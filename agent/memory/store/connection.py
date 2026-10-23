@@ -21,8 +21,7 @@ from core.log import log
 _HEALTH_CHECK_INTERVAL = 30.0
 
 
-async def fetch_count(db: aiosqlite.Connection, sql: str,
-                      params: Sequence[Any] = ()) -> int:
+async def fetch_count(db: aiosqlite.Connection, sql: str, params: Sequence[Any] = ()) -> int:
     """执行 COUNT 聚合并返回数值。
 
     COUNT 恒返回一行（fetchone 实际不会为 None）；aiosqlite 把 fetchone
@@ -54,7 +53,10 @@ class MemoryConnectionManager:
 
     @staticmethod
     async def _ensure_column(
-        db: aiosqlite.Connection, table: str, column: str, ddl: str,
+        db: aiosqlite.Connection,
+        table: str,
+        column: str,
+        ddl: str,
     ) -> None:
         """幂等加列迁移：列不存在时 ALTER TABLE 添加。"""
         cursor = await db.execute(f"PRAGMA table_info({table})")
@@ -107,6 +109,7 @@ class MemoryConnectionManager:
                     return self.db
 
             from pathlib import Path
+
             Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
 
             db = await aiosqlite.connect(self.db_path)
@@ -137,6 +140,7 @@ class MemoryConnectionManager:
             return
         try:
             from agent.storage.scope_migrate import get_legacy_adapter, migrate_memory_db_tags
+
             # 持写锁执行：迁移失败 rollback 不会连坐其他协程的在途写事务
             async with self.write_lock:
                 await migrate_memory_db_tags(db, self.db_path, get_legacy_adapter())
@@ -192,9 +196,7 @@ class MemoryConnectionManager:
         await db.execute("CREATE INDEX IF NOT EXISTS idx_mem_type ON memories(type);")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_mem_source ON memories(source);")
         await db.execute("CREATE INDEX IF NOT EXISTS idx_mem_ts ON memories(ts_ns);")
-        await db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_mem_access ON memories(access_count);"
-        )
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_mem_access ON memories(access_count);")
         # version 列迁移：内容修订版本号（update +1），审计与冲突排查用
         await self._ensure_column(db, "memories", "version", "INTEGER NOT NULL DEFAULT 1")
 
@@ -234,9 +236,7 @@ class MemoryConnectionManager:
                 purged_at_ns INTEGER NOT NULL
             );
         """)
-        await db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_tomb_purged ON memories_tombstone(purged_at_ns);"
-        )
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_tomb_purged ON memories_tombstone(purged_at_ns);")
         # 物删条目的合并去向（merged_into 谱系）：墓碑除"曾经知道什么"外保留"搬到了哪里"
         await self._ensure_column(db, "memories_tombstone", "redirect_to", "INTEGER")
 
@@ -323,12 +323,8 @@ class MemoryConnectionManager:
         """)
         # 触发方标识（tool:*/auto_capture/consolidator/web 等），变更可归属
         await self._ensure_column(db, "memory_audit", "actor", "TEXT NOT NULL DEFAULT ''")
-        await db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_audit_mid ON memory_audit(memory_id);"
-        )
-        await db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_audit_ts ON memory_audit(ts_ns);"
-        )
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_audit_mid ON memory_audit(memory_id);")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_audit_ts ON memory_audit(ts_ns);")
 
         # ---- 自动捕获游标（每 scope 的提取进度，进程重启后续跑） ----
         await db.execute("""
@@ -341,12 +337,8 @@ class MemoryConnectionManager:
                 updated_ns INTEGER NOT NULL
             );
         """)
-        await self._ensure_column(
-            db, "capture_cursors", "counted_msg_id", "INTEGER NOT NULL DEFAULT 0"
-        )
-        await self._ensure_column(
-            db, "capture_cursors", "pending_json", "TEXT NOT NULL DEFAULT ''"
-        )
+        await self._ensure_column(db, "capture_cursors", "counted_msg_id", "INTEGER NOT NULL DEFAULT 0")
+        await self._ensure_column(db, "capture_cursors", "pending_json", "TEXT NOT NULL DEFAULT ''")
 
         # ---- 工具错误追踪表 ----
         await db.execute("""
@@ -361,12 +353,8 @@ class MemoryConnectionManager:
                 ts_ns INTEGER NOT NULL
             );
         """)
-        await db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_te_tool ON tool_errors(tool_name);"
-        )
-        await db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_te_ts ON tool_errors(ts_ns);"
-        )
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_te_tool ON tool_errors(tool_name);")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_te_ts ON tool_errors(ts_ns);")
 
         # ---- Cognee 异步投影队列与 ID 映射 ----
         # entry_kind 区分投影条目类型：memory（记忆）/ graph_node（关系节点）
@@ -386,8 +374,7 @@ class MemoryConnectionManager:
             );
         """)
         await db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_cognee_queue_ready "
-            "ON cognee_sync_queue(status, next_retry_ns, id);"
+            "CREATE INDEX IF NOT EXISTS idx_cognee_queue_ready ON cognee_sync_queue(status, next_retry_ns, id);"
         )
         await db.execute("""
             CREATE TABLE IF NOT EXISTS cognee_entry_map (
@@ -425,12 +412,13 @@ class MemoryConnectionManager:
             );
         """)
         await self._ensure_column(
-            db, "cognee_entry_map", "content_hash", "TEXT NOT NULL DEFAULT ''",
+            db,
+            "cognee_entry_map",
+            "content_hash",
+            "TEXT NOT NULL DEFAULT ''",
         )
         # 上次进程异常退出时可能遗留 processing，启动后安全重试。
-        await db.execute(
-            "UPDATE cognee_sync_queue SET status='pending' WHERE status='processing'"
-        )
+        await db.execute("UPDATE cognee_sync_queue SET status='pending' WHERE status='processing'")
 
         # ---- 关系图谱（权威存储；cognee 仅为其投影层） ----
         # 节点：实体型（user/group，key 与实体 scope 标签同构）+ 自由型（person/topic/...）
@@ -446,9 +434,7 @@ class MemoryConnectionManager:
                 archived INTEGER NOT NULL DEFAULT 0
             );
         """)
-        await db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_gn_type ON graph_nodes(node_type);"
-        )
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_gn_type ON graph_nodes(node_type);")
         # 边：(subject, predicate, object) 唯一，重复写入即更新强度与证据
         await db.execute("""
             CREATE TABLE IF NOT EXISTS graph_edges (
@@ -472,23 +458,40 @@ class MemoryConnectionManager:
         """)
         # 访问追踪（存量库迁移）：被检索命中的边计数加成，衰减带访问护盾
         await self._ensure_column(
-            db, "graph_edges", "access_count", "INTEGER NOT NULL DEFAULT 0",
+            db,
+            "graph_edges",
+            "access_count",
+            "INTEGER NOT NULL DEFAULT 0",
         )
         await self._ensure_column(
-            db, "graph_edges", "last_accessed_ns", "INTEGER NOT NULL DEFAULT 0",
+            db,
+            "graph_edges",
+            "last_accessed_ns",
+            "INTEGER NOT NULL DEFAULT 0",
         )
-        await db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_ge_subject ON graph_edges(subject_id);"
-        )
-        await db.execute(
-            "CREATE INDEX IF NOT EXISTS idx_ge_object ON graph_edges(object_id);"
-        )
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_ge_subject ON graph_edges(subject_id);")
+        await db.execute("CREATE INDEX IF NOT EXISTS idx_ge_object ON graph_edges(object_id);")
 
         # ---- 治理议程豁免（AI 裁决「误报/真实扇出/设计使然」后登记，检测器不再生产该项） ----
         # 闭环「事实归系统」的最后一环：裁决结论落库，build_agenda 塑形时剔除，
         # 根治常驻误报导致的逐拍复核流水；签名口径见 GraphStore 豁免方法注释
         await db.execute("""
             CREATE TABLE IF NOT EXISTS graph_curation_exemptions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                kind TEXT NOT NULL,
+                signature TEXT NOT NULL,
+                reason TEXT NOT NULL DEFAULT '',
+                actor TEXT NOT NULL DEFAULT '',
+                active INTEGER NOT NULL DEFAULT 1,
+                created_ns INTEGER NOT NULL,
+                revoked_ns INTEGER NOT NULL DEFAULT 0,
+                UNIQUE (kind, signature)
+            );
+        """)
+
+        # ---- 标签归并候选豁免（AI 判定误报/设计使然后登记，议程不再生产该对） ----
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS tag_curation_exemptions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 kind TEXT NOT NULL,
                 signature TEXT NOT NULL,
@@ -508,7 +511,9 @@ class MemoryConnectionManager:
             "memories_archive": "type,content,tags_json,importance,ts_ns,source,metadata_json",
             "graph_nodes": "node_key,node_type,label,metadata_json,archived",
             "graph_edges": "subject_id,predicate,object_id,symmetric,evidence,source_memory_id,origin,metadata_json,archived",
-            "cognee_entry_map": "", "cognee_sync_queue": "", "cognee_projection_attempts": "",
+            "cognee_entry_map": "",
+            "cognee_sync_queue": "",
+            "cognee_projection_attempts": "",
         }
         for table, columns in revision_columns.items():
             for operation in ("INSERT", "UPDATE", "DELETE"):
@@ -558,9 +563,7 @@ class MemoryConnectionManager:
 
     async def _existing_vec_dims(self, db: aiosqlite.Connection) -> Optional[int]:
         """读取已存在的 memories_vec 声明维度，不存在返回 None。"""
-        cursor = await db.execute(
-            "SELECT sql FROM sqlite_master WHERE name='memories_vec'"
-        )
+        cursor = await db.execute("SELECT sql FROM sqlite_master WHERE name='memories_vec'")
         row = await cursor.fetchone()
         if not row or not row["sql"]:
             return None
@@ -570,10 +573,7 @@ class MemoryConnectionManager:
     async def _ensure_vec_tables(self, db: aiosqlite.Connection, dims: int) -> None:
         """确保 vec0 索引表存在且维度匹配；维度变更时重建。"""
         # vec_dims 已缓存时跳过 sqlite_master 探测（写入路径热调用）
-        existing = (
-            self.vec_dims if self.vec_dims is not None
-            else await self._existing_vec_dims(db)
-        )
+        existing = self.vec_dims if self.vec_dims is not None else await self._existing_vec_dims(db)
         if existing is not None and existing != dims:
             log(f"vec 索引维度变更 {existing}→{dims}，重建索引", "WARNING")
             await db.execute("DROP TABLE IF EXISTS memories_vec")
@@ -598,12 +598,10 @@ class MemoryConnectionManager:
             ("chunks_vec", "chunks", "embedding", "id", "chunk_id"),
         )
         for vec_table, src_table, blob_col, src_key, vec_key in pairs:
-            src_cnt = await (await db.execute(
-                f"SELECT COUNT(*) AS c FROM {src_table} WHERE {blob_col} IS NOT NULL"
-            )).fetchone()
-            idx_cnt = await (await db.execute(
-                f"SELECT COUNT(*) AS c FROM {vec_table}"
-            )).fetchone()
+            src_cnt = await (
+                await db.execute(f"SELECT COUNT(*) AS c FROM {src_table} WHERE {blob_col} IS NOT NULL")
+            ).fetchone()
+            idx_cnt = await (await db.execute(f"SELECT COUNT(*) AS c FROM {vec_table}")).fetchone()
             if (src_cnt["c"] if src_cnt else 0) != (idx_cnt["c"] if idx_cnt else 0):
                 await db.execute(f"DELETE FROM {vec_table}")
                 await db.execute(
@@ -634,7 +632,8 @@ class MemoryConnectionManager:
             if blob is not None:
                 try:
                     await db.execute(
-                        "UPDATE memories SET embedding_blob=NULL WHERE id=?", (memory_id,),
+                        "UPDATE memories SET embedding_blob=NULL WHERE id=?",
+                        (memory_id,),
                     )
                 except Exception:
                     pass
@@ -680,7 +679,8 @@ class MemoryConnectionManager:
             if ids:
                 placeholders = ",".join("?" for _ in ids)
                 await db.execute(
-                    f"DELETE FROM chunks_vec WHERE chunk_id IN ({placeholders})", ids,
+                    f"DELETE FROM chunks_vec WHERE chunk_id IN ({placeholders})",
+                    ids,
                 )
         except Exception as exc:
             log(f"vec 索引按路径删除失败 [{path}]: {exc}", "DEBUG")
@@ -698,9 +698,7 @@ class MemoryConnectionManager:
             await db.execute(f"DROP TRIGGER IF EXISTS {trigger}")
         if self.fts_available:
             # external-content 表不支持手动增删，直接 drop 重建为独立表
-            cursor = await db.execute(
-                "SELECT sql FROM sqlite_master WHERE name='memories_fts'"
-            )
+            cursor = await db.execute("SELECT sql FROM sqlite_master WHERE name='memories_fts'")
             row = await cursor.fetchone()
             if row and row["sql"] and "content='memories'" in str(row["sql"]):
                 await db.execute("DROP TABLE memories_fts")
@@ -709,9 +707,7 @@ class MemoryConnectionManager:
                     USING fts5(content, tokenize='unicode61 remove_diacritics 2');
                 """)
 
-        cursor = await db.execute(
-            "SELECT value FROM schema_meta WHERE key='fts_tokenizer_version'"
-        )
+        cursor = await db.execute("SELECT value FROM schema_meta WHERE key='fts_tokenizer_version'")
         row = await cursor.fetchone()
         stored_version = row["value"] if row else ""
         if stored_version == FTS_TOKENIZER_VERSION:
@@ -726,7 +722,8 @@ class MemoryConnectionManager:
                     log(
                         f"memories_fts 计数对账不一致（{src['c'] if src else 0} vs "
                         f"{idx['c'] if idx else 0}），已全量重建",
-                        "WARNING", tag="思维",
+                        "WARNING",
+                        tag="思维",
                     )
             return
 
@@ -749,9 +746,7 @@ class MemoryConnectionManager:
 
         words: set[str] = set()
         try:
-            cursor = await db.execute(
-                "SELECT label FROM graph_nodes WHERE label != '' AND archived = 0"
-            )
+            cursor = await db.execute("SELECT label FROM graph_nodes WHERE label != '' AND archived = 0")
             words.update(str(r["label"]).strip() for r in await cursor.fetchall())
         except Exception:
             pass  # graph_nodes 可能尚未建表（首次初始化顺序），忽略即可
@@ -778,12 +773,11 @@ class MemoryConnectionManager:
 
         cursor = await db.execute("SELECT id, content FROM memories")
         rows = await cursor.fetchall()
-        tokenized = await asyncio.to_thread(
-            lambda: [(int(r["id"]), tokenize_for_index(r["content"])) for r in rows]
-        )
+        tokenized = await asyncio.to_thread(lambda: [(int(r["id"]), tokenize_for_index(r["content"])) for r in rows])
         await db.execute("DELETE FROM memories_fts")
         await db.executemany(
-            "INSERT INTO memories_fts(rowid, content) VALUES(?, ?)", tokenized,
+            "INSERT INTO memories_fts(rowid, content) VALUES(?, ?)",
+            tokenized,
         )
         if tokenized:
             log(f"memories_fts 重建: {len(tokenized)} 条", "DEBUG", tag="思维")
@@ -796,9 +790,7 @@ class MemoryConnectionManager:
         rows = await cursor.fetchall()
         tokenized = await asyncio.to_thread(
             lambda: [
-                (str(r["id"]), r["path"], r["start_line"], r["end_line"],
-                 tokenize_for_index(r["text"]))
-                for r in rows
+                (str(r["id"]), r["path"], r["start_line"], r["end_line"], tokenize_for_index(r["text"])) for r in rows
             ]
         )
         await db.execute("DELETE FROM chunks_fts")
@@ -810,7 +802,10 @@ class MemoryConnectionManager:
             log(f"chunks_fts 重建: {len(tokenized)} 条", "DEBUG", tag="思维")
 
     async def fts_upsert_memory(
-        self, db: aiosqlite.Connection, memory_id: int, content: str,
+        self,
+        db: aiosqlite.Connection,
+        memory_id: int,
+        content: str,
     ) -> None:
         """同步单条记忆到 FTS 索引（分词后文本；失败不影响主流程）。"""
         if not self.fts_available or memory_id <= 0:
@@ -830,7 +825,9 @@ class MemoryConnectionManager:
             log(f"FTS 索引写入失败 id={memory_id}: {exc}", "WARNING", tag="记忆")
 
     async def fts_delete_memories(
-        self, db: aiosqlite.Connection, memory_ids: list[int],
+        self,
+        db: aiosqlite.Connection,
+        memory_ids: list[int],
     ) -> None:
         """从 FTS 索引批量移除记忆。"""
         if not self.fts_available or not memory_ids:

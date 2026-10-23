@@ -80,8 +80,7 @@ _SWEEP_CONFIGS = {
         },
         "task_expired_delete_grace_seconds": {
             "description": (
-                "过期任务自动删除的宽限期（秒）：过期后保留该时长供改期恢复，"
-                "届满随心跳维护删除，0 = 过期即删"
+                "过期任务自动删除的宽限期（秒）：过期后保留该时长供改期恢复，届满随心跳维护删除，0 = 过期即删"
             ),
             "default": 259200,
             "value_type": ConfigValueType.RANGE,
@@ -104,6 +103,7 @@ def _format_interval(seconds: int) -> str:
     if seconds >= 60:
         return f"{seconds // 60} 分钟"
     return f"{seconds} 秒"
+
 
 _ENTITY_ANALYSIS_PROMPT = (
     "请对 {entity} 进行画像分析并输出结构化 Markdown 总结。\n\n"
@@ -153,7 +153,9 @@ class HeartbeatEngine:
     _MAX_TASK_FAILURES = 3  # 任务连续失败上限，达到后放弃本轮调度标记
     _MAX_ANALYSIS_ATTEMPTS = 3  # 实体画像分析连续未执行上限，达到后放弃该实体
 
-    def __init__(self, mind: Mind, everything_data: EverythingData, *, memory: MemoryHost, skills: SkillRuntime | None) -> None:
+    def __init__(
+        self, mind: Mind, everything_data: EverythingData, *, memory: MemoryHost, skills: SkillRuntime | None
+    ) -> None:
         self.mind = mind
         self.memory = memory
         self.skills = skills
@@ -197,9 +199,9 @@ class HeartbeatEngine:
             # 目录不可枚举时注册表为空是异常态，跳过对账防误清全部调度
             return
         orphans = [
-            s.task_name for s in self.config.task_schedules
-            if self.task_registry.get(s.task_name) is None
-            and not self.task_registry.task_file_exists(s.task_name)
+            s.task_name
+            for s in self.config.task_schedules
+            if self.task_registry.get(s.task_name) is None and not self.task_registry.task_file_exists(s.task_name)
         ]
         if not orphans:
             return
@@ -218,9 +220,8 @@ class HeartbeatEngine:
         if not self.task_registry.is_dir_available():
             return
         from agent.task import handoff as task_handoff
-        alive = self.task_registry.file_stems() | {
-            t.name for t in self.task_registry.list_all()
-        }
+
+        alive = self.task_registry.file_stems() | {t.name for t in self.task_registry.list_all()}
         pruned_history = task_history.prune_orphans(alive)
         pruned_handoffs = task_handoff.prune_orphans(alive)
         if pruned_history or pruned_handoffs:
@@ -255,10 +256,13 @@ class HeartbeatEngine:
             if not task.is_expired(now):
                 continue
             if task.enabled:
-                ok = await self.task_registry.update_task_fields(task.name, {
-                    "enabled": False,
-                    "updated_at": now,
-                })
+                ok = await self.task_registry.update_task_fields(
+                    task.name,
+                    {
+                        "enabled": False,
+                        "updated_at": now,
+                    },
+                )
                 if not ok:
                     log(f"过期任务 [{task.name}] 停用写回失败，本次跳过", "WARNING", tag="心跳")
                     continue
@@ -266,9 +270,7 @@ class HeartbeatEngine:
                     f"任务 [{task.name}] 已过生效截止（{task.expires_at}），已自动停用",
                     tag="心跳",
                 )
-                hb_log.append_entry(
-                    f"任务过期自动停用: {task.name}（截止 {task.expires_at}，可改期恢复）"
-                )
+                hb_log.append_entry(f"任务过期自动停用: {task.name}（截止 {task.expires_at}，可改期恢复）")
             schedule_removed = self.config.remove_schedule(task.name)
             save_needed = save_needed or schedule_removed
         if save_needed:
@@ -283,6 +285,7 @@ class HeartbeatEngine:
         task_expired_delete_enabled=false 时整段关闭。
         """
         from core.config import get_config_bool, get_config_int
+
         if not get_config_bool("task_expired_delete_enabled", True):
             return
         grace = max(0, get_config_int("task_expired_delete_grace_seconds", 259200))
@@ -299,16 +302,14 @@ class HeartbeatEngine:
             save_needed = save_needed or schedule_removed
             task_history.clear_history(name)
             from agent.task import handoff as task_handoff
+
             task_handoff.delete_handoff(name)
             self._warned_missing_tasks.discard(name)
             log(
-                f"任务 [{name}] 过期超宽限期（截止 {task.expires_at}），已自动删除"
-                f"（调度移除: {schedule_removed}）",
+                f"任务 [{name}] 过期超宽限期（截止 {task.expires_at}），已自动删除（调度移除: {schedule_removed}）",
                 tag="心跳",
             )
-            hb_log.append_entry(
-                f"任务过期自动删除: {name}（截止 {task.expires_at}，宽限期已过）"
-            )
+            hb_log.append_entry(f"任务过期自动删除: {name}（截止 {task.expires_at}，宽限期已过）")
         if save_needed:
             self.config.save()
 
@@ -321,6 +322,7 @@ class HeartbeatEngine:
         self.task_registry.reload()
         self._warned_missing_tasks.clear()
         from .config import reload_heartbeat_config
+
         self.config = reload_heartbeat_config()
         self._seed_declared_schedules()
         self._prune_orphan_schedules()
@@ -342,6 +344,7 @@ class HeartbeatEngine:
         """
         try:
             from agent.task.event_trigger import sync_task_event_hooks
+
             sync_task_event_hooks(self)
         except Exception as exc:
             log(f"任务事件触发装配失败: {exc}", "WARNING", tag="任务")
@@ -361,16 +364,17 @@ class HeartbeatEngine:
                 continue
             if self.config.get_schedule(task.name) is not None:
                 continue
-            self.config.set_schedule(TaskSchedule(
-                task_name=task.name,
-                mode=ScheduleMode(mode),
-                every_n_beats=max(1, task.schedule_every_n_beats),
-                schedule_times=list(task.schedule_times),
-            ))
+            self.config.set_schedule(
+                TaskSchedule(
+                    task_name=task.name,
+                    mode=ScheduleMode(mode),
+                    every_n_beats=max(1, task.schedule_every_n_beats),
+                    schedule_times=list(task.schedule_times),
+                )
+            )
             seeded = True
             log(
-                f"任务 {task.name} 按定义文件种子化调度（mode={mode}, "
-                f"every_n_beats={task.schedule_every_n_beats}）",
+                f"任务 {task.name} 按定义文件种子化调度（mode={mode}, every_n_beats={task.schedule_every_n_beats}）",
                 tag="心跳",
             )
         if seeded:
@@ -400,6 +404,7 @@ class HeartbeatEngine:
         # 到期定时提醒触发（持久化提醒，含停机期间错过的补触发）
         try:
             from agent.mind.tools.scheduler import check_due_reminders
+
             await check_due_reminders()
         except Exception as e:
             log(f"定时提醒检查失败: {e}", "DEBUG", tag="心跳")
@@ -435,7 +440,8 @@ class HeartbeatEngine:
                         f"调度 [{schedule.task_name}] 无对应任务定义"
                         "（config/tasks 下缺失），已跳过；"
                         "请在心跳配置中移除该调度或补充任务文件",
-                        "WARNING", tag="心跳",
+                        "WARNING",
+                        tag="心跳",
                     )
                 continue
             if not task.enabled:
@@ -479,7 +485,8 @@ class HeartbeatEngine:
             self._task_inflight.add(pending_task.name)
             try:
                 await self.executor.run(
-                    pending_task, entity,
+                    pending_task,
+                    entity,
                     temperature=self.config.analysis_temperature,
                     model_id=schedule.model_id,
                     reasoning_effort=schedule.reasoning_effort,
@@ -497,14 +504,18 @@ class HeartbeatEngine:
                     # 否则该实体的画像分析要等对话计数再达阈值才恢复
                     try:
                         self.mind.pfc.requeue_analysis(
-                            entity.group_id or 0, entity.uid or 0,
+                            entity.group_id or 0,
+                            entity.uid or 0,
                             entity.adapter_key or "",
                         )
                     except Exception as rq_exc:
                         log(f"画像分析重入队失败: {rq_exc}", "WARNING", tag="心跳")
                 if failures < self._MAX_TASK_FAILURES:
-                    log(f"任务 [{pending_task.name}] 执行失败（第 {failures} 次），"
-                        f"保留下个 tick 重试: {exc}", "WARNING", tag="心跳")
+                    log(
+                        f"任务 [{pending_task.name}] 执行失败（第 {failures} 次），保留下个 tick 重试: {exc}",
+                        "WARNING",
+                        tag="心跳",
+                    )
                     if dirty:
                         self.config.save()
                     return executed
@@ -513,7 +524,8 @@ class HeartbeatEngine:
                 log(
                     f"任务 [{pending_task.name}] 连续 {failures} 次失败，放弃本轮: {exc}"
                     + ("（今日不再重试）" if schedule.mode == ScheduleMode.SCHEDULED else ""),
-                    "ERROR", tag="心跳",
+                    "ERROR",
+                    tag="心跳",
                 )
             else:
                 self._task_failures.pop(pending_task.name, None)
@@ -563,6 +575,7 @@ class HeartbeatEngine:
                 schedule.beat_count += 1
             # 积极性缩放：proactivity_level 越高，空闲反思/自由活动触发越快
             from agent.mind.proactivity import idle_beats_factor
+
             effective_beats = max(1, round(schedule.every_n_beats * idle_beats_factor()))
             if schedule.beat_count >= effective_beats or self._reflection_pending:
                 extra_note = ""
@@ -623,14 +636,20 @@ class HeartbeatEngine:
             log(f"执行任务: {task_name}（{trigger}）", tag="心跳")
 
             # 会话生命周期由 thinking_session 管理：退出（含异常）保证发射 SESSION_END
-            async with thinking_session({
-                "is_heartbeat": True, "is_introspection": True, "entity": "任务执行",
-            }) as session:
+            async with thinking_session(
+                {
+                    "is_heartbeat": True,
+                    "is_introspection": True,
+                    "entity": "任务执行",
+                }
+            ) as session:
                 session.end["reason"] = "task_completed"
                 entity = await self._pop_analysis_entity() if task.scope.value == "entity" else None
                 try:
                     result = await self.executor.run(
-                        task, entity, temperature=self.config.analysis_temperature,
+                        task,
+                        entity,
+                        temperature=self.config.analysis_temperature,
                         trigger=trigger,
                     )
                 except Exception as exc:
@@ -675,6 +694,7 @@ class HeartbeatEngine:
                 fold_idle_beats,
                 is_summary_enabled,
             )
+
             if not is_summary_enabled():
                 return
             conv_data = self.mind.conversation_data
@@ -696,7 +716,8 @@ class HeartbeatEngine:
                 if await conv_data.schedule_fold(scope_type, scope_id):
                     log(
                         f"空闲自动折叠: {key}（{beats[key]} 心跳无新消息，积压 {backlog} 条）",
-                        "DEBUG", tag="心跳",
+                        "DEBUG",
+                        tag="心跳",
                     )
         except Exception as e:
             log(f"空闲折叠扫描失败: {e}", "DEBUG", tag="心跳")
@@ -704,9 +725,11 @@ class HeartbeatEngine:
     async def _run_maintenance(self) -> None:
         """内置维护步骤（不可由用户配置为任务）。"""
         from core.config import get_config_bool
+
         try:
             if get_config_bool("auto_consolidate_enabled", True):
                 from agent.memory.notes import consolidate_heartbeat
+
                 consolidate_heartbeat()
         except Exception as e:
             log(f"心跳日志合并失败: {e}", "DEBUG", tag="心跳")
@@ -737,9 +760,11 @@ class HeartbeatEngine:
         consolidate_report = None
         try:
             from core.config import get_config_int
+
             consolidate_every = max(1, get_config_int("memory_consolidate_every_n_ticks", 12))
             if self.memory.memory_store and self._total_ticks % consolidate_every == 0:
                 from agent.memory.consolidator import MemoryConsolidator
+
                 consolidate_report = await MemoryConsolidator(self.memory.memory_store).consolidate()
                 for line in consolidate_report.to_log_lines():
                     hb_log.append_entry(f"[记忆整理] {line}")
@@ -750,6 +775,7 @@ class HeartbeatEngine:
         # 让 uploads/docs 的外部新增/修改在进程运行期内即可被检索到
         try:
             from core.config import get_config_int
+
             sync_every = max(1, get_config_int("memory_file_sync_every_n_ticks", 12))
             if self.memory.memory_store and self._total_ticks % sync_every == 0:
                 await self._resync_file_index()
@@ -759,6 +785,7 @@ class HeartbeatEngine:
         # 自动记忆捕获：对话达轮数阈值或静默空闲时提取事实进长期记忆
         try:
             from agent.memory.auto_capture import run_auto_capture
+
             await run_auto_capture(self.memory)
         except Exception as e:
             log(f"自动记忆捕获失败: {e}", "DEBUG", tag="心跳")
@@ -767,6 +794,7 @@ class HeartbeatEngine:
         # 存续判断权在 AI——长期目标是规划常态，系统不做基于时间的自动清理
         try:
             from agent.planning.situation import stale_goal_line
+
             stale_line = await stale_goal_line()
             if stale_line:
                 hb_log.append_entry(stale_line)
@@ -777,6 +805,7 @@ class HeartbeatEngine:
         if self.memory.memory_store:
             try:
                 from agent.memory.hub import ensure_hub
+
                 if await ensure_hub(self.memory.memory_store):
                     hb_log.append_entry("[主标签记忆] 骨架缺失，已重建")
             except Exception as e:
@@ -801,13 +830,13 @@ class HeartbeatEngine:
             curator = skills.curator if skills is not None else None
             if curator is not None:
                 from core.config import get_config_int
+
                 curator_every = max(1, get_config_int("skills_curator_every_n_ticks", 12))
                 if self._total_ticks % curator_every == 0:
                     report = curator.apply_automatic_transitions()
                     if report["staled"] or report["archived"]:
                         hb_log.append_entry(
-                            f"[技能策展] 降级 {len(report['staled'])} 个，"
-                            f"归档 {len(report['archived'])} 个"
+                            f"[技能策展] 降级 {len(report['staled'])} 个，归档 {len(report['archived'])} 个"
                         )
                     agenda = await curator.build_agenda()
                     summary = curator.agenda_summary(agenda)
@@ -821,6 +850,7 @@ class HeartbeatEngine:
         try:
             if self.memory.memory_store is not None:
                 from agent.memory.graph.curation import agenda_summary, build_agenda
+
                 graph_agenda = await build_agenda(self.memory.memory_store.graph)
                 graph_summary = agenda_summary(graph_agenda)
                 if graph_summary:
@@ -845,20 +875,19 @@ class HeartbeatEngine:
                 if attempts < self._MAX_ANALYSIS_ATTEMPTS:
                     self._analysis_attempts[key] = attempts
                     self.mind.pfc.requeue_analysis(key[0], key[1], key[2])
-                    log(f"实体画像分析推迟重试（第 {attempts} 次）: {entity.get_entity_desc()}",
-                        "DEBUG", tag="心跳")
+                    log(f"实体画像分析推迟重试（第 {attempts} 次）: {entity.get_entity_desc()}", "DEBUG", tag="心跳")
                 else:
                     self._analysis_attempts.pop(key, None)
-                    log(f"实体画像分析连续 {attempts} 次未执行，放弃: {entity.get_entity_desc()}",
-                        "WARNING", tag="心跳")
+                    log(
+                        f"实体画像分析连续 {attempts} 次未执行，放弃: {entity.get_entity_desc()}", "WARNING", tag="心跳"
+                    )
             else:
-                self._analysis_attempts.pop(
-                    (entity.group_id or 0, entity.uid or 0, entity.adapter_key or ""), None
-                )
+                self._analysis_attempts.pop((entity.group_id or 0, entity.uid or 0, entity.adapter_key or ""), None)
 
         # 上下文提供者 on_tick 钩子（实体自驱维护周期）
         try:
             from core.context_provider import ContextProviderRegistry
+
             await ContextProviderRegistry.tick_all()
         except Exception as e:
             log(f"上下文提供者 tick 失败: {e}", "DEBUG", tag="心跳")
@@ -866,6 +895,7 @@ class HeartbeatEngine:
         # 实体 Lifecycle on_tick 钩子（如 share_store.sweep_expired）
         try:
             from core.lifecycle import Lifecycle
+
             await Lifecycle.tick_all()
         except Exception as e:
             log(f"Lifecycle tick 失败: {e}", "DEBUG", tag="心跳")
@@ -879,10 +909,7 @@ class HeartbeatEngine:
             # _last_empty_sweep=0 表示本进程从未执行（首心跳必清存量）；
             # 仅当已执行过且间隔未到才跳过——monotonic 是开机时长，
             # 全新机器上 monotonic()<interval 不等于"刚执行过"
-            if not interval or (
-                self._last_empty_sweep
-                and (time.monotonic() - self._last_empty_sweep) < interval
-            ):
+            if not interval or (self._last_empty_sweep and (time.monotonic() - self._last_empty_sweep) < interval):
                 return
             self._last_empty_sweep = time.monotonic()
             report = await self.mind.conversation_data.router.sqlite.sweep_empty_conversations()
@@ -895,12 +922,14 @@ class HeartbeatEngine:
             log(f"空会话清理失败: {e}", "DEBUG", tag="心跳")
 
     async def _check_memory_health(
-        self, type_counts: Optional[Dict[str, int]] = None,
+        self,
+        type_counts: Optional[Dict[str, int]] = None,
     ) -> List[str]:
         """记忆健康检查：纯逻辑检查阈值（与 memory_stats 共用同一配置口径）。"""
         if not self.memory.memory_store:
             return []
         from core.config import get_config_int
+
         warn_threshold = get_config_int("memory_warn_threshold", 200)
         warnings: List[str] = []
         try:
@@ -909,8 +938,7 @@ class HeartbeatEngine:
             entity_count = type_counts.get("entity", 0)
             if entity_count > 5:
                 warnings.append(
-                    f"实体记忆有 {entity_count} 条（阈值 5），"
-                    "建议使用 memory_deep_search 查看并用 merge_memories 合并"
+                    f"实体记忆有 {entity_count} 条（阈值 5），建议使用 memory_deep_search 查看并用 merge_memories 合并"
                 )
             reflection_count = type_counts.get("reflection", 0)
             if reflection_count > 10:
@@ -941,7 +969,8 @@ class HeartbeatEngine:
     }
 
     async def _write_memory_status(
-        self, consolidate_report: Any = None,
+        self,
+        consolidate_report: Any = None,
         type_counts: Optional[Dict[str, int]] = None,
     ) -> None:
         """将记忆系统状态写入主便签受管区块（仅 AI 可行动项）。
@@ -956,6 +985,7 @@ class HeartbeatEngine:
             return
         try:
             from agent.memory import notes as notes_mod
+
             # 整理 tick 计数可能已变化，需重查；其余 tick 复用健康检查的结果
             if type_counts is None or consolidate_report is not None:
                 type_counts = await store.get_type_counts()
@@ -968,8 +998,10 @@ class HeartbeatEngine:
             ]
             try:
                 from agent.memory.cognee.config import load_cognee_config
+
                 if load_cognee_config().enabled:
                     from agent.memory.cognee.runtime import get_cognee_coordinator
+
                     coordinator = get_cognee_coordinator()
                     pending = 0
                     paused_note = ""
@@ -978,12 +1010,11 @@ class HeartbeatEngine:
                         pending = getattr(status, "pending", 0) or 0
                         if getattr(status, "paused", False):
                             until = time.strftime(
-                                "%H:%M", time.localtime(status.paused_until or 0),
+                                "%H:%M",
+                                time.localtime(status.paused_until or 0),
                             )
                             paused_note = f"（写盘熔断暂停中，至 {until} 自动恢复）"
-                    lines.append(
-                        f"- cognee 图谱：已启用，同步积压 {pending} 条{paused_note}"
-                    )
+                    lines.append(f"- cognee 图谱：已启用，同步积压 {pending} 条{paused_note}")
                 else:
                     lines.append("- cognee 图谱：未启用")
             except Exception:
@@ -1002,6 +1033,7 @@ class HeartbeatEngine:
             # 常态零占用——标签空间健康时这行对 AI 是纯噪音）
             try:
                 from core.config import get_config_int as _get_int
+
                 bloat_threshold = _get_int("memory_tag_bloat_threshold", 400)
                 if bloat_threshold > 0:
                     tag_df = await store.list_tags()
@@ -1012,18 +1044,16 @@ class HeartbeatEngine:
                         )
             except Exception:
                 pass
-            # 标签归并议程：确定性候选（写法变体/包含关系），事实归系统、决策归 AI
+            # 标签归并议程：确定性候选（豁免过滤后），事实归系统、决策归 AI
             # （无候选零占用；候选上限 5 对全量列出，更多明细经 memory_index 查看）
             try:
                 merge_candidates = await store.tag_merge_candidates(limit=5)
                 if merge_candidates:
-                    preview = "；".join(
-                        f"{c['from']}→{c['into']}（{c['reason']}）"
-                        for c in merge_candidates
-                    )
+                    preview = "；".join(f"{c['from']}→{c['into']}（{c['reason']}）" for c in merge_candidates)
                     lines.append(
                         f"- 标签归并候选 {len(merge_candidates)} 对：{preview}"
-                        "——确认后经 update_memory 归并（明细经 memory_index 查看）"
+                        "——确认后经 update_memory 归并；误报对经 tag_curation_exempt 豁免"
+                        "（明细经 memory_index 查看）"
                     )
             except Exception:
                 pass
@@ -1061,8 +1091,7 @@ class HeartbeatEngine:
 
             interval = current_interval_seconds()
             schedule_count = sum(
-                1 for s in self.config.task_schedules
-                if self.task_registry.get(s.task_name) is not None
+                1 for s in self.config.task_schedules if self.task_registry.get(s.task_name) is not None
             )
             lines = [
                 f"- 心跳：{'运行中' if self.config.enabled else '已停用'}，每 {interval}s 一拍",
@@ -1077,13 +1106,12 @@ class HeartbeatEngine:
                 )
 
             failed = sorted(
-                name for name, run in last_runs.items()
+                name
+                for name, run in last_runs.items()
                 if run.get("status") == "error" and self.task_registry.get(name) is not None
             )
             if failed:
-                lines.append(
-                    f"- ⚠️ 最近执行失败：{', '.join(failed)}（用 task_history 查看错误详情）"
-                )
+                lines.append(f"- ⚠️ 最近执行失败：{', '.join(failed)}（用 task_history 查看错误详情）")
 
             await notes_mod.update_heartbeat_status_block_async("\n".join(lines))
         except Exception as exc:
@@ -1111,12 +1139,11 @@ class HeartbeatEngine:
         started = float(last.get("started_at") or 0.0)
         status = str(last.get("status") or "")
         status_text = {
-            "success": "成功", "no_output": "无产出", "error": "失败",
+            "success": "成功",
+            "no_output": "无产出",
+            "error": "失败",
         }.get(status, status or "未知")
-        when = (
-            time.strftime("%m-%d %H:%M", time.localtime(started))
-            if started > 0 else "未知时间"
-        )
+        when = time.strftime("%m-%d %H:%M", time.localtime(started)) if started > 0 else "未知时间"
         return f"，上次 {when} {status_text}（{task_history.format_duration_ms(int(last.get('duration_ms') or 0))}）"
 
     # ------------------------------------------------------------------
@@ -1149,9 +1176,7 @@ class HeartbeatEngine:
                         continue
                     if distilled:
                         await self._store_distilled_event(note.date, distilled)
-                        hb_log.append_entry(
-                            f"[事件归档] {note.date}: 提炼 {len(distilled)} 字要点，文件已删除"
-                        )
+                        hb_log.append_entry(f"[事件归档] {note.date}: 提炼 {len(distilled)} 字要点，文件已删除")
                     else:
                         hb_log.append_entry(f"[事件归档] {note.date}: 无长期价值，文件已删除")
                 else:
@@ -1170,9 +1195,7 @@ class HeartbeatEngine:
 
         返回要点文本；无保留价值返回空字符串；提炼失败返回 None（调用方保留文件重试）。
         """
-        prompt = _EVENT_DISTILL_PROMPT.replace("{date}", note_date).replace(
-            "{content}", content[:_DISTILL_MAX_CHARS]
-        )
+        prompt = _EVENT_DISTILL_PROMPT.replace("{date}", note_date).replace("{content}", content[:_DISTILL_MAX_CHARS])
         try:
             raw = await self.mind.reflect(
                 [{"role": "user", "content": f"[系统任务 - events_archive]\n{prompt}"}],
@@ -1204,6 +1227,7 @@ class HeartbeatEngine:
                 gather_dedup_candidates,
                 judge_write,
             )
+
             candidates = await gather_dedup_candidates(store, self.memory.embedder, content)
             decision = await judge_write(content, candidates, tags=tags)
             action = decision.get("action", "store")
@@ -1213,8 +1237,10 @@ class HeartbeatEngine:
                 return
             if action == "update" and decision.get("target_id"):
                 updated = await apply_update(
-                    store, int(decision["target_id"]),
-                    str(decision.get("content") or content), tags,
+                    store,
+                    int(decision["target_id"]),
+                    str(decision.get("content") or content),
+                    tags,
                     actor="heartbeat_distill",
                 )
                 if updated is not None:
@@ -1240,6 +1266,7 @@ class HeartbeatEngine:
         )
         await store.add(entry, actor="heartbeat_distill")
         from agent.memory.embedding import wake_embedding_worker
+
         wake_embedding_worker()
 
     async def _resync_file_index(self) -> None:
@@ -1250,6 +1277,7 @@ class HeartbeatEngine:
         try:
             from agent.memory.memory_sync import sync_files
             from agent.memory.notes import get_memory_dir
+
             await sync_files(store, self.memory.embedder, get_memory_dir())
         except Exception as exc:
             log(f"文件索引同步失败: {exc}", "DEBUG", tag="心跳")
@@ -1281,17 +1309,22 @@ class HeartbeatEngine:
             combined = combined + alias_convs
 
         from core.config import get_config_bool
-        base_messages = await coordinator.prepare_recollection(self.mind,
-            combined, lean=get_config_bool("task_lean_context", True),
+
+        base_messages = await coordinator.prepare_recollection(
+            self.mind,
+            combined,
+            lean=get_config_bool("task_lean_context", True),
         )
         personality_desc = entity.get_personality_desc()
         analysis_messages = list(base_messages)
         if personality_desc:
             analysis_messages.append(personality_desc)
-        analysis_messages.append({
-            "role": "user",
-            "content": f"[系统任务 - entity_analysis]\n{prompt}",
-        })
+        analysis_messages.append(
+            {
+                "role": "user",
+                "content": f"[系统任务 - entity_analysis]\n{prompt}",
+            }
+        )
 
         raw = await self.mind.reflect(
             analysis_messages,
@@ -1306,10 +1339,12 @@ class HeartbeatEngine:
             scope_type0, scope_id0 = entity.identity_parts
             sqlite0 = self.everything_data.router.sqlite
             old_profile = await sqlite0.get_entity_personality(
-                scope_type=scope_type0, scope_id=scope_id0,
+                scope_type=scope_type0,
+                scope_id=scope_id0,
             )
             if old_profile and old_profile.get("personality"):
                 from agent.memory.profile_backup import backup_entity_profile
+
                 backup_entity_profile(scope_type0, scope_id0, old_profile["personality"])
         except Exception as exc:
             log(f"画像备份失败: {exc}", "DEBUG", tag="心跳")
@@ -1325,7 +1360,9 @@ class HeartbeatEngine:
 
         if self.memory.memory_store:
             old_entries = await self.memory.memory_store.list_recent(
-                limit=5, memory_type=MemoryType.ENTITY, source=source,
+                limit=5,
+                memory_type=MemoryType.ENTITY,
+                source=source,
             )
             for old in old_entries:
                 if old.id:
@@ -1340,12 +1377,14 @@ class HeartbeatEngine:
             )
             await self.memory.memory_store.add(entry, actor="heartbeat_profile")
             from agent.memory.embedding import wake_embedding_worker
+
             wake_embedding_worker()
 
         # 关系抽取：复用同一份对话材料提炼结构化关系事实（失败不影响画像产出）
         if self.memory.memory_store:
             try:
                 from agent.memory.graph.extract import extract_and_store_relations
+
                 added = await extract_and_store_relations(self.mind, entity, combined)
                 if added:
                     hb_log.append_entry(f"[relation_extract] {desc}: +{added} 条关系")
@@ -1373,6 +1412,7 @@ class HeartbeatEngine:
         """收集所有 alias 关联身份的对话记录。"""
         try:
             from agent.messages import MessageAssistant, MessageAssistantGroup
+
             sqlite = self.everything_data.router.sqlite
             scope_type, scope_id = entity.identity_parts
             primary = await sqlite.resolve_alias(scope_type, scope_id)
@@ -1387,9 +1427,7 @@ class HeartbeatEngine:
                 # id_id 已是含 adapter 前缀的 scope_id；以裸 adapter 构造使 scope_id 原样命中
                 # 群组身份用 MessageAssistantGroup（携带 group_id 字段），用户用 MessageAssistant
                 alias_entity = (
-                    MessageAssistantGroup(group_id=id_id)
-                    if id_type == "group"
-                    else MessageAssistant(uid=id_id)
+                    MessageAssistantGroup(group_id=id_id) if id_type == "group" else MessageAssistant(uid=id_id)
                 )
                 conv = await self.mind.conversation_data.get_conversation_record_by_everything(alias_entity)
                 if conv:
@@ -1421,11 +1459,11 @@ class HeartbeatEngine:
             except (ValueError, TypeError):
                 continue
             if current_minutes >= target:
-                occurrence = now.replace(
-                    hour=target // 60, minute=target % 60, second=0, microsecond=0)
+                occurrence = now.replace(hour=target // 60, minute=target % 60, second=0, microsecond=0)
             elif (1440 - target) + current_minutes <= interval_minutes:
                 occurrence = (now - timedelta(days=1)).replace(
-                    hour=target // 60, minute=target % 60, second=0, microsecond=0)
+                    hour=target // 60, minute=target % 60, second=0, microsecond=0
+                )
             else:
                 continue
             if last_good_ts < occurrence.timestamp():

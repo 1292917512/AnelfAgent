@@ -26,8 +26,6 @@ from agent.judgment import (
     ChoiceAnswer,
     ChoiceQuestion,
     JudgmentError,
-    NoulAnswer,
-    NoulQuestion,
     Question,
     get_judgment_engine,
 )
@@ -81,9 +79,12 @@ async def light_llm(prompt: str, *, temperature: float = 0.1, timeout: float = 1
         client = manager.get_enabled_client(model_id)
         if client is None:
             reason = "不存在" if manager.get_client(model_id) is None else "已停用"
-            log(f"轻量内部模型配置失效: memory_light_model='{model_id}'（{reason}）；"
+            log(
+                f"轻量内部模型配置失效: memory_light_model='{model_id}'（{reason}）；"
                 "本次调用改用默认主模型及其回退链。请在配置中心重新选择已启用模型，或清空此项跟随默认模型。",
-                "WARNING", tag="思维")
+                "WARNING",
+                tag="思维",
+            )
     options: Dict[str, Any] = {"temperature": temperature}
     effort = normalize_effort(get_config("memory_judge_reasoning_effort", ""))
     if effort:
@@ -136,23 +137,21 @@ async def gather_dedup_candidates(
 # 判断段（agent/judgment 平台）
 # ---------------------------------------------------------------------------
 
-# 关系四选一的选项语义（判断模型只看到选项名与描述，边界靠描述拉开）
+# 关系三选一的选项语义（判断模型只看到选项名与描述，边界靠描述拉开）
 _RELATION_CRITERIA: Dict[str, str] = {
     "novel": "与所有候选都不重复（不同事实或不同事件），应直接写入新记忆。"
-             "同一句话涉及的 user:/group: 对象不同时，是不同人各自的事实，不是重复",
+    "同一句话涉及的 user:/group: 对象不同时，是不同人各自的事实，不是重复",
     "covered": "已被某条候选完整覆盖——同一事实且没有增加任何新信息"
-               "（更简略的重述、子集表述也算覆盖），应放弃写入。"
-               "不依赖说话人的通用事实在不同频道再次出现也算覆盖；覆盖不代表得到用户确认",
+    "（更简略的重述、子集表述也算覆盖），应放弃写入。"
+    "不依赖说话人的通用事实在不同频道再次出现也算覆盖；覆盖不代表得到用户确认",
     "evolution": "是对某一条候选的更新、补充或修正（同一事实的新进展或更准确的表述），"
-                 "应合并进该候选，而不是新增一条造成矛盾或冗余",
-    "fragments": "与多条候选互为片段或重复，应把这些候选与新内容合并为一条完整记忆",
+    "应合并进该候选，而不是新增一条造成矛盾或冗余",
 }
 
 _RELATION_TO_ACTION = {
     "novel": "store",
     "covered": "skip",
     "evolution": "update",
-    "fragments": "merge",
 }
 
 
@@ -166,13 +165,12 @@ def _candidate_previews(candidates: List[MemoryEntry]) -> List[Dict[str, Any]]:
     previews: List[Dict[str, Any]] = []
     for seq, entry in enumerate(candidates, start=1):
         day = time.strftime("%m-%d", time.localtime(entry.timestamp))
-        previews.append({"seq": str(seq), "date": day, "content": entry.content[:200],
-                         "tags": entry.tags})
+        previews.append({"seq": str(seq), "date": day, "content": entry.content[:200], "tags": entry.tags})
     return previews
 
 
 def _build_judgment_questions(previews: List[Dict[str, Any]]) -> Dict[str, Question]:
-    """构造判断题面：关系四选一 + update 目标选择 + merge 逐候选是非（投机题，按需消费）。"""
+    """构造判断题面：关系三选一 + update 目标选择。"""
     questions: Dict[str, Question] = {
         "relation": ChoiceQuestion(
             instructions="这条新记忆与候选既有记忆是什么关系？据此决定新记忆的写入方式",
@@ -181,24 +179,17 @@ def _build_judgment_questions(previews: List[Dict[str, Any]]) -> Dict[str, Quest
         "target": ChoiceQuestion(
             instructions="若已有候选完整覆盖新记忆，或新记忆更新/补充/修正候选，应归属哪条候选？",
             criteria={
-                **{p["seq"]: f"候选 {p['seq']}（{p['date']}）{p['content'][:80]}"
-                   for p in previews},
+                **{p["seq"]: f"候选 {p['seq']}（{p['date']}）{p['content'][:80]}" for p in previews},
                 "none": "不属于对任何候选的更新",
             },
         ),
     }
-    for p in previews:
-        questions[f"merge_fit_{p['seq']}"] = NoulQuestion(
-            instructions=f"候选 {p['seq']}（{p['date']}）「{p['content'][:80]}」"
-                         "是否与新记忆互为片段或重复，应与新内容合并为一条？"
-        )
     return questions
 
 
 async def _synthesize_merged_content(content: str, targets: List[MemoryEntry]) -> str:
-    """生成段：合成合并后的记忆文本（仅 update/merge 需要；失败返回空串）。"""
-    lines = [f"[#{t.id}]（{time.strftime('%m-%d', time.localtime(t.timestamp))}）{t.content}"
-             for t in targets]
+    """生成段：合成合并后的记忆文本（仅 update 需要；失败返回空串）。"""
+    lines = [f"[#{t.id}]（{time.strftime('%m-%d', time.localtime(t.timestamp))}）{t.content}" for t in targets]
     prompt = (
         "你是记忆系统的文本合并器。把下列记忆合并为一条完整、准确的表述"
         "（一两句话，保留关键事实、时间、来源与不确定性；AI 自述不等于已验证事实，修正应取代被否定的旧说法）。只输出合并后的文本，不要输出任何其他内容。\n\n"
@@ -219,18 +210,17 @@ async def judge_write(
 ) -> Dict[str, Any]:
     """对一条新记忆做写入裁决。无候选、判断失败或置信度不足时返回 store。
 
-    判断段经 agent/judgment 平台（Jev 原生或普通模型回退）；仅 update/merge
-    再经 light_llm 合成合并文本。去重永远不阻塞写入路径。候选不做身份预过滤
+    判断段经 agent/judgment 平台（Jev 原生或普通模型回退）；仅 update 再经
+    light_llm 合成合并文本。去重永远不阻塞写入路径。候选不做身份预过滤
     ——跨频道/跨人的相似内容由判断模型结合候选标签与新记忆标签裁决。
+    多条互为片段的重复不做写入期合并（合并长文本稀释 embedding 语义），
+    留给记忆整理任务按铁律 forget 收敛。
     """
     if not candidates or not get_config_bool("memory_llm_dedup_enabled", True):
         return {"action": "store"}
 
     previews = _candidate_previews(candidates)
-    seq_to_id = {
-        p["seq"]: e.id for p, e in zip(previews, candidates, strict=True)
-        if e.id is not None
-    }
+    seq_to_id = {p["seq"]: e.id for p, e in zip(previews, candidates, strict=True) if e.id is not None}
     state: Dict[str, Any] = {
         "new_memory": content,
         "new_tags": list(tags or []),
@@ -252,9 +242,9 @@ async def judge_write(
     min_confidence = get_config_float("memory_dedup_min_confidence", 0.25)
     if relation.confidence < min_confidence:
         log(
-            f"写入去重关系判断置信度不足（{relation.confidence:.2f} < {min_confidence}），"
-            "保守直接写入",
-            "DEBUG", tag="记忆",
+            f"写入去重关系判断置信度不足（{relation.confidence:.2f} < {min_confidence}），保守直接写入",
+            "DEBUG",
+            tag="记忆",
         )
         return {"action": "store"}
 
@@ -262,7 +252,8 @@ async def judge_write(
     log(
         f"写入去重裁决 [{report.source.value}]: {action} "
         f"(relation={relation.choice}, confidence={relation.confidence:.2f})",
-        "DEBUG", tag="记忆",
+        "DEBUG",
+        tag="记忆",
     )
     if action == "store":
         return {"action": action}
@@ -293,42 +284,24 @@ async def judge_write(
             "content": merged,
             "reason": f"同一事实的演进，合并进候选 #{target_id}",
         }
-
-    # merge：逐候选是非评判，越过 0.5 的进入合并集
-    target_ids = []
-    for p in previews:
-        fit = report.answers.get(f"merge_fit_{p['seq']}")
-        real_id = seq_to_id.get(p["seq"])
-        if real_id is None:
-            continue
-        if isinstance(fit, NoulAnswer) and fit.noul > 0.5:
-            target_ids.append(real_id)
-    if not target_ids:
-        log("写入去重 merge 无候选越界，直接写入", "DEBUG", tag="记忆")
-        return {"action": "store"}
-    targets = [e for e in candidates if e.id in target_ids]
-    merged = await _synthesize_merged_content(content, targets)
-    if not merged:
-        return {"action": "store"}
-    return {
-        "action": "merge",
-        "target_ids": target_ids,
-        "content": merged,
-        "reason": f"与 {len(target_ids)} 条候选互为片段，合并为一条",
-    }
+    # 未知 action 一律保守直接写入（与判断失败的降级语义一致）
+    return {"action": "store"}
 
 
 async def retain_duplicate_origin(
-    store: MemoryStore, target_id: int, metadata: Dict[str, Any],
+    store: MemoryStore,
+    target_id: int,
+    metadata: Dict[str, Any],
 ) -> bool:
     """为裁决选中的重复条目保留材料出处，不改变证据分或用户确认数。"""
     from .provenance import merge_metadata
+
     target = await store.get(target_id)
     if target is None:
         return False
-    merged = merge_metadata(target.metadata, {
-        key: metadata[key] for key in ("origins", "sensitivity") if key in metadata
-    })
+    merged = merge_metadata(
+        target.metadata, {key: metadata[key] for key in ("origins", "sensitivity") if key in metadata}
+    )
     if merged == target.metadata:
         return True
     target.metadata = merged
@@ -350,10 +323,9 @@ async def apply_update(
     target = await store.get(target_id)
     if target is None:
         return None
-    merged_tags = (
-        list(dict.fromkeys(target.tags + extra_tags)) if extra_tags else target.tags
-    )
+    merged_tags = list(dict.fromkeys(target.tags + extra_tags)) if extra_tags else target.tags
     from .provenance import merge_metadata
+
     merged_metadata = merge_metadata(target.metadata, metadata or {})
     if target.content == merged_content and merged_tags == target.tags and merged_metadata == target.metadata:
         # 内容与标签均无变化：无变化的 update 会空转审计并触发

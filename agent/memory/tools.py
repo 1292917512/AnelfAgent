@@ -51,6 +51,7 @@ def _deps() -> Optional[MemoryToolDeps]:
     """取记忆工具依赖（端口未施绑时返回 None，工具降级为未就绪错误）。"""
     return memory_tools_port.get() if memory_tools_port.bound else None
 
+
 _TYPE_MAP = {
     "trait": MemoryType.ENTITY,
     "event": MemoryType.EPISODIC,
@@ -65,7 +66,8 @@ def _store_not_ready() -> str:
     """记忆存储未就绪的统一错误。"""
     return tool_error(
         "记忆系统未初始化",
-        cause=ErrorCause.STATE, retryable=False,
+        cause=ErrorCause.STATE,
+        retryable=False,
         hint="记忆组件未初始化，请检查服务启动状态",
     )
 
@@ -74,7 +76,8 @@ def _cognee_not_ready() -> str:
     """Cognee 后端未就绪的统一错误。"""
     return tool_error(
         "Cognee 运行时未初始化",
-        cause=ErrorCause.STATE, retryable=False,
+        cause=ErrorCause.STATE,
+        retryable=False,
         hint="Cognee 为可选记忆后端，请确认其已启用并完成初始化",
     )
 
@@ -86,6 +89,7 @@ def _current_scope_tag() -> str:
     """
     try:
         from core.conversation_scope import current_scope as get_current_scope
+
         scope = get_current_scope()
         if scope.startswith("user_"):
             return f"user:{scope[5:]}"
@@ -100,8 +104,11 @@ def _current_scope_tag() -> str:
 # 工具实现
 # ------------------------------------------------------------------
 
+
 @deferred_tool(
-    group="memory", tags=["always"], source="mind.memory",
+    group="memory",
+    tags=["always"],
+    source="mind.memory",
     description="调整本轮召回策略 off/tags/fast/deep 与首轮深探开关；不会在执行中自动重启召回。不影响手动 recall。全局默认通过 update_entity_config 修改 memory_recall_level。",
 )
 async def set_recall_policy(level: str, tags: str = "", background: bool = True) -> str:
@@ -109,18 +116,34 @@ async def set_recall_policy(level: str, tags: str = "", background: bool = True)
     from core.conversation_scope import current_scope
 
     from .recall_policy import RecallPolicy, set_turn_recall_policy
+
     try:
-        policy = RecallPolicy.model_validate({"level": level, "tags": [t.strip() for t in tags.split(",") if t.strip()],
-                                              "background": background})
+        policy = RecallPolicy.model_validate(
+            {"level": level, "tags": [t.strip() for t in tags.split(",") if t.strip()], "background": background}
+        )
         set_turn_recall_policy(policy, current_scope())
-        return json.dumps({"policy": policy.model_dump(), "scope": current_scope(),
-                           "effect": "仅更新本轮准备策略并停止在途检索；不触发新的自动召回，已注入内容保留。需要查询请调用 recall。"}, ensure_ascii=False)
+        return json.dumps(
+            {
+                "policy": policy.model_dump(),
+                "scope": current_scope(),
+                "effect": "仅更新本轮准备策略并停止在途检索；不触发新的自动召回，已注入内容保留。需要查询请调用 recall。",
+            },
+            ensure_ascii=False,
+        )
     except ValueError as exc:
-        return tool_error(str(exc), cause=ErrorCause.PARAM, retryable=False,
-                          hint="在对话轮次内使用 off/tags/fast/deep；标签采用记忆系统中的完整标签")
+        return tool_error(
+            str(exc),
+            cause=ErrorCause.PARAM,
+            retryable=False,
+            hint="在对话轮次内使用 off/tags/fast/deep；标签采用记忆系统中的完整标签",
+        )
+
 
 @deferred_tool(
-    group="memory", tags=["always"], source="mind.memory", timeout=300.0,
+    group="memory",
+    tags=["always"],
+    source="mind.memory",
+    timeout=300.0,
     description="将一条关键信息存入长期记忆（内容简洁精炼；type:permanent 为永久记忆）。"
     "先 recall 检查已有事实，修订已有内容用 update_memory；不要把图谱综合重新存为独立证据。"
     "原生写入立即可查，Cognee 图谱异步跟进。返回 verdict 落盘裁决，落盘纪律见「记忆体系铁律」。",
@@ -154,7 +177,8 @@ async def memorize(
 
     Returns:
         JSON 字符串。verdict 为落盘裁决：stored（新写入）/ updated（更新既有记忆）/
-        merged（多条合并）/ skipped_duplicate（重复，未写入）。
+        skipped_duplicate（重复，未写入）。重复条目的收敛由记忆整理任务按铁律
+        forget 处置（合并长文本会稀释 embedding 语义，写入路径不做多条合并）。
     """
     try:
         deps = _deps()
@@ -164,18 +188,28 @@ async def memorize(
 
         # 威胁扫描：记忆写入是注入持久化的关键路径，命中威胁模式时拒绝写入
         from agent.security.threat_scanner import first_threat_message, is_threat_scan_enabled
+
         if is_threat_scan_enabled():
             threat = first_threat_message(content, scope="strict")
             if threat:
                 log(f"记忆写入被威胁扫描拦截: {threat}", "WARNING", tag="安全")
                 return tool_error(
                     f"写入被拒绝：{threat}。请检查内容是否包含注入指令。",
-                    cause=ErrorCause.PERMISSION, retryable=False,
+                    cause=ErrorCause.PERMISSION,
+                    retryable=False,
                 )
 
         tag_list = _normalize_tags(tags)
 
-        # 自动关联：未指定实体标签时，用当前对话 scope 补充（记忆自动挂到关联网络）
+        # 写入闸门：新标签的确定性归一与校验（只治理增量，既有形态不触碰）
+        from .tag_gate import enforce_tag_gate
+
+        gate = await enforce_tag_gate(tag_list, store=store)
+        tag_list = gate.tags
+        gate_summary = gate.summary()
+
+        # 自动关联：未指定实体标签时，用当前对话 scope 补充（记忆自动挂到关联网络；
+        # AI 显式指定的实体标签归属以其判定为准，不叠加 scope）
         if not any(t.startswith(ENTITY_PREFIXES) for t in tag_list):
             scope_tag = _current_scope_tag()
             if scope_tag:
@@ -195,6 +229,7 @@ async def memorize(
             temporal_scope = ""
         link_ids = await _parse_linked_to(store, linked_to)
         from core.conversation_scope import current_scope
+
         metadata = {
             **note_origin(current_scope()),
             **({"sensitivity": sensitivity} if sensitivity != "normal" else {}),
@@ -207,54 +242,61 @@ async def memorize(
         # 第一级：规则判重（子串/字面高相似，零成本快速拦截）
         if await store.has_similar_content(content, tags=tag_list):
             from . import metrics
+
             metrics.incr("write.dedup_rule_skip")
-            return json.dumps({
-                "ok": False, "verdict": "skipped_duplicate",
-                "message": "已存在相似记忆，跳过（未重复写入）",
-            }, ensure_ascii=False)
+            return json.dumps(
+                {
+                    "ok": False,
+                    "verdict": "skipped_duplicate",
+                    "message": "已存在相似记忆，跳过（未重复写入）",
+                },
+                ensure_ascii=False,
+            )
 
         # 第二级：LLM 语义裁决（事实演进 update / 语义重复 skip / 无重复 store）
         from . import metrics
         from .dedup import apply_update, gather_dedup_candidates, judge_write
+
         candidates = await gather_dedup_candidates(store, deps.embedder, content)
         decision = await judge_write(content, candidates, tags=tag_list)
         action = decision.get("action", "store")
         metrics.incr(f"write.dedup_llm_{action}")
         if action == "skip":
             from .dedup import retain_duplicate_origin
+
             if await retain_duplicate_origin(store, int(decision["target_id"]), metadata):
-                return json.dumps({
-                    "ok": False, "verdict": "skipped_duplicate",
-                    "message": f"已有等价记忆，跳过（{decision.get('reason', '语义重复')}）（未重复写入）",
-                }, ensure_ascii=False)
+                return json.dumps(
+                    {
+                        "ok": False,
+                        "verdict": "skipped_duplicate",
+                        "message": f"已有等价记忆，跳过（{decision.get('reason', '语义重复')}）（未重复写入）",
+                    },
+                    ensure_ascii=False,
+                )
         if action == "update" and decision.get("target_id"):
             updated = await apply_update(
-                store, int(decision["target_id"]),
-                str(decision.get("content") or content), tag_list,
-                actor="tool:memorize", metadata=metadata,
+                store,
+                int(decision["target_id"]),
+                str(decision.get("content") or content),
+                tag_list,
+                actor="tool:memorize",
+                metadata=metadata,
             )
             if updated is not None:
                 wake_embedding_worker()
-                return json.dumps({
-                    "ok": True, "id": updated.id, "action": "updated", "verdict": "updated",
-                    "message": "与既有记忆为同一事实，已合并更新",
-                    "content_preview": updated.content[:100],
-                }, ensure_ascii=False)
+                return json.dumps(
+                    {
+                        "ok": True,
+                        "id": updated.id,
+                        "action": "updated",
+                        "verdict": "updated",
+                        "message": "与既有记忆为同一事实，已合并更新",
+                        "content_preview": updated.content[:100],
+                        **({"tag_gate": gate_summary} if gate_summary else {}),
+                    },
+                    ensure_ascii=False,
+                )
             # 目标已不存在等异常：回退为正常写入
-        if action == "merge" and decision.get("target_ids"):
-            merge_ids = [int(i) for i in decision["target_ids"]]
-            merged_content = str(decision.get("content") or content)
-            keep_id = await store.merge_memories(
-                merge_ids, merged_content, actor="tool:memorize", metadata=metadata, extra_tags=tag_list,
-            )
-            if keep_id:
-                wake_embedding_worker()
-                return json.dumps({
-                    "ok": True, "id": keep_id, "action": "merged", "verdict": "merged",
-                    "message": f"已与 {len(merge_ids)} 条既有记忆合并为一条",
-                    "merged_from": merge_ids,
-                }, ensure_ascii=False)
-            # 合并目标失效：回退为正常写入
 
         entry = MemoryEntry(
             memory_type=mem_type,
@@ -264,15 +306,14 @@ async def memorize(
             metadata=metadata,
         )
         from .reflection_lifecycle import seed_reflection
+
         seed_reflection(entry)
 
-        # 近重复提示须在写入前计算（写入后新标签已进入统计，会被误判为既有标签）
-        hints = await _tag_near_duplicate_hints(tag_list)
         mid = await store.add(entry, actor="tool:memorize")
         wake_embedding_worker()
         result: Dict[str, Any] = {"ok": True, "id": mid, "verdict": "stored", "tags": tag_list}
-        if hints:
-            result["tag_hints"] = hints
+        if gate_summary:
+            result["tag_gate"] = gate_summary
         return json.dumps(result, ensure_ascii=False)
     except Exception as e:
         return error_from_exception(e, action="写入记忆")
@@ -281,6 +322,7 @@ async def memorize(
 def _normalize_tags(tags: str) -> list[str]:
     """标签规范化：trim、全角逗号/冒号归一、折叠内部空白、去重保序。"""
     import re
+
     out: list[str] = []
     for raw in re.split(r"[,，]", tags):
         tag = re.sub(r"\s+", " ", raw.strip().replace("：", ":"))
@@ -306,35 +348,7 @@ async def _parse_linked_to(store: Any, linked_to: str) -> list[int]:
     return valid
 
 
-async def _tag_near_duplicate_hints(tag_list: list[str]) -> list[str]:
-    """新 topic: 标签与既有高频标签存在包含关系时给出归并建议（只提示不改数据）。"""
-    new_topics = [t for t in tag_list if t.startswith("topic:")]
-    deps = _deps()
-    if not new_topics or deps is None:
-        return []
-    try:
-        tag_df = await deps.store.list_tags()
-    except Exception:
-        return []
-    hints: list[str] = []
-    for tag in new_topics:
-        if tag in tag_df:
-            continue  # 已存在的标签不算新
-        name = tag[len("topic:"):]
-        for existing, count in sorted(tag_df.items(), key=lambda kv: -kv[1]):
-            if not existing.startswith("topic:") or count < 2:
-                continue
-            other = existing[len("topic:"):]
-            if name and other and (name in other or other in name):
-                hints.append(f"新标签 {tag} 与既有 {existing}（{count} 次）相近，建议统一用后者")
-                break
-        if len(hints) >= 3:
-            break
-    return hints
-
-
-async def _upsert_permanent(content: str, tag_list: list[str], importance: float,
-                            metadata: Dict[str, Any]) -> str:
+async def _upsert_permanent(content: str, tag_list: list[str], importance: float, metadata: Dict[str, Any]) -> str:
     """永久记忆的 upsert：按非 type: 标签匹配已有条目，存在则更新，不存在则新增。
 
     主标签记忆（main:hub）只按 HUB_TAG 单标签匹配——AI 覆写时可自由附带
@@ -362,10 +376,17 @@ async def _upsert_permanent(content: str, tag_list: list[str], importance: float
         target.embedding = None
         await store.update(target, clear_embedding=True, actor="tool:memorize")
         wake_embedding_worker()
-        return json.dumps({
-            "ok": True, "id": target.id, "action": "updated", "verdict": "updated",
-            "old_preview": old_preview, "tags": tag_list,
-        }, ensure_ascii=False)
+        return json.dumps(
+            {
+                "ok": True,
+                "id": target.id,
+                "action": "updated",
+                "verdict": "updated",
+                "old_preview": old_preview,
+                "tags": tag_list,
+            },
+            ensure_ascii=False,
+        )
 
     entry = MemoryEntry(
         memory_type=MemoryType.PERMANENT,
@@ -376,21 +397,33 @@ async def _upsert_permanent(content: str, tag_list: list[str], importance: float
     )
     mid = await store.add(entry, actor="tool:memorize")
     wake_embedding_worker()
-    return json.dumps({
-        "ok": True, "id": mid, "action": "created", "verdict": "stored", "tags": tag_list,
-    }, ensure_ascii=False)
+    return json.dumps(
+        {
+            "ok": True,
+            "id": mid,
+            "action": "created",
+            "verdict": "stored",
+            "tags": tag_list,
+        },
+        ensure_ascii=False,
+    )
 
 
 @deferred_tool(
-    group="memory", tags=["always"], source="mind.memory",
+    group="memory",
+    tags=["always"],
+    source="mind.memory",
     description="检索长期记忆。每个问题先调用一次 recall，等结果返回后再决定是否补查；内部已融合多个检索通道，勿并行提交同一问题的改写查询。"
     "depth 三选一：shallow 查明确事实；deep 查人物/项目关系与跨记忆关联；overview 综合主题，包含 deep 并利用有效全局摘要，无需另调 deep。"
     "tags 只加权；filter_tags/全部、filter_any/任一、filter_not/排除才限定范围，未知标签先用 memory_index 查看。"
     "原文用 get_memory(memory_id) 回查；图谱综合不是原话，score 是排序而非事实置信度。"
     "retrieval 为 partial/native_only 时不能把空结果解释为从未记住；有 conflicts 时先核对来源再修订。"
     "forgotten 中 archived 可 restore_memory，tombstone 只有梗概。",
-    schema_extra={"depth": {"enum": ["shallow", "deep", "overview"]},
-                  "limit": {"minimum": 1, "maximum": 20}, "min_score": {"minimum": 0, "maximum": 1}},
+    schema_extra={
+        "depth": {"enum": ["shallow", "deep", "overview"]},
+        "limit": {"minimum": 1, "maximum": 20},
+        "min_score": {"minimum": 0, "maximum": 1},
+    },
 )
 async def recall(
     query: str,
@@ -426,12 +459,20 @@ async def recall(
 
         depth = depth.strip().lower()
         if depth not in {"shallow", "deep", "overview"} or not 1 <= limit <= 20 or not 0 <= min_score <= 1:
-            return tool_error("无效的召回参数", cause=ErrorCause.PARAM, retryable=False,
-                              hint="depth 使用 shallow/deep/overview，limit 为 1–20，min_score 为 0–1")
+            return tool_error(
+                "无效的召回参数",
+                cause=ErrorCause.PARAM,
+                retryable=False,
+                hint="depth 使用 shallow/deep/overview，limit 为 1–20，min_score 为 0–1",
+            )
         tag_list = _normalize_tags(tags) or None
         from .tag_query import TagQuery
-        tag_query = TagQuery(all_of=tuple(_normalize_tags(filter_tags)),
-                             any_of=tuple(_normalize_tags(filter_any)), none_of=tuple(_normalize_tags(filter_not)))
+
+        tag_query = TagQuery(
+            all_of=tuple(_normalize_tags(filter_tags)),
+            any_of=tuple(_normalize_tags(filter_any)),
+            none_of=tuple(_normalize_tags(filter_not)),
+        )
         hard_tags = tag_query.active
         is_deep = depth.strip().lower() in {"deep", "overview"}
 
@@ -447,15 +488,18 @@ async def recall(
         from .cognee.config import load_cognee_config
         from .cognee.fusion import RecallDiagnostics, federated_search
         from .cognee.runtime import get_cognee_client
+
         cognee_config = load_cognee_config()
         entity_scope = ""
         for tag in tag_list or []:
             if tag.startswith(ENTITY_PREFIXES):
                 scope_type, scope_id = tag.split(":", 1)
                 from agent.messages import build_entity_scope
+
                 adapter, separator, base_id = scope_id.partition(":")
-                entity_scope = build_entity_scope(scope_type, adapter if separator else "",
-                                                  base_id if separator else adapter)
+                entity_scope = build_entity_scope(
+                    scope_type, adapter if separator else "", base_id if separator else adapter
+                )
                 break
         pool_multiplier = cognee_config.recall_pool_multiplier * (2 if is_deep else 1)
         # 实体标签 → 图谱节点：邻域查询（relations 字段）与 cognee node_name
@@ -484,7 +528,8 @@ async def recall(
                 node_names=list(dict.fromkeys((tag_list or []) + node_keys)) or None,
             ),
             store.search_forgotten(
-                query, query_vec,
+                query,
+                query_vec,
                 limit=get_config_int("memory_forgotten_recall_limit", 3),
             ),
         )
@@ -492,15 +537,12 @@ async def recall(
         if min_score > 0:
             results = [r for r in results if r.score >= min_score]
 
-        mem_ids = [
-            int(r.id.split(":")[1])
-            for r in results
-            if r.source == "memory" and r.id.startswith("mem:")
-        ]
+        mem_ids = [int(r.id.split(":")[1]) for r in results if r.source == "memory" and r.id.startswith("mem:")]
         if mem_ids:
             await store.record_access(mem_ids)
 
         from core.conversation_scope import current_scope
+
         consumer_scope = current_scope()
         deep_probe_hub.record(consumer_scope, results=results)
 
@@ -511,7 +553,8 @@ async def recall(
         archive_min = get_config_float("memory_archive_recall_min_score", 0.5)
         main_empty = not results
         forgotten_items = [
-            item for item in forgotten
+            item
+            for item in forgotten
             if not hard_tags and (item["score"] >= archive_min or (main_empty and item["score"] >= 0.25))
         ]
         forgotten_out = [_format_forgotten_item(item) for item in forgotten_items]
@@ -528,32 +571,51 @@ async def recall(
         relations: list[str] = []
         if is_deep and node_keys and not hard_tags:
             from .graph import format_triple
+
             edges = await store.graph.edges_for_scopes(node_keys, limit=10)
             relations = [format_triple(e) for e in edges]
             # 工具返回的关系边同样入账本：异步深探不重复注入 AI 已取回的关系
             deep_probe_hub.record(
-                consumer_scope, edge_ids=(int(e["id"]) for e in edges),
+                consumer_scope,
+                edge_ids=(int(e["id"]) for e in edges),
             )
 
-        return json.dumps({
-            "count": len(items),
-            "depth": depth,
-            "retrieval": diagnostics.result(),
-            **({"retrieval_hint": "本次未覆盖完整图谱，保留已找到的原生证据。索引未就绪/有积压可查看 cognee_status；空结果不代表事实不存在。"}
-               if diagnostics.result()["status"] != "complete" else {}),
-            **({"overview_hint": "本次未使用全局摘要。需要主题综合时，先从 list_cognee_datasets 选择当前数据集，"
-                                  "用 improve_cognee_dataset(action='summary') 刷新后再查询；普通事实查询无需刷新。"}
-               if depth == "overview" and not diagnostics.summary_used else {}),
-            "results": items,
-            "related": related_items,
-            **({"relations": relations} if relations else {}),
-            **({
-                "forgotten": forgotten_out,
-                "forgotten_hint": "以下为已遗忘的记忆，不参与常规召回。"
-                "kind=archived 的可经 restore_memory(id) 恢复到活跃记忆库；"
-                "kind=tombstone 的原文已物理删除仅剩梗概，如需找回请基于梗概重新 memorize。",
-            } if forgotten_out else {}),
-        }, ensure_ascii=False)
+        return json.dumps(
+            {
+                "count": len(items),
+                "depth": depth,
+                "retrieval": diagnostics.result(),
+                **(
+                    {
+                        "retrieval_hint": "本次未覆盖完整图谱，保留已找到的原生证据。索引未就绪/有积压可查看 cognee_status；空结果不代表事实不存在。"
+                    }
+                    if diagnostics.result()["status"] != "complete"
+                    else {}
+                ),
+                **(
+                    {
+                        "overview_hint": "本次未使用全局摘要。需要主题综合时，先从 list_cognee_datasets 选择当前数据集，"
+                        "用 improve_cognee_dataset(action='summary') 刷新后再查询；普通事实查询无需刷新。"
+                    }
+                    if depth == "overview" and not diagnostics.summary_used
+                    else {}
+                ),
+                "results": items,
+                "related": related_items,
+                **({"relations": relations} if relations else {}),
+                **(
+                    {
+                        "forgotten": forgotten_out,
+                        "forgotten_hint": "以下为已遗忘的记忆，不参与常规召回。"
+                        "kind=archived 的可经 restore_memory(id) 恢复到活跃记忆库；"
+                        "kind=tombstone 的原文已物理删除仅剩梗概，如需找回请基于梗概重新 memorize。",
+                    }
+                    if forgotten_out
+                    else {}
+                ),
+            },
+            ensure_ascii=False,
+        )
     except Exception as e:
         return error_from_exception(e, action="搜索记忆")
 
@@ -569,6 +631,7 @@ def _format_forgotten_item(item: Dict[str, Any]) -> Dict[str, Any]:
     }
     if item["kind"] == "archived":
         from .provenance import visible_provenance
+
         return {
             "id": item["id"],
             **base,
@@ -577,8 +640,7 @@ def _format_forgotten_item(item: Dict[str, Any]) -> Dict[str, Any]:
             "restorable": True,
             "provenance": visible_provenance(item.get("provenance", {})),
             "sensitivity": item.get("sensitivity", "normal"),
-            **({"time": time.strftime("%Y-%m-%d", time.localtime(item["timestamp"]))}
-               if item.get("timestamp") else {}),
+            **({"time": time.strftime("%Y-%m-%d", time.localtime(item["timestamp"]))} if item.get("timestamp") else {}),
         }
     return {
         "id": item["id"],
@@ -591,10 +653,10 @@ def _format_forgotten_item(item: Dict[str, Any]) -> Dict[str, Any]:
 
 
 async def _recall_associations(
-        results: list[MemorySearchResult],
-        existing_mem_ids: list[int],
-        *,
-        max_related: int = 3,
+    results: list[MemorySearchResult],
+    existing_mem_ids: list[int],
+    *,
+    max_related: int = 3,
 ) -> list[Dict[str, Any]]:
     """沿主结果的关联网络联想相关记忆（linked_to 显式链接优先，标签共现补充）。"""
     deps = _deps()
@@ -621,12 +683,14 @@ async def _recall_associations(
             if target is None or target.importance <= 0 or target.id is None:
                 continue
             seen.add(lid)
-            out.append({
-                **format_recall_result(MemorySearchResult.from_entry(target, 0.9)),
-                "related": True,
-                "hop": "link",
-                "linked_from": mid,
-            })
+            out.append(
+                {
+                    **format_recall_result(MemorySearchResult.from_entry(target, 0.9)),
+                    "related": True,
+                    "hop": "link",
+                    "linked_from": mid,
+                }
+            )
 
     assoc_tags: list[str] = []
     for r in results:
@@ -637,23 +701,27 @@ async def _recall_associations(
         # 种子三层扩展（图谱邻居 + 标签共现）
         assoc_tags = await store.expand_tag_seeds(assoc_tags)
         related = await store.search_associative(
-            assoc_tags, exclude_ids=seen, limit=max_related - len(out),
+            assoc_tags,
+            exclude_ids=seen,
+            limit=max_related - len(out),
         )
-        out.extend([
-            {
-                **format_recall_result(MemorySearchResult.from_entry(entry, score)),
-                "related": True,
-            }
-            for entry, score in related
-        ])
+        out.extend(
+            [
+                {
+                    **format_recall_result(MemorySearchResult.from_entry(entry, score)),
+                    "related": True,
+                }
+                for entry, score in related
+            ]
+        )
     return out
 
 
 async def _recall_associations_deep(
-        results: list[MemorySearchResult],
-        existing_mem_ids: list[int],
-        *,
-        max_related: int = 6,
+    results: list[MemorySearchResult],
+    existing_mem_ids: list[int],
+    *,
+    max_related: int = 6,
 ) -> list[Dict[str, Any]]:
     """深度联想：在一跳基础上再做二跳扩展（联想链），第二跳分数打 0.75 折。
 
@@ -681,9 +749,7 @@ async def _recall_associations_deep(
                     if tag.startswith(ASSOC_PREFIXES) and tag not in extra_tags:
                         extra_tags.append(tag)
         if extra_tags:
-            seed_results = list(results) + [
-                MemorySearchResult(id="seed", snippet="", score=0.0, tags=extra_tags)
-            ]
+            seed_results = list(results) + [MemorySearchResult(id="seed", snippet="", score=0.0, tags=extra_tags)]
 
     hop1 = await _recall_associations(seed_results, existing_mem_ids, max_related=max_related)
     if store is None or len(hop1) >= max_related:
@@ -701,19 +767,25 @@ async def _recall_associations_deep(
         return hop1
 
     hop2 = await store.search_associative(
-        hop1_tags, exclude_ids=seen_ids, limit=max_related - len(hop1),
+        hop1_tags,
+        exclude_ids=seen_ids,
+        limit=max_related - len(hop1),
     )
     for entry, score in hop2:
-        hop1.append({
-            **format_recall_result(MemorySearchResult.from_entry(entry, score * 0.75)),
-            "related": True,
-            "hop": 2,
-        })
+        hop1.append(
+            {
+                **format_recall_result(MemorySearchResult.from_entry(entry, score * 0.75)),
+                "related": True,
+                "hop": 2,
+            }
+        )
     return hop1
 
 
 @deferred_tool(
-    group="memory", tags=["core", "heartbeat"], source="mind.memory",
+    group="memory",
+    tags=["core", "heartbeat"],
+    source="mind.memory",
     description="浏览记忆索引。不传 tag 返回标签统计；传 tag 返回该标签下的记忆列表。",
 )
 async def memory_index(tag: str = "") -> str:
@@ -733,31 +805,103 @@ async def memory_index(tag: str = "") -> str:
             total = await store.count()
             index_status = await store.get_index_status()
             merge_candidates = await store.tag_merge_candidates(limit=20)
-            return json.dumps({
-                "total_memories": total,
-                "tags": tag_counts,
-                "index": index_status,
-                **({
-                    "tag_merge_candidates": merge_candidates,
-                    "tag_merge_hint": "标签归并候选（事实归系统、决策归你）：逐对确认后"
-                    "经 update_memory 把 from 标签的记忆改挂 into 标签；确认全部处理后标签空间收敛",
-                } if merge_candidates else {}),
-            }, ensure_ascii=False)
+            return json.dumps(
+                {
+                    "total_memories": total,
+                    "tags": tag_counts,
+                    "index": index_status,
+                    **(
+                        {
+                            "tag_merge_candidates": merge_candidates,
+                            "tag_merge_hint": "标签归并候选（事实归系统、决策归你）：逐对确认后"
+                            "经 update_memory 把 from 标签的记忆改挂 into 标签；判定误报/"
+                            "设计使然的候选对用 tag_curation_exempt 登记豁免（signature 取候选的"
+                            " exempt_signature 原样回传），系统不再列入议程",
+                        }
+                        if merge_candidates
+                        else {}
+                    ),
+                },
+                ensure_ascii=False,
+            )
 
         entries = await store.search_by_tags([tag], limit=20)
-        items = [{
-            "id": e.id,
-            "summary": e.content[:80],
-            "tags": e.tags,
-            "importance": round(e.importance, 2),
-        } for e in entries]
+        items = [
+            {
+                "id": e.id,
+                "summary": e.content[:80],
+                "tags": e.tags,
+                "importance": round(e.importance, 2),
+            }
+            for e in entries
+        ]
         return json.dumps({"tag": tag, "count": len(items), "memories": items}, ensure_ascii=False)
     except Exception as e:
         return error_from_exception(e, action="读取记忆索引")
 
 
 @deferred_tool(
-    group="memory", tags=["core", "heartbeat"], source="mind.memory",
+    group="memory",
+    tags=["core", "heartbeat"],
+    source="mind.memory",
+    description=(
+        "登记/撤销标签归并候选豁免：对归并议程中判定为误报或设计使然的候选对"
+        "（如确认应为独立话题的包含关系对），登记豁免让系统不再将其列入议程——"
+        "根治同一批候选被反复复核。豁免结论随 memory_index 展示供复核，误判可撤销。"
+    ),
+)
+async def tag_curation_exempt(
+    kind: str,
+    signature: str,
+    reason: str = "",
+    revoke: bool = False,
+) -> str:
+    """登记或撤销一条标签归并候选豁免。
+
+    Args:
+        kind: 豁免类型：form_variant（写法变体）/ containment（包含关系）
+        signature: 豁免签名——取候选的 exempt_signature 字段原样回传即可
+        reason: 豁免理由（必填更佳，供日后复核）
+        revoke: true 时撤销该豁免（议程恢复生产该候选）
+    """
+    try:
+        deps = _deps()
+        if deps is None:
+            return _store_not_ready()
+        store = deps.store
+        kind = kind.strip()
+        if kind not in ("form_variant", "containment"):
+            return tool_error(
+                f"未知豁免类型: {kind}（可选 form_variant / containment）",
+                cause=ErrorCause.PARAM,
+                retryable=False,
+            )
+        if revoke:
+            ok = await store.revoke_tag_exemption(kind, signature)
+            if not ok:
+                return tool_error(
+                    "未找到生效中的该豁免",
+                    cause=ErrorCause.NOT_FOUND,
+                    retryable=False,
+                )
+            return json.dumps({"ok": True, "revoked": True, "kind": kind, "signature": signature}, ensure_ascii=False)
+        result = await store.set_tag_exemption(
+            kind,
+            signature,
+            reason=reason,
+            actor="tool:tag_exempt",
+        )
+        return json.dumps({"ok": True, **result}, ensure_ascii=False)
+    except ValueError as e:
+        return tool_error(str(e), cause=ErrorCause.PARAM, retryable=False)
+    except Exception as e:
+        return error_from_exception(e, action="登记标签豁免")
+
+
+@deferred_tool(
+    group="memory",
+    tags=["core", "heartbeat"],
+    source="mind.memory",
     description="按 ID 获取一条记忆的完整内容、标签、变更史与合并去向。"
     "被合并的 id 自动重定向到存活条目；归档/物删的 id 返回分层语义。用于在修改前先确认记忆的当前状态。",
 )
@@ -779,41 +923,57 @@ async def get_memory(memory_id: int) -> str:
             return tool_error(f"记忆 {memory_id} 不存在", cause=ErrorCause.NOT_FOUND, retryable=False)
         if status == "archived":
             row = resolution["row"]
-            return json.dumps({
-                "ok": True, "status": "archived", "id": row["id"],
-                "content": row["content"][:300], "type": row["type"], "tags": row["tags"],
-                "archived_at": time.strftime("%Y-%m-%d", time.localtime(row["archived_at"])),
-                "reason": row["reason"],
-                "provenance": recall_provenance(row["metadata"], source=row["source"]),
-                "sensitivity": row["metadata"].get("sensitivity", "normal"),
-                "timestamp": row["timestamp"],
-                **({"redirect_chain": chain} if chain else {}),
-                "hint": "已归档（不参与召回）；可 restore_memory 恢复到活跃记忆库",
-            }, ensure_ascii=False)
+            return json.dumps(
+                {
+                    "ok": True,
+                    "status": "archived",
+                    "id": row["id"],
+                    "content": row["content"][:300],
+                    "type": row["type"],
+                    "tags": row["tags"],
+                    "archived_at": time.strftime("%Y-%m-%d", time.localtime(row["archived_at"])),
+                    "reason": row["reason"],
+                    "provenance": recall_provenance(row["metadata"], source=row["source"]),
+                    "sensitivity": row["metadata"].get("sensitivity", "normal"),
+                    "timestamp": row["timestamp"],
+                    **({"redirect_chain": chain} if chain else {}),
+                    "hint": "已归档（不参与召回）；可 restore_memory 恢复到活跃记忆库",
+                },
+                ensure_ascii=False,
+            )
         if status == "tombstone":
             row = resolution["row"]
             redirect = row.get("redirect_to")
-            return json.dumps({
-                "ok": True, "status": "tombstone", "id": row["memory_id"],
-                "gist": row["gist"], "type": row["type"], "tags": row["tags"],
-                "purged_at": time.strftime("%Y-%m-%d", time.localtime(row["purged_at"])),
-                **({"redirect_chain": chain} if chain else {}),
-                **({"redirect_to": redirect} if redirect else {}),
-                "hint": (
-                    f"原文已物理删除仅余梗概；内容已并入 #{redirect}，可 get_memory 查看"
-                    if redirect
-                    else "原文已物理删除仅余梗概；如需找回请基于梗概重新 memorize"
-                ),
-            }, ensure_ascii=False)
+            return json.dumps(
+                {
+                    "ok": True,
+                    "status": "tombstone",
+                    "id": row["memory_id"],
+                    "gist": row["gist"],
+                    "type": row["type"],
+                    "tags": row["tags"],
+                    "purged_at": time.strftime("%Y-%m-%d", time.localtime(row["purged_at"])),
+                    **({"redirect_chain": chain} if chain else {}),
+                    **({"redirect_to": redirect} if redirect else {}),
+                    "hint": (
+                        f"原文已物理删除仅余梗概；内容已并入 #{redirect}，可 get_memory 查看"
+                        if redirect
+                        else "原文已物理删除仅余梗概；如需找回请基于梗概重新 memorize"
+                    ),
+                },
+                ensure_ascii=False,
+            )
         entry = resolution.get("entry")
         if entry is None:
             return tool_error(
                 f"记忆 {memory_id} 的并入链过深（{' → '.join(map(str, chain))}），无法解析到存活条目",
-                cause=ErrorCause.NOT_FOUND, retryable=False,
+                cause=ErrorCause.NOT_FOUND,
+                retryable=False,
                 hint="请对链上较新的 id 调用",
             )
         result: Dict[str, Any] = {
-            "ok": True, "status": "active",
+            "ok": True,
+            "status": "active",
             "id": entry.id,
             "type": entry.memory_type.value,
             "content": entry.content,
@@ -839,7 +999,8 @@ async def get_memory(memory_id: int) -> str:
         if audit:
             result["audit"] = [
                 {
-                    "action": a["action"], "actor": a.get("actor") or "",
+                    "action": a["action"],
+                    "actor": a.get("actor") or "",
                     "time": time.strftime("%m-%d %H:%M", time.localtime(a["timestamp"])),
                     **({"detail": a["detail"][:60]} if a["detail"] else {}),
                 }
@@ -851,7 +1012,9 @@ async def get_memory(memory_id: int) -> str:
 
 
 async def _resolve_active_for_mutation(
-    store: Any, memory_id: int, action: str,
+    store: Any,
+    memory_id: int,
+    action: str,
 ) -> tuple[Optional[Any], Optional[str]]:
     """变更类操作的 id 预检：仅活跃条目可变更，其余状态返回引导错误。
 
@@ -868,30 +1031,36 @@ async def _resolve_active_for_mutation(
         if keep is not None:
             return None, tool_error(
                 f"记忆 {memory_id} 已并入 #{keep.id}（合并谱系），本身已退出召回",
-                cause=ErrorCause.STATE, retryable=False,
+                cause=ErrorCause.STATE,
+                retryable=False,
                 hint=f"请对 #{keep.id} 进行{action}",
             )
         return None, tool_error(
             f"记忆 {memory_id} 的并入链过深（{' → '.join(map(str, chain))}），无法解析",
-            cause=ErrorCause.NOT_FOUND, retryable=False,
+            cause=ErrorCause.NOT_FOUND,
+            retryable=False,
         )
     if status == "archived":
         return None, tool_error(
             f"记忆 {memory_id} 已归档（{resolution['row']['reason']}）",
-            cause=ErrorCause.STATE, retryable=False,
+            cause=ErrorCause.STATE,
+            retryable=False,
             hint=f"先 restore_memory 恢复，再进行{action}",
         )
     if status == "tombstone":
         return None, tool_error(
             f"记忆 {memory_id} 已物理删除，仅余梗概",
-            cause=ErrorCause.NOT_FOUND, retryable=False,
+            cause=ErrorCause.NOT_FOUND,
+            retryable=False,
             hint="如需保留内容请基于梗概重新 memorize",
         )
     return None, tool_error(f"记忆 {memory_id} 不存在", cause=ErrorCause.NOT_FOUND, retryable=False)
 
 
 @deferred_tool(
-    group="memory", tags=["core", "heartbeat"], source="mind.memory",
+    group="memory",
+    tags=["core", "heartbeat"],
+    source="mind.memory",
     description=(
         "更新指定 ID 的记忆内容、标签或重要性。用于纠正错误记忆、补充细节或调整分类。"
         "建议先用 get_memory 查看当前内容再修改，至少提供 content / tags / importance 之一。"
@@ -925,6 +1094,7 @@ async def update_memory(
 
         changed: list[str] = []
         content_changed = False
+        gate_note: Optional[Dict[str, Any]] = None
 
         if content.strip() and content.strip() != entry.content:
             entry.content = content.strip()
@@ -933,6 +1103,12 @@ async def update_memory(
 
         if tags.strip():
             new_tags = _normalize_tags(tags)
+            # 咨询模式：治理工具保留 AI 主动权，闸门只提示不改写
+            from .tag_gate import enforce_tag_gate
+
+            gate = await enforce_tag_gate(new_tags, store=deps.store, enforce=False)
+            new_tags = gate.tags
+            gate_note = gate.summary()
             if new_tags != entry.tags:
                 entry.tags = new_tags
                 changed.append("tags")
@@ -959,19 +1135,24 @@ async def update_memory(
         if content_changed:
             entry.embedding = None
             from core.conversation_scope import current_scope
+
             entry.metadata = merge_metadata(entry.metadata, note_origin(current_scope()))
 
         ok = await deps.store.update(entry, clear_embedding=content_changed, actor="tool:update_memory")
         if ok and content_changed:
             wake_embedding_worker()
-        return json.dumps({
-            "ok": ok,
-            "id": memory_id,
-            "changed": changed,
-            "content_preview": entry.content[:100],
-            "tags": entry.tags,
-            "importance": round(entry.importance, 3),
-        }, ensure_ascii=False)
+        return json.dumps(
+            {
+                "ok": ok,
+                "id": memory_id,
+                "changed": changed,
+                "content_preview": entry.content[:100],
+                "tags": entry.tags,
+                "importance": round(entry.importance, 3),
+                **({"tag_gate": gate_note} if gate_note else {}),
+            },
+            ensure_ascii=False,
+        )
     except Exception as e:
         return error_from_exception(e, action="更新记忆")
 
@@ -993,20 +1174,26 @@ async def forget(memory_id: int) -> str:
         if entry is not None and HUB_TAG in entry.tags:
             return tool_error(
                 "主标签记忆（main:hub）是系统常驻的索引中枢，禁止归档",
-                cause=ErrorCause.PERMISSION, retryable=False,
+                cause=ErrorCause.PERMISSION,
+                retryable=False,
                 hint="需要更新其内容时，用 memorize 携带 type:permanent + main:hub 标签整段覆写",
             )
         ok = await deps.store.archive_memory(memory_id, reason="manual_forget", actor="tool:forget")
-        return json.dumps({
-            "ok": ok,
-            "message": f"记忆 {memory_id} {'已遗忘（归档，可恢复）' if ok else '不存在'}",
-        }, ensure_ascii=False)
+        return json.dumps(
+            {
+                "ok": ok,
+                "message": f"记忆 {memory_id} {'已遗忘（归档，可恢复）' if ok else '不存在'}",
+            },
+            ensure_ascii=False,
+        )
     except Exception as e:
         return error_from_exception(e, action="遗忘记忆")
 
 
 @deferred_tool(
-    group="memory", tags=["always"], source="mind.memory",
+    group="memory",
+    tags=["always"],
+    source="mind.memory",
     description="把一条已遗忘（归档）的记忆恢复到活跃记忆库，恢复后正常参与召回。"
     "仅当 recall 返回的 forgotten 列表中 kind=archived 且确认内容确有需要时使用。",
 )
@@ -1024,13 +1211,19 @@ async def restore_memory(memory_id: int) -> str:
         if not ok:
             return tool_error(
                 f"归档中不存在记忆 #{memory_id}",
-                cause=ErrorCause.NOT_FOUND, retryable=False,
+                cause=ErrorCause.NOT_FOUND,
+                retryable=False,
                 hint="该记忆可能已被恢复，或已超归档保留期被物理删除"
                 "（forgotten 列表中 kind=tombstone 的项仅剩梗概，请基于梗概重新 memorize）",
             )
-        return json.dumps({
-            "ok": True, "id": memory_id, "action": "restored",
-        }, ensure_ascii=False)
+        return json.dumps(
+            {
+                "ok": True,
+                "id": memory_id,
+                "action": "restored",
+            },
+            ensure_ascii=False,
+        )
     except Exception as e:
         return error_from_exception(e, action="恢复记忆")
 
@@ -1040,17 +1233,9 @@ async def restore_memory(memory_id: int) -> str:
 # ------------------------------------------------------------------
 
 
-
-
-
-
-
-
-
-
-
 def _get_sqlite():
     from agent.runtime.singleton import require_runtime
+
     return require_runtime().data_center.sqlite
 
 
@@ -1074,36 +1259,22 @@ def _current_scope_adapter() -> str:
     try:
         from agent.messages import parse_entity_scope
         from core.conversation_scope import current_scope as get_current_scope
+
         _st, adapter, _base, _sess = parse_entity_scope(get_current_scope())
         return adapter or ""
     except Exception:
         return ""
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 # ------------------------------------------------------------------
 # 记忆统计、深度搜索、合并
 # ------------------------------------------------------------------
 
+
 @deferred_tool(
-    group="memory", tags=["core", "heartbeat"], source="mind.memory",
+    group="memory",
+    tags=["core", "heartbeat"],
+    source="mind.memory",
     description="查看记忆系统统计和健康状态。返回各类型记忆数量、阈值预警、索引状态、"
     "运行指标（召回通道/写入去重累计计数）与近 24h 变更审计等信息。",
 )
@@ -1118,6 +1289,7 @@ async def memory_stats() -> str:
             return _store_not_ready()
         health = await deps.store.get_health_status()
         from . import metrics as memory_metrics
+
         if memory_metrics.snapshot():
             health["metrics"] = memory_metrics.snapshot()
         audit = await deps.store.get_audit_summary(hours=24)
@@ -1129,7 +1301,9 @@ async def memory_stats() -> str:
 
 
 @deferred_tool(
-    group="memory", tags=["core", "heartbeat"], source="mind.memory",
+    group="memory",
+    tags=["core", "heartbeat"],
+    source="mind.memory",
     description="查看 Cognee 知识图谱记忆后端的安装、可用性、同步积压和失败状态。",
 )
 async def cognee_status() -> str:
@@ -1145,8 +1319,11 @@ async def cognee_status() -> str:
             client.availability().model_dump()
             if client
             else {
-                "installed": False, "enabled": config.enabled, "ready": False,
-                "version": "", "reason": "运行时未初始化",
+                "installed": False,
+                "enabled": config.enabled,
+                "ready": False,
+                "version": "",
+                "reason": "运行时未初始化",
             }
         )
         sync = (
@@ -1155,9 +1332,13 @@ async def cognee_status() -> str:
             else {"enabled": False, "running": False, "pending": 0, "failed": 0, "synced": 0}
         )
         return json.dumps(
-            {"availability": availability, "sync": sync,
-             "projection": coordinator.rebuild.state.model_dump(include={"phase", "namespace", "verified", "error"})
-                if coordinator and coordinator.rebuild.state else None},
+            {
+                "availability": availability,
+                "sync": sync,
+                "projection": coordinator.rebuild.state.model_dump(include={"phase", "namespace", "verified", "error"})
+                if coordinator and coordinator.rebuild.state
+                else None,
+            },
             ensure_ascii=False,
         )
     except Exception as e:
@@ -1165,13 +1346,16 @@ async def cognee_status() -> str:
 
 
 @deferred_tool(
-    group="memory", tags=["core", "heartbeat"], source="mind.memory",
+    group="memory",
+    tags=["core", "heartbeat"],
+    source="mind.memory",
     description="重试 Cognee 同步队列中已达到失败上限的记忆投影任务。",
 )
 async def retry_cognee_sync() -> str:
     """重试 Cognee 失败同步项。"""
     try:
         from .cognee.runtime import get_cognee_coordinator
+
         coordinator = get_cognee_coordinator()
         if not coordinator:
             return _cognee_not_ready()
@@ -1182,7 +1366,9 @@ async def retry_cognee_sync() -> str:
 
 
 @deferred_tool(
-    group="memory", tags=["core"], source="mind.memory",
+    group="memory",
+    tags=["core"],
+    source="mind.memory",
     description="读取最近确认的当前代际 Cognee 数据集及 summary_ready，不等待后台同步。"
     "catalog_ready=false 表示目录尚未初始化，不代表没有数据。用于选择摘要或冲突审查目标；人物/项目筛选用 recall 标签参数。",
 )
@@ -1190,10 +1376,12 @@ async def list_cognee_datasets() -> str:
     """列出 Cognee datasets。"""
     try:
         from .cognee.runtime import get_cognee_client
+
         client = get_cognee_client()
         if not client:
             return _cognee_not_ready()
         from .cognee.fusion import datasets_for_projection
+
         active = set(datasets_for_projection(client.config, client.projection_namespace))
         catalog = client.dataset_catalog()
         values = catalog["items"]
@@ -1202,17 +1390,33 @@ async def list_cognee_datasets() -> str:
             name = str(value.get("name", "") if isinstance(value, dict) else getattr(value, "name", ""))
             if name in active:
                 dataset_id = str(value.get("id", "") if isinstance(value, dict) else getattr(value, "id", ""))
-                items.append({"id": dataset_id, "name": name, "ready": client.projection_ready,
-                              "summary_ready": client.global_context_ready(name)})
-        return json.dumps({"datasets": items, "count": len(items), "catalog_ready": catalog["ready"],
-                           "updating": catalog["busy"], "observed_at": catalog["updated_at"],
-                           "warning": catalog["error"]}, ensure_ascii=False)
+                items.append(
+                    {
+                        "id": dataset_id,
+                        "name": name,
+                        "ready": client.projection_ready,
+                        "summary_ready": client.global_context_ready(name),
+                    }
+                )
+        return json.dumps(
+            {
+                "datasets": items,
+                "count": len(items),
+                "catalog_ready": catalog["ready"],
+                "updating": catalog["busy"],
+                "observed_at": catalog["updated_at"],
+                "warning": catalog["error"],
+            },
+            ensure_ascii=False,
+        )
     except Exception as e:
         return error_from_exception(e, action="列出 Cognee 数据集")
 
 
 @deferred_tool(
-    group="memory", tags=["core", "heartbeat"], source="mind.memory",
+    group="memory",
+    tags=["core", "heartbeat"],
+    source="mind.memory",
     description="对 list_cognee_datasets 返回的当前数据集进行显式增强：summary 刷新主题摘要以供 recall(depth='overview')；"
     "conflicts 审查相互冲突的事实并保留证据，不自动修改原始记忆。调用模型且可能较慢，普通事实查询无需先运行。",
     timeout=1800.0,
@@ -1227,19 +1431,28 @@ async def improve_cognee_dataset(dataset_name: str, action: str = "summary") -> 
     """
     try:
         from .cognee.runtime import get_cognee_coordinator
+
         coordinator = get_cognee_coordinator()
         if not coordinator:
             return _cognee_not_ready()
         if action not in {"summary", "conflicts"}:
-            return tool_error("无效增强动作", cause=ErrorCause.PARAM, retryable=False,
-                              hint="action 使用 summary 或 conflicts")
+            return tool_error(
+                "无效增强动作", cause=ErrorCause.PARAM, retryable=False, hint="action 使用 summary 或 conflicts"
+            )
         from .cognee.fusion import datasets_for_projection
+
         if not coordinator.client.projection_ready or dataset_name not in datasets_for_projection(
-                coordinator.config, coordinator.client.projection_namespace):
-            return tool_error("数据集不是就绪的当前代际", cause=ErrorCause.STATE, retryable=False,
-                              hint="先查看 cognee_status 和 list_cognee_datasets")
-        result = await coordinator.improve(dataset_name, review_conflicts=action == "conflicts",
-                                           build_global_context_index=action == "summary")
+            coordinator.config, coordinator.client.projection_namespace
+        ):
+            return tool_error(
+                "数据集不是就绪的当前代际",
+                cause=ErrorCause.STATE,
+                retryable=False,
+                hint="先查看 cognee_status 和 list_cognee_datasets",
+            )
+        result = await coordinator.improve(
+            dataset_name, review_conflicts=action == "conflicts", build_global_context_index=action == "summary"
+        )
         value = result.model_dump(mode="json") if hasattr(result, "model_dump") else result
         return json.dumps({"ok": True, "result": value}, ensure_ascii=False, default=str)
     except Exception as e:
@@ -1247,7 +1460,9 @@ async def improve_cognee_dataset(dataset_name: str, action: str = "summary") -> 
 
 
 @deferred_tool(
-    group="memory", tags=["core", "heartbeat"], source="mind.memory",
+    group="memory",
+    tags=["core", "heartbeat"],
+    source="mind.memory",
     description="压缩 Cognee 向量库存储，回收删除/更新遗留的历史版本占用的磁盘空间。"
     "不影响任何记忆数据（最新版本永远保留）。同步进行中时会排队到空闲窗口执行。",
 )
@@ -1255,6 +1470,7 @@ async def compact_cognee_storage() -> str:
     """压缩 Cognee LanceDB 存储，回收磁盘空间。"""
     try:
         from .cognee.runtime import get_cognee_coordinator
+
         coordinator = get_cognee_coordinator()
         if not coordinator:
             return _cognee_not_ready()
@@ -1265,7 +1481,9 @@ async def compact_cognee_storage() -> str:
 
 
 @deferred_tool(
-    group="memory", tags=["core", "heartbeat"], source="mind.memory",
+    group="memory",
+    tags=["core", "heartbeat"],
+    source="mind.memory",
     description="分页深度搜索所有记忆，支持按类型过滤。用于整理和合并记忆时分批查看所有记忆。",
 )
 async def memory_deep_search(page: int = 1, page_size: int = 20, memory_type: str = "") -> str:
@@ -1293,7 +1511,9 @@ async def memory_deep_search(page: int = 1, page_size: int = 20, memory_type: st
 
 
 @deferred_tool(
-    group="memory", tags=["core", "heartbeat"], source="mind.memory",
+    group="memory",
+    tags=["core", "heartbeat"],
+    source="mind.memory",
     description="将多条记忆合并为一条。旧记忆不会删除但会被标记为低优先级。用于整理和压缩过多的同类记忆。",
 )
 async def merge_memories(memory_ids: str, merged_content: str) -> str:
@@ -1322,17 +1542,22 @@ async def merge_memories(memory_ids: str, merged_content: str) -> str:
         if not keep_id:
             return tool_error(
                 "合并失败：可合并的记忆不足（不存在，或为永久记忆/画像/规划等系统独占条目）",
-                cause=ErrorCause.NOT_FOUND, retryable=False,
+                cause=ErrorCause.NOT_FOUND,
+                retryable=False,
                 hint="先用 get_memory 确认要合并的记忆状态；系统独占条目不参与合并",
             )
 
         wake_embedding_worker()
 
-        return json.dumps({
-            "ok": True, "keep_id": keep_id,
-            "merged_from": [i for i in ids if i != keep_id],
-            "message": f"已合并为一条（存活 id={keep_id}，其余 id 已重定向到本条）",
-        }, ensure_ascii=False)
+        return json.dumps(
+            {
+                "ok": True,
+                "keep_id": keep_id,
+                "merged_from": [i for i in ids if i != keep_id],
+                "message": f"已合并为一条（存活 id={keep_id}，其余 id 已重定向到本条）",
+            },
+            ensure_ascii=False,
+        )
     except Exception as e:
         return error_from_exception(e, action="合并记忆")
 
@@ -1341,12 +1566,12 @@ async def merge_memories(memory_ids: str, merged_content: str) -> str:
 # 心跳日志
 # ------------------------------------------------------------------
 
+
 @deferred_tool(
-    group="memory", tags=["heartbeat"], source="mind.heartbeat",
-    description=(
-        "将内容写入心跳工作日志。用于在执行任务后记录操作总结。"
-        "在 end_reply 之前调用，简要记录本次做了什么。"
-    ),
+    group="memory",
+    tags=["heartbeat"],
+    source="mind.heartbeat",
+    description=("将内容写入心跳工作日志。用于在执行任务后记录操作总结。在 end_reply 之前调用，简要记录本次做了什么。"),
 )
 async def log_to_heartbeat(content: str) -> str:
     """将一条记录写入心跳工作日志。
@@ -1356,6 +1581,7 @@ async def log_to_heartbeat(content: str) -> str:
     """
     try:
         from agent.heartbeat.log import append_entry
+
         append_entry(content)
         return json.dumps({"ok": True, "message": "已写入心跳日志"}, ensure_ascii=False)
     except Exception as e:
@@ -1363,7 +1589,9 @@ async def log_to_heartbeat(content: str) -> str:
 
 
 @deferred_tool(
-    group="memory", tags=["heartbeat"], source="mind.heartbeat",
+    group="memory",
+    tags=["heartbeat"],
+    source="mind.heartbeat",
     description=(
         "读取最近的心跳工作日志（自己在心跳/任务中经 log_to_heartbeat 记录的操作总结，"
         "以及系统维护摘要）。回顾近期自主工作、核实某任务是否真的做过时使用。"
@@ -1377,17 +1605,27 @@ async def get_heartbeat_log(count: int = 3) -> str:
     """
     try:
         from agent.heartbeat.log import load_recent
+
         entries = max(1, min(20, int(count)))
         text = load_recent(entries)
         if not text.strip():
-            return json.dumps({
-                "ok": True, "count": 0, "log": "",
-                "message": "暂无心跳日志（尚无心跳周期或日志已被裁剪）",
-            }, ensure_ascii=False)
-        return json.dumps({
-            "ok": True, "count": entries,
-            "log": text[-8000:],  # 超长截尾保最近条目
-        }, ensure_ascii=False)
+            return json.dumps(
+                {
+                    "ok": True,
+                    "count": 0,
+                    "log": "",
+                    "message": "暂无心跳日志（尚无心跳周期或日志已被裁剪）",
+                },
+                ensure_ascii=False,
+            )
+        return json.dumps(
+            {
+                "ok": True,
+                "count": entries,
+                "log": text[-8000:],  # 超长截尾保最近条目
+            },
+            ensure_ascii=False,
+        )
     except Exception as e:
         return error_from_exception(e, action="读取心跳日志")
 
@@ -1396,8 +1634,11 @@ async def get_heartbeat_log(count: int = 3) -> str:
 # 任务执行
 # ------------------------------------------------------------------
 
+
 @deferred_tool(
-    group="memory", tags=["core", "heartbeat"], source="mind.memory",
+    group="memory",
+    tags=["core", "heartbeat"],
+    source="mind.memory",
     description=(
         "列出所有可执行的任务（含每个任务最近一次执行概况：时间/时长/状态/触发来源）。"
         "任务是预定义的流程化工作，可按名称触发执行；需要历次执行明细用 task_history。"
@@ -1407,9 +1648,11 @@ async def list_tasks() -> str:
     """列出所有可执行的任务。"""
     try:
         from agent.runtime.singleton import require_runtime
+
         engine = require_runtime().mind.heartbeat_engine
         tasks = engine.task_registry.list_info()
         from agent.task.history import get_summary
+
         summary = get_summary()
         for item in tasks:
             last = summary.get(str(item.get("name") or ""))
@@ -1423,6 +1666,7 @@ async def list_tasks() -> str:
 def _with_readable_time(record: Dict[str, Any]) -> Dict[str, Any]:
     """执行概况副本附可读时间文本（epoch 保留，模型直接读文本）。"""
     import time as _time
+
     readable = dict(record)
     started_at = float(record.get("started_at") or 0.0)
     if started_at > 0:
@@ -1431,7 +1675,9 @@ def _with_readable_time(record: Dict[str, Any]) -> Dict[str, Any]:
 
 
 @deferred_tool(
-    group="memory", tags=["core", "heartbeat"], source="mind.task",
+    group="memory",
+    tags=["core", "heartbeat"],
+    source="mind.task",
     description=(
         "查看指定任务最近几次的执行记录（每次的开始时间/耗时/状态/触发来源/"
         "产出摘要/错误信息）。评估任务是否按时运行、是否反复失败、上次产出了什么时使用。"
@@ -1445,28 +1691,43 @@ async def task_history(task_name: str) -> str:
     """
     try:
         from agent.task.history import get_history
+
         records = get_history(task_name)
         if not records:
-            return json.dumps({
-                "ok": True, "task": task_name, "count": 0, "records": [],
-                "message": "该任务暂无执行记录（可能从未执行过，或记录已被任务删除清理）",
-            }, ensure_ascii=False)
+            return json.dumps(
+                {
+                    "ok": True,
+                    "task": task_name,
+                    "count": 0,
+                    "records": [],
+                    "message": "该任务暂无执行记录（可能从未执行过，或记录已被任务删除清理）",
+                },
+                ensure_ascii=False,
+            )
         rendered = []
         for rec in records:
             from agent.task.history import format_duration_ms
+
             item = _with_readable_time(rec)
             item["duration_text"] = format_duration_ms(int(rec.get("duration_ms") or 0))
             rendered.append(item)
-        return json.dumps({
-            "ok": True, "task": task_name, "count": len(rendered),
-            "records": rendered,
-        }, ensure_ascii=False)
+        return json.dumps(
+            {
+                "ok": True,
+                "task": task_name,
+                "count": len(rendered),
+                "records": rendered,
+            },
+            ensure_ascii=False,
+        )
     except Exception as e:
         return error_from_exception(e, action="查询任务执行历史")
 
 
 @deferred_tool(
-    group="memory", tags=["core", "heartbeat"], source="mind.memory",
+    group="memory",
+    tags=["core", "heartbeat"],
+    source="mind.memory",
     description=(
         "按名称执行指定任务。任务在后台异步执行，可通过 list_tasks 查看可用任务。"
         "任务执行期间会调用工具完成具体工作（如整理画像、清理记忆等）。"
@@ -1480,6 +1741,7 @@ async def execute_task(task_name: str) -> str:
     """
     try:
         from agent.runtime.singleton import require_runtime
+
         engine = require_runtime().mind.heartbeat_engine
         ok, message = engine.start_task_background(task_name)
         return json.dumps({"ok": ok, "task": task_name, "message": message}, ensure_ascii=False)
@@ -1491,8 +1753,11 @@ async def execute_task(task_name: str) -> str:
 # 实体画像管理
 # ------------------------------------------------------------------
 
+
 @deferred_tool(
-    group="memory", tags=["core", "heartbeat"], source="mind.memory",
+    group="memory",
+    tags=["core", "heartbeat"],
+    source="mind.memory",
     description=(
         "列出所有已知的实体画像（用户/群组）。"
         "返回每个实体的 scope、对话次数、画像摘要和跨平台关联信息。"
@@ -1535,10 +1800,11 @@ async def list_entity_profiles() -> str:
 
 
 @deferred_tool(
-    group="memory", tags=["core", "heartbeat"], source="mind.memory",
+    group="memory",
+    tags=["core", "heartbeat"],
+    source="mind.memory",
     description=(
-        "查看指定实体的完整画像内容（自动解析跨平台关联）。"
-        "先用 list_entity_profiles 获取可用的 scope_type/scope_id。"
+        "查看指定实体的完整画像内容（自动解析跨平台关联）。先用 list_entity_profiles 获取可用的 scope_type/scope_id。"
     ),
 )
 async def get_entity_profile(scope_type: str, scope_id: str) -> str:
@@ -1575,7 +1841,9 @@ async def get_entity_profile(scope_type: str, scope_id: str) -> str:
 
 
 @deferred_tool(
-    group="memory", tags=["core", "heartbeat"], source="mind.memory",
+    group="memory",
+    tags=["core", "heartbeat"],
+    source="mind.memory",
     description=(
         "删除指定实体的画像。用于清理无意义或不再需要的实体画像（如临时用户、测试数据等）。"
         "删除前建议先用 get_entity_profile 确认内容。"
@@ -1604,6 +1872,7 @@ async def delete_entity_profile(scope_type: str, scope_id: str) -> str:
         # 清理内存缓存（primary + 所有 alias 的内存实体）
         try:
             from agent.runtime.singleton import require_runtime
+
             rt = require_runtime()
             entities = rt.data_center.everything_data.entities
             entities.pop(f"{p_type}_{p_id}", None)
@@ -1618,22 +1887,29 @@ async def delete_entity_profile(scope_type: str, scope_id: str) -> str:
         if deps is not None:
             source = f"entity_{p_id}"
             old_entries = await deps.store.list_recent(
-                limit=5, memory_type=MemoryType.ENTITY, source=source,
+                limit=5,
+                memory_type=MemoryType.ENTITY,
+                source=source,
             )
             for entry in old_entries:
                 if entry.id:
                     await deps.store.delete(entry.id, actor="tool:entity_profile")
 
-        return json.dumps({
-            "ok": True,
-            "message": f"已删除 {scope_type}:{scope_id} 的画像",
-        }, ensure_ascii=False)
+        return json.dumps(
+            {
+                "ok": True,
+                "message": f"已删除 {scope_type}:{scope_id} 的画像",
+            },
+            ensure_ascii=False,
+        )
     except Exception as e:
         return error_from_exception(e, action="删除实体画像")
 
 
 @deferred_tool(
-    group="memory", tags=["core", "heartbeat"], source="mind.memory",
+    group="memory",
+    tags=["core", "heartbeat"],
+    source="mind.memory",
     description=(
         "更新指定实体的画像内容（自动解析跨平台关联，写入主身份）。"
         "建议先用 get_entity_profile 查看当前画像，在此基础上增量更新。"
@@ -1663,16 +1939,21 @@ async def update_entity_profile(scope_type: str, scope_id: str, personality: str
         # 覆盖式更新前备份旧画像（防坏写不可恢复）
         if old and old.get("personality"):
             from .profile_backup import backup_entity_profile
+
             backup_entity_profile(p_type, p_id, old["personality"])
 
         await sqlite.set_entity_personality(
-            scope_type=p_type, scope_id=p_id, personality=personality.strip(),
-            conv_num=conv_num, conv_update_num=0,
+            scope_type=p_type,
+            scope_id=p_id,
+            personality=personality.strip(),
+            conv_num=conv_num,
+            conv_update_num=0,
         )
 
         # 同步更新内存缓存（primary + 所有 alias 的内存实体）
         try:
             from agent.runtime.singleton import require_runtime
+
             rt = require_runtime()
             entities = rt.data_center.everything_data.entities
             keys_to_update = [f"{p_type}_{p_id}"]
@@ -1689,10 +1970,13 @@ async def update_entity_profile(scope_type: str, scope_id: str, personality: str
         deps = _deps()
         if deps is not None:
             from .self_profile import PROFILE_MEMORY_IMPORTANCE
+
             source = f"entity_{p_id}"
             scope_tag = f"{p_type}:{p_id}"
             old_entries = await deps.store.list_recent(
-                limit=5, memory_type=MemoryType.ENTITY, source=source,
+                limit=5,
+                memory_type=MemoryType.ENTITY,
+                source=source,
             )
             for old_entry in old_entries:
                 if old_entry.id:
@@ -1710,11 +1994,14 @@ async def update_entity_profile(scope_type: str, scope_id: str, personality: str
         target_desc = f"{p_type}:{p_id}"
         if primary:
             target_desc += f" (通过 {scope_type}:{scope_id})"
-        return json.dumps({
-            "ok": True,
-            "message": f"已更新 {target_desc} 的画像",
-            "preview": personality.strip()[:100],
-        }, ensure_ascii=False)
+        return json.dumps(
+            {
+                "ok": True,
+                "message": f"已更新 {target_desc} 的画像",
+                "preview": personality.strip()[:100],
+            },
+            ensure_ascii=False,
+        )
     except Exception as e:
         return error_from_exception(e, action="更新实体画像")
 
@@ -1723,8 +2010,11 @@ async def update_entity_profile(scope_type: str, scope_id: str, personality: str
 # 跨平台实体关联
 # ------------------------------------------------------------------
 
+
 @deferred_tool(
-    group="memory", tags=["core", "heartbeat"], source="mind.memory",
+    group="memory",
+    tags=["core", "heartbeat"],
+    source="mind.memory",
     description=(
         "将两个不同平台的实体关联为同一个人/群组。"
         "source 将成为 target 的别名，画像共享 target 的内容。"
@@ -1762,36 +2052,40 @@ async def link_entity(
         existing = await sqlite.resolve_alias(source_scope_type, source_scope_id)
         if existing and (existing[0] != final_type or existing[1] != final_id):
             return tool_error(
-                f"{source_scope_type}:{source_scope_id} 已关联到 "
-                f"{existing[0]}:{existing[1]}，需先 unlink_entity 解除",
-                cause=ErrorCause.STATE, retryable=False,
+                f"{source_scope_type}:{source_scope_id} 已关联到 {existing[0]}:{existing[1]}，需先 unlink_entity 解除",
+                cause=ErrorCause.STATE,
+                retryable=False,
             )
 
         await sqlite.set_alias(
-            scope_type=source_scope_type, scope_id=source_scope_id,
-            primary_scope_type=final_type, primary_scope_id=final_id,
+            scope_type=source_scope_type,
+            scope_id=source_scope_id,
+            primary_scope_type=final_type,
+            primary_scope_id=final_id,
         )
         from .graph.tools import invalidate_alias_cache
+
         invalidate_alias_cache()
 
-        return json.dumps({
-            "ok": True,
-            "message": (
-                f"已将 {source_scope_type}:{source_scope_id} "
-                f"关联到 {final_type}:{final_id}"
-            ),
-            "source": f"{source_scope_type}:{source_scope_id}",
-            "primary": f"{final_type}:{final_id}",
-        }, ensure_ascii=False)
+        return json.dumps(
+            {
+                "ok": True,
+                "message": (f"已将 {source_scope_type}:{source_scope_id} 关联到 {final_type}:{final_id}"),
+                "source": f"{source_scope_type}:{source_scope_id}",
+                "primary": f"{final_type}:{final_id}",
+            },
+            ensure_ascii=False,
+        )
     except Exception as e:
         return error_from_exception(e, action="关联实体")
 
 
 @deferred_tool(
-    group="memory", tags=["core", "heartbeat"], source="mind.memory",
+    group="memory",
+    tags=["core", "heartbeat"],
+    source="mind.memory",
     description=(
-        "解除一个实体的跨平台关联，使其恢复为独立实体。"
-        "解除后该实体将拥有独立的画像（可选择复制当前主身份的画像）。"
+        "解除一个实体的跨平台关联，使其恢复为独立实体。解除后该实体将拥有独立的画像（可选择复制当前主身份的画像）。"
     ),
 )
 async def unlink_entity(scope_type: str, scope_id: str, copy_profile: bool = True) -> str:
@@ -1809,17 +2103,20 @@ async def unlink_entity(scope_type: str, scope_id: str, copy_profile: bool = Tru
         if not primary:
             return tool_error(
                 f"{scope_type}:{scope_id} 没有关联关系",
-                cause=ErrorCause.NOT_FOUND, retryable=False,
+                cause=ErrorCause.NOT_FOUND,
+                retryable=False,
             )
 
         # 复制 primary 的画像到自己名下
         if copy_profile:
             primary_data = await sqlite.get_entity_personality(
-                scope_type=primary[0], scope_id=primary[1],
+                scope_type=primary[0],
+                scope_id=primary[1],
             )
             if primary_data and primary_data.get("personality"):
                 await sqlite.set_entity_personality(
-                    scope_type=scope_type, scope_id=scope_id,
+                    scope_type=scope_type,
+                    scope_id=scope_id,
                     personality=primary_data["personality"],
                 )
 
@@ -1827,16 +2124,17 @@ async def unlink_entity(scope_type: str, scope_id: str, copy_profile: bool = Tru
         if not removed:
             return tool_error("解除关联失败", cause=ErrorCause.INTERNAL)
         from .graph.tools import invalidate_alias_cache
+
         invalidate_alias_cache()
 
-        return json.dumps({
-            "ok": True,
-            "message": (
-                f"已解除 {scope_type}:{scope_id} 与 "
-                f"{primary[0]}:{primary[1]} 的关联"
-            ),
-            "copied_profile": copy_profile,
-        }, ensure_ascii=False)
+        return json.dumps(
+            {
+                "ok": True,
+                "message": (f"已解除 {scope_type}:{scope_id} 与 {primary[0]}:{primary[1]} 的关联"),
+                "copied_profile": copy_profile,
+            },
+            ensure_ascii=False,
+        )
     except Exception as e:
         return error_from_exception(e, action="解除实体关联")
 
@@ -1845,8 +2143,11 @@ async def unlink_entity(scope_type: str, scope_id: str, copy_profile: bool = Tru
 # 工具错误查询
 # ------------------------------------------------------------------
 
+
 @deferred_tool(
-    group="memory", tags=["core", "heartbeat"], source="mind.memory",
+    group="memory",
+    tags=["core", "heartbeat"],
+    source="mind.memory",
     description="查询工具调用错误历史，用于反思和总结经验。空 tool_name 返回所有工具的错误统计。",
 )
 async def recall_tool_errors(tool_name: str = "", limit: int = 20) -> str:
@@ -1865,10 +2166,13 @@ async def recall_tool_errors(tool_name: str = "", limit: int = 20) -> str:
             stats = await deps.store.get_tool_error_stats()
             return json.dumps({"stats": stats}, ensure_ascii=False)
         errors = await deps.store.get_tool_errors(tool_name=tool_name, limit=limit)
-        return json.dumps({
-            "tool_name": tool_name,
-            "count": len(errors),
-            "errors": errors,
-        }, ensure_ascii=False)
+        return json.dumps(
+            {
+                "tool_name": tool_name,
+                "count": len(errors),
+                "errors": errors,
+            },
+            ensure_ascii=False,
+        )
     except Exception as e:
         return error_from_exception(e, action="查询工具错误历史")

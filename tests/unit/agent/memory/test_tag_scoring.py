@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
 from agent.memory.memory_types import MemoryEntry, MemoryType
@@ -11,16 +9,22 @@ from agent.memory.store._shared import idf_tag_score
 from agent.memory.tag_query import TagQuery
 
 
-@pytest.mark.parametrize("filtering,expected", [
-    (TagQuery(all_of=("future:a/*",), any_of=("role:owner", "role:reader"), none_of=("state:old",)), {"a", "b"}),
-    (TagQuery(all_of=("future:a",)), {"a"}),
-    (TagQuery(any_of=("future:ab", "future:a%")), {"d", "e"}),
-    (TagQuery(none_of=("future:a/*",)), {"d", "e"}),
-])
+@pytest.mark.parametrize(
+    "filtering,expected",
+    [
+        (TagQuery(all_of=("future:a/*",), any_of=("role:owner", "role:reader"), none_of=("state:old",)), {"a", "b"}),
+        (TagQuery(all_of=("future:a",)), {"a"}),
+        (TagQuery(any_of=("future:ab", "future:a%")), {"d", "e"}),
+        (TagQuery(none_of=("future:a/*",)), {"d", "e"}),
+    ],
+)
 async def test_sql_and_backend_tag_filters_share_exact_semantics(store, filtering, expected):
     entries = {
-        "a": ["future:a", "role:owner"], "b": ["future:a/child", "role:reader"],
-        "c": ["future:a/child", "role:owner", "state:old"], "d": ["future:ab"], "e": ["future:a%"],
+        "a": ["future:a", "role:owner"],
+        "b": ["future:a/child", "role:reader"],
+        "c": ["future:a/child", "role:owner", "state:old"],
+        "d": ["future:ab"],
+        "e": ["future:a%"],
     }
     for label, tags in entries.items():
         await store.add(MemoryEntry(content=label, tags=tags, memory_type=MemoryType.SEMANTIC))
@@ -30,18 +34,25 @@ async def test_sql_and_backend_tag_filters_share_exact_semantics(store, filterin
 
 
 async def test_tag_filter_runs_before_text_and_vector_candidate_limits(store):
-    target = await store.add(MemoryEntry(content="needle", tags=["future:rare"],
-        embedding=[.8, .6], memory_type=MemoryType.SEMANTIC))
+    target = await store.add(
+        MemoryEntry(content="needle", tags=["future:rare"], embedding=[0.8, 0.6], memory_type=MemoryType.SEMANTIC)
+    )
     for i in range(20):
-        await store.add(MemoryEntry(content=f"needle {i}", tags=["future:other"],
-            embedding=[1., 0.], memory_type=MemoryType.SEMANTIC))
-    results = await store._search.search_hybrid("needle", query_vec=[1., 0.], limit=1,
-                                               tag_query=TagQuery(all_of=("future:rare",)))
+        await store.add(
+            MemoryEntry(
+                content=f"needle {i}", tags=["future:other"], embedding=[1.0, 0.0], memory_type=MemoryType.SEMANTIC
+            )
+        )
+    results = await store._search.search_hybrid(
+        "needle", query_vec=[1.0, 0.0], limit=1, tag_query=TagQuery(all_of=("future:rare",))
+    )
     assert [entry.id for entry, score in results] == [target]
+
 
 # ==================================================================
 # IDF 评分
 # ==================================================================
+
 
 def test_idf_score_rare_tag_dominates() -> None:
     df = {"user:qq:1": 300, "topic:罕见": 1}
@@ -67,14 +78,22 @@ def test_idf_score_empty_and_full_hit() -> None:
 async def test_associative_prefers_rare_tag_match(store) -> None:
     # 高频公共标签（10 条）
     for i in range(10):
-        await store.add(MemoryEntry(
-            memory_type=MemoryType.SEMANTIC, content=f"公共记忆{i}",
-            tags=["user:qq:hot"], importance=0.9,
-        ))
-    rare = await store.add(MemoryEntry(
-        memory_type=MemoryType.SEMANTIC, content="稀有标签记忆",
-        tags=["topic:unique_x"], importance=0.9,
-    ))
+        await store.add(
+            MemoryEntry(
+                memory_type=MemoryType.SEMANTIC,
+                content=f"公共记忆{i}",
+                tags=["user:qq:hot"],
+                importance=0.9,
+            )
+        )
+    rare = await store.add(
+        MemoryEntry(
+            memory_type=MemoryType.SEMANTIC,
+            content="稀有标签记忆",
+            tags=["topic:unique_x"],
+            importance=0.9,
+        )
+    )
     results = await store.search_associative(["user:qq:hot", "topic:unique_x"], limit=3)
     assert results
     # 命中稀有标签的记忆应排第一（IDF 权重远高于高频标签命中）
@@ -88,10 +107,14 @@ async def test_associative_prefers_rare_tag_match(store) -> None:
 
 @pytest.mark.asyncio
 async def test_hybrid_recalls_tag_only_match(store) -> None:
-    target_id = await store.add(MemoryEntry(
-        memory_type=MemoryType.SEMANTIC, content="一段与查询词完全无关的内容 zzz",
-        tags=["goal:abc123"], importance=0.8,
-    ))
+    target_id = await store.add(
+        MemoryEntry(
+            memory_type=MemoryType.SEMANTIC,
+            content="一段与查询词完全无关的内容 zzz",
+            tags=["goal:abc123"],
+            importance=0.8,
+        )
+    )
     # 无 query_tags：文本/向量都不命中 → 召不回
     plain = await store.search_hybrid("火锅 烧烤", limit=5, min_score=0.0)
     assert all(e.id != target_id for e, _ in plain)
@@ -101,36 +124,13 @@ async def test_hybrid_recalls_tag_only_match(store) -> None:
 
 
 # ==================================================================
-# 写入规范化与近重复提示
+# 写入规范化（写入闸门行为见 test_tag_gate.py）
 # ==================================================================
 
 
 def test_normalize_tags() -> None:
     from agent.memory.tools import _normalize_tags
+
     assert _normalize_tags(" topic:LOL ，type:fact,  topic:LOL ,") == ["topic:LOL", "type:fact"]
     assert _normalize_tags("topic:内部  空格") == ["topic:内部 空格"]
     assert _normalize_tags("") == []
-
-
-@pytest.mark.asyncio
-async def test_memorize_tag_hints(store) -> None:
-    from agent.memory import tools as mem_tools
-    mem_tools.memory_tools_port.set(mem_tools.MemoryToolDeps(store, None))
-    try:
-        # 既有高频标签
-        for _ in range(2):
-            await store.add(MemoryEntry(
-                memory_type=MemoryType.SEMANTIC, content="电竞相关",
-                tags=["topic:LOL"], importance=0.6,
-            ))
-        raw = await mem_tools.memorize("打野出新装备了", tags="topic:LOL梗, type:fact")
-        data = json.loads(raw)
-        assert data["ok"] is True
-        assert any("topic:LOL" in h for h in data.get("tag_hints", []))
-
-        # 复用既有标签（非新标签）不给提示
-        raw = await mem_tools.memorize("中单又秀了", tags="topic:LOL, type:fact")
-        data = json.loads(raw)
-        assert "tag_hints" not in data
-    finally:
-        mem_tools.memory_tools_port.unbind()

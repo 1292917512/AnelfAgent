@@ -51,7 +51,9 @@ class TagIntelligence:
         return tag.startswith(_COOC_PREFIX_FILTER)
 
     def _compute(
-        self, tag_rows: List[str], node_rows: List[tuple[str, str]],
+        self,
+        tag_rows: List[str],
+        node_rows: List[tuple[str, str]],
     ) -> tuple[Dict[str, int], Dict[tuple[str, str], int], Dict[str, str]]:
         """纯计算部分（worker 线程执行）：df + 共现对 + 提及词表。"""
         df: Dict[str, int] = {}
@@ -76,7 +78,7 @@ class TagIntelligence:
         mentions: Dict[str, set[str]] = {}
         for tag, count in df.items():
             if tag.startswith("topic:") and count >= 2:
-                name = tag[len("topic:"):]
+                name = tag[len("topic:") :]
                 if len(name) >= 2:
                     mentions.setdefault(name.casefold(), set()).add(tag)
         # 图谱节点 label/key 词表（user/group/topic 节点 → 同名记忆标签）
@@ -103,18 +105,11 @@ class TagIntelligence:
             if now - self._built_at < _TTL_SECONDS:
                 return
             db = await self._conn.get_db()
-            cursor = await db.execute(
-                "SELECT tags_json FROM memories WHERE importance > 0"
-            )
+            cursor = await db.execute("SELECT tags_json FROM memories WHERE importance > 0")
             tag_rows = [str(r["tags_json"]) for r in await cursor.fetchall()]
             try:
-                cursor = await db.execute(
-                    "SELECT node_key, label FROM graph_nodes WHERE archived=0"
-                )
-                node_rows = [
-                    (str(r["node_key"]), str(r["label"] or ""))
-                    for r in await cursor.fetchall()
-                ]
+                cursor = await db.execute("SELECT node_key, label FROM graph_nodes WHERE archived=0")
+                node_rows = [(str(r["node_key"]), str(r["label"] or "")) for r in await cursor.fetchall()]
             except Exception:
                 node_rows = []  # graph_nodes 表尚未创建（旧库）时仅用词表
 
@@ -156,10 +151,7 @@ class TagIntelligence:
                 cooc_count[b] = cooc_count.get(b, 0) + count
             elif b in seeds and a not in seeds:
                 cooc_count[a] = cooc_count.get(a, 0) + count
-        scores = {
-            tag: (count / self._df.get(tag, 1)) * self._idf(tag)
-            for tag, count in cooc_count.items()
-        }
+        scores = {tag: (count / self._df.get(tag, 1)) * self._idf(tag) for tag, count in cooc_count.items()}
         ranked = sorted(scores.items(), key=lambda kv: (-kv[1], kv[0]))
         return ranked[:limit]
 
@@ -177,8 +169,7 @@ class TagIntelligence:
         hits: List[str] = []
         for word in sorted(self._vocab, key=lambda value: (-len(value), value)):
             if word in text and (
-                not word.isascii()
-                or re.search(rf"(?<![a-z0-9_]){re.escape(word)}(?![a-z0-9_])", text)
+                not word.isascii() or re.search(rf"(?<![a-z0-9_]){re.escape(word)}(?![a-z0-9_])", text)
             ):
                 tag = self._vocab[word]
                 if tag not in hits:
@@ -190,11 +181,11 @@ class TagIntelligence:
     async def merge_candidates(self, *, limit: int = 20) -> List[Dict[str, Any]]:
         """标签归并候选（确定性事实生产；归并决策归 AI，经 update_memory 执行）。
 
-        两类高置信候选，宁缺毋滥：
-        - 写法变体：NFKC/小写/空白归一后相同的 topic:/goal: 标签组
-          （如全角字符或多余空格产生的孪生标签），归并到高频形态；
-        - 包含关系对：topic: 名互为子串且双方 df>=2（与 memorize 写入时
-          的近重复提示同口径，作用于存量），归并到高频一方。
+        两类高置信候选，宁缺毋滥（kind 供治理豁免签名用）：
+        - form_variant 写法变体：NFKC/小写/空白归一后相同的 topic:/goal:
+          标签组（如全角字符或多余空格产生的孪生标签），归并到高频形态；
+        - containment 包含关系对：topic: 名互为子串且双方 df>=2（与写入
+          闸门的包含提示同口径，作用于存量），归并到高频一方。
         """
         await self._ensure_fresh()
         out: List[Dict[str, Any]] = []
@@ -203,7 +194,7 @@ class TagIntelligence:
         groups: Dict[str, List[str]] = {}
         for tag in self._df:
             if tag.startswith(("topic:", "goal:")):
-                groups.setdefault(_normalize_tag_form(tag), []).append(tag)
+                groups.setdefault(normalize_tag_form(tag), []).append(tag)
         for tags in groups.values():
             if len(tags) < 2:
                 continue
@@ -215,19 +206,25 @@ class TagIntelligence:
                 if key in seen:
                     continue
                 seen.add(key)
-                out.append({
-                    "from": t, "into": canonical, "reason": "写法变体",
-                    "from_count": self._df.get(t, 0), "into_count": self._df.get(canonical, 0),
-                })
+                out.append(
+                    {
+                        "kind": "form_variant",
+                        "from": t,
+                        "into": canonical,
+                        "reason": "写法变体",
+                        "from_count": self._df.get(t, 0),
+                        "into_count": self._df.get(canonical, 0),
+                    }
+                )
 
         topics = sorted(
             (t for t in self._df if t.startswith("topic:") and self._df.get(t, 0) >= 2),
             key=lambda t: -self._df.get(t, 0),
         )
         for i, a in enumerate(topics):
-            na = a[len("topic:"):]
-            for b in topics[i + 1:]:
-                nb = b[len("topic:"):]
+            na = a[len("topic:") :]
+            for b in topics[i + 1 :]:
+                nb = b[len("topic:") :]
                 if not na or not nb or (na not in nb and nb not in na):
                     continue
                 into, from_ = (a, b) if self._df.get(a, 0) >= self._df.get(b, 0) else (b, a)
@@ -235,16 +232,23 @@ class TagIntelligence:
                 if key in seen or from_ == into:
                     continue
                 seen.add(key)
-                out.append({
-                    "from": from_, "into": into, "reason": "名称包含关系",
-                    "from_count": self._df.get(from_, 0), "into_count": self._df.get(into, 0),
-                })
+                out.append(
+                    {
+                        "kind": "containment",
+                        "from": from_,
+                        "into": into,
+                        "reason": "名称包含关系",
+                        "from_count": self._df.get(from_, 0),
+                        "into_count": self._df.get(into, 0),
+                    }
+                )
         out.sort(key=lambda c: -(c["from_count"] + c["into_count"]))
         return out[:limit]
 
 
-def _normalize_tag_form(tag: str) -> str:
-    """标签形态归一（NFKC + 小写 + 去空白）——写法变体的判定口径。"""
+def normalize_tag_form(tag: str) -> str:
+    """标签形态归一（NFKC + 小写 + 去空白）——写法变体的判定口径（写侧闸门与归并议程共用）。"""
     import re
     import unicodedata
+
     return re.sub(r"\s+", "", unicodedata.normalize("NFKC", tag).casefold())

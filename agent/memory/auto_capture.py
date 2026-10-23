@@ -78,7 +78,7 @@ AI 的计划、推测和自述不是执行证据；保留条件、否定与不�
 - 0.6：一般偏好线索、次要观察
 - 0.5：弱线索（不确定的照实标低分，不要在提取侧预过滤——下游有裁决）
 importance 仅决定记忆的重要程度与留存优先级，不代表内容已经核实，请严格对照上表，不要一律给中间值。
-
+{tag_vocab}
 ## 输出格式（只输出 JSON 数组，没有值得提取的内容时输出 []）
 [{"content": "一两句话的记忆内容（用称呼写明主体是谁，禁止「用户」「有人」这类模糊指代）",
    "speaker": "该信息发言者的 uid（取自消息行的 [uid:xxx]；AI 说的或无法确定时省略）",
@@ -95,6 +95,7 @@ importance 仅决定记忆的重要程度与留存优先级，不代表内容已
 【新对话（提取对象）】
 {new_messages}
 """
+
 
 def _extract_speaker(content: str) -> Tuple[str, str]:
     """从消息元数据标签确定性提取发言者身份，返回 (展示标签, uid)。
@@ -126,9 +127,9 @@ def _extract_speaker(content: str) -> Tuple[str, str]:
 def should_extract(messages: List[Dict[str, Any]]) -> bool:
     """存在实质性正文即可提取，单条约定不依赖后续回复。"""
     from core.tags import strip_message_meta_tags
+
     return any(
-        re.search(r"[一-鿿A-Za-z0-9]", strip_message_meta_tags(str(msg.get("content") or "")))
-        for msg in messages
+        re.search(r"[一-鿿A-Za-z0-9]", strip_message_meta_tags(str(msg.get("content") or ""))) for msg in messages
     )
 
 
@@ -163,6 +164,7 @@ class AutoCapturePipeline:
             return
         try:
             from agent.runtime.singleton import require_runtime
+
             sqlite = require_runtime().data_center.sqlite
             # 轻量枚举（无 COUNT）：每 tick 调用，避免全表 GROUP BY
             scopes = await sqlite.list_conversation_scope_keys()
@@ -181,15 +183,20 @@ class AutoCapturePipeline:
                 break
             try:
                 outcome = await self._process_scope(
-                    sqlite, scope["scope_type"], scope["scope_id"],
-                    every_n=every_n, idle_seconds=idle_seconds, now=now,
+                    sqlite,
+                    scope["scope_type"],
+                    scope["scope_id"],
+                    every_n=every_n,
+                    idle_seconds=idle_seconds,
+                    now=now,
                 )
                 if outcome is not CaptureOutcome.IDLE:
                     processed += 1
             except Exception as exc:
                 log(
                     f"自动捕获失败 [{scope['scope_type']}:{scope['scope_id']}]: {exc}",
-                    "DEBUG", tag="记忆",
+                    "DEBUG",
+                    tag="记忆",
                 )
 
     async def _fetch_pending(
@@ -204,8 +211,10 @@ class AutoCapturePipeline:
         cursor = after_id
         while len(rows) < _MAX_PENDING_PER_TICK:
             batch = await sqlite.fetch_conversation_with_id(
-                scope_type=scope_type, scope_id=scope_id,
-                limit=_PENDING_BATCH_SIZE, after_id=cursor,
+                scope_type=scope_type,
+                scope_id=scope_id,
+                limit=_PENDING_BATCH_SIZE,
+                after_id=cursor,
             )
             if not batch:
                 break
@@ -229,13 +238,23 @@ class AutoCapturePipeline:
         lock = self._scope_locks.setdefault(f"{scope_type}:{scope_id}", asyncio.Lock())
         async with lock:
             return await self._process_scope_locked(
-                sqlite, scope_type, scope_id,
-                every_n=every_n, idle_seconds=idle_seconds, now=now,
+                sqlite,
+                scope_type,
+                scope_id,
+                every_n=every_n,
+                idle_seconds=idle_seconds,
+                now=now,
             )
 
     async def _process_scope_locked(
-        self, sqlite: Any, scope_type: str, scope_id: str, *,
-        every_n: int, idle_seconds: int, now: float,
+        self,
+        sqlite: Any,
+        scope_type: str,
+        scope_id: str,
+        *,
+        every_n: int,
+        idle_seconds: int,
+        now: float,
     ) -> CaptureOutcome:
         """消费一个有界批次；失败检查点保留，终止的批次写入审计。"""
         scope_key = f"{scope_type}:{scope_id}"
@@ -262,15 +281,19 @@ class AutoCapturePipeline:
                 selected.append(row)
                 chars += size
             background = await sqlite.fetch_conversation_with_id(
-                scope_type=scope_type, scope_id=scope_id, limit=3, before_id=int(selected[0]["id"]),
+                scope_type=scope_type,
+                scope_id=scope_id,
+                limit=3,
+                before_id=int(selected[0]["id"]),
             )
-            state.batch = CaptureBatch(rows=selected, background=[
-                r for r in background if r["role"] in ("user", "assistant")
-            ])
+            state.batch = CaptureBatch(
+                rows=selected, background=[r for r in background if r["role"] in ("user", "assistant")]
+            )
             await journal.save(scope_key, state)
         batch = state.batch
         messages = [r for r in batch.rows if r["role"] in ("user", "assistant")]
         from . import metrics
+
         metrics.incr("capture.batches")
         try:
             stored = await self._consume_batch(scope_key, state, messages)
@@ -281,12 +304,17 @@ class AutoCapturePipeline:
         except Exception as exc:
             batch.failures += 1
             metrics.incr("capture.failed")
-            detail = json.dumps({
-                "scope": scope_key, "message_ids": [r["id"] for r in batch.rows],
-                "attempt": batch.failures, "next_item": batch.next_item,
-                "error": f"{type(exc).__name__}: {exc}"[:500],
-                "abandoned": batch.failures >= _MAX_BATCH_FAILURES,
-            }, ensure_ascii=False)
+            detail = json.dumps(
+                {
+                    "scope": scope_key,
+                    "message_ids": [r["id"] for r in batch.rows],
+                    "attempt": batch.failures,
+                    "next_item": batch.next_item,
+                    "error": f"{type(exc).__name__}: {exc}"[:500],
+                    "abandoned": batch.failures >= _MAX_BATCH_FAILURES,
+                },
+                ensure_ascii=False,
+            )
             if batch.failures >= _MAX_BATCH_FAILURES:
                 self._advance(state, batch)
             await journal.save(scope_key, state, failure=detail)
@@ -298,6 +326,7 @@ class AutoCapturePipeline:
         metrics.incr("capture.extracted", stored)
         if stored:
             from .embedding import wake_embedding_worker
+
             wake_embedding_worker()
         if get_config_bool("memory_auto_capture_extract_relations", True):
             try:
@@ -315,7 +344,10 @@ class AutoCapturePipeline:
         state.batch = None
 
     async def _consume_batch(
-        self, scope_key: str, state: CaptureState, messages: list[dict[str, Any]],
+        self,
+        scope_key: str,
+        state: CaptureState,
+        messages: list[dict[str, Any]],
     ) -> int:
         """先保存提取结果，再按出处回执恢复写入，反馈独立于新事实数量。"""
         batch = state.batch
@@ -328,12 +360,15 @@ class AutoCapturePipeline:
         while batch.next_item < len(batch.items):
             key = batch.item_key(scope_key, batch.next_item)
             if not await journal.has_item(key):
-                stored += await self._store_item(scope_key, [*batch.background, *messages], batch.items[batch.next_item], key)
+                stored += await self._store_item(
+                    scope_key, [*batch.background, *messages], batch.items[batch.next_item], key
+                )
             batch.next_item += 1
             await journal.save(scope_key, state)
         if not batch.feedback_done:
             if get_config_bool("memory_reflection_feedback_enabled", True):
                 from .reflection_lifecycle import classify_reflection_feedback
+
                 await classify_reflection_feedback(journal.store, scope_key, messages)
             batch.feedback_done = True
             await journal.save(scope_key, state)
@@ -353,13 +388,39 @@ class AutoCapturePipeline:
         lines = [render(msg) for msg in messages]
         previous = "\n".join(render(msg, background=True) for msg in background)
         limit = max(1, get_config_int("memory_auto_capture_max_per_batch", 6))
-        prompt = (_EXTRACT_PROMPT.replace("{max_items}", str(limit))
-                  .replace("{background}", previous or "（无）").replace("{new_messages}", "\n".join(lines)))
+        prompt = (
+            _EXTRACT_PROMPT.replace("{max_items}", str(limit))
+            .replace("{tag_vocab}", await self._topic_vocab_section())
+            .replace("{background}", previous or "（无）")
+            .replace("{new_messages}", "\n".join(lines))
+        )
         raw = await light_llm(prompt, temperature=0.2, timeout=120.0)
         return parse_extraction(raw, max_items=limit)
 
+    async def _topic_vocab_section(self) -> str:
+        """高 df 主题词表段（topic 生成期复用抑制；未启用/无词表返回空串）。"""
+        if not get_config_bool("memory_tag_gate_vocab_injection", True):
+            return ""
+        store = self._memory.memory_store
+        if store is None:
+            return ""
+        try:
+            tag_df = await store.list_tags()
+        except Exception:
+            return ""
+        from .tag_gate import topic_vocab_line
+
+        line = topic_vocab_line(tag_df)
+        if not line:
+            return ""
+        return "\n【既有主题标签词表（topic 优先从中选取原词；确属新话题才造新词，禁止造表内词的近义变体）】\n" + line
+
     async def _store_item(
-        self, scope_key: str, messages: list[dict[str, Any]], item: CaptureItem, key: str,
+        self,
+        scope_key: str,
+        messages: list[dict[str, Any]],
+        item: CaptureItem,
+        key: str,
     ) -> int:
         """保存一个提取结果及其出处；写入失败交由批次检查点处理。"""
         store = self._journal.store
@@ -383,37 +444,54 @@ class AutoCapturePipeline:
             speaker_tag = f"user:{adapter}:{item.speaker}"
             if speaker_tag not in tags:
                 tags.append(speaker_tag)
+        # 写入闸门：新 topic 标签的确定性归一与校验（fail-open，不阻塞写入）
+        from .tag_gate import enforce_tag_gate
+
+        gate = await enforce_tag_gate(tags, store=store)
+        tags = gate.tags
+        if gate.rewrites or gate.dropped:
+            log(
+                f"标签闸门改写 [{scope_key}]: {gate.rewrites} dropped={gate.dropped}",
+                "DEBUG",
+                tag="记忆",
+            )
         candidates = await gather_dedup_candidates(store, self._memory.embedder, item.content)
         decision = await judge_write(item.content, candidates, tags=tags)
         action = decision.get("action", "store")
         from . import metrics
+
         metrics.incr(f"write.dedup_llm_{action}")
         if action == "skip" and decision.get("target_id"):
             if await retain_duplicate_origin(store, int(decision["target_id"]), metadata):
                 return 0
         if action == "update" and decision.get("target_id"):
             updated = await apply_update(
-                store, int(decision["target_id"]), str(decision.get("content") or item.content),
-                tags, actor="auto_capture", metadata=metadata,
+                store,
+                int(decision["target_id"]),
+                str(decision.get("content") or item.content),
+                tags,
+                actor="auto_capture",
+                metadata=metadata,
             )
             if updated is not None:
                 return 1
-        if action == "merge" and decision.get("target_ids"):
-            keep_id = await store.merge_memories(
-                [int(i) for i in decision["target_ids"]], str(decision.get("content") or item.content),
-                actor="auto_capture", metadata=metadata, extra_tags=tags,
-            )
-            if keep_id:
-                return 1
-        await store.add(MemoryEntry(
-            memory_type=MemoryType.EPISODIC if item.type == "event" else MemoryType.SEMANTIC,
-            content=item.content, source="auto_capture", tags=tags,
-            importance=item.importance, metadata=metadata,
-        ), actor="auto_capture")
+        await store.add(
+            MemoryEntry(
+                memory_type=MemoryType.EPISODIC if item.type == "event" else MemoryType.SEMANTIC,
+                content=item.content,
+                source="auto_capture",
+                tags=tags,
+                importance=item.importance,
+                metadata=metadata,
+            ),
+            actor="auto_capture",
+        )
         return 1
 
     async def _extract_relations(
-        self, scope_key: str, messages: List[Dict[str, Any]],
+        self,
+        scope_key: str,
+        messages: List[Dict[str, Any]],
     ) -> int:
         """从提取批次中抽取关系事实落库到图谱（复用 graph.extract 的 prompt/解析）。"""
         from .graph.extract import (
@@ -440,11 +518,15 @@ class AutoCapturePipeline:
         for cand in candidates:
             try:
                 await store.graph.add_relation(
-                    cand["subject"], cand["predicate"], cand["object"],
+                    cand["subject"],
+                    cand["predicate"],
+                    cand["object"],
                     subject_label=cand["subject_label"],
                     object_label=cand["object_label"],
-                    symmetric=cand["symmetric"], strength=cand["strength"],
-                    evidence=cand["evidence"], origin="auto_capture",
+                    symmetric=cand["symmetric"],
+                    strength=cand["strength"],
+                    evidence=cand["evidence"],
+                    origin="auto_capture",
                 )
                 stored += 1
             except ValueError as exc:
@@ -482,13 +564,18 @@ async def flush_scope_capture(mind: MemoryHost, scope_key: str) -> bool:
         return False
     try:
         from agent.runtime.singleton import require_runtime
+
         sqlite = require_runtime().data_center.sqlite
     except Exception:
         return False
     every_n = max(1, get_config_int("memory_auto_capture_every_n", 5))
     outcome = await _pipeline()._process_scope(
-        sqlite, scope_type, scope_id,
-        every_n=every_n, idle_seconds=0, now=time.time(),
+        sqlite,
+        scope_type,
+        scope_id,
+        every_n=every_n,
+        idle_seconds=0,
+        now=time.time(),
     )
     return outcome is CaptureOutcome.COMPLETED
 

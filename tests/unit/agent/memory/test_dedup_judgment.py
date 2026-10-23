@@ -17,7 +17,6 @@ from agent.judgment.types import (
     JudgmentError,
     JudgmentReport,
     JudgmentSource,
-    NoulAnswer,
 )
 from agent.memory import dedup
 from agent.memory.memory_types import MemoryEntry, MemoryType
@@ -44,9 +43,7 @@ class _FakeEngine:
     async def judge(self, state: Any, questions: Dict[str, Any]) -> JudgmentReport:
         self.seen_state = state
         self.seen_questions = questions
-        return JudgmentReport(
-            answers=self._answers, source=JudgmentSource.TYPESAFE, model="jev-test"
-        )
+        return JudgmentReport(answers=self._answers, source=JudgmentSource.TYPESAFE, model="jev-test")
 
 
 def _relation(choice: str, confidence: float = 1.0) -> ChoiceAnswer:
@@ -97,7 +94,7 @@ class TestQuestionShape:
 
         await dedup.judge_write("新事实", _CANDIDATES)
 
-        assert set(engine.seen_questions) == {"relation", "target", "merge_fit_1", "merge_fit_2"}
+        assert set(engine.seen_questions) == {"relation", "target"}
         # 结构化 state：新记忆 + 候选快照（序号标识，不暴露真实 id）
         assert engine.seen_state["new_memory"] == "新事实"
         assert [c["seq"] for c in engine.seen_state["candidates"]] == ["1", "2"]
@@ -109,15 +106,18 @@ class TestQuestionShape:
 class TestSeqMapping:
     async def test_real_ids_hidden_and_mapped_back(self, monkeypatch: pytest.MonkeyPatch) -> None:
         big_candidates = [_entry(1001, "住在杭州西湖区"), _entry(2042, "喜欢下雨天")]
-        engine = _patch(monkeypatch, {
-            "relation": _relation("evolution"),
-            "target": _target("2"),
-        })
+        engine = _patch(
+            monkeypatch,
+            {
+                "relation": _relation("evolution"),
+                "target": _target("2"),
+            },
+        )
 
         decision = await dedup.judge_write("搬到了杭州滨江区", big_candidates)
 
         # 题面与 state 只出现 1..N 序号，真实长 id 不暴露给判断模型
-        assert set(engine.seen_questions) == {"relation", "target", "merge_fit_1", "merge_fit_2"}
+        assert set(engine.seen_questions) == {"relation", "target"}
         assert set(engine.seen_questions["target"].criteria) == {"1", "2", "none"}
         for question in engine.seen_questions.values():
             assert "1001" not in str(question.instructions)
@@ -127,19 +127,6 @@ class TestSeqMapping:
         # 序号裁决映射回真实 id
         assert decision["action"] == "update"
         assert decision["target_id"] == 2042
-
-    async def test_merge_seq_mapped_back(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        big_candidates = [_entry(1001, "住在杭州西湖区"), _entry(2042, "喜欢下雨天")]
-        _patch(monkeypatch, {
-            "relation": _relation("fragments"),
-            "merge_fit_1": NoulAnswer(noul=0.2),
-            "merge_fit_2": NoulAnswer(noul=0.9),
-        })
-
-        decision = await dedup.judge_write("在西湖区听雨", big_candidates)
-
-        assert decision["action"] == "merge"
-        assert decision["target_ids"] == [2042]
 
 
 class TestActionMapping:
@@ -161,10 +148,13 @@ class TestActionMapping:
         assert decision == {"action": "skip", "target_id": 1}
 
     async def test_evolution_to_update(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _patch(monkeypatch, {
-            "relation": _relation("evolution"),
-            "target": _target("1"),
-        })
+        _patch(
+            monkeypatch,
+            {
+                "relation": _relation("evolution"),
+                "target": _target("1"),
+            },
+        )
 
         decision = await dedup.judge_write("搬到了杭州滨江区", _CANDIDATES)
 
@@ -172,36 +162,45 @@ class TestActionMapping:
         assert decision["target_id"] == 1
         assert decision["content"] == "合并后的记忆文本"
 
-    async def test_fragments_to_merge(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _patch(monkeypatch, {
-            "relation": _relation("fragments"),
-            "merge_fit_1": NoulAnswer(noul=0.9),
-            "merge_fit_2": NoulAnswer(noul=0.2),
-        })
+    async def test_unknown_relation_choice_stores(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # 判断面已收窄为三选一：体系外的关系选项回退为直接写入
+        _patch(
+            monkeypatch,
+            {
+                "relation": ChoiceAnswer(choice="fragments", probabilities={}, confidence=1.0),
+            },
+        )
 
         decision = await dedup.judge_write("在杭州西湖区喜欢听雨", _CANDIDATES)
-
-        assert decision["action"] == "merge"
-        assert decision["target_ids"] == [1]  # 只有越过 0.5 的候选进合并集
-        assert decision["content"] == "合并后的记忆文本"
+        assert decision == {"action": "store"}
 
 
 class TestConservativeFallbacks:
-    @pytest.mark.parametrize("relation,valid_target,action", [
-        ("novel", False, "store"),
-        ("covered", False, "store"),
-        ("evolution", False, "store"),
-        ("fragments", False, "merge"),
-        ("evolution", True, "update"),
-    ])
+    @pytest.mark.parametrize(
+        "relation,valid_target,action",
+        [
+            ("novel", False, "store"),
+            ("covered", False, "store"),
+            ("evolution", False, "store"),
+            ("evolution", True, "update"),
+        ],
+    )
     async def test_native_batch_does_not_use_invalid_update_target(
-        self, monkeypatch: pytest.MonkeyPatch, relation: str, valid_target: bool, action: str,
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        relation: str,
+        valid_target: bool,
+        action: str,
     ) -> None:
-        update_catalog("save_provider", "bailian", {
-            "name": "Bailian",
-            "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
-            "models": {"decision": {"model": "decision-model-preview"}},
-        })
+        update_catalog(
+            "save_provider",
+            "bailian",
+            {
+                "name": "Bailian",
+                "base_url": "https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
+                "models": {"decision": {"model": "decision-model-preview"}},
+            },
+        )
         update_catalog("set_default", "decision")
         requests: list[httpx.Request] = []
         light = _FakeLight("合并后的记忆文本")
@@ -213,28 +212,37 @@ class TestConservativeFallbacks:
             assert request.url.path == "/compatible-mode/v1/systemone"
             assert payload["model"] == "decision-model-preview"
             assert set(payload["questions"]["target"]["criteria"]) == {"1", "2", "none"}
-            return httpx.Response(200, json={
-                "request_id": "dedup-trace", "model": "decision-model-preview",
-                "usage": {"input_tokens": 80},
-                "answers": {
-                    "relation": _relation(relation).model_dump(),
-                    "target": {"choice": "1", "confidence": 1,
-                               "probabilities": {"1": 1, "2": 0, "none": 0} if valid_target else {"1": 1}},
-                    "merge_fit_1": {"noul": 0.9}, "merge_fit_2": {"noul": 0.1},
+            return httpx.Response(
+                200,
+                json={
+                    "request_id": "dedup-trace",
+                    "model": "decision-model-preview",
+                    "usage": {"input_tokens": 80},
+                    "answers": {
+                        "relation": _relation(relation).model_dump(),
+                        "target": {
+                            "choice": "1",
+                            "confidence": 1,
+                            "probabilities": {"1": 1, "2": 0, "none": 0} if valid_target else {"1": 1},
+                        },
+                    },
                 },
-            })
+            )
 
-        monkeypatch.setattr(judgment_client, "async_network_client", lambda proxy_mode, **kwargs: httpx.AsyncClient(
-            transport=httpx.MockTransport(handler), **kwargs,
-        ))
+        monkeypatch.setattr(
+            judgment_client,
+            "async_network_client",
+            lambda proxy_mode, **kwargs: httpx.AsyncClient(
+                transport=httpx.MockTransport(handler),
+                **kwargs,
+            ),
+        )
         decision = await dedup.judge_write("新事实", _CANDIDATES)
         assert decision["action"] == action
         assert len(requests) == 1
-        assert len(light.prompts) == int(action in {"merge", "update"})
+        assert len(light.prompts) == int(action == "update")
         if action == "update":
             assert decision["target_id"] == 1
-        elif action == "merge":
-            assert decision["target_ids"] == [1]
         assert judgment_health.snapshot()["decision"]["status"] == "ready"
 
     async def test_low_relation_confidence_stores(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -244,38 +252,38 @@ class TestConservativeFallbacks:
         assert decision == {"action": "store"}
 
     async def test_update_target_none_stores(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _patch(monkeypatch, {
-            "relation": _relation("evolution"),
-            "target": _target("none"),
-        })
+        _patch(
+            monkeypatch,
+            {
+                "relation": _relation("evolution"),
+                "target": _target("none"),
+            },
+        )
 
         decision = await dedup.judge_write("搬到了杭州滨江区", _CANDIDATES)
         assert decision == {"action": "store"}
 
     async def test_update_target_low_confidence_stores(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _patch(monkeypatch, {
-            "relation": _relation("evolution"),
-            "target": _target("1", confidence=0.05),
-        })
+        _patch(
+            monkeypatch,
+            {
+                "relation": _relation("evolution"),
+                "target": _target("1", confidence=0.05),
+            },
+        )
 
         decision = await dedup.judge_write("搬到了杭州滨江区", _CANDIDATES)
         assert decision == {"action": "store"}
 
-    async def test_merge_without_fit_stores(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _patch(monkeypatch, {
-            "relation": _relation("fragments"),
-            "merge_fit_1": NoulAnswer(noul=0.3),
-            "merge_fit_2": NoulAnswer(noul=0.1),
-        })
-
-        decision = await dedup.judge_write("在杭州西湖区喜欢听雨", _CANDIDATES)
-        assert decision == {"action": "store"}
-
     async def test_synthesis_failure_stores(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        _patch(monkeypatch, {
-            "relation": _relation("evolution"),
-            "target": _target("1"),
-        }, synthesized=None)
+        _patch(
+            monkeypatch,
+            {
+                "relation": _relation("evolution"),
+                "target": _target("1"),
+            },
+            synthesized=None,
+        )
 
         decision = await dedup.judge_write("搬到了杭州滨江区", _CANDIDATES)
         assert decision == {"action": "store"}
