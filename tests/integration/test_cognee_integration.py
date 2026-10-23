@@ -62,10 +62,16 @@ async def test_real_coverage_repair_api_validation_and_old_generation_retirement
     try:
         await coordinator.rebuild.initialize(config)
         mid = await store.add(MemoryEntry(content="蓝鸢项目由林舟维护，部署在杭州。", memory_type=MemoryType.SEMANTIC))
+        deleted = await store.add(MemoryEntry(content="白鹭项目曾部署在南京。", memory_type=MemoryType.SEMANTIC))
         await store.graph.add_relation("project:蓝鸢", "维护者", "person:林舟", subject_label="蓝 鸢",
                                        evidence="林舟负责蓝鸢项目的发布和维护。")
         await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
         assert not coordinator.writer.last_error
+        legacy_text = ("Memory type: semantic\nSource: \nImportance: 0.5\nTags: project:白鹭\nMetadata: {}\n\n"
+                       "白鹭项目早期计划部署在苏州。")
+        legacy = await client.make_data_item(legacy_text, label=f"anelf-memory-{deleted}",
+            external_metadata={"anelf_memory_id": str(deleted)}, dataset_name="anelf_legacy")
+        await client.add([legacy], dataset_name="anelf_legacy", incremental_loading=True)
         await coordinator.rebuild.request(config)
         await finish()
         state = coordinator.rebuild.state
@@ -88,12 +94,20 @@ async def test_real_coverage_repair_api_validation_and_old_generation_retirement
         await finish()
         assert state.namespace == namespace and client.projection_ready
         assert await store.get_cognee_mapping(mid) == memory_before
+        assert await store.delete(deleted, actor="integration")
+        await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
+        assert not coordinator.writer.last_error
         config.sync_enabled = False
         for previous in old:
             await coordinator.retirement.request_generation(previous)
             await coordinator.retirement._task
             assert coordinator.retirement.status.stage == "completed", coordinator.retirement.status.error
         assert state.previous_namespaces == []
+        assert await store.get(deleted) is None
+        saved = await (await db.execute("SELECT document_json FROM cognee_legacy_documents WHERE entry_id=?",
+                                       (deleted,))).fetchall()
+        assert any((doc := json.loads(row[0])).get("source_status") == "deleted" and doc["text"] == legacy_text
+                   and doc["deletion_audit"]["actor"] == "integration" for row in saved)
         assert (await store.get(mid)).content == "蓝鸢项目由林舟维护，部署在杭州。"
         await coordinator.rebuild.verify_backend(state, await store.projection_state.mappings())
         rows = await client.recall("谁维护蓝鸢项目？", query_type=client.search_type("GRAPH_COMPLETION"),

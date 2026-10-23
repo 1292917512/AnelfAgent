@@ -769,6 +769,7 @@ class MemoryRetriever:
 
         不记访问、不触发首轮深探；Web 召回测试面板经此复用，
         诊断编排与真实召回单一实现、不再两处维护。
+        显式 search_types 同时约束浅层和深层模式，只覆盖本次诊断，不回写配置。
         """
         import time as _time
 
@@ -782,9 +783,11 @@ class MemoryRetriever:
         cognee_config = self._cognee_config()
         if search_types:
             import dataclasses
+            selected_types = [s.strip().upper() for s in search_types if s.strip()]
             cognee_config = dataclasses.replace(
                 cognee_config,
-                search_types=[s.strip().upper() for s in search_types if s.strip()],
+                search_types=selected_types,
+                deep_search_types=selected_types,
             )
         client = get_cognee_client()
         datasets = datasets_for_projection(cognee_config, client.projection_namespace if client else "")

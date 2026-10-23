@@ -926,6 +926,78 @@ async def test_tombstone_uses_original_memory_id_and_does_not_resurrect_it(coord
     assert json.loads(row[0])["text"] == text
 
 
+@pytest.mark.parametrize("delete_before_rebuild", [True, False])
+async def test_retirement_preserves_hard_deleted_memory_with_audit(coordinator, store, delete_before_rebuild):
+    mid = await store.add(MemoryEntry(content="待删除的旧事实", memory_type=MemoryType.ENTITY))
+    retained = await store.add(MemoryEntry(content="新图当前事实", memory_type=MemoryType.SEMANTIC))
+    text = legacy_memory_text(mid, "旧索引独有的完整历史正文", with_identity=True)
+    legacy_document(coordinator, mid, text)
+    if delete_before_rebuild:
+        assert await store.delete(mid, actor="web")
+    await coordinator.rebuild.request(coordinator.config)
+    await settle(coordinator)
+    if not delete_before_rebuild:
+        assert await store.delete(mid, actor="web")
+        await coordinator._process_batch(await store.claim_cognee_sync_batch(20))
+    coordinator.config.sync_enabled = False
+    mappings = await store.projection_state.mappings()
+    namespace = coordinator.rebuild.state.namespace
+    current = copy.deepcopy(coordinator.client.documents[namespace + "_global"])
+    await coordinator.retirement.request_generation("anelf")
+    await coordinator.retirement._task
+    status = coordinator.retirement.status
+    assert status.stage == "completed", status.error
+    assert await store.get(mid) is None
+    assert (await store.get(retained)).content == "新图当前事实"
+    assert await store.projection_state.mappings() == mappings
+    assert coordinator.client.documents[namespace + "_global"] == current
+    assert "anelf_legacy" not in coordinator.client.documents
+    with sqlite3.connect(status.backup_path) as snapshot:
+        saved = [json.loads(row[0]) for row in snapshot.execute(
+            "SELECT document_json FROM cognee_legacy_documents WHERE entry_id=?", (mid,))]
+    deleted = [row for row in saved if row.get("source_status") == "deleted"]
+    assert len(deleted) == 1 and deleted[0]["text"] == text
+    assert deleted[0]["deletion_audit"]["actor"] == "web"
+    assert (await store.projection_state.load()).previous_namespaces == []
+
+
+@pytest.mark.parametrize("damage", ["no_audit", "later_event", "format", "identity", "audit_removed_during_read"])
+async def test_deleted_history_still_requires_proof_and_complete_archive(coordinator, store, monkeypatch, damage):
+    from agent.memory.cognee.preflight import preserve_owned_document
+
+    mid = await store.add(MemoryEntry(content="已删除事实", memory_type=MemoryType.SEMANTIC))
+    item = legacy_document(coordinator, mid, legacy_memory_text(mid, "完整历史", with_identity=True))
+    assert await store.delete(mid)
+    db = await store._get_db()
+    if damage == "no_audit":
+        await db.execute("DELETE FROM memory_audit WHERE memory_id=?", (mid,))
+    elif damage == "later_event":
+        await store._record_audit(db, mid, "restore")
+    elif damage == "format":
+        item = legacy_document(coordinator, mid, "缺少包装的未知内容")
+    elif damage == "identity":
+        item["external_metadata"]["anelf_memory_id"] = str(mid + 1)
+    await db.commit()
+    if damage == "audit_removed_during_read":
+        preserve = store.projection_state.preserve_legacy_document
+
+        async def remove_proof(**kwargs):
+            await db.execute("DELETE FROM memory_audit WHERE memory_id=?", (mid,))
+            await db.commit()
+            await preserve(**kwargs)
+
+        monkeypatch.setattr(store.projection_state, "preserve_legacy_document", remove_proof)
+        with pytest.raises(RuntimeError, match="原生来源已消失"):
+            await preserve_owned_document(store.projection_state, coordinator.rebuild.state,
+                                          item, "anelf_legacy", "anelf_legacy", include_current_format=True)
+    else:
+        assert not await preserve_owned_document(store.projection_state, coordinator.rebuild.state,
+                                                item, "anelf_legacy", "anelf_legacy", include_current_format=True)
+    assert (await (await db.execute("SELECT COUNT(*) FROM cognee_legacy_documents")).fetchone())[0] == 0
+    assert coordinator.client.documents["anelf_legacy"][item["id"]] == item
+    assert await store.get(mid) is None
+
+
 async def test_request_is_durable_without_waiting_for_projection(coordinator, store):
     async with coordinator._projection_lock:
         result = await asyncio.wait_for(coordinator.request_rebuild(), 1)

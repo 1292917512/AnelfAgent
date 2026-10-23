@@ -158,6 +158,16 @@ class ProjectionStateStore:
                 "UNION ALL SELECT type,NULL,'tombstone' FROM memories_tombstone WHERE memory_id=? LIMIT 1",
                 (entry_id, entry_id, entry_id),
             )).fetchone()
+            if row is None:
+                deletion = await (await db.execute(
+                    "SELECT id,action,actor,ts_ns FROM memory_audit WHERE memory_id=? ORDER BY id DESC LIMIT 1",
+                    (entry_id,),
+                )).fetchone()
+                if deletion is not None and deletion["action"] == "delete":
+                    return {"content": None, "status": "deleted", "deletion_audit": {
+                        "id": int(deletion["id"]), "actor": str(deletion["actor"]),
+                        "ts_ns": int(deletion["ts_ns"]),
+                    }}
         else:
             return None
         return dict(row) if row else None

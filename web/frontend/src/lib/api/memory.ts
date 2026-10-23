@@ -76,7 +76,7 @@ export const memoryApi = {
     entity_scope?: string;
     limit?: number;
     search_types?: string[];
-  }) => api.post("/memory/recall-test", data),
+  }) => api.post("/memory/recall-test", data, { timeout: 120_000, errorFeedback: "local" }),
   conv: {
     scopes: () => api.get("/memory/conversations/scopes"),
     messages: (

@@ -125,6 +125,9 @@ async def preserve_owned_document(
         "content_hash", "raw_content_hash", "external_metadata", "system_metadata", "node_set",
     )}
     document["legacy_id"] = _identity(document["legacy_id"])
+    if source.get("status") == "deleted":
+        document["source_status"] = "deleted"
+        document["deletion_audit"] = source["deletion_audit"]
     document.update(dataset_name=dataset_name, text=text, text_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest())
     await store.preserve_legacy_document(
         dataset_id=dataset_id, data_id=data_id, kind=kind, entry_id=entry_id,

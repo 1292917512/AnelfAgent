@@ -2,6 +2,7 @@
 
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -47,6 +48,27 @@ class SearchClient:
                 self.pending -= 1
             return []
         return [CogneeRecallItem(id="memory:fast", content="已索引的项目部署事实", score=1)]
+
+
+@pytest.mark.parametrize("deep", [False, True])
+@pytest.mark.parametrize("explicit", [False, True])
+async def test_diagnostic_types_match_executed_lanes_without_changing_saved_config(store, monkeypatch, deep, explicit):
+    from agent.memory.memory_retriever import MemoryRetriever
+
+    client = SearchClient()
+    client.release.set()
+    config = CogneeConfig(search_types=["CHUNKS"], deep_search_types=["CHUNKS", "GRAPH_COMPLETION"])
+    retriever = MemoryRetriever(store, SimpleNamespace(embed_query=AsyncMock(return_value=None)))
+    monkeypatch.setattr(retriever, "_cognee_config", lambda: config)
+    monkeypatch.setattr(retriever, "plan_retrieval", AsyncMock(return_value=RetrievalPlan(queries=["诊断查询"])))
+    monkeypatch.setattr("agent.memory.cognee.runtime.get_cognee_client", lambda: client)
+    result = await retriever.diagnostic_recall("诊断查询", deep=deep,
+                                             search_types=[" chunks_lexical "] if explicit else None)
+    expected = ["CHUNKS_LEXICAL"] if explicit else config.deep_search_types if deep else config.search_types
+    assert {call["query_type"] for call in client.calls} == set(expected)
+    effective = result["cognee_config"]
+    assert (effective.deep_search_types if deep else effective.search_types) == expected
+    assert config.search_types == ["CHUNKS"] and config.deep_search_types == ["CHUNKS", "GRAPH_COMPLETION"]
 
 
 async def test_completed_lane_is_delivered_before_slow_lane_and_cancel_drains():
