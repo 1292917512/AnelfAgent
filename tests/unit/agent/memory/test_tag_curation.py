@@ -25,6 +25,31 @@ async def _seed(store, content: str, tags: list[str], times: int = 1) -> None:
 
 
 class TestExemptionStore:
+    async def test_existing_form_signatures_keep_their_normalization(self, store) -> None:
+        await _seed(store, "写法", ["topic:RimTalk", "topic:Rim Talk"], times=2)
+        candidate = (await store.tag_merge_candidates())[0]
+        assert candidate["exempt_signature"] == "topic:rimtalk"
+        await store.set_tag_exemption("form_variant", "topic:rimtalk")
+        assert await store.tag_merge_candidates() == []
+
+    async def test_exemptions_do_not_hide_lower_ranked_candidates(self, store) -> None:
+        await _seed(store, "高频", ["topic:AAA", "topic:aaa"], times=3)
+        await _seed(store, "低频", ["topic:BBB", "topic:bbb"], times=2)
+        first, second = await store.tag_merge_candidates(limit=2)
+        await store.set_tag_exemption(first["kind"], first["exempt_signature"])
+        assert await store.tag_merge_candidates(limit=1) == [second]
+        assert await store.tag_merge_candidates(limit=0) == []
+
+    async def test_rules_beyond_display_page_remain_active(self, store) -> None:
+        await _seed(store, "记忆", ["topic:AAA", "topic:aaa"], times=2)
+        candidate = (await store.tag_merge_candidates())[0]
+        await store.set_tag_exemption(candidate["kind"], candidate["exempt_signature"])
+        for i in range(200):
+            await store.set_tag_exemption("form_variant", f"topic:other{i}")
+        assert await store.tag_merge_candidates() == []
+        await store.revoke_tag_exemption(candidate["kind"], candidate["exempt_signature"])
+        assert await store.tag_merge_candidates() == [candidate]
+
     async def test_candidate_kinds_and_signatures(self, store) -> None:
         await _seed(store, "火锅", ["topic:火锅"], times=2)
         await _seed(store, "孪生", ["topic:火锅 "], times=1)
@@ -65,6 +90,26 @@ class TestExemptionStore:
 
 
 class TestExemptTool:
+    async def test_index_pages_allow_review_and_revocation(self, store) -> None:
+        mem_tools.memory_tools_port.set(mem_tools.MemoryToolDeps(store, None))
+        try:
+            assert await store.list_tags() == {}
+            await _seed(store, "新事实", ["topic:保留"])
+            for i in range(21):
+                await store.set_tag_exemption("form_variant", f"topic:kept{i}", reason="独立主题")
+            first = json.loads(await mem_tools.memory_index())
+            assert first["tags"] == {"topic:保留": 1}
+            assert len(first["tag_exemptions"]) == 20
+            second = json.loads(await mem_tools.memory_index(exemptions_offset=first["tag_exemptions_next_offset"]))
+            assert second["tag_exemptions_next_offset"] is None
+            assert len(second["tag_exemptions"]) == 1
+            rule = second["tag_exemptions"][0]
+            assert rule["reason"] == "独立主题"
+            response = json.loads(await mem_tools.tag_curation_exempt(rule["kind"], rule["signature"], revoke=True))
+            assert response["revoked"] is True
+        finally:
+            mem_tools.memory_tools_port.unbind()
+
     async def test_register_and_revoke_via_tool(self, store) -> None:
         mem_tools.memory_tools_port.set(mem_tools.MemoryToolDeps(store, None))
         try:

@@ -123,6 +123,25 @@ async def test_hybrid_recalls_tag_only_match(store) -> None:
     assert any(e.id == target_id for e, _ in tagged)
 
 
+async def test_channel_wins_count_only_returned_results(store, monkeypatch) -> None:
+    from agent.memory import metrics
+
+    monkeypatch.setattr(metrics, "_counters", {})
+    for i in range(4):
+        await store.add(MemoryEntry(
+            content=f"needle {i}", tags=["topic:test"], memory_type=MemoryType.SEMANTIC,
+        ))
+    results = await store.search_hybrid("needle", limit=1, min_score=0)
+    assert len(results) == 1
+    assert metrics.snapshot().get("recall.win_fts") == 1
+    assert sum(value for key, value in metrics.snapshot().items() if key.startswith("recall.win_")) == 1
+
+    monkeypatch.setattr(metrics, "_counters", {})
+    results = await store._search.search_hybrid("", limit=1, tag_query=TagQuery(all_of=("topic:test",)))
+    assert len(results) == 1
+    assert metrics.snapshot().get("recall.win_vec", 0) == 0
+
+
 # ==================================================================
 # 写入规范化（写入闸门行为见 test_tag_gate.py）
 # ==================================================================

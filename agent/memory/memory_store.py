@@ -1390,9 +1390,9 @@ class MemoryStore(BaseEntity):
     # 搜索管线（委托 SearchEngine）
     # ------------------------------------------------------------------
 
-    async def list_tags(self) -> Dict[str, int]:
-        """聚合所有标签及其出现次数。"""
-        return await self._search.list_tags()
+    async def list_tags(self, *, fresh: bool = False) -> Dict[str, int]:
+        """聚合标签文档频率；写入治理用 fresh 复核已提交的权威修订。"""
+        return await self._search.list_tags(fresh=fresh)
 
     async def cooccurring_tags(
         self,
@@ -1435,11 +1435,13 @@ class MemoryStore(BaseEntity):
 
         return await revoke_exemption(self._conn, kind, signature)
 
-    async def list_tag_exemptions(self, *, active_only: bool = True) -> list[Dict[str, Any]]:
-        """标签归并候选豁免清单（默认仅生效中）。"""
+    async def list_tag_exemptions(
+        self, *, active_only: bool = True, limit: int = 200, offset: int = 0,
+    ) -> list[Dict[str, Any]]:
+        """标签归并候选豁免分页；展示上限不影响规则生效范围。"""
         from .store.tag_curation import list_exemptions
 
-        return await list_exemptions(self._conn, active_only=active_only)
+        return await list_exemptions(self._conn, active_only=active_only, limit=limit, offset=offset)
 
     async def expand_tag_seeds(
         self,

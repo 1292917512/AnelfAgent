@@ -40,6 +40,7 @@ class TagIntelligence:
     def __init__(self, conn: MemoryConnectionManager) -> None:
         self._conn = conn
         self._built_at: float = 0.0
+        self._revision: int = -1
         self._df: Dict[str, int] = {}
         self._total: int = 0
         self._cooc: Dict[tuple[str, str], int] = {}
@@ -95,23 +96,27 @@ class TagIntelligence:
         vocab = {word: next(iter(tags)) for word, tags in mentions.items() if len(tags) == 1}
         return df, cooc, vocab
 
-    async def _ensure_fresh(self) -> None:
+    async def _ensure_fresh(self, *, fresh: bool = False) -> None:
+        """召回复用 TTL；写入治理按权威修订号复核，读不到未提交的标签。"""
         # 空表也记录构建时间：无记忆时不至于每次调用都全表重建
-        if time.monotonic() - self._built_at < _TTL_SECONDS:
+        if not fresh and time.monotonic() - self._built_at < _TTL_SECONDS:
             return
         async with self._rebuild_lock:
             # 双检：等待锁期间可能已有并发重建完成
             now = time.monotonic()
-            if now - self._built_at < _TTL_SECONDS:
+            if not fresh and now - self._built_at < _TTL_SECONDS:
                 return
             db = await self._conn.get_db()
-            cursor = await db.execute("SELECT tags_json FROM memories WHERE importance > 0")
-            tag_rows = [str(r["tags_json"]) for r in await cursor.fetchall()]
-            try:
+            async with self._conn.write_lock:
+                cursor = await db.execute("SELECT value FROM schema_meta WHERE key='projection_revision'")
+                row = await cursor.fetchone()
+                revision = int(row["value"]) if row else -1
+                if revision >= 0 and revision == self._revision and now - self._built_at < _TTL_SECONDS:
+                    return
+                cursor = await db.execute("SELECT tags_json FROM memories WHERE importance > 0")
+                tag_rows = [str(r["tags_json"]) for r in await cursor.fetchall()]
                 cursor = await db.execute("SELECT node_key, label FROM graph_nodes WHERE archived=0")
                 node_rows = [(str(r["node_key"]), str(r["label"] or "")) for r in await cursor.fetchall()]
-            except Exception:
-                node_rows = []  # graph_nodes 表尚未创建（旧库）时仅用词表
 
             # 逐行 JSON 解析 + 共现组合在 worker 线程执行，避免阻塞事件循环
             df, cooc, vocab = await asyncio.to_thread(self._compute, tag_rows, node_rows)
@@ -120,10 +125,11 @@ class TagIntelligence:
             self._vocab = vocab
             self._total = len(tag_rows)
             self._built_at = now
+            self._revision = revision
 
-    async def tag_stats(self) -> tuple[Dict[str, int], int]:
+    async def tag_stats(self, *, fresh: bool = False) -> tuple[Dict[str, int], int]:
         """(标签文档频率, 活跃记忆总数)。"""
-        await self._ensure_fresh()
+        await self._ensure_fresh(fresh=fresh)
         return self._df, self._total
 
     def _idf(self, tag: str) -> float:
@@ -178,7 +184,7 @@ class TagIntelligence:
                     break
         return hits
 
-    async def merge_candidates(self, *, limit: int = 20) -> List[Dict[str, Any]]:
+    async def merge_candidates(self, *, limit: int | None = 20) -> List[Dict[str, Any]]:
         """标签归并候选（确定性事实生产；归并决策归 AI，经 update_memory 执行）。
 
         两类高置信候选，宁缺毋滥（kind 供治理豁免签名用）：
@@ -187,7 +193,9 @@ class TagIntelligence:
         - containment 包含关系对：topic: 名互为子串且双方 df>=2（与写入
           闸门的包含提示同口径，作用于存量），归并到高频一方。
         """
-        await self._ensure_fresh()
+        if limit is not None and limit <= 0:
+            return []
+        await self._ensure_fresh(fresh=True)
         out: List[Dict[str, Any]] = []
         seen: set[frozenset[str]] = set()
 
@@ -246,9 +254,12 @@ class TagIntelligence:
         return out[:limit]
 
 
-def normalize_tag_form(tag: str) -> str:
-    """标签形态归一（NFKC + 小写 + 去空白）——写法变体的判定口径（写侧闸门与归并议程共用）。"""
+def normalize_tag_form(tag: str, *, preserve_word_boundaries: bool = False) -> str:
+    """形态归一；写入保留词间空格，治理候选及持久豁免签名沿用去空白口径。"""
     import re
     import unicodedata
 
-    return re.sub(r"\s+", "", unicodedata.normalize("NFKC", tag).casefold())
+    normalized = unicodedata.normalize("NFKC", tag).casefold()
+    if preserve_word_boundaries:
+        return re.sub(r"\s+", " ", normalized).strip()
+    return re.sub(r"\s+", "", normalized)

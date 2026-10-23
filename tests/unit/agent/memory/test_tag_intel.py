@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
@@ -42,6 +43,49 @@ async def test_tag_document_frequency_counts_documents(store) -> None:
     assert df == {"topic:NAS": 1, "topic:备份": 1}
     assert list(cooc.values()) == [1]
     assert vocab == {}
+
+
+async def test_fresh_statistics_reuse_unchanged_snapshot_and_track_writes(store, monkeypatch) -> None:
+    mid = await store.add(MemoryEntry(memory_type=MemoryType.SEMANTIC, content="事实", tags=["topic:old"]))
+    assert await store.list_tags(fresh=True) == {"topic:old": 1}
+    intel = store._search._tag_intel
+    original = intel._compute
+    calls = 0
+
+    def counted(tag_rows, node_rows):
+        nonlocal calls
+        calls += 1
+        return original(tag_rows, node_rows)
+
+    monkeypatch.setattr(intel, "_compute", counted)
+    assert await store.list_tags(fresh=True) == {"topic:old": 1}
+    assert calls == 0
+    entry = await store.get(mid)
+    assert entry is not None
+    entry.tags = ["topic:new"]
+    await store.update(entry)
+    assert await store.list_tags(fresh=True) == {"topic:new": 1}
+    await store.update_importance(mid, 0)
+    assert await store.list_tags(fresh=True) == {}
+    assert calls == 2
+
+
+async def test_fresh_statistics_wait_for_rollback(store) -> None:
+    mid = await store.add(MemoryEntry(memory_type=MemoryType.SEMANTIC, content="事实", tags=["topic:kept"]))
+    db = await store._conn.get_db()
+    started = asyncio.Event()
+
+    async def read():
+        started.set()
+        return await store.list_tags(fresh=True)
+
+    with pytest.raises(RuntimeError, match="rollback"):
+        async with store._conn.tx(db):
+            await db.execute("UPDATE memories SET tags_json='[]' WHERE id=?", (mid,))
+            reader = asyncio.create_task(read())
+            await started.wait()
+            raise RuntimeError("rollback")
+    assert await asyncio.wait_for(reader, timeout=5) == {"topic:kept": 1}
 
 
 async def _seed(store: MemoryStore) -> None:

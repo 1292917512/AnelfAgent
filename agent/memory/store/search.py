@@ -94,9 +94,9 @@ class SearchEngine:
     # 标签索引
     # ------------------------------------------------------------------
 
-    async def list_tags(self) -> Dict[str, int]:
+    async def list_tags(self, *, fresh: bool = False) -> Dict[str, int]:
         """聚合所有活跃标签及其出现次数（importance=0 的已合并条目不计）。"""
-        df, _ = await self._tag_intel.tag_stats()
+        df, _ = await self._tag_intel.tag_stats(fresh=fresh)
         return dict(df)
 
     async def get_tag_df(self) -> tuple[Dict[str, int], int]:
@@ -118,7 +118,9 @@ class SearchEngine:
 
     async def tag_merge_candidates(self, *, limit: int = 20) -> list[Dict[str, Any]]:
         """标签归并候选（豁免过滤 + 签名下发；候选生产归 TagIntelligence）。"""
-        raw = await self._tag_intel.merge_candidates(limit=limit)
+        if limit <= 0:
+            return []
+        raw = await self._tag_intel.merge_candidates(limit=None)
         from .tag_curation import curate_candidates
 
         return await curate_candidates(raw, self._conn, limit=limit)
@@ -502,7 +504,7 @@ class SearchEngine:
         bypass_threshold = len(candidates) <= limit
 
         results: list[tuple[MemoryEntry, float]] = []
-        channel_wins = {"vec": 0, "fts": 0, "tag": 0}
+        winners: dict[int, str] = {}
         for entry, vec_score, fts_score, like_score in candidates.values():
             tag_score = idf_tag_score(q_tags, entry.tags, tag_df, total_docs) if q_tags else 0.0
             text_score = max(fts_score, like_score)
@@ -521,20 +523,22 @@ class SearchEngine:
             if bypass_threshold or final >= min_score:
                 results.append((entry, final))
                 parts = {"vec": vec_part, "fts": fts_part, "tag": tag_part}
-                channel_wins[max(parts, key=lambda key: parts[key])] += 1
+                winner = max(parts, key=lambda key: parts[key])
+                if parts[winner] > 0 and entry.id is not None:
+                    winners[entry.id] = winner
 
         results.sort(key=lambda x: x[1], reverse=True)
+        results = results[:limit]
         # 通道贡献观测：终选结果按分通道最高者计数（memory_stats 查询，不进上下文）
         try:
             from .. import metrics
 
             if results:
-                metrics.incr("recall.win_vec", channel_wins["vec"])
-                metrics.incr("recall.win_fts", channel_wins["fts"])
-                metrics.incr("recall.win_tag", channel_wins["tag"])
+                for channel in ("vec", "fts", "tag"):
+                    metrics.incr(f"recall.win_{channel}", sum(winners.get(entry.id or 0) == channel for entry, _ in results))
         except Exception:
             pass
-        return results[:limit]
+        return results
 
     # ------------------------------------------------------------------
     # 统一搜索（memories + chunks 双轨并行）

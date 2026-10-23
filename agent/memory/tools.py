@@ -7,6 +7,7 @@
 Model Experience：召回和联想统一返回出处、时间语义与材料指针；get_memory 可读完整出处。
 每条结果增加短出处字段，不新增模型调用；仅进入工具结果，不触碰稳定前缀。
 数据集目录工具读取最近确认的观测值及忙碌状态，增加几十 token，不调用模型、不改变前缀。
+标签治理建议及每页最多 20 条豁免按需进入工具结果，不新增调用、不改变稳定前缀。
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ from .probe import deep_probe_hub
 from .provenance import merge_metadata, note_origin, recall_provenance
 from .recall_format import format_recall_result
 from .store.tag_intel import ASSOC_PREFIXES, ENTITY_PREFIXES
+from .tag_gate import enforce_tag_gate
 
 EntityRegistry.register_group_order("memory", 10)
 
@@ -83,20 +85,20 @@ def _cognee_not_ready() -> str:
 
 
 def _current_scope_tag() -> str:
-    """解析当前对话 scope 为实体标签（user_X → user:X，group_X → group:X）。
+    """从当前会话解析包含频道的实体标签，保留会话后缀；无频道时不猜测。
 
     memorize 未指定实体标签时自动补充，让记忆自动挂入关联网络。
     """
     try:
+        from agent.messages import parse_entity_scope
         from core.conversation_scope import current_scope as get_current_scope
 
-        scope = get_current_scope()
-        if scope.startswith("user_"):
-            return f"user:{scope[5:]}"
-        if scope.startswith("group_"):
-            return f"group:{scope[6:]}"
-    except Exception:
-        pass  # 非工具会话上下文（心跳/后台路径）无 scope 属常态，返回空串
+        kind, adapter, base_id, session_id = parse_entity_scope(get_current_scope())
+        if kind and adapter and base_id:
+            suffix = f"#{session_id}" if session_id else ""
+            return f"{kind}:{adapter}:{base_id}{suffix}"
+    except Exception as exc:
+        log(f"记忆会话标签解析失败: {exc}", "DEBUG", tag="记忆")
     return ""
 
 
@@ -160,7 +162,7 @@ async def memorize(
 
     Args:
         content: 要记住的内容（简洁扼要，一两句话）
-        tags: 标签，逗号分隔。前缀：type:(fact/event/permanent) user:(uid) group:(id) topic:(主题) goal:(目标id)。
+        tags: 标签，逗号分隔。前缀：type:(fact/event/permanent) user:频道:uid group:频道:id topic:主题 goal:目标id。
             与某目标相关的记忆打 goal:xxx 标签，可在目标视角串联召回
         importance: 重要性 0-1，按校准表取值：0.9+ 身份级事实（姓名/生日/住址/重要关系、
             用户明确说"记住这个"）；0.8 长期偏好与习惯、重要约定与承诺；0.7 阶段性计划
@@ -202,9 +204,14 @@ async def memorize(
         tag_list = _normalize_tags(tags)
 
         # 写入闸门：新标签的确定性归一与校验（只治理增量，既有形态不触碰）
-        from .tag_gate import enforce_tag_gate
-
         gate = await enforce_tag_gate(tag_list, store=store)
+        if any(item["tag"].startswith(ENTITY_PREFIXES) for item in gate.dropped):
+            return tool_error(
+                "实体标签格式无效，未写入记忆",
+                cause=ErrorCause.PARAM,
+                retryable=False,
+                hint="请从 memory_index 或会话身份核对 user:频道:ID / group:频道:ID；不猜测归属频道",
+            )
         tag_list = gate.tags
         gate_summary = gate.summary()
 
@@ -788,11 +795,12 @@ async def _recall_associations_deep(
     source="mind.memory",
     description="浏览记忆索引。不传 tag 返回标签统计；传 tag 返回该标签下的记忆列表。",
 )
-async def memory_index(tag: str = "") -> str:
+async def memory_index(tag: str = "", exemptions_offset: int = 0) -> str:
     """浏览记忆索引（包含 memories 表和文件索引统计）。
 
     Args:
-        tag: 可选，指定标签查看其下的记忆（如 user:123）
+        tag: 可选，指定标签查看其下的记忆（如 user:qq:123）
+        exemptions_offset: 未指定 tag 时的豁免分页偏移；续页使用返回的 tag_exemptions_next_offset
     """
     try:
         deps = _deps()
@@ -801,15 +809,20 @@ async def memory_index(tag: str = "") -> str:
         store = deps.store
 
         if not tag:
-            tag_counts = await store.list_tags()
+            if exemptions_offset < 0:
+                return tool_error("分页偏移不能为负数", cause=ErrorCause.PARAM, retryable=False)
+            tag_counts = await store.list_tags(fresh=True)
             total = await store.count()
             index_status = await store.get_index_status()
             merge_candidates = await store.tag_merge_candidates(limit=20)
+            exemptions = await store.list_tag_exemptions(limit=21, offset=exemptions_offset)
             return json.dumps(
                 {
                     "total_memories": total,
                     "tags": tag_counts,
                     "index": index_status,
+                    "tag_exemptions": exemptions[:20],
+                    "tag_exemptions_next_offset": exemptions_offset + 20 if len(exemptions) > 20 else None,
                     **(
                         {
                             "tag_merge_candidates": merge_candidates,
@@ -1104,8 +1117,6 @@ async def update_memory(
         if tags.strip():
             new_tags = _normalize_tags(tags)
             # 咨询模式：治理工具保留 AI 主动权，闸门只提示不改写
-            from .tag_gate import enforce_tag_gate
-
             gate = await enforce_tag_gate(new_tags, store=deps.store, enforce=False)
             new_tags = gate.tags
             gate_note = gate.summary()

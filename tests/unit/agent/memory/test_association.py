@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from agent.memory.memory_retriever import MemoryRetriever
 from agent.memory.memory_store import MemoryStore
 from agent.memory.memory_types import MemoryEntry, MemorySearchResult, MemoryType
@@ -93,32 +95,50 @@ class TestExpandAssociations:
 
 
 class TestMemorizeAutoTag:
-    async def test_auto_tag_current_scope(self, store: MemoryStore, monkeypatch) -> None:
+    @pytest.mark.parametrize("kind,adapter,entity_id,session,expected", [
+        ("user", "qq", "424242", "", "user:qq:424242"),
+        ("group", "feishu", "abc", "thread", "group:feishu:abc#thread"),
+    ])
+    async def test_auto_tag_current_scope(
+        self, store: MemoryStore, kind: str, adapter: str, entity_id: str, session: str, expected: str,
+    ) -> None:
         from agent.memory import tools as mem_tools
+        from agent.messages import build_entity_scope
         from core.conversation_scope import bind_scope, reset_scope
 
         mem_tools.memory_tools_port.set(mem_tools.MemoryToolDeps(store, None))
 
-        token = bind_scope("user_424242")
+        token = bind_scope(build_entity_scope(kind, adapter, entity_id, session))
         try:
             result = json.loads(await mem_tools.memorize("测试自动标签"))
             assert result["ok"] is True
-            assert "user:424242" in result["tags"]
+            assert expected in result["tags"]
         finally:
             reset_scope(token)
             mem_tools.memory_tools_port.unbind()
 
-    async def test_explicit_tag_not_overridden(self, store: MemoryStore, monkeypatch) -> None:
+    async def test_explicit_tag_not_overridden(self, store: MemoryStore) -> None:
         from agent.memory import tools as mem_tools
+        from agent.messages import build_entity_scope
         from core.conversation_scope import bind_scope, reset_scope
 
         mem_tools.memory_tools_port.set(mem_tools.MemoryToolDeps(store, None))
 
-        token = bind_scope("user_424242")
+        token = bind_scope(build_entity_scope("user", "qq", "424242"))
         try:
-            result = json.loads(await mem_tools.memorize("显式标签", tags="user:111"))
-            assert "user:111" in result["tags"]
-            assert "user:424242" not in result["tags"]
+            result = json.loads(await mem_tools.memorize("显式标签", tags="user:webui:424242"))
+            assert "user:webui:424242" in result["tags"]
+            assert "user:qq:424242" not in result["tags"]
         finally:
             reset_scope(token)
             mem_tools.memory_tools_port.unbind()
+
+    def test_unqualified_scope_does_not_invent_a_channel(self) -> None:
+        from agent.memory import tools as mem_tools
+        from core.conversation_scope import bind_scope, reset_scope
+
+        token = bind_scope("user_424242")
+        try:
+            assert mem_tools._current_scope_tag() == ""
+        finally:
+            reset_scope(token)

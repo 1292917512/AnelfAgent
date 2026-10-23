@@ -18,8 +18,8 @@
 归属线索，不把摘要当作逐字原话（读取侧见 recall_format）。
 
 Model Experience：内部提取器收到完整新消息、有限旧背景和真实发言者标记；
-平台事件单独标明，AI 自述不得作为执行证据。
-Token：每批最多 12 条、通常不超过 12000 字符；单条超长消息保持完整。
+平台事件单独标明，AI 自述不得作为执行证据；可选既有主题词表只帮助复用标签，不改变事实归属。
+Token：每批最多 12 条、通常不超过 12000 字符；单条超长消息保持完整，词表默认最多 80 词。
 缓存：内部辅助调用，不改变主对话稳定前缀；已保存结果恢复时不重复提取。
 """
 
@@ -48,6 +48,7 @@ from .dedup import (
 from .memory_types import MemoryEntry, MemoryType
 from .ports import MemoryHost
 from .provenance import capture_origin
+from .tag_gate import enforce_tag_gate, topic_vocab_line
 
 _MAX_NEW_MESSAGES = 12
 _BATCH_MAX_CHARS = 12000
@@ -406,9 +407,9 @@ class AutoCapturePipeline:
             return ""
         try:
             tag_df = await store.list_tags()
-        except Exception:
+        except Exception as exc:
+            log(f"提取主题词表不可用: {exc}", "DEBUG", tag="记忆")
             return ""
-        from .tag_gate import topic_vocab_line
 
         line = topic_vocab_line(tag_df)
         if not line:
@@ -445,8 +446,6 @@ class AutoCapturePipeline:
             if speaker_tag not in tags:
                 tags.append(speaker_tag)
         # 写入闸门：新 topic 标签的确定性归一与校验（fail-open，不阻塞写入）
-        from .tag_gate import enforce_tag_gate
-
         gate = await enforce_tag_gate(tags, store=store)
         tags = gate.tags
         if gate.rewrites or gate.dropped:
