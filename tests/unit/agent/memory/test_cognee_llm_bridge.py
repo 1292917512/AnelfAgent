@@ -130,6 +130,7 @@ def test_extraction_request_inherits_model_timeout_unless_overridden(source, ove
     ), manager)
     expected = DEFAULT_TIMEOUT if source == "custom" else 120.0
     assert payload["llm_args"]["timeout"] == (override or expected)
+    assert summarize_resolved(payload, kind="chat")["request_timeout_seconds"] == (override or expected)
     assert manager._clients["sf-chat"].config.timeout == 120.0
 
 

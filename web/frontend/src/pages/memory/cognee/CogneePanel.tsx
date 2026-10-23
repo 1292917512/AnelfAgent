@@ -1,7 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Link } from "react-router-dom";
 import { RefreshCw, Upload, Shrink, Settings, Search } from "lucide-react";
 import { ProbeStatusCard } from "./ProbeStatusCard";
 import { DatasetMaintenanceCard } from "./DatasetMaintenanceCard";
@@ -11,13 +10,11 @@ import { QueryError } from "@/components/common/AsyncState";
 import { Card } from "@/components/common/Card";
 import { StatCard } from "@/components/common/StatCard";
 import { Button, Modal, ConfirmDialog, toast } from "@/components/ui";
-import { ConfigFormPanel } from "@/pages/config/ConfigFormPanel";
-import { type FieldMeta } from "@/pages/config/AppField";
-import { ModelConfigCard, ResolvedModelLine } from "@/pages/memory/cognee/ModelConfigCard";
+import { ResolvedModelLine } from "./ResolvedModelLine";
+import { CogneeSettings } from "./CogneeSettings";
 import { RecallTester } from "@/pages/memory/RecallTester";
 import { memoryApi } from "@/lib/api";
 import { formatSize } from "@/lib/utils";
-import type { ConfigValues } from "@/lib/types";
 
 export function CogneePanel() {
   const { t } = useTranslation("memory");
@@ -63,30 +60,6 @@ export function CogneePanel() {
   const availability = status?.availability;
   const sync = status?.sync;
   const storage = status?.storage;
-
-  const generalFields: FieldMeta[] = [
-    { key: "enabled", label: t("cogneeFields.enabled"), type: "bool", desc: t("cogneeDescs.enabled") },
-    { key: "sync_enabled", label: t("cogneeFields.sync_enabled"), type: "bool", desc: t("cogneeDescs.sync_enabled") },
-    { key: "recall_enabled", label: t("cogneeFields.recall_enabled"), type: "bool", desc: t("cogneeDescs.recall_enabled") },
-    { key: "dataset_prefix", label: t("cogneeFields.dataset_prefix"), type: "string", desc: t("cogneeDescs.dataset_prefix") },
-    { key: "timeout_seconds", label: t("cogneeFields.timeout_seconds"), type: "float", desc: t("cogneeDescs.timeout_seconds") },
-    { key: "pipeline_timeout_seconds", label: t("cogneeFields.pipeline_timeout_seconds"), type: "float", desc: t("cogneeDescs.pipeline_timeout_seconds") },
-    { key: "improve_interval_seconds", label: t("cogneeFields.improve_interval_seconds"), type: "float", desc: t("cogneeDescs.improve_interval_seconds") },
-    { key: "sync_interval_seconds", label: t("cogneeFields.sync_interval_seconds"), type: "float", desc: t("cogneeDescs.sync_interval_seconds") },
-    { key: "sync_batch_size", label: t("cogneeFields.sync_batch_size"), type: "int", desc: t("cogneeDescs.sync_batch_size") },
-    { key: "max_retries", label: t("cogneeFields.max_retries"), type: "int", desc: t("cogneeDescs.max_retries") },
-    { key: "compact_enabled", label: t("cogneeFields.compact_enabled"), type: "bool", desc: t("cogneeDescs.compact_enabled") },
-    { key: "compact_interval_seconds", label: t("cogneeFields.compact_interval_seconds"), type: "float", desc: t("cogneeDescs.compact_interval_seconds") },
-    { key: "compact_retention_days", label: t("cogneeFields.compact_retention_days"), type: "float", desc: t("cogneeDescs.compact_retention_days") },
-    { key: "write_breaker_enabled", label: t("cogneeFields.write_breaker_enabled"), type: "bool", desc: t("cogneeDescs.write_breaker_enabled") },
-    { key: "write_breaker_threshold_mb", label: t("cogneeFields.write_breaker_threshold_mb"), type: "float", desc: t("cogneeDescs.write_breaker_threshold_mb") },
-    { key: "write_breaker_window_seconds", label: t("cogneeFields.write_breaker_window_seconds"), type: "float", desc: t("cogneeDescs.write_breaker_window_seconds") },
-    { key: "write_breaker_cooldown_seconds", label: t("cogneeFields.write_breaker_cooldown_seconds"), type: "float", desc: t("cogneeDescs.write_breaker_cooldown_seconds") },
-    { key: "native_weight", label: t("cogneeFields.native_weight"), type: "float", desc: t("cogneeDescs.native_weight") },
-    { key: "cognee_weight", label: t("cogneeFields.cognee_weight"), type: "float", desc: t("cogneeDescs.cognee_weight") },
-    { key: "rrf_k", label: t("cogneeFields.rrf_k"), type: "int", desc: t("cogneeDescs.rrf_k") },
-    { key: "recall_pool_multiplier", label: t("cogneeFields.recall_pool_multiplier"), type: "int", desc: t("cogneeDescs.recall_pool_multiplier") },
-  ];
 
   return (
     <div className="space-y-4">
@@ -197,27 +170,7 @@ export function CogneePanel() {
       <DatasetMaintenanceCard ready={!!availability?.ready && !statusError} status={status} />
 
       <Modal open={detail === "models"} onClose={() => setDetail(null)} title={t("cognee.configDialog")} width="max-w-4xl">
-        <div className="space-y-4">
-          <div className="rounded-xl border border-border bg-elevated p-3 space-y-2 text-sm">
-            <p className="text-heading">{t("cognee.setupHint")}</p>
-            <Link to="/models" className="text-accent hover:underline">{t("cognee.configureModels")}</Link>
-            <p className="text-xs text-muted">{t("cognee.usageHint")}</p>
-          </div>
-          <div className="grid gap-4 lg:grid-cols-2">
-            <ModelConfigCard kind="chat" />
-            <ModelConfigCard kind="embedding" />
-          </div>
-          <ConfigFormPanel
-            title={t("cognee.generalTitle")}
-            subtitle={t("cognee.generalSubtitle")}
-            fields={generalFields}
-            queryKey="cogneeConfig"
-            fetchFn={() => memoryApi.cognee.getConfig().then((r) => r.data as unknown as ConfigValues)}
-            saveFn={(values) => memoryApi.cognee.saveConfig(values as Parameters<typeof memoryApi.cognee.saveConfig>[0])}
-            extraInvalidateKeys={["cogneeStatus", "memoryHealth"]}
-            note={t("cognee.hotApplyNote")}
-          />
-        </div>
+        <CogneeSettings status={status} />
       </Modal>
       <Modal open={detail === "recall"} onClose={() => setDetail(null)} title={t("cognee.recallDialog")} width="max-w-4xl">
         <div className="space-y-4"><RecallTester preset="cognee" /><ProbeStatusCard /></div>

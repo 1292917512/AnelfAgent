@@ -21,25 +21,6 @@ import { useCopyFeedback } from "@/hooks/useCopyFeedback";
 type ModelKind = "chat" | "embedding";
 type KindConfig = CogneeChatModelConfig | CogneeEmbeddingModelConfig;
 
-export function ResolvedModelLine({ label, info }: { label: string; info?: CogneeResolvedInfo }) {
-  const { t } = useTranslation("memory");
-  return (
-    <div className="flex flex-wrap items-center gap-2 text-xs">
-      <span className="text-muted w-20 flex-shrink-0">{label}</span>
-      {info?.model ? <>
-        <span className="min-w-0 break-all font-mono text-heading">{info.model}</span>
-        {info.instructor_mode && (
-          <span className="px-1.5 py-0.5 rounded bg-elevated border border-border text-muted">
-            {info.instructor_mode}
-          </span>
-        )}
-        {info.endpoint && <span className="text-muted truncate max-w-64">{info.endpoint}</span>}
-      </> : <span className="text-muted">{t("cognee.notResolved")}</span>}
-    </div>
-  );
-}
-
-
 function Field({ label, desc, children }: { label: string; desc?: string; children: React.ReactNode }) {
   return (
     <label className="block space-y-1">
@@ -50,7 +31,7 @@ function Field({ label, desc, children }: { label: string; desc?: string; childr
   );
 }
 
-export function ModelConfigCard({ kind }: { kind: ModelKind }) {
+export function ModelConfigCard({ kind, resolved }: { kind: ModelKind; resolved?: CogneeResolvedInfo }) {
   const { t } = useTranslation("memory");
   const { t: ta } = useTranslation("appconfig");
   const queryClient = useQueryClient();
@@ -66,6 +47,9 @@ export function ModelConfigCard({ kind }: { kind: ModelKind }) {
 
   const form = draft ?? config?.[kind];
   const hasChanges = draft !== null;
+  const requestTimeout = form && "extra_args" in form ? form.extra_args.timeout : undefined;
+  const validTimeout = requestTimeout === undefined
+    || (typeof requestTimeout === "number" && Number.isFinite(requestTimeout) && requestTimeout > 0);
 
   const saveMutation = useMutation({
     mutationFn: (values: KindConfig) =>
@@ -108,12 +92,17 @@ export function ModelConfigCard({ kind }: { kind: ModelKind }) {
       title={t(`cognee.${kind}ConfigTitle`)}
       subtitle={t(`cognee.${kind}ConfigSubtitle`)}
     >
-      <div className="space-y-3">
-        <Field label={t("cognee.source")}>
+      <form className="space-y-3" onSubmit={(event) => {
+        event.preventDefault();
+        if (hasChanges && validTimeout && !saveMutation.isPending) saveMutation.mutate(form);
+      }}>
+        <fieldset className="space-y-1">
+          <legend className="text-xs font-medium text-muted">{t("cognee.source")}</legend>
           <div className="flex gap-1.5 flex-wrap">
             {(["auto", "model", "custom"] as CogneeModelSource[]).map((s) => (
               <button
                 key={s}
+                type="button"
                 onClick={() => update({ source: s })}
                 className={cn(
                   "px-3 py-1.5 text-xs font-medium rounded-md border transition-[color,background-color,border-color,box-shadow,opacity]",
@@ -127,7 +116,7 @@ export function ModelConfigCard({ kind }: { kind: ModelKind }) {
             ))}
           </div>
           <span className="block text-xs text-muted opacity-70 pt-1">{sourceDesc[form.source]}</span>
-        </Field>
+        </fieldset>
 
         {form.source === "model" && (
           <Field label={t("cognee.selectModel")}>
@@ -200,6 +189,23 @@ export function ModelConfigCard({ kind }: { kind: ModelKind }) {
           </div>
         )}
 
+        {kind === "chat" && "extra_args" in form && <Field label={t("cognee.requestTimeout")} desc={t("cognee.requestTimeoutHint")}>
+          <Input type="number" min={0} step="any" aria-label={t("cognee.requestTimeout")}
+            aria-invalid={!validTimeout}
+            placeholder={t("cognee.requestTimeoutInherited")}
+            value={typeof requestTimeout === "number" ? requestTimeout : ""}
+            onChange={(event) => {
+              const extra_args = { ...form.extra_args };
+              if (event.target.value === "") delete extra_args.timeout;
+              else extra_args.timeout = event.target.valueAsNumber;
+              update({ extra_args });
+            }} />
+          {!validTimeout && <span role="alert" className="text-xs text-danger">{t("cognee.requestTimeoutInvalid")}</span>}
+          {resolved?.request_timeout_seconds !== undefined && <span className="block text-xs text-accent">
+            {t("cognee.requestTimeoutActive", { seconds: resolved.request_timeout_seconds })}
+          </span>}
+        </Field>}
+
         {kind === "chat" && "instructor_mode" in form && (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <Field label={t("cognee.instructorModeLabel")} desc={t("cognee.instructorModeHint")}>
@@ -244,8 +250,8 @@ export function ModelConfigCard({ kind }: { kind: ModelKind }) {
         <div className="flex items-center gap-3 pt-1 flex-wrap">
           <Button
             variant="primary"
-            onClick={() => hasChanges && !saveMutation.isPending && saveMutation.mutate(form)}
-            disabled={!hasChanges}
+            type="submit"
+            disabled={!hasChanges || !validTimeout}
             loading={saveMutation.isPending}
             className={cn(saved && !hasChanges && "!bg-ok")}
           >
@@ -264,7 +270,7 @@ export function ModelConfigCard({ kind }: { kind: ModelKind }) {
           )}
           <p className="text-xs text-muted">{t("cognee.hotApplyNote")}</p>
         </div>
-      </div>
+      </form>
     </Card>
   );
 }

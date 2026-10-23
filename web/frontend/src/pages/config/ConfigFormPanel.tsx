@@ -20,9 +20,10 @@ export interface ConfigFormPanelProps {
   saveFn: (data: ConfigValues) => Promise<unknown>;
   extraInvalidateKeys?: string[];
   note?: string;
+  advancedLabel?: string;
 }
 
-export function ConfigFormPanel({ title, subtitle, fields, queryKey, fetchFn, saveFn, extraInvalidateKeys, note }: ConfigFormPanelProps) {
+export function ConfigFormPanel({ title, subtitle, fields, queryKey, fetchFn, saveFn, extraInvalidateKeys, note, advancedLabel }: ConfigFormPanelProps) {
   const { t } = useTranslation(["common", "appconfig"]);
   const client = useQueryClient();
   const query = useQuery({ queryKey: [queryKey], queryFn: fetchFn, throwOnError: false });
@@ -44,8 +45,14 @@ export function ConfigFormPanel({ title, subtitle, fields, queryKey, fetchFn, sa
       <AsyncState pending={query.isPending} error={!query.data ? query.error : undefined} retry={() => void query.refetch()}>
         <form onSubmit={(event) => { event.preventDefault(); if (draft.dirty && !mutation.isPending) mutation.mutate(draft.patch); }}>
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            {fields.map((field) => <AppField key={field.key} meta={field} value={draft.values[field.key]} onChange={(value) => draft.update(field.key, value)} />)}
+            {fields.filter((field) => !field.advanced).map((field) => <AppField key={field.key} meta={field} value={draft.values[field.key]} onChange={(value) => draft.update(field.key, value)} />)}
           </div>
+          {fields.some((field) => field.advanced) && <details className="mt-4 rounded-xl border border-border p-3">
+            <summary className="cursor-pointer text-sm font-medium text-heading">{advancedLabel}</summary>
+            <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2">
+              {fields.filter((field) => field.advanced).map((field) => <AppField key={field.key} meta={field} value={draft.values[field.key]} onChange={(value) => draft.update(field.key, value)} />)}
+            </div>
+          </details>}
           <div className="sticky bottom-0 z-10 mt-5 flex flex-wrap items-center gap-3 border-t border-border bg-card py-4">
             <Button type="submit" variant="primary" disabled={!draft.dirty} loading={mutation.isPending}>
               {saved && !draft.dirty ? <Check size={15} /> : <Save size={15} />}

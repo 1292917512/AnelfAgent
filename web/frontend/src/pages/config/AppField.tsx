@@ -1,13 +1,16 @@
 import { Switch } from "@/components/ui/Switch";
 import { ModelSelect } from "@/components/models/ModelSelect";
 
-export type FieldType = "int" | "float" | "bool" | "string" | "password" | "model";
+export type FieldType = "int" | "float" | "bool" | "string" | "string_list" | "password" | "model";
 
 export interface FieldMeta {
   key: string;
   label: string;
   type: FieldType;
   desc?: string;
+  min?: number;
+  advanced?: boolean;
+  read_only?: boolean;
   /** type === "model" 时的模型类型（chat / embedding / vision ...），默认 chat */
   modelType?: string;
   /** type === "model" 时是否提供「跟随默认」空选项 */
@@ -25,6 +28,7 @@ export function AppField({ meta, value, onChange }: AppFieldProps) {
     "w-full text-sm bg-card border border-input rounded-lg px-2.5 py-1.5 text-heading focus:outline-none focus:border-accent transition-colors";
 
   const renderInput = () => {
+    if (meta.read_only) return <p className="break-all text-sm text-heading">{String(value ?? "")}</p>;
     if (meta.type === "bool") {
       return <Switch checked={!!value} onChange={onChange} label={meta.label} />;
     }
@@ -33,6 +37,8 @@ export function AppField({ meta, value, onChange }: AppFieldProps) {
         <input aria-label={meta.label}
           type="number"
           step="1"
+          min={meta.min}
+          required={meta.min !== undefined}
           className={base}
           value={typeof value === "number" ? value : ""}
           onChange={(e) => onChange(e.target.value === "" ? null : parseInt(e.target.value, 10))}
@@ -44,6 +50,8 @@ export function AppField({ meta, value, onChange }: AppFieldProps) {
         <input aria-label={meta.label}
           type="number"
           step="any"
+          min={meta.min}
+          required={meta.min !== undefined}
           className={base}
           value={typeof value === "number" ? value : ""}
           onChange={(e) => onChange(e.target.value === "" ? null : parseFloat(e.target.value))}
@@ -73,6 +81,11 @@ export function AppField({ meta, value, onChange }: AppFieldProps) {
           showDefaultWhenEmpty={false}
         />
       );
+    }
+    if (meta.type === "string_list") {
+      return <input aria-label={meta.label} className={base}
+        value={Array.isArray(value) ? value.join(", ") : ""}
+        onChange={(event) => onChange(event.target.value.split(",").map((part) => part.trim()))} />;
     }
     return (
       <input aria-label={meta.label}

@@ -35,6 +35,8 @@ class CogneeConfigUpdate(BaseModel):
     enabled: Optional[bool] = None
     sync_enabled: Optional[bool] = None
     recall_enabled: Optional[bool] = None
+    project_memories_enabled: Optional[bool] = None
+    project_graph_enabled: Optional[bool] = None
     data_root: Optional[str] = None
     dataset_prefix: Optional[str] = None
     timeout_seconds: Optional[float] = None
@@ -50,6 +52,8 @@ class CogneeConfigUpdate(BaseModel):
     write_breaker_threshold_mb: Optional[float] = None
     write_breaker_window_seconds: Optional[float] = None
     write_breaker_cooldown_seconds: Optional[float] = None
+    native_watchdog_enabled: Optional[bool] = None
+    native_watchdog_restart_seconds: Optional[float] = None
     native_weight: Optional[float] = None
     cognee_weight: Optional[float] = None
     rrf_k: Optional[int] = None

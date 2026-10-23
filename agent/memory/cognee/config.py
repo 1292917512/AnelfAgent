@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 from typing import Any, Optional
 
@@ -100,53 +100,54 @@ class CogneeEmbeddingModelConfig:
 class CogneeConfig:
     """Cognee 投影与联邦召回配置。"""
 
-    enabled: bool = True
-    sync_enabled: bool = True
-    recall_enabled: bool = True
+    enabled: bool = field(default=True, metadata={"section": "models"})
+    sync_enabled: bool = field(default=True, metadata={"section": "sync"})
+    recall_enabled: bool = field(default=True, metadata={"section": "recall"})
     # 投影开关：memory 投影与主向量库内容同源（重复嵌入一份），
     # 召回经 RRF 按 memory id 去重后增益主要在 cognee 图谱抽取；
     # graph 投影（关系邻域文档）是原生检索没有的增量信息
-    project_memories_enabled: bool = True
-    project_graph_enabled: bool = True
-    data_root: str = ConfigPaths.COGNEE_DATA_DIR
-    dataset_prefix: str = "anelf"
-    timeout_seconds: float = 30.0
+    project_memories_enabled: bool = field(default=True, metadata={"section": "sync", "advanced": True})
+    project_graph_enabled: bool = field(default=True, metadata={"section": "sync", "advanced": True})
+    data_root: str = field(default=ConfigPaths.COGNEE_DATA_DIR, metadata={"section": "storage", "advanced": True, "read_only": True})
+    dataset_prefix: str = field(default="anelf", metadata={"section": "sync", "advanced": True})
+    timeout_seconds: float = field(default=30.0, metadata={"section": "recall", "min": 1})
     # 流水线超时需覆盖整批次的 add/cognify/improve：
     # thinking 模型下单批 20 条记忆的图谱抽取约需 15 分钟
-    pipeline_timeout_seconds: float = 1800.0
+    pipeline_timeout_seconds: float = field(default=1800.0, metadata={"section": "sync", "min": 1})
     # 全局上下文摘要需要额外模型调用，CHUNKS 不依赖它；默认手动维护。
-    improve_interval_seconds: float = 0.0
-    sync_interval_seconds: float = 5.0
-    sync_batch_size: int = 20
-    max_retries: int = 5
+    improve_interval_seconds: float = field(default=0.0, metadata={"section": "sync", "advanced": True})
+    sync_interval_seconds: float = field(default=5.0, metadata={"section": "sync", "advanced": True, "min": 0.5})
+    sync_batch_size: int = field(default=20, metadata={"section": "sync", "min": 1})
+    max_retries: int = field(default=5, metadata={"section": "sync", "min": 1})
     # LanceDB 物理压缩：同步队列空闲时按共享预算轮换维护向量表，
     # 回收删除/更新遗留的历史版本（最新版本永远保留，逻辑数据不受影响）。
     # 保留期只是并发读保险：cognee 从不时间旅行，而高频重抽取每天产生
     # 上千个版本清单（单表 7 天可累积 ~7G manifests），窗口宁短勿长
-    compact_enabled: bool = True
-    compact_interval_seconds: float = 86400.0
-    compact_retention_days: float = 1.0
+    compact_enabled: bool = field(default=True, metadata={"section": "storage"})
+    compact_interval_seconds: float = field(default=86400.0, metadata={"section": "storage", "advanced": True, "min": 600})
+    compact_retention_days: float = field(default=1.0, metadata={"section": "storage", "min": 0})
     # 写盘熔断：滑动窗口内进程自身写入速率超阈值时暂停投影认领与
     # 自动压缩（冷却期后重评），防止 Kùzu checkpoint 风暴撞爆磁盘配额
-    write_breaker_enabled: bool = True
-    write_breaker_threshold_mb: float = 500.0
-    write_breaker_window_seconds: float = 300.0
-    write_breaker_cooldown_seconds: float = 1800.0
+    write_breaker_enabled: bool = field(default=True, metadata={"section": "storage", "advanced": True})
+    write_breaker_threshold_mb: float = field(default=500.0, metadata={"section": "storage", "advanced": True, "min": 1})
+    write_breaker_window_seconds: float = field(default=300.0, metadata={"section": "storage", "advanced": True, "min": 10})
+    write_breaker_cooldown_seconds: float = field(default=1800.0, metadata={"section": "storage", "advanced": True, "min": 60})
     # 失控看门狗：门闸被持有超阈值（native 查询失控的唯一可靠信号）即请求
     # 守护重启——ladybug 的 timeout/interrupt 中止路径对卡死扫描不可靠
     # （会升级为 SIGSEGV），进程级重启是唯一安全语义
-    native_watchdog_enabled: bool = True
-    native_watchdog_restart_seconds: float = 600.0
-    native_weight: float = 1.0
+    native_watchdog_enabled: bool = field(default=True, metadata={"section": "storage", "advanced": True})
+    native_watchdog_restart_seconds: float = field(default=600.0, metadata={"section": "storage", "advanced": True, "min": 120})
+    native_weight: float = field(default=1.0, metadata={"section": "recall", "advanced": True, "min": 0})
     # cognee 与原生同权：融合去重时来源优先级已保证原生结果胜出（memory >
     # file > cognee_chunk > cognee_graph），权重不再额外压制——图谱投影
     # 的净增量事实（跨记忆实体关联）值得与原生结果同台竞争
-    cognee_weight: float = 1.0
-    rrf_k: int = 60
-    recall_pool_multiplier: int = 3
+    cognee_weight: float = field(default=1.0, metadata={"section": "recall", "advanced": True, "min": 0})
+    rrf_k: int = field(default=60, metadata={"section": "recall", "advanced": True, "min": 1})
+    recall_pool_multiplier: int = field(default=3, metadata={"section": "recall", "advanced": True, "min": 1})
     search_types: list[str] = field(
         # 原生 FTS 已覆盖同步词法召回；Cognee BM25 会全量加载图库。
         default_factory=lambda: ["CHUNKS"],
+        metadata={"section": "recall", "advanced": True},
     )
     # 显式 recall depth=deep 的搜索类型；自动补充独立选择非生成式通道。
     # only_context 仅跳过最终回答生成，CONTEXT_EXTENSION 的迭代检索仍调用 LLM。
@@ -158,6 +159,7 @@ class CogneeConfig:
             "GRAPH_COMPLETION_CONTEXT_EXTENSION",
             "SUMMARIES",
         ],
+        metadata={"section": "recall", "advanced": True},
     )
     chat: CogneeChatModelConfig = field(default_factory=CogneeChatModelConfig)
     embedding: CogneeEmbeddingModelConfig = field(default_factory=CogneeEmbeddingModelConfig)
@@ -199,6 +201,19 @@ class CogneeConfig:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    def settings_schema(self) -> list[dict[str, Any]]:
+        """界面字段从配置声明派生；模型配置由专用编辑器管理。"""
+        result: list[dict[str, Any]] = []
+        for item in fields(self):
+            if "section" not in item.metadata:
+                continue
+            value = getattr(self, item.name)
+            kind = ("bool" if isinstance(value, bool) else "int" if isinstance(value, int)
+                    else "float" if isinstance(value, float) else "string_list" if isinstance(value, list)
+                    else "string")
+            result.append({"key": item.name, "type": kind, **item.metadata})
+        return result
 
 
 #: 旧版深检索默认值（用于识别"从未自定义"的存量配置，升级到新默认）

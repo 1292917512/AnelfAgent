@@ -374,7 +374,7 @@ test("Cognee reasoning edits survive failures and independent saves", async ({ p
     enabled: true, sync_enabled: true, recall_enabled: true,
     chat: { source: "auto", model_id: "", provider: "openai", model: "", api_key: "", endpoint: "", api_version: "", instructor_mode: "", max_completion_tokens: 0, reasoning_effort: "", extra_args: {} },
     embedding: { source: "auto", model_id: "", provider: "openai", model: "", api_key: "", endpoint: "", dimensions: 0 },
-    options: { chat_providers: ["openai"], embed_providers: ["openai"], instructor_modes: [""], reasoning_efforts: ["", "off", "low", "high"] },
+    options: { chat_providers: ["openai"], embed_providers: ["openai"], instructor_modes: [""], reasoning_efforts: ["", "off", "low", "high"], settings_fields: [] },
   };
   await page.route("**/api/memory/cognee/config", async (route) => {
     if (route.request().method() === "PUT") {

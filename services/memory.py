@@ -737,6 +737,7 @@ class MemoryService:
                 "embed_providers": list(COGNEE_EMBED_PROVIDERS),
                 "instructor_modes": list(COGNEE_INSTRUCTOR_MODES),
                 "reasoning_efforts": list(REASONING_EFFORTS),
+                "settings_fields": config.settings_schema(),
             },
         }
 

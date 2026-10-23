@@ -430,4 +430,5 @@ def summarize_resolved(payload: Optional[dict[str, Any]], *, kind: str) -> dict[
         "endpoint": payload.get(f"{prefix}_endpoint", ""),
         "instructor_mode": payload.get("llm_instructor_mode", "") if kind == "chat" else "",
         "api_key_set": bool(payload.get(f"{prefix}_api_key")),
+        **({"request_timeout_seconds": payload.get("llm_args", {}).get("timeout")} if kind == "chat" else {}),
     }

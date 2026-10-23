@@ -51,6 +51,8 @@ export interface CogneeConfig {
   enabled: boolean;
   sync_enabled: boolean;
   recall_enabled: boolean;
+  project_memories_enabled: boolean;
+  project_graph_enabled: boolean;
   data_root: string;
   dataset_prefix: string;
   timeout_seconds: number;
@@ -62,11 +64,18 @@ export interface CogneeConfig {
   compact_enabled: boolean;
   compact_interval_seconds: number;
   compact_retention_days: number;
+  write_breaker_enabled: boolean;
+  write_breaker_threshold_mb: number;
+  write_breaker_window_seconds: number;
+  write_breaker_cooldown_seconds: number;
+  native_watchdog_enabled: boolean;
+  native_watchdog_restart_seconds: number;
   native_weight: number;
   cognee_weight: number;
   rrf_k: number;
   recall_pool_multiplier: number;
   search_types: string[];
+  deep_search_types: string[];
   chat: CogneeChatModelConfig;
   embedding: CogneeEmbeddingModelConfig;
   /** 后端下发的下拉词汇（名单单一权威在后端 cognee 配置） */
@@ -78,6 +87,18 @@ export interface CogneeConfigOptions {
   embed_providers: string[];
   instructor_modes: string[];
   reasoning_efforts: CogneeReasoningEffort[];
+  settings_fields: CogneeSettingField[];
+}
+
+export type CogneeSettingsSection = "models" | "recall" | "sync" | "storage";
+
+export interface CogneeSettingField {
+  key: string;
+  type: "bool" | "int" | "float" | "string" | "string_list";
+  section: CogneeSettingsSection;
+  advanced?: boolean;
+  min?: number;
+  read_only?: boolean;
 }
 
 export interface CogneeResolvedInfo {
@@ -86,6 +107,7 @@ export interface CogneeResolvedInfo {
   endpoint?: string;
   instructor_mode?: string;
   api_key_set?: boolean;
+  request_timeout_seconds?: number;
 }
 
 export interface CogneeStorageInfo {
