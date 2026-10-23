@@ -38,10 +38,9 @@ export function ProjectionStatusCard({ state, sync, updatedAt, stale, enabled }:
             memories: state.counts.memories ?? 0, relations: state.counts.graph_nodes ?? 0,
           })}</p>
           <p className="text-heading">{t("cognee.progress.overall", { count: sync.synced, total })}</p>
-          {total > 0 && <progress className="w-full h-2 accent-accent" aria-label={t("cognee.progress.overallLabel")}
-            value={Math.min(sync.synced, total)} max={total} />}
+          {total > 0 && sync.synced >= total && <p className="text-accent text-xs" role="status">{t("cognee.progress.awaitingVerification")}</p>}
           <p className="text-xs">{t("cognee.progress.overallHint")}</p>
-          <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 border-t border-border pt-2 text-sm tabular-nums">
             <span>{t("cognee.progress.queued", { count: Math.max(0, sync.pending - (sync.processing ?? 0)) })}</span>
             <span>{t("cognee.progress.processing", { count: sync.processing ?? 0 })}</span>
             <span className={sync.failed ? "text-danger" : ""}>{t("cognee.progress.failed", { count: sync.failed })}</span>

@@ -227,7 +227,10 @@ class ProjectionWriter:
                         raise RuntimeError("Cognee 摄入未返回 dataset_id，保留旧投影")
                     stage = "cognify"
                     self.progress.stage(stage, dataset_name=dataset_name, dataset_id=dataset_id,
-                                        timeout=self.config.pipeline_timeout_seconds)
+                                        timeout=self.config.pipeline_timeout_seconds,
+                                        documents={str(_value(data_item, "data_id", "")):
+                                                   bool(_value(data_item, "external_metadata", {}).get("anelf_part_key"))
+                                                   for data_item in additions})
                     await self.client.cognify(datasets=[dataset_name], incremental_loading=True)
                     self._observe_write()
                 if not dataset_id:

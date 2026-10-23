@@ -35,6 +35,16 @@ class CogneeRecallItem(BaseModel):
     raw: Any = None
 
 
+class CogneeDocumentProgress(BaseModel):
+    """本次摄入文档的抽取完成标记；不代表候选索引已安全提交。"""
+
+    total: int = Field(ge=0)
+    completed: int | None = Field(default=None, ge=0)
+    fragments: int = Field(default=0, ge=0)
+    fragments_completed: int | None = Field(default=None, ge=0)
+    last_completed_at: float | None = None
+
+
 class CogneePipelineProgress(BaseModel):
     """SDK 最近一次流水线报告；缺少计数表示尚未报告，不等于零。"""
 
@@ -42,6 +52,8 @@ class CogneePipelineProgress(BaseModel):
     completed_items: int | None = Field(default=None, ge=0)
     total_items: int | None = Field(default=None, ge=0)
     current_stage: str = ""
+    documents: CogneeDocumentProgress | None = None
+    observation_error: str = ""
 
 
 class CogneeBatchProgress(BaseModel):
@@ -60,6 +72,8 @@ class CogneeBatchProgress(BaseModel):
     pipeline: CogneePipelineProgress | None = None
     progress_checked_at: float = 0
     progress_error: str = ""
+    documents: CogneeDocumentProgress | None = None
+    documents_checked_at: float = 0
 
 
 class CogneeSyncStatus(BaseModel):

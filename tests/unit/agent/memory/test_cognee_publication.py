@@ -769,7 +769,7 @@ def test_host_does_not_inherit_or_import_native_sdk():
 
 def test_native_imports_stay_inside_worker_adapters():
     root = Path(__file__).resolve().parents[4]
-    allowed = {"adapters.py", "sdk_client.py", "ladybug_guard.py", "storage.py", "graph_validation.py"}
+    allowed = {"adapters.py", "sdk_client.py", "sdk_progress.py", "ladybug_guard.py", "storage.py", "graph_validation.py"}
     violations = []
     for directory in ("agent", "services", "scripts"):
         for path in (root / directory).rglob("*.py"):

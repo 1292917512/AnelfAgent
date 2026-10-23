@@ -77,6 +77,10 @@ async def test_real_relation_fragments_incremental_update_preserves_committed_do
         mapping = await store.get_cognee_mapping(node_id, entry_kind="graph_node")
         parts = mapped_documents(mapping)
         assert len(parts) >= 2
+        observed = await client.pipeline_progress(mapping["dataset_id"], {part.data_id: True for part in parts})
+        assert not observed.observation_error
+        assert observed.documents.total == observed.documents.completed == len(parts)
+        assert observed.documents.fragments_completed == len(parts) and observed.documents.last_completed_at
         assert old["data_id"] not in {row["id"] for row in await client.list_data(mapping["dataset_id"])}
         writes.clear()
         await store.graph.add_relation("project:蓝鸢", "部署于", "place:杭州",

@@ -193,6 +193,7 @@ test("Cognee exposes in-flight progress, retries and stale observations", async 
       active: { stage: "cognify", items: 10, attempt: 2, dataset_name: "test_global", started_at: now - 600,
         elapsed_seconds: 600, stage_elapsed_seconds: 590, quiet_seconds: 310, last_change_at: now - 310,
         timeout_seconds: 3600, progress_checked_at: now, progress_error: "",
+        documents: { total: 206, completed: 26, fragments: 202, fragments_completed: 22, last_completed_at: now - 5 }, documents_checked_at: now,
         pipeline: { status: "DATASET_PROCESSING_STARTED", completed_items: 9, total_items: 10, current_stage: "add_data_points" } } },
     projection: { phase: "scanning", rebuild_requested: false, namespace: "test", verified: 0,
       counts: { memories: 1825, graph_nodes: 2506, excluded_memories: 118 }, previous_namespaces: ["old"],
@@ -203,11 +204,17 @@ test("Cognee exposes in-flight progress, retries and stale observations", async 
     : route.fulfill({ json: state }));
   await page.goto("/webui/memory?tab=cognee");
   const batch = page.getByTestId("cognee-batch-progress");
-  await expect(page.getByText("Committed 0 / initially expected 4331 documents")).toBeVisible();
-  await expect(page.getByText("Expected rebuild total: 4331 documents")).toBeVisible();
+  await expect(page.getByText("Safely committed 0 / initially expected 4331 records")).toBeVisible();
+  await expect(page.getByText("Initial estimate: 4331 source records")).toBeVisible();
   await expect(page.getByText("1825 memories + 2506 relationship nodes (inventory at build start)")).toBeVisible();
-  await expect(batch.getByText("Cognee pipeline processed 9 / 10 documents")).toBeVisible();
-  await expect(batch.getByText(/No progress change observed for over 5 minutes/)).toBeVisible();
+  await expect(batch.getByText("26 / 206", { exact: true })).toBeVisible();
+  await expect(batch.getByText("22 / 202", { exact: true })).toBeVisible();
+  await expect(batch.getByText(/SDK traversal:/)).not.toBeVisible();
+  await expect(batch.getByText(/No new batch completion marker/)).toBeVisible();
+  state.sync.active.quiet_seconds = 2;
+  Object.assign(state.sync.active.documents, { completed: 34, fragments_completed: 30 });
+  await expect(batch.getByText("30 / 202", { exact: true })).toBeVisible({ timeout: 12000 });
+  await expect(batch.getByText(/No new batch completion marker/)).toHaveCount(0);
   await expect(page.getByText(/10 previously failed items remain/)).toBeVisible();
   await expect(page.getByText(/New model\/settings saved; waiting for the current batch/)).toBeVisible();
   await page.getByRole("button", { name: "Build details", exact: true }).click();
@@ -239,11 +246,11 @@ test("Cognee exposes in-flight progress, retries and stale observations", async 
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await batch.screenshot({ path: info.outputPath("cognee-progress.png") });
   state.sync.active.progress_error = "Progress endpoint timeout";
-  await expect(batch.getByText(/Progress read failed/)).toBeVisible({ timeout: 12000 });
-  await expect(batch.getByText("Cognee pipeline processed 9 / 10 documents")).toBeVisible();
+  await expect(batch.getByText(/Partial progress read failed/)).toBeVisible({ timeout: 12000 });
+  await expect(batch.getByText("30 / 202", { exact: true })).toBeVisible();
   unavailable = true;
   await expect(page.getByText(/Status refresh failed. This is the last snapshot/)).toBeVisible({ timeout: 25000 });
-  await expect(batch.getByText("Cognee pipeline processed 9 / 10 documents")).toBeVisible();
+  await expect(batch.getByText("30 / 202", { exact: true })).toBeVisible();
 });
 
 test("Cognee catalog distinguishes initial loading and keeps confirmed datasets visible during writes", async ({ page }, info) => {

@@ -448,11 +448,11 @@ class CogneeClient:
         finally:
             self._compact_rotation += 1
 
-    async def pipeline_progress(self, dataset_id: str) -> CogneePipelineProgress:
+    async def pipeline_progress(self, dataset_id: str, documents: dict[str, bool] | None = None) -> CogneePipelineProgress:
         # 元数据观测允许与同一工作进程的长抽取并行，不另开图库连接。
         if self._process is None:
             return CogneePipelineProgress()
-        value = await self._process.call("pipeline_progress", dataset_id, timeout=4)
+        value = await self._process.call("pipeline_progress", dataset_id, documents=documents, timeout=4)
         return CogneePipelineProgress.model_validate(value)
 
     def document_processed(self, item: DocumentRecord, dataset_id: str) -> bool:

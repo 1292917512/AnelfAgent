@@ -130,6 +130,14 @@ export interface CogneeBatchProgress {
   timeout_seconds: number;
   progress_checked_at: number;
   progress_error: string;
+  documents?: {
+    total: number;
+    completed: number | null;
+    fragments: number;
+    fragments_completed: number | null;
+    last_completed_at: number | null;
+  } | null;
+  documents_checked_at?: number;
   pipeline: {
     status: string;
     completed_items: number | null;

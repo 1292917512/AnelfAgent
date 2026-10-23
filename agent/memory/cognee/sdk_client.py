@@ -373,19 +373,33 @@ class SDKClient:
 
 
     # Dataset namespace
-    async def pipeline_progress(self, dataset_id: str) -> CogneePipelineProgress:
+    async def pipeline_progress(self, dataset_id: str, documents: dict[str, bool] | None = None) -> CogneePipelineProgress:
         """只读公开流水线进度；短超时避免观测接口阻塞管理页面。"""
         identity = _to_uuid(dataset_id)
-        rows = await self._call("datasets.get_progress", [identity],
-                                pipeline_names=["cognify_pipeline"], timeout=3.0)
-        row = rows.get(str(identity), {})
-        progress = row.get("progress") or {}
-        return CogneePipelineProgress(
-            status=row.get("status", ""),
-            completed_items=progress.get("completed_items"),
-            total_items=progress.get("total_items"),
-            current_stage=progress.get("current_stage") or "",
-        )
+        result = CogneePipelineProgress()
+        errors: list[str] = []
+        if documents is not None:
+            from .sdk_progress import document_progress
+
+            try:
+                async with asyncio.timeout(1.5):
+                    result.documents = await document_progress(str(identity), documents)
+            except Exception as exc:
+                errors.append(f"documents: {type(exc).__name__}: {exc}")
+        try:
+            async with asyncio.timeout(1):
+                rows = await self._call("datasets.get_progress", [identity],
+                                        pipeline_names=["cognify_pipeline"], timeout=1.0)
+            row = rows.get(str(identity), {})
+            progress = row.get("progress") or {}
+            result.status = row.get("status", "")
+            result.completed_items = progress.get("completed_items")
+            result.total_items = progress.get("total_items")
+            result.current_stage = progress.get("current_stage") or ""
+        except Exception as exc:
+            errors.append(f"pipeline: {type(exc).__name__}: {exc}")
+        result.observation_error = "; ".join(errors)
+        return result
 
     async def list_datasets(self, **kwargs: Any) -> Any:
         try:

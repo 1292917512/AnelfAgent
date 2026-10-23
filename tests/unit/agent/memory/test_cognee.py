@@ -104,6 +104,93 @@ async def test_late_progress_response_cannot_leak_into_next_batch():
         assert result.items == 2 and result.pipeline is None and result.stage == "prepare"
 
 
+async def test_actual_progress_ignores_sdk_ticks_and_preserves_failed_observation():
+    from agent.memory.cognee.progress import ProjectionProgress
+    from agent.memory.cognee.types import CogneeDocumentProgress, CogneePipelineProgress
+
+    monitor = ProjectionProgress()
+    docs = CogneeDocumentProgress(total=202, completed=14, fragments=202, fragments_completed=14,
+                                 last_completed_at=1000)
+    read = AsyncMock(return_value=CogneePipelineProgress(completed_items=1, total_items=2885, documents=docs))
+    with monitor.batch([{}]):
+        monitor.stage("cognify", dataset_id="dataset", documents={"new": True})
+        first = await monitor.snapshot(read)
+        read.assert_awaited_once_with("dataset", documents={"new": True})
+        monitor._changed -= 400
+        monitor._read_after = 0
+        read.return_value = CogneePipelineProgress(completed_items=144, total_items=2885, documents=docs)
+        same = await monitor.snapshot(read)
+        assert same.last_change_at == first.last_change_at and same.quiet_seconds >= 400
+        monitor._read_after = 0
+        read.return_value = CogneePipelineProgress(documents=docs.model_copy(update={
+            "completed": 22, "fragments_completed": 22, "last_completed_at": 1042}))
+        advanced = await monitor.snapshot(read)
+        assert advanced.quiet_seconds < 1 and advanced.documents.completed == 22
+        checked = advanced.documents_checked_at
+        monitor._read_after = 0
+        read.return_value = CogneePipelineProgress(observation_error="documents: database busy")
+        failed = await monitor.snapshot(read)
+        assert failed.documents.completed == 22 and failed.documents_checked_at == checked
+        assert "database busy" in failed.progress_error
+        monitor.stage("verify")
+        assert (await monitor.snapshot(read)).documents.completed == 22
+        monitor.stage("add")
+        assert (await monitor.snapshot(read)).documents is None
+
+
+async def test_document_progress_queries_only_selected_ids_without_writes(tmp_path, monkeypatch):
+    from datetime import datetime, timezone
+    from uuid import uuid4
+
+    import cognee.infrastructure.databases.relational as relational
+    from cognee.modules.data.models import Data
+    from sqlalchemy import event
+    from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+
+    from agent.memory.cognee.sdk_progress import document_progress
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'progress.db'}")
+    identity, other = uuid4(), uuid4()
+    ids = [uuid4() for _ in range(403)]
+    stamp = datetime(2026, 10, 23, 3, 57, 21)
+    rows = [{"id": item, "dataset_id": identity, "pipeline_status": {
+        "cognify_pipeline": {str(identity): "DATA_ITEM_PROCESSING_COMPLETED"}}, "updated_at": stamp} for item in ids]
+    rows[0]["pipeline_status"] = {"cognify_pipeline": {str(identity): "DATA_ITEM_PROCESSING_STARTED"}}
+    rows[1]["dataset_id"] = other
+    # 未选择的旧文档不能影响分子、分母或最近完成时间。
+    rows[-1]["updated_at"] = datetime(2030, 1, 1)
+    try:
+        async with engine.begin() as connection:
+            await connection.run_sync(Data.__table__.create)
+            await connection.execute(Data.__table__.insert(), rows)
+        statements = []
+        event.listen(engine.sync_engine, "before_cursor_execute", lambda conn, cursor, statement, params, ctx, many:
+                     statements.append(statement))
+        monkeypatch.setattr(relational, "get_relational_engine", lambda: SimpleNamespace(
+            get_async_session=async_sessionmaker(engine)))
+        selected = {str(item): True for item in ids[:-1]}
+        selected[str(uuid4())] = False  # 尚不存在的目标也不能伪报完成。
+        result = await document_progress(str(identity), selected)
+        assert result.total == 403 and result.completed == result.fragments_completed == 400
+        assert result.fragments == 402
+        assert result.last_completed_at == stamp.replace(tzinfo=timezone.utc).timestamp()
+        assert len(statements) == 2 and all(sql.lstrip().startswith("SELECT") for sql in statements)
+    finally:
+        await engine.dispose()
+
+
+async def test_document_observation_survives_public_sdk_progress_failure(monkeypatch):
+    from agent.memory.cognee import sdk_progress
+    from agent.memory.cognee.types import CogneeDocumentProgress
+
+    client = CogneeClient(CogneeConfig())
+    monkeypatch.setattr(client, "_call", AsyncMock(side_effect=TimeoutError("SDK report late")))
+    result = CogneeDocumentProgress(total=2, completed=1, fragments=2, fragments_completed=1)
+    monkeypatch.setattr(sdk_progress, "document_progress", AsyncMock(return_value=result))
+    read = await client.pipeline_progress("b56459b0-35aa-4cd2-b5a7-a4a070b735ae", {"one": True})
+    assert read.documents == result and "SDK report late" in read.observation_error
+
+
 @pytest.mark.parametrize("serialized", [False, True])
 def test_chunk_external_metadata_is_restored_from_sdk_storage(serialized: bool) -> None:
     import json
@@ -591,7 +678,7 @@ class _FakeCogneeClient(FakeIndexTransactions):
     async def cognify(self, **_kwargs):
         return None
 
-    async def pipeline_progress(self, _dataset_id):
+    async def pipeline_progress(self, _dataset_id, documents=None):
         from agent.memory.cognee.types import CogneePipelineProgress
 
         return CogneePipelineProgress()
