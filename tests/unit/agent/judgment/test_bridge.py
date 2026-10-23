@@ -141,6 +141,52 @@ async def test_bridge_garbage_raises(monkeypatch: pytest.MonkeyPatch) -> None:
         )
 
 
+async def test_bridge_retries_incomplete_json_once_with_shared_budget(monkeypatch):
+    manager = _FakeManager(_llm_payload()[:-1])
+    original = manager.chat_with_fallback
+    budgets = []
+
+    async def respond(messages, **kwargs):
+        budgets.append(kwargs["timeout"])
+        result = await original(messages, **kwargs)
+        manager._content = _llm_payload()
+        return result
+
+    monkeypatch.setattr(manager, "chat_with_fallback", respond)
+    monkeypatch.setattr("agent.llm.get_llm_manager", lambda: manager)
+    answers, missing, _, _ = await bridge.judge_via_llm(
+        state="事实修订", questions=_questions(), model_id="", effort="", timeout=30,
+    )
+    assert set(answers) == set(_questions()) and not missing
+    assert len(budgets) == 2 and 0 < budgets[1] <= budgets[0] <= 30
+    assert "括号闭合" in manager.calls[-1]["messages"][-1]["content"]
+
+
+async def test_bridge_invalid_output_cannot_retry_forever(monkeypatch):
+    manager = _FakeManager(_llm_payload()[:-1])
+    monkeypatch.setattr("agent.llm.get_llm_manager", lambda: manager)
+    with pytest.raises(JudgmentError):
+        await bridge.judge_via_llm(state="事实", questions=_questions(), model_id="", effort="", timeout=30)
+    assert len(manager.calls) == 2
+
+
+async def test_bridge_provider_cannot_overrun_shared_deadline(monkeypatch):
+    import asyncio
+
+    from core.tool_errors import ErrorCause
+
+    manager = _FakeManager("")
+
+    async def stalled(*args, **kwargs):
+        await asyncio.Future()
+
+    monkeypatch.setattr(manager, "chat_with_fallback", stalled)
+    monkeypatch.setattr("agent.llm.get_llm_manager", lambda: manager)
+    with pytest.raises(JudgmentError) as caught:
+        await bridge.judge_via_llm(state="事实", questions=_questions(), model_id="", effort="", timeout=.01)
+    assert caught.value.cause == ErrorCause.TIMEOUT
+
+
 async def test_bridge_all_zero_probs_uniform(monkeypatch: pytest.MonkeyPatch) -> None:
     """全零概率退化为均匀分布（置信度 0，如实反映不确定）。"""
     payload = json.dumps({"answers": {"urgent": {"noul": 0.5}, "dept": {"probabilities": {}},

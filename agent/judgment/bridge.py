@@ -4,10 +4,16 @@
 解析后由本地合成最终答案：概率归一化、置信度按 TypeSafe 同公式
 (n·p−1)/(n−1) 计算、Score 位置按概率加权。单题解析失败不拖垮整批——
 成功答案照出、失败 id 记入报告 missing。
+
+Model Experience：格式无效时要求模型重发合法 JSON，不根据残缺输出猜测裁决。
+Token 影响：仅无效响应最多增加一次内部调用，共用原等待预算。
+缓存影响：只改变内部判断请求，不触碰主对话稳定前缀。
 """
 from __future__ import annotations
 
+import asyncio
 import json
+import time
 from typing import Any, Dict, List, Tuple
 
 from agent.judgment.types import (
@@ -59,29 +65,44 @@ async def judge_via_llm(
         client = manager.get_enabled_client(model_id)
         if client is None:
             log(f"回退判断模型不可用，走默认链: {model_id}", "DEBUG", tag="判断")
-    result = await manager.chat_with_fallback(
-        [
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": _render_user_message(state, questions)},
-        ],
-        options={"reasoning_effort": effort} if effort else None,
-        client=client,
-        max_retries=1,
-        timeout=timeout,
-        purpose="judgment",
-    )
-    answers, missing = _parse_answers(_extract_json(result.content or ""), questions)
-    if not answers:
-        raise JudgmentError(
-            "回退通道输出无法解析为有效答案", cause=ErrorCause.INTERNAL, retryable=True
-        )
+    messages = [
+        {"role": "system", "content": _SYSTEM_PROMPT},
+        {"role": "user", "content": _render_user_message(state, questions)},
+    ]
+    deadline = time.monotonic() + timeout
     usage = JudgmentUsage()
-    if result.usage is not None:
-        usage = JudgmentUsage(
-            input_tokens=result.usage.prompt_tokens,
-            output_tokens=result.usage.completion_tokens,
-        )
-    return answers, missing, result.model or "", usage
+    for attempt in range(2):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise JudgmentError("回退判断等待预算已用尽", cause=ErrorCause.TIMEOUT, retryable=True)
+        try:
+            async with asyncio.timeout(remaining):
+                result = await manager.chat_with_fallback(
+                    messages,
+                    options={"reasoning_effort": effort} if effort else None,
+                    client=client,
+                    max_retries=1,
+                    timeout=remaining,
+                    purpose="judgment",
+                )
+        except TimeoutError as exc:
+            raise JudgmentError("回退判断等待预算已用尽", cause=ErrorCause.TIMEOUT, retryable=True) from exc
+        if result.usage is not None:
+            usage.input_tokens += result.usage.prompt_tokens
+            usage.output_tokens += result.usage.completion_tokens
+        try:
+            answers, missing = _parse_answers(_extract_json(result.content or ""), questions)
+            if not answers:
+                raise JudgmentError("回退通道输出无法解析为有效答案", cause=ErrorCause.INTERNAL, retryable=True)
+        except JudgmentError:
+            if attempt:
+                raise
+            messages.append({"role": "assistant", "content": result.content or ""})
+            messages.append({"role": "user", "content": "上一条响应格式无效。请重新逐题判断，只输出完整、合法的 JSON 对象；"
+                             "确保所有括号闭合，answers 包含所需答案，不要解释。"})
+        else:
+            return answers, missing, result.model or "", usage
+    raise AssertionError("判断重试必须返回结果或抛出格式错误")
 
 
 def _render_user_message(state: JsonValue, questions: Dict[str, Question]) -> str:

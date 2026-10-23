@@ -275,6 +275,7 @@ class MemoryRetriever:
                         query_tags=mention_tags or None,
                         node_names=plan.node_keys if targeted else None,
                         on_results=preserve,
+                        resolve_sources=self._store.resolve_memory_references,
                     )
 
                 # 多窗口补充：以最近一条用户消息为焦点查询（即时窗口，捕捉当前
@@ -817,6 +818,7 @@ class MemoryRetriever:
                 limit=limit,
                 query_tags=query_tags, deep=deep, overview=overview,
                 node_names=plan.node_keys if targeted else None,
+                resolve_sources=self._store.resolve_memory_references,
             )
 
         lanes = await asyncio.gather(*(

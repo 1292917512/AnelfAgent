@@ -161,6 +161,83 @@ async def test_strict_tags_exclude_unattributed_and_graph_answers(monkeypatch):
     assert recall.await_count == 1 and recall.call_args.kwargs["query_type"] == "CHUNKS"
 
 
+@pytest.mark.parametrize("change", ["content", "tags", "deleted", "inactive"])
+async def test_index_hits_recheck_current_source_before_hard_tag_filter(store, monkeypatch, change):
+    from agent.memory.memory_types import MemoryEntry, MemoryType
+    from agent.memory.tag_query import TagQuery
+
+    tags = ["user:qq:1", "project:蓝鸢/prod", "role:owner"]
+    mid = await store.add(MemoryEntry(memory_type=MemoryType.SEMANTIC, content="林舟住在西湖区。", tags=tags))
+    item = CogneeRecallItem(id="old-chunk", content="林舟住在西湖区。", metadata={
+        "anelf_memory_id": str(mid), "anelf_attribution": {"tags": tags},
+    })
+    entry = await store.get(mid)
+    if change == "deleted":
+        await store.delete(mid)
+    else:
+        entry.content = "林舟现在住在滨江区。"
+        if change == "tags":
+            entry.tags = ["user:qq:2", "project:蓝鸢/prod", "role:owner"]
+        elif change == "inactive":
+            entry.importance = 0
+        await store.update(entry)
+    client = SearchClient()
+    monkeypatch.setattr(client, "recall", AsyncMock(return_value=[item]))
+    found = await search_cognee(client, CogneeConfig(), "住址", ["scope"], 5, ["CHUNKS"],
+        tag_query=TagQuery(all_of=("user:qq:1", "project:蓝鸢/*"),
+                           any_of=("role:owner", "role:reviewer"), none_of=("state:old",)),
+        resolve_sources=store.resolve_memory_references)
+    if change == "content":
+        assert len(found) == 1 and found[0].id == f"mem:{mid}"
+        assert found[0].snippet == entry.content and found[0].tags == tags
+    else:
+        assert found == []
+
+
+async def test_source_resolution_preserves_long_document_hit_and_graph_attribution(store):
+    from agent.memory.memory_types import MemoryEntry, MemorySearchResult, MemoryType
+    from agent.memory.store._shared import entry_projection_payload, projection_content_hash
+
+    tail = "发布负责人是许岚，发布必须双人审批。"
+    mid = await store.add(MemoryEntry(memory_type=MemoryType.SEMANTIC, content="部署背景。" * 300 + tail))
+    fingerprint = projection_content_hash(entry_projection_payload(await store.get(mid), mid))
+    chunk = MemorySearchResult(id="chunk", source="cognee_chunk", snippet=tail, score=.8,
+                               provenance={"anelf_memory_id": str(mid), "anelf_content_hash": fingerprint})
+    graph = chunk.model_copy(update={"source": "cognee_graph", "id": "graph"})
+    found = await store.resolve_memory_references([chunk, graph])
+    assert found[0].id == f"mem:{mid}" and found[0].snippet == tail
+    assert found[1] == graph  # 图谱综合包含多条事实，不能冒充单条原文。
+    entry = await store.get(mid)
+    entry.content = f'更正：此前“{tail}”的说法已作废。现在只有林舟负责发布。'
+    await store.update(entry)
+    changed = await store.resolve_memory_references([chunk])
+    assert changed[0].snippet == entry.content  # 旧片段仍是子串，也必须展示完整更正。
+
+
+async def test_strict_search_expands_past_stale_tag_matches(store, monkeypatch):
+    from agent.memory.memory_types import MemoryEntry, MemoryType
+    from agent.memory.tag_query import TagQuery
+
+    items = []
+    for index in range(4):
+        tags = ["project:keep"] if index == 3 else ["project:moved"]
+        mid = await store.add(MemoryEntry(memory_type=MemoryType.SEMANTIC, content=f"发布事实 {index}", tags=tags))
+        items.append(CogneeRecallItem(id=str(index), content="旧内容", metadata={
+            "anelf_memory_id": str(mid), "anelf_attribution": {"tags": ["project:keep"]},
+        }))
+    client = SearchClient()
+
+    async def recall(query, **kwargs):
+        client.calls.append(kwargs)
+        return items[:kwargs["top_k"]]
+
+    monkeypatch.setattr(client, "recall", recall)
+    found = await search_cognee(client, CogneeConfig(recall_pool_multiplier=2), "发布", ["scope"], 1,
+        ["CHUNKS"], tag_query=TagQuery(all_of=("project:keep",)), resolve_sources=store.resolve_memory_references)
+    assert len(found) == 1 and found[0].snippet == "发布事实 3"
+    assert len(client.calls) == 2 and client.calls[1]["top_k"] == 4
+
+
 @pytest.mark.parametrize("required,excluded", [
     (("topic:WoL",), ()),
     (("topic:WOL", "topic:WoL"), ()),

@@ -335,11 +335,11 @@ class TestExportTableFilter:
 
 
 class TestRegistryParity:
-    def test_database_registry_volume_driven(self):
+    def test_database_registry_volume_driven(self, sandbox):
         """Web 库注册表由卷驱动：原 6 库齐全 + share 补登。
 
-        显式重放各存储模块的卷登记（幂等替换），避免依赖进程内
-        模块导入顺序——其他测试可能已把登记落进了被替换的临时注册表。
+        使用独立注册表并显式重放各存储模块的卷登记，避免继承其他测试的
+        活跃路径或依赖进程内模块导入顺序。
         """
         import importlib
 

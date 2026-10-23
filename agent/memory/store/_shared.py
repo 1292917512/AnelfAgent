@@ -308,14 +308,3 @@ def extract_like_keywords(query: str) -> list[str]:
         elif len(word) >= 2:
             keywords.append(word)
     return keywords[:10]
-
-
-def bigram_similarity(a: str, b: str) -> float:
-    """bigram Jaccard 相似度（去重判重用）。"""
-    if len(a) < 2 or len(b) < 2:
-        return 0.0
-    bigrams_a = {a[i:i + 2] for i in range(len(a) - 1)}
-    bigrams_b = {b[i:i + 2] for i in range(len(b) - 1)}
-    intersection = bigrams_a & bigrams_b
-    union = bigrams_a | bigrams_b
-    return len(intersection) / len(union) if union else 0.0

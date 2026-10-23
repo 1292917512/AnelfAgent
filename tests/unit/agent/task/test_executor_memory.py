@@ -68,7 +68,7 @@ def _mind_with_store(store: SimpleNamespace, reflect_return: str = "产出") -> 
 
 def _store(**overrides) -> SimpleNamespace:
     base = dict(
-        has_similar_content=AsyncMock(return_value=False),
+        has_duplicate_content=AsyncMock(return_value=False),
         add=AsyncMock(return_value=1),
         merge_memories=AsyncMock(return_value=9),
         get=AsyncMock(return_value=None),
@@ -82,7 +82,7 @@ def _store(**overrides) -> SimpleNamespace:
 
 class TestStoreResultDedup:
     async def test_rule_dedup_skips_write(self, monkeypatch) -> None:
-        store = _store(has_similar_content=AsyncMock(return_value=True))
+        store = _store(has_duplicate_content=AsyncMock(return_value=True))
         mind = _mind_with_store(store)
         result = TaskResult(task_name="t", content="重复内容", memory_type=MemoryType.EPISODIC, source="t")
 

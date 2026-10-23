@@ -1541,11 +1541,15 @@ class MemoryStore(BaseEntity):
             tag_query=tag_query,
         )
 
-    async def has_similar_content(
-        self, content: str, min_overlap: float = 0.6, *, tags: Optional[list[str]] = None
+    async def resolve_memory_references(self, results: list[MemorySearchResult]) -> list[MemorySearchResult]:
+        """将派生索引中可追溯的记忆引用解析为当前原文，剔除已删除或已归档项。"""
+        return await self._search.resolve_memory_references(results)
+
+    async def has_duplicate_content(
+        self, content: str, *, tags: list[str]
     ) -> bool:
-        """检查是否已存在语义相近的记忆（基于 FTS 候选 + bigram 相似度）。"""
-        return await self._search.has_similar_content(content, min_overlap, tags=tags)
+        """检查正文与完整标签集合均相同的重复，不以文字相似度否决新事实。"""
+        return await self._search.has_duplicate_content(content, tags=tags)
 
     async def search_forgotten(
         self,

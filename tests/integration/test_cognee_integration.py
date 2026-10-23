@@ -22,6 +22,51 @@ pytestmark = [
 ]
 
 
+@pytest.mark.parametrize("old,new,tags,query,expected", [
+    ("林舟目前住在杭州西湖区，日常乘地铁通勤。", "林舟目前住在杭州滨江区，日常乘地铁通勤。",
+     ["user:qq:7101", "topic:住址"], "林舟现在住在哪个区？", "滨江区"),
+    ("林舟可以吃花生，参加聚餐时不用避开花生。", "更正：林舟不能吃花生，参加聚餐时必须避开花生。",
+     ["user:qq:7101", "topic:饮食"], "林舟聚餐时能吃花生吗？", "不能"),
+    ("蓝鸢项目生产服务的监听端口是8092，使用HTTPS访问。", "蓝鸢项目生产服务的监听端口已改为8094，仍使用HTTPS访问。",
+     ["project:蓝鸢", "topic:端口"], "蓝鸢项目当前监听端口是多少？", "8094"),
+    ("林舟喜欢咖啡。", "林舟喜欢咖啡，但晚上不喝以免失眠。",
+     ["user:qq:7101", "topic:饮食"], "林舟晚上喝咖啡吗？", "不喝"),
+    ("蓝鸢项目部署说明：" + "生产环境需要记录运行状态，发布前完成检查，保持操作记录清晰。" * 9 + "当前唯一发布负责人是林舟。",
+     "蓝鸢项目当前唯一发布负责人已由林舟变更为许岚，其余部署规则保持不变。",
+     ["project:蓝鸢", "topic:发布"], "蓝鸢项目现在谁负责发布？", "许岚"),
+])
+@pytest.mark.timeout(240)
+async def test_real_fact_revision_remains_recallable_before_and_after_embedding(
+    tmp_path, monkeypatch, old, new, tags, query, expected,
+):
+    """真实判断、合成与向量模型验证修订不被规则吞掉，回填前后均可回查同一事实。"""
+    from agent.memory import tools as memory_tools
+    from agent.memory.embedding import Embedder
+
+    store = MemoryStore(str(tmp_path / "memory.sqlite3"))
+    embedder = Embedder()
+    memory_tools.memory_tools_port.set(memory_tools.MemoryToolDeps(store, embedder))
+    monkeypatch.setattr("agent.memory.cognee.runtime.get_cognee_client", lambda: None)
+    try:
+        vectors = await embedder.embed_text([old])
+        assert vectors, "真实 embedding 端点不可用"
+        mid = await store.add(MemoryEntry(memory_type=MemoryType.SEMANTIC, content=old, tags=tags, embedding=vectors[0]))
+        result = json.loads(await memory_tools.memorize(new, tags=",".join(tags)))
+        assert result.get("verdict") == "updated", result
+        assert result["id"] == mid
+        current = await store.get(mid)
+        assert expected in current.content and current.embedding is None
+        for backfill in (False, True):
+            if backfill:
+                assert await store.backfill_embeddings(embedder) == 1
+            recalled = json.loads(await memory_tools.recall(query, filter_tags=",".join(tags)))
+            assert [item["id"] for item in recalled["results"]] == [f"mem:{mid}"]
+            assert expected in recalled["results"][0]["content"]
+    finally:
+        memory_tools.memory_tools_port.unbind()
+        await store.close()
+
+
 @pytest.mark.timeout(900)
 async def test_real_coverage_repair_api_validation_and_old_generation_retirement(tmp_path, monkeypatch):
     """真实模型与索引贯通 HTTP 修复、同轮验收、旧轮清理及当前图召回。"""

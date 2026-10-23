@@ -24,15 +24,17 @@ from ..memory_utils import pack_embedding, rank_embedding_blobs
 from ..tag_query import TagQuery
 from ._shared import (
     MEM_COLUMNS,
-    bigram_similarity,
+    MEM_COLUMNS_NO_EMB,
     build_fts_query,
     compute_effective_score,
+    entry_projection_payload,
     escape_like,
     extract_like_keywords,
     file_temporal_decay,
     frequency_boost,
     get_memory_config_value,
     idf_tag_score,
+    projection_content_hash,
     row_to_entry,
     temporal_weight,
     time_decay,
@@ -813,24 +815,44 @@ class SearchEngine:
     # 去重
     # ------------------------------------------------------------------
 
-    async def has_similar_content(
-        self, content: str, min_overlap: float = 0.6, *, tags: Optional[list[str]] = None
+    async def resolve_memory_references(self, results: list[MemorySearchResult]) -> list[MemorySearchResult]:
+        """批量回查可确定的记忆引用；派生索引只提供候选，正文与存续以原生库为准。"""
+        ids = list(dict.fromkeys(int(ref.split(":")[1]) for result in results if (ref := result.memory_reference())))
+        if not ids:
+            return results
+        db = await self._conn.get_db()
+        entries: dict[int, MemoryEntry] = {}
+        for offset in range(0, len(ids), 256):
+            batch = ids[offset:offset + 256]
+            placeholders = ",".join("?" for _ in batch)
+            rows = await (await db.execute(
+                f"SELECT {MEM_COLUMNS_NO_EMB} FROM memories WHERE importance>0 AND id IN ({placeholders})", batch,
+            )).fetchall()
+            entries.update({int(row["id"]): row_to_entry(row, with_embedding=False) for row in rows})
+        resolved: list[MemorySearchResult] = []
+        for result in results:
+            reference = result.memory_reference()
+            if not reference:
+                resolved.append(result)
+            elif entry := entries.get(int(reference.split(":")[1])):
+                fresh = MemorySearchResult.from_entry(entry, result.score)
+                # 仅完整投影指纹一致才保留旧片段；旧句出现在更正引文中不代表仍有效。
+                fingerprint = result.provenance.get("anelf_content_hash")
+                if fingerprint and fingerprint == projection_content_hash(entry_projection_payload(entry, entry.id or 0)):
+                    fresh.snippet = result.snippet
+                fresh.dataset_id, fresh.dataset_name = result.dataset_id, result.dataset_name
+                for key in ("references", "conflicts"):
+                    if key in result.provenance:
+                        fresh.provenance[key] = result.provenance[key]
+                resolved.append(fresh)
+        return resolved
+
+    async def has_duplicate_content(
+        self, content: str, *, tags: list[str]
     ) -> bool:
-        """检查是否已存在语义相近的记忆（基于 FTS 候选 + bigram 相似度）。"""
+        """只拦截正文与完整标签集合均相同的重复；近似文本交给语义裁决。"""
         results = await self.search_fts(content, limit=5)
-        content_clean = content.replace(" ", "").replace("\n", "")
-        for entry, _ in results:
-            if tags is not None and (
-                {t for t in entry.tags if t.startswith(("user:", "group:"))}
-                != {t for t in tags if t.startswith(("user:", "group:"))}
-            ):
-                continue
-            existing_clean = entry.content.replace(" ", "").replace("\n", "")
-            if content_clean in existing_clean or existing_clean in content_clean:
-                return True
-            if bigram_similarity(content_clean, existing_clean) >= min_overlap:
-                return True
-        return False
+        return any(entry.content == content and set(entry.tags) == set(tags) for entry, _ in results)
 
 
 # ------------------------------------------------------------------

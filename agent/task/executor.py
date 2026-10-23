@@ -333,7 +333,7 @@ class TaskExecutor:
         from agent.memory.embedding import wake_embedding_worker
 
         content = result.content
-        if await store.has_similar_content(content):
+        if await store.has_duplicate_content(content, tags=result.tags):
             metrics.incr("write.dedup_rule_skip")
             log(f"任务结果与已有记忆重复，跳过存储: [{result.task_name}]", tag="任务")
             return
@@ -351,6 +351,7 @@ class TaskExecutor:
                 store, int(verdict["target_id"]),
                 str(verdict.get("content") or content), result.tags,
                 actor=f"task:{result.task_name}",
+                expected_version=verdict.get("expected_version"),
             )
             if updated is not None:
                 wake_embedding_worker()

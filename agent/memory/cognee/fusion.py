@@ -1,6 +1,6 @@
 """原生记忆与 Cognee 的联邦召回和秩融合。
 
-模型看到什么：动态记忆区接收逐条证据，慢通道不丢弃已完成的事实。
+模型看到什么：动态记忆区接收逐条证据；可回链的分块按原生库当前正文和标签复核。
 token 影响：候选融合后按原预算截取，避免重复文档与检索模板占用上下文。
 缓存影响：只修改动态召回区，不触碰稳定前缀。
 """
@@ -110,6 +110,7 @@ async def federated_search(
     overview: bool = False,
     diagnostics: RecallDiagnostics | None = None,
     on_results: Callable[[list[MemorySearchResult]], None] | None = None,
+    resolve_sources: Callable[[list[MemorySearchResult]], Awaitable[list[MemorySearchResult]]] | None = None,
 ) -> list[MemorySearchResult]:
     """并行搜索原生后端和 Cognee，失败时透明降级。
 
@@ -161,7 +162,7 @@ async def federated_search(
     tasks = [asyncio.create_task(read_native()), asyncio.create_task(
         search_cognee(client, config, query, datasets, limit, search_types,
                       node_names=node_names, on_batch=consume, tag_query=tag_query, overview=overview,
-                      diagnostics=diagnostics),
+                      diagnostics=diagnostics, resolve_sources=resolve_sources),
         name="memory.cognee.recall",
     )]
     try:
@@ -193,6 +194,7 @@ async def search_cognee(
     tag_query: TagQuery | None = None,
     overview: bool = False,
     diagnostics: RecallDiagnostics | None = None,
+    resolve_sources: Callable[[list[MemorySearchResult]], Awaitable[list[MemorySearchResult]]] | None = None,
 ) -> list[MemorySearchResult]:
     """cognee 检索的统一拼装点：类型 × 数据集并行 recall + 定向通道 + 归一化。
 
@@ -253,7 +255,7 @@ async def search_cognee(
                 only_context=not use_summary and search_type_name not in {"CHUNKS", "CHUNKS_LEXICAL", "SUMMARIES"},
                 include_references=True,
             )
-            call = (partial(_filtered_recall, client, query, options, tag_query, limit, diagnostics)
+            call = (partial(_filtered_recall, client, query, options, tag_query, limit, diagnostics, resolve_sources)
                     if strict else partial(client.recall, query, **options))
             lanes.append((f"{search_type_name}/{dataset_name}", call))
     # 定向检索通道：node_name 限定到提及实体的事实块（每数据集一次，
@@ -287,6 +289,11 @@ async def search_cognee(
             await on_batch(CogneeSearchBatch(lane, "running"))
         try:
             items = await call()
+            results = _project_items(items, strict=strict, resolving=resolve_sources is not None)
+            if resolve_sources is not None:
+                results = await resolve_sources(results)
+            if strict and tag_query is not None:
+                results = [result for result in results if tag_query.matches(result.tags)]
         except Exception as exc:
             diagnostics.failed_lanes += 1
             detail = f"{type(exc).__name__}: {str(exc) or '检索未完成'}"
@@ -295,20 +302,6 @@ async def search_cognee(
             if on_batch is not None:
                 await on_batch(CogneeSearchBatch(lane, "error", elapsed, error=detail))
             return []
-        results: list[MemorySearchResult] = []
-        for item in items:
-            projection = recall_projection(item)
-            if strict and (item.source != "cognee_chunk" or "tags" not in projection
-                           or tag_query is None or not tag_query.matches(projection["tags"])):
-                continue
-            provenance = {**item.metadata, **projection.pop("provenance", {})}
-            provenance.pop("anelf_attribution", None)
-            projection["snippet"] = excerpt(str(projection["snippet"]), 700)
-            results.append(MemorySearchResult.model_validate({
-                **projection, "id": item.id, "score": item.score, "source": item.source,
-                "dataset_id": item.dataset_id, "dataset_name": item.dataset_name,
-                "provenance": provenance,
-            }))
         elapsed = time.monotonic() - started
         diagnostics.completed_lanes += 1
         diagnostics.summary_used |= bool(results) and lane in summary_lanes
@@ -333,9 +326,30 @@ async def search_cognee(
             await asyncio.gather(*tasks, return_exceptions=True)
 
 
+def _project_items(items: list[CogneeRecallItem], *, strict: bool, resolving: bool) -> list[MemorySearchResult]:
+    """索引结果转为来源明确的候选；硬过滤只允许结构化标签或可回查的原生引用。"""
+    results: list[MemorySearchResult] = []
+    for item in items:
+        projection = recall_projection(item)
+        provenance = {**item.metadata, **projection.pop("provenance", {})}
+        provenance.pop("anelf_attribution", None)
+        projection["snippet"] = excerpt(str(projection["snippet"]), 700)
+        result = MemorySearchResult.model_validate({
+            **projection, "id": item.id, "score": item.score, "source": item.source,
+            "dataset_id": item.dataset_id, "dataset_name": item.dataset_name, "provenance": provenance,
+        })
+        if strict and (item.source != "cognee_chunk" or
+                       ("tags" not in projection and not (resolving and result.memory_reference()))):
+            continue
+        results.append(result)
+    return results
+
+
 async def _filtered_recall(client: RecallBackend, query: str, options: dict[str, Any],
                            tags: TagQuery | None, limit: int,
-                           diagnostics: RecallDiagnostics) -> list[CogneeRecallItem]:
+                           diagnostics: RecallDiagnostics,
+                           resolve_sources: Callable[[list[MemorySearchResult]], Awaitable[list[MemorySearchResult]]] | None = None,
+                           ) -> list[CogneeRecallItem]:
     """标签不足时有界扩展，并撤下可能因 NodeSet 拼写合并而漏召回的预过滤。"""
     requested = int(options["top_k"])
     cap = max(requested, min(2048, requested * 4))
@@ -345,9 +359,11 @@ async def _filtered_recall(client: RecallBackend, query: str, options: dict[str,
         items = await client.recall(query, **{**options, "top_k": requested})
         for item in items:
             collected[(item.source, item.id)] = item
-        matched = sum(1 for item in collected.values() if item.source == "cognee_chunk" and tags is not None
-                      and "tags" in (projection := recall_projection(item)) and tags.matches(projection["tags"]))
-        if matched >= limit:
+        candidates = _project_items(list(collected.values()), strict=True, resolving=resolve_sources is not None)
+        if resolve_sources is not None:
+            candidates = await resolve_sources(candidates)
+        matched = {dedupe_key(item) for item in candidates if tags is not None and tags.matches(item.tags)}
+        if len(matched) >= limit:
             return list(collected.values())
         if options.pop("node_name", None):
             options.pop("node_name_filter_operator", None)

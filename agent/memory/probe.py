@@ -462,6 +462,7 @@ class DeepProbeHub:
             client, config, query, datasets, 5,
             ["CHUNKS", "GRAPH_COMPLETION"],
             node_names=plan.node_keys or None, on_batch=consume,
+            resolve_sources=store.resolve_memory_references,
         )
         if failures:
             raise RuntimeError(f"{len(failures)} 个检索通道失败；{failures[0]}")

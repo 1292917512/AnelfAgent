@@ -471,6 +471,7 @@ class AutoCapturePipeline:
                 tags,
                 actor="auto_capture",
                 metadata=metadata,
+                expected_version=decision.get("expected_version"),
             )
             if updated is not None:
                 return 1

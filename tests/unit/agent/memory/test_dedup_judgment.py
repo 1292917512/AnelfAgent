@@ -89,6 +89,17 @@ _CANDIDATES = [_entry(1, "住在杭州西湖区"), _entry(2, "喜欢下雨天")]
 
 
 class TestQuestionShape:
+    async def test_complete_candidates_preserve_tail_facts_and_recording_date(self, monkeypatch) -> None:
+        engine = _patch(monkeypatch, {"relation": _relation("novel")})
+        entry = _entry(1, "蓝鸢项目运行说明。" * 40 + "唯一发布负责人是林舟，不能自动发布。")
+        entry.tags = ["project:蓝鸢", "user:qq:1"]
+        await dedup.judge_write("发布负责人改为许岚。", [entry], tags=["project:蓝鸢"])
+        candidate = engine.seen_state["candidates"][0]
+        assert candidate["content"] == entry.content
+        assert candidate["tags"] == entry.tags
+        assert candidate["recorded_at"] == time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(entry.timestamp))
+        assert "完整正文" in engine.seen_questions["target"].criteria["1"]
+
     async def test_questions_cover_all_judgments(self, monkeypatch: pytest.MonkeyPatch) -> None:
         engine = _patch(monkeypatch, {"relation": _relation("novel")})
 
@@ -161,6 +172,7 @@ class TestActionMapping:
         assert decision["action"] == "update"
         assert decision["target_id"] == 1
         assert decision["content"] == "合并后的记忆文本"
+        assert decision["expected_version"] == _CANDIDATES[0].version
 
     async def test_unknown_relation_choice_stores(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # 判断面已收窄为三选一：体系外的关系选项回退为直接写入

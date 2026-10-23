@@ -1,7 +1,7 @@
 """写入去重：候选召回 + 判断平台裁决（store / skip / update）。
 
-规则去重（子串/bigram）只能发现字面近重复；「我搬家了」对旧地址这类事实
-演进检测不到，会累积互相矛盾的记录。本模块在规则去重之后加一道语义裁决：
+规则仅拦截正文与完整标签均相同的重复；近似文本可能包含地址、数值、否定和条件
+的修订，必须经语义裁决，不能按文字重叠率丢弃。本模块负责语义裁决：
 
 1. 候选召回：FTS（jieba 词级）+ 向量并行召回，按融合名次限量；
 2. 判断段（agent/judgment 平台，Jev 原生或普通模型回退）：一次调用并行评判——
@@ -12,8 +12,8 @@
 
 memorize 工具与 auto_capture 自动提取管线共用本模块。
 
-Model Experience：候选携带身份与主题标签，按相关性而非新旧排序，跨身份交判断模型裁决。
-Token 影响：候选预算和判断次数不变，关闭语义判重时不再召回候选。
+Model Experience：候选携带完整正文、身份与主题标签及记录时间，跨身份交判断模型裁决。
+Token 影响：候选条数不变；完整正文增加内部判断输入，避免裁掉结尾的更正与条件。
 缓存影响：内部判断与合成不改主对话稳定前缀。
 """
 
@@ -179,8 +179,8 @@ def _candidate_previews(candidates: List[MemoryEntry]) -> List[Dict[str, Any]]:
     """
     previews: List[Dict[str, Any]] = []
     for seq, entry in enumerate(candidates, start=1):
-        day = time.strftime("%m-%d", time.localtime(entry.timestamp))
-        previews.append({"seq": str(seq), "date": day, "content": entry.content[:200], "tags": entry.tags})
+        recorded_at = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(entry.timestamp))
+        previews.append({"seq": str(seq), "recorded_at": recorded_at, "content": entry.content, "tags": entry.tags})
     return previews
 
 
@@ -188,13 +188,14 @@ def _build_judgment_questions(previews: List[Dict[str, Any]]) -> Dict[str, Quest
     """构造判断题面：关系三选一 + update 目标选择。"""
     questions: Dict[str, Question] = {
         "relation": ChoiceQuestion(
-            instructions="这条新记忆与候选既有记忆是什么关系？据此决定新记忆的写入方式",
+            instructions="根据完整正文和涉及对象判断关系，不能只看共同前缀。记录时间不是事实发生时间；"
+            "数字、地点、否定或条件的变化属于新信息，不能当作已覆盖。",
             criteria=dict(_RELATION_CRITERIA),
         ),
         "target": ChoiceQuestion(
             instructions="若已有候选完整覆盖新记忆，或新记忆更新/补充/修正候选，应归属哪条候选？",
             criteria={
-                **{p["seq"]: f"候选 {p['seq']}（{p['date']}）{p['content'][:80]}" for p in previews},
+                **{p["seq"]: f"候选 {p['seq']}，以 state 中该序号的完整正文和标签为准" for p in previews},
                 "none": "不属于对任何候选的更新",
             },
         ),
@@ -204,10 +205,12 @@ def _build_judgment_questions(previews: List[Dict[str, Any]]) -> Dict[str, Quest
 
 async def _synthesize_merged_content(content: str, targets: List[MemoryEntry]) -> str:
     """生成段：合成合并后的记忆文本（仅 update 需要；失败返回空串）。"""
-    lines = [f"[#{t.id}]（{time.strftime('%m-%d', time.localtime(t.timestamp))}）{t.content}" for t in targets]
+    lines = [t.content for t in targets]
     prompt = (
         "你是记忆系统的文本合并器。把下列记忆合并为一条完整、准确的表述"
-        "（一两句话，保留关键事实、时间、来源与不确定性；AI 自述不等于已验证事实，修正应取代被否定的旧说法）。只输出合并后的文本，不要输出任何其他内容。\n\n"
+        "。保留未被本次变更影响的事实、条件、时间、来源与不确定性，不为缩短文本遗漏信息。"
+        "修正应取代被否定的旧说法；记录时间不等于事件时间，不能据此编造事件日期。"
+        "AI 自述不等于已验证事实。只输出更新后的事实正文，不添加处理过程、编号和记录时间。\n\n"
         f"【新记忆】\n{content}\n\n【待合并的既有记忆】\n" + "\n".join(lines)
     )
     try:
@@ -296,6 +299,7 @@ async def judge_write(
         return {
             "action": "update",
             "target_id": target_id,
+            "expected_version": target_entry.version,
             "content": merged,
             "reason": f"同一事实的演进，合并进候选 #{target_id}",
         }
@@ -333,10 +337,11 @@ async def apply_update(
     *,
     actor: str = "",
     metadata: Optional[Dict[str, Any]] = None,
+    expected_version: int | None = None,
 ) -> Optional[MemoryEntry]:
-    """应用 update 裁决：合并内容写入目标记忆（version+1，向量待重建）。"""
+    """应用更新，拒绝覆盖判断期间已改变的目标；调用方保留新事实并单独写入。"""
     target = await store.get(target_id)
-    if target is None:
+    if target is None or (expected_version is not None and target.version != expected_version):
         return None
     merged_tags = list(dict.fromkeys(target.tags + extra_tags)) if extra_tags else target.tags
     from .provenance import merge_metadata
@@ -350,7 +355,7 @@ async def apply_update(
     target.tags = merged_tags
     target.metadata = merged_metadata
     # 正文变化时 Store 统一失效旧向量并唤醒后台回填
-    ok = await store.update(target, actor=actor)
+    ok = await store.update(target, actor=actor, expected_version=target.version)
     if not ok:
         return None
     return target

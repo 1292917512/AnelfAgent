@@ -212,7 +212,7 @@ async def execute_remember(mind: Mind, decision: Decision) -> None:
 
     try:
         # 第一级：规则判重（零成本快速拦截）
-        if await store.has_similar_content(content):
+        if await store.has_duplicate_content(content, tags=tags):
             metrics.incr("write.dedup_rule_skip")
             log(f"AI 主动记忆裁决: 重复跳过（规则）: {content[:80]}", tag="思维")
             _hb_append(f"主动记忆裁决: 与既有记忆重复，未写入 - {content[:60]}")
@@ -235,6 +235,7 @@ async def execute_remember(mind: Mind, decision: Decision) -> None:
                 store, int(verdict["target_id"]),
                 str(verdict.get("content") or content), tags,
                 actor="decision_executor",
+                expected_version=verdict.get("expected_version"),
             )
             if updated is not None:
                 wake_embedding_worker()

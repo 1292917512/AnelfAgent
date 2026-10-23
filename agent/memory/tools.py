@@ -246,8 +246,8 @@ async def memorize(
         if mem_type == MemoryType.PERMANENT:
             return await _upsert_permanent(content, tag_list, 1.0, metadata)
 
-        # 第一级：规则判重（子串/字面高相似，零成本快速拦截）
-        if await store.has_similar_content(content, tags=tag_list):
+        # 第一级：正文与全部标签相同才直接拦截，修订与补充交给语义裁决。
+        if await store.has_duplicate_content(content, tags=tag_list):
             from . import metrics
 
             metrics.incr("write.dedup_rule_skip")
@@ -255,7 +255,7 @@ async def memorize(
                 {
                     "ok": False,
                     "verdict": "skipped_duplicate",
-                    "message": "已存在相似记忆，跳过（未重复写入）",
+                    "message": "已存在正文和标签相同的记忆，跳过（未重复写入）",
                 },
                 ensure_ascii=False,
             )
@@ -288,6 +288,7 @@ async def memorize(
                 tag_list,
                 actor="tool:memorize",
                 metadata=metadata,
+                expected_version=decision.get("expected_version"),
             )
             if updated is not None:
                 wake_embedding_worker()
@@ -532,6 +533,7 @@ async def recall(
                 deep=is_deep,
                 overview=depth == "overview",
                 diagnostics=diagnostics,
+                resolve_sources=store.resolve_memory_references,
                 node_names=list(dict.fromkeys((tag_list or []) + node_keys)) or None,
             ),
             store.search_forgotten(

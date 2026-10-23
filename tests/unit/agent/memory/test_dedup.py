@@ -14,6 +14,34 @@ from agent.memory import dedup
 from agent.memory.memory_types import MemoryEntry, MemoryType
 
 
+@pytest.mark.parametrize("old,new", [
+    ("林舟目前住在杭州西湖区，日常乘地铁通勤。", "林舟目前住在杭州滨江区，日常乘地铁通勤。"),
+    ("蓝鸢服务监听8092端口。", "蓝鸢服务监听8094端口。"),
+    ("林舟可以吃花生。", "林舟不可以吃花生。"),
+    ("林舟喜欢咖啡", "林舟喜欢咖啡，但晚上不喝"),
+    ("变量名为ab", "变量名为a b"),
+])
+async def test_literal_gate_preserves_corrections_and_conditions(store, old, new) -> None:
+    tags = ["user:qq:1", "topic:偏好"]
+    await store.add(MemoryEntry(memory_type=MemoryType.SEMANTIC, content=old, tags=tags))
+    assert await store.has_duplicate_content(old, tags=tags)
+    assert not await store.has_duplicate_content(new, tags=tags)
+    assert not await store.has_duplicate_content(old, tags=["user:qq:2", "topic:偏好"])
+    assert not await store.has_duplicate_content(old, tags=[*tags, "project:蓝鸢"])
+
+
+async def test_apply_update_rejects_stale_judgment_without_changing_current_fact(store) -> None:
+    mid = await store.add(MemoryEntry(memory_type=MemoryType.SEMANTIC, content="林舟住在杭州。", embedding=[1, 0]))
+    judged = await store.get(mid)
+    current = judged.model_copy(deep=True)
+    current.content = "林舟住在苏州，周末去南京。"
+    await store.update(current, new_embedding=[0, 1])
+    assert await dedup.apply_update(store, mid, "林舟住在上海。", expected_version=judged.version) is None
+    saved = await store.get(mid)
+    assert saved.content == current.content and saved.embedding == [0, 1]
+    assert saved.version == current.version
+
+
 async def test_candidates_retain_relevant_old_facts_and_cross_identity(monkeypatch) -> None:
     old = MemoryEntry(id=1, memory_type=MemoryType.SEMANTIC, content="旧地址", timestamp=1, tags=["user:qq:1"])
     other = MemoryEntry(id=2, memory_type=MemoryType.SEMANTIC, content="另一个人的地址", timestamp=2,

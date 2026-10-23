@@ -1242,6 +1242,7 @@ class HeartbeatEngine:
                     str(decision.get("content") or content),
                     tags,
                     actor="heartbeat_distill",
+                    expected_version=decision.get("expected_version"),
                 )
                 if updated is not None:
                     return

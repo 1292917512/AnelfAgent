@@ -208,6 +208,7 @@ class MemoryService:
             config=cognee_config,
             limit=limit,
             query_tags=tag_list,
+            resolve_sources=store.resolve_memory_references,
         )
         return [
             {
