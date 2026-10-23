@@ -69,6 +69,8 @@ test("credential cards preserve secrets and drafts, batch save and clear explici
   await dialog.getByRole("button", { name: "Save", exact: true }).click();
   await expect(dialog.getByRole("button", { name: "Clear API Key", exact: true })).toHaveCount(0);
   expect(writes[1]).toEqual({ api_key: "" });
+  await expect(secret).toHaveAttribute("placeholder", "API Key");
+  await expect(secret).toBeEnabled();
   await secret.fill("discard-this-secret");
   await dialog.getByRole("button", { name: "Close", exact: true }).last().click();
   await page.getByRole("button", { name: "Discard changes", exact: true }).click();

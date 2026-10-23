@@ -33,11 +33,12 @@ export function CredentialCard({ credential, onEdit }: {
 }
 
 /** 通用字段和模块授权编辑器共享详情标题、归属导航与弹层。 */
-export function CredentialDialog({ credential, onClose, children, footer, busy = false }: {
+export function CredentialDialog({ credential, onClose, children, footer, busy = false, open = true, onAfterClose }: {
   credential: ProviderKeyEntry; onClose: () => void; children: ReactNode; footer?: ReactNode; busy?: boolean;
+  open?: boolean; onAfterClose?: () => void;
 }) {
   const { t } = useTranslation("common");
-  return <Modal open onClose={onClose} title={credential.title} width="max-w-xl" footer={footer} dismissible={!busy}>
+  return <Modal open={open} onAfterClose={onAfterClose} onClose={onClose} title={credential.title} width="max-w-xl" footer={footer} dismissible={!busy}>
     <div className="mb-5 space-y-2 border-b border-border/60 pb-4">
       <p className="break-words text-xs leading-relaxed text-muted">{credential.unregistered ? t("providerKeys.unregisteredHint") : credential.description}</p>
       {credential.destination && <Link to={credential.destination} className="inline-flex items-center gap-1 text-xs text-accent hover:underline">

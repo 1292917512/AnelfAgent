@@ -6,6 +6,7 @@ import {
 } from "lucide-react";
 import { vaultApi, vaultErrorMessage } from "./api";
 import { Card } from "@/components/common/Card";
+import { ConfirmDialog } from "@/components/ui";
 import { toast } from "@/stores/toast-store";
 import type { VaultEntry } from "./types";
 
@@ -69,6 +70,7 @@ function TotpBadge({ entryId }: { entryId: string }) {
 export function VaultList({ onCreate, onEdit }: VaultListProps) {
   const { t } = useTranslation("vault");
   const queryClient = useQueryClient();
+  const [removing, setRemoving] = useState<VaultEntry | null>(null);
   const [query, setQuery] = useState("");
   const [activeTag, setActiveTag] = useState("");
   const [favoriteOnly, setFavoriteOnly] = useState(false);
@@ -91,6 +93,7 @@ export function VaultList({ onCreate, onEdit }: VaultListProps) {
     mutationFn: (id: string) => vaultApi.remove(id),
     onSuccess: () => {
       toast.success(t("messages.removeSuccess"));
+      setRemoving(null);
       queryClient.invalidateQueries({ queryKey: ["vaultEntries"] });
       queryClient.invalidateQueries({ queryKey: ["vaultTags"] });
     },
@@ -123,9 +126,7 @@ export function VaultList({ onCreate, onEdit }: VaultListProps) {
   };
 
   const handleRemove = (entry: VaultEntry) => {
-    if (window.confirm(t("messages.confirmRemove", { title: entry.title }))) {
-      removeMutation.mutate(entry.id);
-    }
+    setRemoving(entry);
   };
 
   return (
@@ -287,6 +288,9 @@ export function VaultList({ onCreate, onEdit }: VaultListProps) {
           </div>
         )}
       </div>
+      <ConfirmDialog open={removing !== null} onClose={() => setRemoving(null)} title={t("common:delete")}
+        message={t("messages.confirmRemove", { title: removing?.title })} danger loading={removeMutation.isPending}
+        onConfirm={() => { if (removing) removeMutation.mutate(removing.id); }} />
     </Card>
   );
 }

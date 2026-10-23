@@ -27,6 +27,52 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
+test("manual model dialog aligns actions and animates guarded close and successful save", async ({ page, isMobile }, info) => {
+  await page.goto("/webui/models");
+  await page.evaluate(() => document.addEventListener("animationstart", (event) => {
+    if (event instanceof AnimationEvent && event.animationName === "surface-exit" && event.target instanceof HTMLElement) {
+      document.documentElement.dataset.dialogExits = (document.documentElement.dataset.dialogExits ?? "") + event.target.textContent;
+    }
+  }));
+  await page.getByRole("button", { name: /Demo provider/ }).click();
+  const trigger = page.getByRole("button", { name: "Manual Add", exact: true });
+  await trigger.click();
+  const dialog = page.getByRole("dialog", { name: "Add Model Manually", exact: true });
+  await dialog.getByRole("textbox", { name: "Model ID", exact: true }).fill("draft-model");
+  const actions = dialog.locator(".dialog-actions > button");
+  const boxes = await actions.evaluateAll((buttons) => buttons.map((button) => {
+    const { x, y, width, height } = button.getBoundingClientRect();
+    return { x, y, width, height };
+  }));
+  expect(boxes).toHaveLength(2);
+  expect(boxes[0]!.y).toBeCloseTo(boxes[1]!.y, 0);
+  expect(boxes[0]!.height).toBe(boxes[1]!.height);
+  expect(boxes[0]!.height).toBeGreaterThanOrEqual(isMobile ? 44 : 40);
+  expect(boxes[0]!.x + boxes[0]!.width).toBeLessThan(boxes[1]!.x);
+  await page.screenshot({ path: info.outputPath("manual-model-actions.png"), animations: "disabled" });
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  const confirmation = page.getByRole("dialog", { name: "Unsaved changes", exact: true });
+  await confirmation.getByRole("button", { name: "Keep editing", exact: true }).click();
+  await expect(dialog.getByRole("textbox", { name: "Model ID", exact: true })).toHaveValue("draft-model");
+  await expect(dialog.getByRole("button", { name: "Cancel", exact: true })).toBeFocused();
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await confirmation.getByRole("button", { name: "Discard changes", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(trigger).toBeFocused();
+  await expect.poll(() => page.evaluate(() => document.documentElement.dataset.dialogExits)).toContain("Add Model Manually");
+  await trigger.click();
+  await expect(dialog.getByRole("textbox", { name: "Model ID", exact: true })).toHaveValue("");
+  await dialog.getByRole("textbox", { name: "Model ID", exact: true }).fill("saved-model");
+  await dialog.getByRole("button", { name: "Create", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(trigger).toBeFocused();
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await trigger.click();
+  await expect(dialog).toHaveCSS("animation-name", "none");
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(dialog).toBeHidden();
+});
+
 test("model picker supports search and keyboard selection inside another dialog", async ({ page }) => {
   await page.goto("/webui/tasks");
   await page.getByRole("button", { name: "Edit", exact: true }).click();

@@ -1,9 +1,10 @@
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Pencil, Plug, Plus, RefreshCw, Star, Trash2, Unplug } from "lucide-react";
 import { sshApi } from "./api";
 import { Card } from "@/components/common/Card";
+import { ConfirmDialog } from "@/components/ui";
 import { StatusDot } from "@/components/common/StatusDot";
 import { toast } from "@/stores/toast-store";
 import type { SshConnection, SshStatus } from "./types";
@@ -25,6 +26,7 @@ function statusDot(status: SshStatus): "ok" | "warn" | "danger" | "offline" {
 export function ConnectionsPanel({ onEdit, onCreate }: ConnectionsPanelProps) {
   const { t } = useTranslation("ssh");
   const queryClient = useQueryClient();
+  const [removing, setRemoving] = useState<SshConnection | null>(null);
 
   const { data, refetch } = useQuery({
     queryKey: ["sshConnections"],
@@ -66,7 +68,7 @@ export function ConnectionsPanel({ onEdit, onCreate }: ConnectionsPanelProps) {
 
   const removeMutation = useMutation({
     mutationFn: (name: string) => sshApi.remove(name),
-    onSuccess: () => { toast.success(t("messages.removeSuccess")); invalidate(); },
+    onSuccess: () => { setRemoving(null); toast.success(t("messages.removeSuccess")); invalidate(); },
     onError: () => toast.error(t("messages.removeFailed")),
   });
 
@@ -79,9 +81,7 @@ export function ConnectionsPanel({ onEdit, onCreate }: ConnectionsPanelProps) {
   const connections = data?.connections ?? [];
 
   const handleRemove = (conn: SshConnection) => {
-    if (window.confirm(t("messages.confirmRemove", { name: conn.name }))) {
-      removeMutation.mutate(conn.name);
-    }
+    setRemoving(conn);
   };
 
   return (
@@ -191,6 +191,9 @@ export function ConnectionsPanel({ onEdit, onCreate }: ConnectionsPanelProps) {
           ))}
         </div>
       )}
+      <ConfirmDialog open={removing !== null} onClose={() => setRemoving(null)} title={t("common:delete")}
+        message={t("messages.confirmRemove", { name: removing?.name })} danger loading={removeMutation.isPending}
+        onConfirm={() => { if (removing) removeMutation.mutate(removing.name); }} />
     </Card>
   );
 }

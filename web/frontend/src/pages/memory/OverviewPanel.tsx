@@ -1,13 +1,16 @@
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { memoryApi } from "@/lib/api";
 import { Card } from "@/components/common/Card";
 import { StatCard } from "@/components/common/StatCard";
 import { Trash2, RefreshCw, AlertTriangle } from "lucide-react";
+import { ConfirmDialog } from "@/components/ui";
 
 export function OverviewPanel() {
   const { t } = useTranslation("memory");
   const queryClient = useQueryClient();
+  const [confirmation, setConfirmation] = useState<"vectors" | "index" | null>(null);
   const { data: health } = useQuery({
     queryKey: ["memoryHealth"],
     queryFn: () => memoryApi.health().then((r) => r.data),
@@ -49,7 +52,7 @@ export function OverviewPanel() {
         <Card title={t("healthTitle")}><p className="text-sm text-muted">{health?.error || t("common:loading")}</p></Card>
       ) : (
         <Card title={t("healthSubtitle")} subtitle={t("totalMemories", { count: health.total_memories || 0 })} actions={
-          <button onClick={() => { if (window.confirm(t("rebuildVectorsConfirm"))) rebuildVectorsMutation.mutate(); }} disabled={rebuildVectorsMutation.isPending}
+          <button onClick={() => setConfirmation("vectors")} disabled={rebuildVectorsMutation.isPending}
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-danger-subtle text-danger hover:bg-[rgba(239,68,68,0.15)] transition-[color,background-color,border-color,box-shadow,opacity]">
             <RefreshCw size={14} /> {t("rebuildVectors")}
           </button>
@@ -115,7 +118,7 @@ export function OverviewPanel() {
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-elevated text-muted hover:bg-hover transition-[color,background-color,border-color,box-shadow,opacity]">
             <RefreshCw size={14} /> {t("incrementalSync")}
           </button>
-          <button onClick={() => { if (window.confirm(t("fullRebuildConfirm"))) resyncMutation.mutate(true); }} disabled={resyncMutation.isPending}
+          <button onClick={() => setConfirmation("index")} disabled={resyncMutation.isPending}
             className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md border border-border bg-danger-subtle text-danger hover:bg-[rgba(239,68,68,0.15)] transition-[color,background-color,border-color,box-shadow,opacity]">
             <RefreshCw size={14} /> {t("fullRebuild")}
           </button>
@@ -139,6 +142,14 @@ export function OverviewPanel() {
           </div>
         ) : (<p className="text-sm text-muted">{t("common:loading")}</p>)}
       </Card>
+      <ConfirmDialog open={confirmation !== null} onClose={() => setConfirmation(null)} danger
+        title={t(confirmation === "vectors" ? "rebuildVectors" : "fullRebuild")}
+        message={t(confirmation === "vectors" ? "rebuildVectorsConfirm" : "fullRebuildConfirm")}
+        onConfirm={() => {
+          if (confirmation === "vectors") rebuildVectorsMutation.mutate();
+          else if (confirmation === "index") resyncMutation.mutate(true);
+          setConfirmation(null);
+        }} />
     </div>
   );
 }

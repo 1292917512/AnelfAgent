@@ -31,6 +31,7 @@ export function CreateTagModal({
     <Modal
       open={open}
       onClose={onClose}
+      dismissible={!pending}
       width="max-w-md"
       title={
         <span className="flex items-center gap-2">
@@ -40,7 +41,7 @@ export function CreateTagModal({
       }
       footer={
         <>
-          <Button variant="secondary" size="sm" onClick={onClose}>
+          <Button variant="secondary" disabled={pending} onClick={onClose}>
             {t("common:cancel")}
           </Button>
           <Button

@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { AlertTriangle, KeyRound, ShieldAlert, ShieldCheck, ShieldX } from "lucide-react";
 import { vaultApi, vaultErrorMessage } from "./api";
 import { Card } from "@/components/common/Card";
+import { ConfirmDialog } from "@/components/ui";
 import { toast } from "@/stores/toast-store";
 import type { VaultBreachReport } from "./types";
 
@@ -28,6 +29,8 @@ export function SecurityPanel({
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [changing, setChanging] = useState(false);
+  const [confirmDisable, setConfirmDisable] = useState(false);
+  const [disabling, setDisabling] = useState(false);
 
   const runCheck = async () => {
     setChecking(true);
@@ -71,15 +74,17 @@ export function SecurityPanel({
   };
 
   const disableMaster = async () => {
-    if (!window.confirm(t("security.confirmDisableMaster"))) {
-      return;
-    }
+    if (disabling) return;
+    setDisabling(true);
     try {
       await vaultApi.masterDisable();
       toast.success(t("security.disableMasterSuccess"));
+      setConfirmDisable(false);
       onModeChanged();
     } catch (err) {
       toast.error(vaultErrorMessage(err, t("security.changeMasterFailed")));
+    } finally {
+      setDisabling(false);
     }
   };
 
@@ -225,7 +230,8 @@ export function SecurityPanel({
           {unlockMode === "master" && (
             <>
               <button
-                onClick={disableMaster}
+                onClick={() => setConfirmDisable(true)}
+                disabled={changing || disabling}
                 className="px-3 py-2 text-sm font-medium rounded-md border border-warn/40 bg-warn/10 text-warn hover:bg-warn/20 transition-all"
               >
                 {t("security.disableMasterAction")}
@@ -243,6 +249,8 @@ export function SecurityPanel({
           )}
         </div>
       </Card>
+      <ConfirmDialog open={confirmDisable} onClose={() => setConfirmDisable(false)} title={t("security.disableMasterAction")}
+        message={t("security.confirmDisableMaster")} danger loading={disabling} onConfirm={() => void disableMaster()} />
     </div>
   );
 }

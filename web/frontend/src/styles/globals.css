@@ -374,6 +374,23 @@ button, a, input, select, textarea, [role="tab"], [role="option"] {
 .dialog-overlay[data-state="closed"] { pointer-events: none; }
 .dialog-surface, .floating-surface { --surface-x: 0px; --surface-y: 6px; --surface-base-y: 0px; }
 .dialog-surface { box-shadow: var(--shadow-lg); }
+/* 弹层操作区独立于滚动内容，统一文字按钮尺寸并容纳长翻译。 */
+.dialog-actions > .app-button:not([data-size="icon"]) {
+  min-width: 6rem;
+  max-width: 100%;
+  min-height: 2.5rem;
+  height: auto;
+  padding: .5rem 1rem;
+  font-size: .875rem;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 767px) {
+  .dialog-actions > .app-button:not([data-size="icon"]) {
+    flex: 1 1 6rem;
+    min-height: 2.75rem;
+  }
+}
 .dialog-surface[data-placement="right"] { --surface-x: 24px; --surface-y: 0px; }
 .dialog-surface[data-placement="left"] { --surface-x: -24px; --surface-y: 0px; }
 .dialog-surface[data-placement="fullscreen"] { --surface-y: 0px; }

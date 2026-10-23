@@ -59,11 +59,12 @@ export function RelationFormModal({ open, onClose, edge, presetSubject, onSubmit
     <Modal
       open={open}
       onClose={onClose}
+      dismissible={!submitting}
       title={editing ? t("form.editTitle") : t("form.addTitle")}
       footer={
         <>
-          <Button variant="ghost" onClick={onClose}>{t("form.cancel")}</Button>
-          <Button onClick={handleSubmit} disabled={!valid || submitting}>
+          <Button disabled={submitting} onClick={onClose}>{t("form.cancel")}</Button>
+          <Button variant="primary" onClick={handleSubmit} disabled={!valid} loading={submitting}>
             {submitting ? t("form.submitting") : t("form.confirm")}
           </Button>
         </>

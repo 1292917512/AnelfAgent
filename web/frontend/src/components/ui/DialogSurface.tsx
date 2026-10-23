@@ -38,8 +38,14 @@ export function DialogSurface({
           }}
           onCloseAutoFocus={(event) => {
             event.preventDefault();
-            if (returnFocus.current?.isConnected) returnFocus.current.focus({ preventScroll: true });
-            else document.querySelector<HTMLElement>("main")?.focus({ preventScroll: true });
+            const target = returnFocus.current;
+            const closingSurface = '[role="dialog"][data-state="closed"]';
+            if (target?.isConnected) {
+              // 父子弹层可同时退出；子层不能把焦点拉回正在退出的父层。
+              if (!target.closest(closingSurface)) target.focus({ preventScroll: true });
+            } else if (document.activeElement === document.body || document.activeElement?.closest(closingSurface)) {
+              document.querySelector<HTMLElement>("main")?.focus({ preventScroll: true });
+            }
             if (!open) onAfterClose?.();
           }}
           onEscapeKeyDown={(event) => {

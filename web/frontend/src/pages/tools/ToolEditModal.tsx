@@ -6,7 +6,8 @@ import { tagsApi } from "@/lib/api";
 import type { UnifiedTag } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Button, Input, Modal, Textarea, ConfirmDialog } from "@/components/ui";
-import { useUnsavedChanges } from "@/components/common/UnsavedChanges";
+import { useDialogSession } from "@/hooks/useDialogSession";
+import { useDiscardChanges } from "@/hooks/useDiscardChanges";
 import { AsyncState } from "@/components/common/AsyncState";
 import { apiErrorMessage } from "@/lib/api/client";
 import type { EditState } from "./types";
@@ -23,16 +24,15 @@ export function ToolEditModal({
   editing: EditState;
   onChange: (state: EditState) => void;
   onClose: () => void;
-  onSave: () => void;
+  onSave: (onSaved: () => void) => void;
   isPending: boolean;
   error: unknown;
 }) {
   const { t } = useTranslation(["tools", "common", "tags"]);
   const [original] = useState(() => JSON.stringify(editing));
   const dirty = original !== JSON.stringify(editing);
-  const [confirmClose, setConfirmClose] = useState(false);
-  useUnsavedChanges(dirty);
-  const requestClose = () => { if (dirty) setConfirmClose(true); else onClose(); };
+  const session = useDialogSession(onClose);
+  const guard = useDiscardChanges(dirty, session.close, isPending);
   const [pickerSearch, setPickerSearch] = useState("");
 
   const tagQuery = useQuery<UnifiedTag[]>({
@@ -60,8 +60,8 @@ export function ToolEditModal({
   return (
     <>
     <Modal
-      open
-      onClose={requestClose}
+      {...session.surfaceProps}
+      onClose={guard.requestClose}
       dismissible={!isPending}
       title={
         <span className="flex items-center gap-2">
@@ -71,8 +71,8 @@ export function ToolEditModal({
       }
       footer={
         <>
-          <Button variant="secondary" size="sm" disabled={isPending} onClick={requestClose}>{t("common:cancel")}</Button>
-          <Button variant="primary" size="sm" onClick={onSave} loading={isPending} disabled={!dirty}>
+          <Button variant="secondary" disabled={isPending} onClick={guard.requestClose}>{t("common:cancel")}</Button>
+          <Button variant="primary" onClick={() => onSave(session.close)} loading={isPending} disabled={!dirty}>
             {isPending ? t("common:saving") : t("common:save")}
           </Button>
         </>
@@ -169,9 +169,7 @@ export function ToolEditModal({
       </fieldset>
       {error != null && <p role="alert" className="mt-4 text-sm text-danger">{apiErrorMessage(error, t("common:error"))}</p>}
     </Modal>
-    <ConfirmDialog open={confirmClose} title={t("common:unsavedChanges")} message={t("common:unsavedDescription")}
-      confirmText={t("common:discardChanges")} cancelText={t("common:keepEditing")} danger
-      onClose={() => setConfirmClose(false)} onConfirm={onClose} />
+    <ConfirmDialog {...guard.confirmProps} />
     </>
   );
 }

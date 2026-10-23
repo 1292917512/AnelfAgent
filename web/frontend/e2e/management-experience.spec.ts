@@ -102,6 +102,41 @@ test("document indexing reports partial coverage and allows retry after failure"
   await expect(page.getByRole("alert")).toHaveCount(0);
 });
 
+test("maintenance confirmations retain their content while exiting and only submit after confirmation", async ({ page }, info) => {
+  let rebuilds = 0;
+  await page.route("**/api/memory/health", (route) => route.fulfill({ json: { type_counts: {}, total_memories: 0 } }));
+  await page.route("**/api/memory/index/status", (route) => route.fulfill({ json: {} }));
+  await page.route("**/api/memory/index/resync?*", (route) => {
+    rebuilds++;
+    return route.fulfill({ json: { synced: 0, unchanged: 0, removed: 0, failed: 0, chunks: 0 } });
+  });
+  await page.goto("/webui/memory");
+  await page.evaluate(() => document.addEventListener("animationstart", (event) => {
+    if (event instanceof AnimationEvent && event.animationName === "surface-exit" && event.target instanceof HTMLElement) {
+      document.documentElement.dataset.lastDialogExit = event.target.textContent ?? "";
+    }
+  }));
+  await page.getByRole("button", { name: "Rebuild Vectors", exact: true }).click();
+  const vectors = page.getByRole("dialog", { name: "Rebuild Vectors", exact: true });
+  await vectors.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(vectors).toBeHidden();
+  await expect.poll(() => page.evaluate(() => document.documentElement.dataset.lastDialogExit)).toContain("This wipes ALL memory vectors");
+  const trigger = page.getByRole("button", { name: "Full Rebuild", exact: true });
+  await trigger.click();
+  const dialog = page.getByRole("dialog", { name: "Full Rebuild", exact: true });
+  await expect(dialog).toContainText("This wipes the file index");
+  await page.screenshot({ path: info.outputPath("maintenance-confirmation.png"), animations: "disabled" });
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(trigger).toBeFocused();
+  expect(rebuilds).toBe(0);
+  await trigger.click();
+  await dialog.getByRole("button", { name: "Confirm", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect.poll(() => rebuilds).toBe(1);
+  await expect.poll(() => page.evaluate(() => document.documentElement.dataset.lastDialogExit)).toContain("This wipes the file index");
+});
+
 test("tool filters survive navigation and editing failures preserve the draft", async ({ page }, info) => {
   const tools: ToolItem[] = [
     { name: "inspect_service", description: "Inspect service health and summarize recent events.", tags: ["ops", "read"], enabled: true, source: "entity" },

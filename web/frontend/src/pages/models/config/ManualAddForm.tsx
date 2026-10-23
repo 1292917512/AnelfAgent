@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { Plus } from "lucide-react";
 import type { CreateModelConfig } from "@/lib/types";
 import { useDiscardChanges } from "@/hooks/useDiscardChanges";
+import { useDialogSession } from "@/hooks/useDialogSession";
 import { Button, Input, Modal, ConfirmDialog } from "@/components/ui";
 import { EMPTY_MANUAL_MODEL, type ManualModelForm } from "./shared";
 
@@ -21,7 +22,8 @@ export function ManualAddForm({
   const [form, setForm] = useState<ManualModelForm>(EMPTY_MANUAL_MODEL);
   const [error, setError] = useState("");
 
-  const guard = useDiscardChanges(JSON.stringify(form) !== JSON.stringify(EMPTY_MANUAL_MODEL), onCancel, isPending);
+  const session = useDialogSession(onCancel);
+  const guard = useDiscardChanges(JSON.stringify(form) !== JSON.stringify(EMPTY_MANUAL_MODEL), session.close, isPending);
 
   const handleSubmit = async () => {
     const modelId = form.id.trim();
@@ -38,6 +40,7 @@ export function ManualAddForm({
         supports_forced_tool_choice: form.supports_forced_tool_choice,
         supports_reasoning: form.supports_reasoning,
       });
+      session.close();
     } catch (err) {
       const detail = axios.isAxiosError(err) ? err.response?.data?.detail : null;
       setError(`${t("createFailed")}: ${typeof detail === "string" ? detail : String(err)}`);
@@ -46,7 +49,13 @@ export function ManualAddForm({
 
   return (
     <>
-    <Modal open onClose={guard.requestClose} title={t("manualAddTitle")} dismissible={!isPending}>
+    <Modal {...session.surfaceProps} onClose={guard.requestClose} title={t("manualAddTitle")} dismissible={!isPending}
+      footer={<>
+        <Button disabled={isPending} onClick={guard.requestClose}>{t("common:cancel")}</Button>
+        <Button variant="primary" onClick={handleSubmit} disabled={!form.id.trim()} loading={isPending}>
+          <Plus size={14} />{t("common:create")}
+        </Button>
+      </>}>
     <fieldset disabled={isPending} className="space-y-4">
       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
         <div className="space-y-1">
@@ -100,17 +109,6 @@ export function ManualAddForm({
         </label>
       </div>
       {error && <p className="text-xs text-danger">{error}</p>}
-      <div className="flex gap-2">
-        <Button
-          variant="primary"
-          onClick={handleSubmit}
-          disabled={!form.id.trim()}
-          loading={isPending}
-        >
-          <Plus size={14} /> {t("common:create")}
-        </Button>
-        <Button variant="secondary" disabled={isPending} onClick={guard.requestClose}>{t("common:cancel")}</Button>
-      </div>
     </fieldset>
     </Modal>
     <ConfirmDialog {...guard.confirmProps} />

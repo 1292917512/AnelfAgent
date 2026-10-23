@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { Download, FileUp, Upload } from "lucide-react";
 import { vaultApi, vaultErrorMessage } from "./api";
 import { Card } from "@/components/common/Card";
+import { ConfirmDialog } from "@/components/ui";
 import { toast } from "@/stores/toast-store";
 import type { VaultExportFormat, VaultImportFormat, VaultImportResult } from "./types";
 
@@ -30,6 +31,7 @@ export function PortablePanel() {
   const [exportFormat, setExportFormat] = useState<VaultExportFormat>("json");
   const [exportPassword, setExportPassword] = useState("");
   const [exporting, setExporting] = useState(false);
+  const [confirmExport, setConfirmExport] = useState(false);
 
   const doImport = async (file: File) => {
     setImporting(true);
@@ -54,10 +56,7 @@ export function PortablePanel() {
   };
 
   const doExport = async () => {
-    if (exportFormat !== "encrypted" &&
-        !window.confirm(t("portable.confirmPlainExport"))) {
-      return;
-    }
+    if (exporting) return;
     setExporting(true);
     try {
       const { data } = await vaultApi.exportEntries(exportFormat, exportPassword);
@@ -71,6 +70,7 @@ export function PortablePanel() {
       link.click();
       URL.revokeObjectURL(link.href);
       toast.success(t("portable.exportDone"));
+      setConfirmExport(false);
     } catch (err) {
       toast.error(vaultErrorMessage(err, t("messages.exportFailed")));
     } finally {
@@ -164,7 +164,7 @@ export function PortablePanel() {
             {t(`portable.exportHint.${exportFormat}`)}
           </p>
           <button
-            onClick={doExport}
+            onClick={() => { if (exportFormat === "encrypted") void doExport(); else setConfirmExport(true); }}
             disabled={exporting || (exportFormat === "encrypted" && !exportPassword)}
             className="flex items-center gap-1.5 px-3 py-2 text-sm font-medium rounded-md bg-accent text-white hover:opacity-90 disabled:opacity-50 transition-all"
           >
@@ -173,6 +173,8 @@ export function PortablePanel() {
           </button>
         </div>
       </Card>
+      <ConfirmDialog open={confirmExport} onClose={() => setConfirmExport(false)} title={t("portable.exportAction")}
+        message={t("portable.confirmPlainExport")} danger loading={exporting} onConfirm={() => void doExport()} />
     </div>
   );
 }

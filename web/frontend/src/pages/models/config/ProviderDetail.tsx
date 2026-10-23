@@ -144,7 +144,7 @@ export function ProviderDetail({ provider }: { provider: ProviderConfig }) {
 
       {showManualAdd && (
         <ManualAddForm
-          onSubmit={async (data) => { await addModelMut.mutateAsync(data); setShowManualAdd(false); }}
+          onSubmit={async (data) => { await addModelMut.mutateAsync(data); }}
           onCancel={() => setShowManualAdd(false)}
           isPending={addModelMut.isPending}
         />

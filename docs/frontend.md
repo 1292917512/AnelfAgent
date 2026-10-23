@@ -66,6 +66,11 @@ i18n/locales/{zh,en}/         # 核心 namespace（zh/en key 一一对应；插�
 
 Modal / Drawer 通过 `open` 驱动 Radix Presence；Popover Content 使用 `floating-surface`
 复用方向感知的进入和退出动画，不叠加独立淡入类。关闭态不可接收指针操作。
+表单的取消、确认和辅助操作放入 `Modal.footer`，按取消在前、主操作在后的顺序排列；
+公共 `dialog-actions` 统一按钮高度、间距和窄屏伸展，内容区滚动时保留操作区。
+`Modal` 在退出期间保留最后一次打开时的展示内容，避免清空选中项后标题、正文或按钮闪变；
+嵌套弹层同时关闭时，子层不会把焦点恢复到正在退出的父层。应用内确认使用 `ConfirmDialog`，
+不使用浏览器原生 `window.confirm`；提交期间通过 `loading` 阻止重复提交和意外关闭。
 按需挂载的编辑/详情会话可使用 `useDialogSession`：校验或未保存确认通过后调用 `close`，
 将 `surfaceProps` 传入主弹层，`onAfterClose` 在退出、焦点恢复后通知宿主卸载并清理草稿。
 该钩子仅用于一次挂载对应一次打开的会话；长期挂载的弹层仍由宿主直接控制 `open`。

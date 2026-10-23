@@ -5,12 +5,14 @@ import { Eye, EyeOff, RotateCcw, Save, Trash2 } from "lucide-react";
 import { apiErrorMessage, providerKeysApi } from "@/lib/api";
 import { Button, ConfirmDialog, Input, toast } from "@/components/ui";
 import { useDiscardChanges } from "@/hooks/useDiscardChanges";
+import { useDialogSession } from "@/hooks/useDialogSession";
 import type { CredentialEditorProps } from "@/lib/ui-contributions";
 import { CredentialDialog } from "./CredentialCard";
 
 export function CredentialFields({ credential, onClose }: CredentialEditorProps) {
   const { t } = useTranslation("common");
   const client = useQueryClient();
+  const session = useDialogSession(onClose);
   const formId = useId();
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [visible, setVisible] = useState<Record<string, boolean>>({});
@@ -31,8 +33,8 @@ export function CredentialFields({ credential, onClose }: CredentialEditorProps)
     else next[key] = value;
     return next;
   });
-  const guard = useDiscardChanges(dirty, onClose, save.isPending);
-  return <><CredentialDialog credential={credential} onClose={guard.requestClose} busy={save.isPending}
+  const guard = useDiscardChanges(dirty, session.close, save.isPending);
+  return <><CredentialDialog {...session.surfaceProps} credential={credential} onClose={guard.requestClose} busy={save.isPending}
     footer={<>
       <Button type="button" size="sm" disabled={save.isPending} onClick={guard.requestClose}>{t("close")}</Button>
       {dirty && <Button type="button" size="sm" variant="ghost" disabled={save.isPending} onClick={reset}>{t("reset")}</Button>}

@@ -8,6 +8,7 @@ import type { SkillMCPBindings as Bindings } from "@/lib/types";
 import { Button, ConfirmDialog, Input, Modal } from "@/components/ui";
 import { AsyncState } from "@/components/common/AsyncState";
 import { useDiscardChanges } from "@/hooks/useDiscardChanges";
+import { useDialogSession } from "@/hooks/useDialogSession";
 import { SkillMCPState } from "@/components/skills/SkillMCPStatus";
 
 export function SkillMCPBindings({ name, count }: { name: string; count: number }) {
@@ -19,8 +20,9 @@ export function SkillMCPBindings({ name, count }: { name: string; count: number 
 
 function BindingsLoader({ name, onClose }: { name: string; onClose: () => void }) {
   const { t } = useTranslation("skills");
+  const session = useDialogSession(onClose);
   const query = useQuery({ queryKey: ["skillMcp", name], queryFn: () => skillsApi.mcpBindings(name).then((r) => r.data), throwOnError: false });
-  if (!query.data) return <Modal open title={t("mcp.title", { name })} onClose={onClose} width="max-w-xl">
+  if (!query.data || !session.surfaceProps.open) return <Modal {...session.surfaceProps} title={t("mcp.title", { name })} onClose={session.close} width="max-w-xl">
     <AsyncState pending={query.isPending} error={query.error} retry={() => void query.refetch()}>{null}</AsyncState>
   </Modal>;
   return <BindingsEditor data={query.data} onClose={onClose} />;
@@ -28,6 +30,7 @@ function BindingsLoader({ name, onClose }: { name: string; onClose: () => void }
 
 function BindingsEditor({ data, onClose }: { data: Bindings; onClose: () => void }) {
   const { t } = useTranslation("skills");
+  const session = useDialogSession(onClose);
   const client = useQueryClient();
   const [initial] = useState(() => data.servers.map((server) => server.name));
   const [selected, setSelected] = useState(initial);
@@ -37,12 +40,12 @@ function BindingsEditor({ data, onClose }: { data: Bindings; onClose: () => void
     void client.invalidateQueries({ queryKey: ["skillMcp", data.name] });
     void client.invalidateQueries({ queryKey: ["skill", data.name] });
     void client.invalidateQueries({ queryKey: ["skills", "list"] });
-    onClose();
+    session.close();
   } });
-  const guard = useDiscardChanges(dirty, onClose, save.isPending);
+  const guard = useDiscardChanges(dirty, session.close, save.isPending);
   const choices = [...data.available, ...data.servers.filter((server) => !data.available.some((item) => item.name === server.name))]
     .filter((server) => server.name.toLocaleLowerCase().includes(search.toLocaleLowerCase()));
-  return <><Modal open title={t("mcp.title", { name: data.name })} onClose={guard.requestClose} dismissible={!save.isPending} width="max-w-xl"
+  return <><Modal {...session.surfaceProps} title={t("mcp.title", { name: data.name })} onClose={guard.requestClose} dismissible={!save.isPending} width="max-w-xl"
     footer={<><Button onClick={guard.requestClose} disabled={save.isPending}>{t("cancel")}</Button><Button variant="primary" disabled={!dirty} loading={save.isPending} onClick={() => save.mutate()}>{t("save")}</Button></>}>
     <div className="space-y-4">
       <p className="text-xs leading-5 text-muted">{t("mcp.hint")}</p>

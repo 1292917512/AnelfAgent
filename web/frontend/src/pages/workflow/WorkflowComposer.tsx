@@ -7,6 +7,7 @@ import { Modal, ConfirmDialog } from "@/components/ui/Modal";
 import { Button, Input, Textarea } from "@/components/ui";
 import { QueryError } from "@/components/common/AsyncState";
 import { useDiscardChanges } from "@/hooks/useDiscardChanges";
+import { useDialogSession } from "@/hooks/useDialogSession";
 
 type ComposerProps = { onClose: () => void } & (
   { mode?: "run"; source: WorkflowRunDetail | null; onStarted: (run: WorkflowRun) => void }
@@ -22,20 +23,28 @@ export function WorkflowComposer(props: ComposerProps) {
   const [text, setText] = useState(initial);
   const [resumeOf, setResumeOf] = useState(source?.run.run_id ?? "");
   const [validated, setValidated] = useState<{ text: string; layers: string[][] } | null>(null);
+  const [completion, setCompletion] = useState<(() => void) | null>(null);
+  const session = useDialogSession(() => { if (completion) completion(); else onClose(); });
   const start = useMutation({
     mutationFn: () => workflowApi.startRun(JSON.parse(text), resumeOf.trim()).then((r) => r.data),
-    onSuccess: (run) => { if (props.mode !== "definition") props.onStarted(run); },
+    onSuccess: (run) => {
+      if (props.mode !== "definition") setCompletion(() => () => props.onStarted(run));
+      session.close();
+    },
   });
   const save = useMutation({
     mutationFn: () => workflowApi.saveDefinition(JSON.parse(text), props.mode === "definition" ? props.definition?.workflow_id : "").then((r) => r.data),
-    onSuccess: (definition) => { if (props.mode === "definition") props.onSaved(definition); },
+    onSuccess: (definition) => {
+      if (props.mode === "definition") setCompletion(() => () => props.onSaved(definition));
+      session.close();
+    },
   });
   const validate = useMutation({
     mutationFn: async (submitted: string) => ({ text: submitted, ...(await workflowApi.validate(JSON.parse(submitted))).data }),
     onSuccess: (result) => setValidated({ text: result.text, layers: result.layers }),
   });
   const busy = start.isPending || save.isPending || validate.isPending;
-  const guard = useDiscardChanges(text !== initial || resumeOf !== (source?.run.run_id ?? ""), onClose, busy);
+  const guard = useDiscardChanges(text !== initial || resumeOf !== (source?.run.run_id ?? ""), session.close, busy);
   const example = () => setText(JSON.stringify({
     name: t("start.exampleName"), steps: [
       { key: "research", kind: "ask", goal: t("start.exampleResearch") },
@@ -43,7 +52,7 @@ export function WorkflowComposer(props: ComposerProps) {
     ],
   }, null, 2));
   return <>
-    <Modal open onClose={guard.requestClose} title={saving ? t(props.definition ? "definitions.edit" : "definitions.create") : source ? t("action.revise") : t("start.title")} width="max-w-3xl" dismissible={!busy}
+    <Modal {...session.surfaceProps} onClose={guard.requestClose} title={saving ? t(props.definition ? "definitions.edit" : "definitions.create") : source ? t("action.revise") : t("start.title")} width="max-w-3xl" dismissible={!busy}
       footer={<>
         <Button onClick={guard.requestClose} disabled={busy}>{t("common:cancel")}</Button>
         <Button onClick={() => validate.mutate(text)} disabled={!text.trim() || busy} loading={validate.isPending}><CheckCheck size={15} />{t("start.validate")}</Button>

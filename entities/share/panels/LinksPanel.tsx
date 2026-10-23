@@ -3,6 +3,7 @@ import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { shareApi } from "./api";
 import { Card } from "@/components/common/Card";
+import { ConfirmDialog } from "@/components/ui";
 import { Copy, Download, ExternalLink, FileText, Globe, Image as ImageIcon, Link2, Music, RefreshCw, Search, Trash2, Video } from "lucide-react";
 import { toast } from "@/stores/toast-store";
 import type { ShareLink } from "./types";
@@ -52,6 +53,7 @@ function TypeBadge({ link }: { link: ShareLink }) {
 export function LinksPanel() {
   const { t } = useTranslation("share");
   const queryClient = useQueryClient();
+  const [revoking, setRevoking] = useState<string | null>(null);
   const [status, setStatus] = useState<string>("active");
   const [query, setQuery] = useState("");
   const [page, setPage] = useState(1);
@@ -67,6 +69,7 @@ export function LinksPanel() {
     mutationFn: (token: string) => shareApi.revoke(token),
     onSuccess: () => {
       toast.success(t("messages.revokeSuccess"));
+      setRevoking(null);
       queryClient.invalidateQueries({ queryKey: ["shareLinks"] });
       queryClient.invalidateQueries({ queryKey: ["shareStats"] });
     },
@@ -213,11 +216,7 @@ export function LinksPanel() {
                                 </a>
                               )}
                               <button
-                                onClick={() => {
-                                  if (window.confirm(t("messages.confirmRevoke"))) {
-                                    revokeMutation.mutate(link.token);
-                                  }
-                                }}
+                                onClick={() => setRevoking(link.token)}
                                 className="p-1.5 rounded-md text-danger hover:bg-danger-subtle transition-all"
                                 title={t("actions.revoke")}
                               >
@@ -260,6 +259,9 @@ export function LinksPanel() {
           </>
         )}
       </Card>
+      <ConfirmDialog open={revoking !== null} onClose={() => setRevoking(null)} title={t("actions.revoke")}
+        message={t("messages.confirmRevoke")} danger loading={revokeMutation.isPending}
+        onConfirm={() => { if (revoking) revokeMutation.mutate(revoking); }} />
     </div>
   );
 }

@@ -63,7 +63,7 @@ export function ToolsListPanel() {
   const reload = useMutation({ mutationFn: toolsApi.reload, onSuccess: refresh });
   const save = useMutation({
     mutationFn: (state: EditState) => toolsApi.updateMeta(state.name, { tags: state.tags, description: state.description }),
-    onSuccess: async () => { await refresh(); setEditing(null); },
+    onSuccess: refresh,
   });
   const busy = toggle.isPending || reload.isPending || save.isPending;
   const groups = query.data ?? EMPTY_GROUPS;
@@ -118,6 +118,6 @@ export function ToolsListPanel() {
         : <p className="rounded-xl border border-dashed border-border py-12 text-center text-sm text-muted">{t(activeFilters ? "noMatch" : "noTools")}</p>}
     </AsyncState>
     <SectionBoundary>{plugins.error ? <QueryError compact error={plugins.error} retry={() => void plugins.refetch()} /> : plugins.data && <PluginsCard plugins={plugins.data} />}</SectionBoundary>
-    {editing && <ToolEditModal editing={editing} onChange={setEditing} onClose={() => { if (!save.isPending) setEditing(null); }} onSave={() => save.mutate(editing)} isPending={save.isPending} error={save.error} />}
+    {editing && <ToolEditModal editing={editing} onChange={setEditing} onClose={() => setEditing(null)} onSave={(onSaved) => save.mutate(editing, { onSuccess: onSaved })} isPending={save.isPending} error={save.error} />}
   </div>;
 }
