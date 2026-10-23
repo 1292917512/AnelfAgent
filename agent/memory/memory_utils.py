@@ -7,9 +7,10 @@
 from __future__ import annotations
 
 import hashlib
-import math
 import struct
 from pathlib import Path
+
+import numpy as np
 
 
 def pack_embedding(vec: list[float]) -> bytes:
@@ -24,15 +25,47 @@ def unpack_embedding(blob: bytes) -> list[float]:
 
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:
-    """计算两个向量的余弦相似度（维度不等返回 0.0）。"""
+    """计算余弦相似度；空、异维、零模或非有限向量返回 0.0。"""
     if not a or not b or len(a) != len(b):
         return 0.0
-    dot = sum(x * y for x, y in zip(a, b, strict=False))
-    na = math.sqrt(sum(x * x for x in a))
-    nb = math.sqrt(sum(x * x for x in b))
-    if na == 0 or nb == 0:
-        return 0.0
-    return dot / (na * nb)
+    left, right = np.asarray(a, dtype=np.float64), np.asarray(b, dtype=np.float64)
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        denominator = np.linalg.norm(left) * np.linalg.norm(right)
+        score = np.dot(left, right) / denominator if denominator > 0 else 0.0
+    return float(np.clip(score, -1.0, 1.0)) if np.isfinite(score) else 0.0
+
+
+def rank_embedding_blobs(
+    query_vec: list[float], blobs: list[bytes | None], *, limit: int, min_score: float,
+) -> list[tuple[int, float]]:
+    """批量精确评分，返回 (原位置, 分数) 前 limit 项，同分保留输入顺序。
+
+    BLOB 只建立 float32 视图，累计使用 float64；不逐行构造 Python 浮点列表。
+    损坏、异维或非有限向量不作为证据，零模向量得分为 0。
+    调用方按页传入，内存随页大小而非库大小增长。
+    """
+    if not query_vec or limit <= 0:
+        return []
+    query = np.asarray(query_vec, dtype=np.float64)
+    with np.errstate(over="ignore", invalid="ignore"):
+        query_norm = np.linalg.norm(query)
+    if not np.isfinite(query_norm):
+        return []
+    vectors = [(i, np.frombuffer(blob, dtype=np.float32)) for i, blob in enumerate(blobs)
+               if blob is not None and len(blob) == len(query_vec) * 4]
+    if not vectors:
+        return []
+    matrix = np.stack([vector for _, vector in vectors]).astype(np.float64)
+    # einsum 避免小批次触发多线程 BLAS，与其它召回线程争抢计算资源。
+    with np.errstate(over="ignore", invalid="ignore", divide="ignore"):
+        dots = np.einsum("ij,j->i", matrix, query)
+        norms = np.sqrt(np.einsum("ij,ij->i", matrix, matrix)) * query_norm
+        scores = np.divide(dots, norms, out=np.zeros(len(vectors)), where=norms > 0)
+    valid = np.isfinite(dots) & np.isfinite(norms)
+    np.clip(scores, -1.0, 1.0, out=scores)
+    hits = np.flatnonzero(valid & (scores >= min_score))
+    ranked = hits[np.argsort(-scores[hits], kind="stable")[:limit]]
+    return [(vectors[int(i)][0], float(scores[i])) for i in ranked]
 
 
 def hash_text(text: str) -> str:

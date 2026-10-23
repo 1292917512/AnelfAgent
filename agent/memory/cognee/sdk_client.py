@@ -462,13 +462,17 @@ class SDKClient:
             dataset = encode(row)
             dataset_id, name = str(dataset["id"]), str(dataset["name"])
             target = DatasetStamp(name=name)
-            for item in await self.list_data(dataset_id):
-                document = encode(item)
+            items = await self.list_data(dataset_id)
+            documents = [encode(item) for item in items]
+            locations = dict.fromkeys(str(document.get("raw_data_location") or "") for document in documents)
+            pending = [location for location in locations if location not in digests]
+            if pending:
+                digests.update(await asyncio.to_thread(
+                    _source_digests, Path(self.config.absolute_data_root) / "data", pending,
+                ))
+            for item, document in zip(items, documents, strict=True):
                 metadata = document.get("external_metadata") or {}
                 location = str(document.get("raw_data_location") or "")
-                if location not in digests:
-                    digests[location] = await asyncio.to_thread(_source_digest,
-                        Path(self.config.absolute_data_root) / "data", location)
                 target.documents[str(document["id"])] = DocumentStamp(
                     identity=document_identity(document.get("label") or "", metadata, document.get("node_set")),
                     content_hash=str(metadata.get("anelf_content_hash", "")),
@@ -527,6 +531,11 @@ class SDKClient:
         if self._module is None:
             raise RuntimeError("Cognee 未初始化")
         return getattr(self._module.SearchType, name.upper())
+
+
+def _source_digests(root: Path, locations: list[str]) -> dict[str, str]:
+    """单次线程调度完整读取本批原文；缓存只在一次验收内共享，重新打开必须重新读。"""
+    return {location: _source_digest(root, location) for location in locations}
 
 
 def _source_digest(root: Path, location: str) -> str:

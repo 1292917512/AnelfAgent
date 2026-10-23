@@ -320,6 +320,33 @@ class TestPurgeTombstone:
 
 
 class TestSearchForgotten:
+    async def test_archive_exact_top_k_across_pages_without_keyword_overlap(self, store: MemoryStore) -> None:
+        from agent.memory.memory_utils import pack_embedding
+
+        db = await store._get_db()
+        rows = [(i, "semantic", f"历史资料{i}", 1, 2, pack_embedding([1, (1005 - i) / 1005]))
+                for i in range(1, 1006)]
+        await db.executemany(
+            "INSERT INTO memories_archive(id,type,content,ts_ns,archived_at_ns,embedding_blob) VALUES(?,?,?,?,?,?)",
+            rows,
+        )
+        await db.commit()
+        hits = await store.search_forgotten("措辞完全不同的提问", [1, 0], limit=3)
+        assert [hit["id"] for hit in hits] == [1005, 1004, 1003]
+        assert all(hit["kind"] == "archived" for hit in hits)
+        assert (await (await db.execute("SELECT COUNT(*) FROM memories_archive")).fetchone())[0] == 1005
+
+    async def test_keyword_signal_not_suppressed_by_weaker_vector_hit(self, store: MemoryStore) -> None:
+        import math
+
+        entry = _entry("keywordanchor 保留的历史")
+        entry.embedding = [0.31, math.sqrt(1 - 0.31 ** 2)]
+        mid = await store.add(entry)
+        assert await store.archive_memory(mid)
+        hits = await store.search_forgotten("keywordanchor", [1, 0], limit=1)
+        assert hits[0]["id"] == mid
+        assert hits[0]["score"] == pytest.approx(0.35)
+
     async def test_archived_keyword_hit(self, store: MemoryStore) -> None:
         mid = await store.add(_entry("forgotanchor 被遗忘的知识", importance=0.6))
         assert await store.archive_memory(mid)

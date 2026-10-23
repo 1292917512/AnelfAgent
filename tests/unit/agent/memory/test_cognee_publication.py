@@ -572,6 +572,42 @@ def test_new_document_must_preserve_exact_input_bytes(tmp_path):
         plan.validate(candidate)
 
 
+async def test_inspection_batches_raw_reads_but_rechecks_bytes_on_every_inspection(tmp_path, monkeypatch):
+    from agent.memory.cognee import sdk_client
+
+    data_root = tmp_path / "data"
+    data_root.mkdir()
+    raw = data_root / "shared.txt"
+    raw.write_text("完整原文", encoding="utf-8")
+    client = sdk_client.SDKClient(CogneeConfig(data_root=str(tmp_path)))
+    monkeypatch.setattr(client, "list_datasets", AsyncMock(return_value=[
+        {"id": "a", "name": "a"}, {"id": "b", "name": "b"},
+    ]))
+    monkeypatch.setattr(client, "list_data", AsyncMock(return_value=[
+        {"id": str(i), "raw_data_location": raw.as_uri(), "label": str(i)} for i in range(20)
+    ]))
+    monkeypatch.setattr(client, "document_processed", lambda *args: False)
+    original = sdk_client._source_digests
+    reads = []
+
+    def record(root, locations):
+        reads.append(locations)
+        return original(root, locations)
+
+    monkeypatch.setattr(sdk_client, "_source_digests", record)
+    before = IndexManifest.model_validate(await client.inspect_index([]))
+    assert reads == [[raw.as_uri()]]
+    assert sum(len(dataset.documents) for dataset in before.datasets.values()) == 40
+    raw.write_text("截断", encoding="utf-8")
+    after = IndexManifest.model_validate(await client.inspect_index([]))
+    assert len(reads) == 2
+    with pytest.raises(RuntimeError, match="实际原文"):
+        MutationPlan(before).validate(after)
+    raw.unlink()
+    with pytest.raises(FileNotFoundError):
+        await client.inspect_index([])
+
+
 @pytest.mark.parametrize("tags", [
     ["topic:WOL", "topic:WoL"],
     ["topic:two words", "topic:two_words"],

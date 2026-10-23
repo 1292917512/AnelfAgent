@@ -2,13 +2,52 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
 from agent.memory import dedup
+from agent.memory.memory_types import MemoryEntry, MemoryType
+
+
+async def test_candidates_retain_relevant_old_facts_and_cross_identity(monkeypatch) -> None:
+    old = MemoryEntry(id=1, memory_type=MemoryType.SEMANTIC, content="旧地址", timestamp=1, tags=["user:qq:1"])
+    other = MemoryEntry(id=2, memory_type=MemoryType.SEMANTIC, content="另一个人的地址", timestamp=2,
+                        tags=["user:qq:2"])
+    recent = MemoryEntry(id=3, memory_type=MemoryType.SEMANTIC, content="无关新事实", timestamp=999)
+    text_started, vector_started = asyncio.Event(), asyncio.Event()
+
+    async def text_lane(*args, **kwargs):
+        text_started.set()
+        await vector_started.wait()
+        return [(old, 0.2), (other, 0.1), (recent, 0.01)]
+
+    async def embed(*args):
+        vector_started.set()
+        await text_started.wait()
+        return [1, 0]
+
+    store = SimpleNamespace(search_fts=text_lane, search_vector=AsyncMock(return_value=[(old, 0.9)]))
+    monkeypatch.setattr(dedup, "get_config_int", lambda key, default: 2)
+    async with asyncio.timeout(3):
+        candidates = await dedup.gather_dedup_candidates(store, SimpleNamespace(embed_query=embed), "搬家了")
+    assert [entry.id for entry in candidates] == [1, 2]
+    # 没有向量证据的跨身份 FTS 候选仍交给模型，不能被阈值提前判成 novel。
+    assert candidates[1].tags == ["user:qq:2"]
+
+
+async def test_disabled_dedup_does_not_request_embeddings_or_candidates(monkeypatch) -> None:
+    store = SimpleNamespace(search_fts=AsyncMock(), search_vector=AsyncMock())
+    embedder = SimpleNamespace(embed_query=AsyncMock())
+    monkeypatch.setattr(dedup, "get_config_bool", lambda key, default: False)
+    assert await dedup.gather_dedup_candidates(store, embedder, "新事实") == []
+    store.search_fts.assert_not_called()
+    store.search_vector.assert_not_called()
+    embedder.embed_query.assert_not_called()
 
 
 @pytest.mark.asyncio

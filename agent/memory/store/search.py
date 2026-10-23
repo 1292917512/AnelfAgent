@@ -1,9 +1,13 @@
 """记忆搜索管线：FTS5 / 向量 / 混合评分 / 标签关联 / 双轨统一搜索。
 
 语义评分 (Vector + FTS + TagMatch) × 衰减评分 (Recency + Frequency + Importance)。
-向量检索优先 sqlite-vec ANN 索引，不可用时 keyset 分页（id 游标）全表扫描；
+向量检索优先 sqlite-vec 精确 KNN，标签在限量前过滤；不可用时 keyset 分页批量评分。
 FTS 不可用或异常时回退 LIKE（ESCAPE 转义）。chunks 侧检索委托 FileIndexStore。
 连接由 MemoryConnectionManager 提供，本模块不自建连接。
+
+模型可见：保留语义与关键词两路证据、精确标签范围和原有评分。
+Token 影响：不增加调用或结果预算。
+缓存影响：只影响动态召回，不改稳定前缀。
 """
 
 from __future__ import annotations
@@ -16,7 +20,7 @@ from typing import Any, Dict, Optional
 from core.log import log
 
 from ..memory_types import MemoryEntry, MemorySearchResult
-from ..memory_utils import cosine_similarity, pack_embedding, unpack_embedding
+from ..memory_utils import pack_embedding, rank_embedding_blobs
 from ..tag_query import TagQuery
 from ._shared import (
     MEM_COLUMNS,
@@ -263,10 +267,12 @@ class SearchEngine:
         *,
         tag_query: TagQuery | None = None,
     ) -> list[tuple[MemoryEntry, float]]:
-        """向量搜索：优先走 sqlite-vec ANN 索引，不可用时分批全表扫描。"""
-        if not (tag_query and tag_query.active) and self._conn.vec_available and self._conn.vec_dims is not None:
+        """向量搜索：标签预过滤后的精确 KNN，不可用时分批精确扫描。"""
+        if limit <= 0 or not query_vec:
+            return []
+        if self._conn.vec_available and self._conn.vec_dims == len(query_vec):
             try:
-                return await self._search_vector_vec(query_vec, limit, min_score)
+                return await self._search_vector_vec(query_vec, limit, min_score, tag_query=tag_query)
             except Exception as exc:
                 log(f"vec 检索失败，降级全表扫描: {exc}", "WARNING")
 
@@ -285,14 +291,13 @@ class SearchEngine:
                 rows,
                 query_vec,
                 min_score,
+                limit,
             )
             merged.extend(scored)
+            merged.sort(key=lambda x: x[1], reverse=True)
+            del merged[limit:]
             if len(rows) < batch_size:
                 break
-            # 定期修剪，避免大库扫描时中间列表无限增长
-            if len(merged) > limit * 4:
-                merged.sort(key=lambda x: x[1], reverse=True)
-                merged = merged[:limit]
 
         merged.sort(key=lambda x: x[1], reverse=True)
         return merged[:limit]
@@ -321,29 +326,29 @@ class SearchEngine:
         rows: list[Any],
         query_vec: list[float],
         min_score: float,
+        limit: int,
     ) -> list[tuple[MemoryEntry, float]]:
         """对一批记忆行计算余弦相似度（纯 CPU，供 to_thread 调用）。"""
-        scored: list[tuple[MemoryEntry, float]] = []
-        for row in rows:
-            entry = row_to_entry(row)
-            if not entry.embedding:
-                continue
-            score = cosine_similarity(query_vec, entry.embedding)
-            if score >= min_score:
-                scored.append((entry, score))
-        return scored
+        ranked = rank_embedding_blobs(query_vec, [row["embedding_blob"] for row in rows],
+                                      limit=limit, min_score=min_score)
+        return [(row_to_entry(rows[index]), score) for index, score in ranked]
 
     async def _search_vector_vec(
         self,
         query_vec: list[float],
         limit: int,
         min_score: float,
+        *,
+        tag_query: TagQuery | None = None,
     ) -> list[tuple[MemoryEntry, float]]:
-        """基于 sqlite-vec 的 ANN 检索（cosine distance → similarity）。"""
+        """通过 rowid 子查询预过滤，再由 vec0 求精确 top-k，稀有标签不欠召回。"""
         db = await self._conn.get_db()
+        tag_sql, tag_params = (tag_query or TagQuery()).sql()
         cursor = await db.execute(
-            "SELECT rowid, distance FROM memories_vec WHERE embedding MATCH ? AND k = ? ORDER BY distance",
-            (pack_embedding(query_vec), max(1, limit)),
+            "SELECT rowid, distance FROM memories_vec WHERE embedding MATCH ? AND k = ? "
+            "AND rowid IN (SELECT id FROM memories WHERE importance > 0 "
+            f"AND embedding_blob IS NOT NULL AND ({tag_sql})) ORDER BY distance",
+            (pack_embedding(query_vec), limit, *tag_params),
         )
         vec_rows = await cursor.fetchall()
         if not vec_rows:
@@ -353,8 +358,8 @@ class SearchEngine:
         placeholders = ",".join("?" for _ in ids)
         cursor = await db.execute(
             f"SELECT {MEM_COLUMNS} FROM memories "
-            f"WHERE importance > 0 AND embedding_blob IS NOT NULL AND id IN ({placeholders})",
-            ids,
+            f"WHERE importance > 0 AND embedding_blob IS NOT NULL AND id IN ({placeholders}) AND ({tag_sql})",
+            [*ids, *tag_params],
         )
         entries = {int(row["id"]): row_to_entry(row) for row in await cursor.fetchall()}
 
@@ -680,12 +685,14 @@ class SearchEngine:
         limit: int = 3,
         min_score: float = 0.3,
     ) -> list[Dict[str, Any]]:
-        """归档记忆检索：向量余弦（分批全表扫描）+ 关键词 LIKE 两路合并。
+        """归档记忆检索：批量精确向量评分 + 关键词 LIKE 两路合并。
 
         归档表无 FTS/vec 索引（量级小、受保留期约束），不参与常规索引维护；
         关键词命中给固定基准分 0.35，低于向量强匹配，避免弱命中喧宾夺主。
         Returns: [{"id", "type", "content", "tags", "archived_at", "reason", "score"}] 降序。
         """
+        if limit <= 0:
+            return []
         scored: Dict[int, Dict[str, Any]] = {}
 
         if query_vec:
@@ -707,13 +714,16 @@ class SearchEngine:
                     rows,
                     query_vec,
                     min_score,
+                    limit,
                 ):
                     scored[item["id"]] = item
+                scored = dict(sorted(scored.items(), key=lambda item: item[1]["score"], reverse=True)[:limit])
                 if len(rows) < 500:
                     break
 
         for item in await self._match_archived_keywords(query, limit * 4):
-            scored.setdefault(item["id"], item)
+            if item["score"] > scored.get(item["id"], {}).get("score", -1.0):
+                scored[item["id"]] = item
 
         merged = sorted(scored.values(), key=lambda x: x["score"], reverse=True)
         return merged[:limit]
@@ -723,17 +733,12 @@ class SearchEngine:
         rows: list[Any],
         query_vec: list[float],
         min_score: float,
+        limit: int,
     ) -> list[Dict[str, Any]]:
         """对一批归档行计算余弦相似度（纯 CPU，供 to_thread 调用）。"""
-        hits: list[Dict[str, Any]] = []
-        for row in rows:
-            embedding = unpack_embedding(row["embedding_blob"])
-            if not embedding:
-                continue
-            score = cosine_similarity(query_vec, embedding)
-            if score >= min_score:
-                hits.append({**_archived_row_dict(row), "score": score})
-        return hits
+        ranked = rank_embedding_blobs(query_vec, [row["embedding_blob"] for row in rows],
+                                      limit=limit, min_score=min_score)
+        return [{**_archived_row_dict(rows[index]), "score": score} for index, score in ranked]
 
     async def _match_archived_keywords(
         self,

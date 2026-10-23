@@ -1,24 +1,25 @@
-"""写入去重：候选召回 + 判断平台裁决（store / skip / update / merge）。
+"""写入去重：候选召回 + 判断平台裁决（store / skip / update）。
 
 规则去重（子串/bigram）只能发现字面近重复；「我搬家了」对旧地址这类事实
 演进检测不到，会累积互相矛盾的记录。本模块在规则去重之后加一道语义裁决：
 
-1. 候选召回：FTS（jieba 词级）+ 向量双路取并集，上限 memory_dedup_candidate_limit；
+1. 候选召回：FTS（jieba 词级）+ 向量并行召回，按融合名次限量；
 2. 判断段（agent/judgment 平台，Jev 原生或普通模型回退）：一次调用并行评判——
-   关系四选一（novel/covered/evolution/fragments）+ skip/update 目标选择 +
-   merge 逐候选是非，置信度不足保守退回直接写入；
-3. 生成段：仅 update/merge 需要合并文本时，经 light_llm 合成一次
-   （store/skip 占写入绝大多数，热路径零 LLM 调用）；
+   关系三选一（novel/covered/evolution）+ skip/update 目标选择，置信度不足保守退回直接写入；
+3. 生成段：仅 update 需要合并文本时，经 light_llm 合成一次
+   （store/skip 不调用生成模型，有候选时仍调用判断模型）；
 4. 判断/合成不可用或无候选时回退为直接写入（去重永远不阻塞写入路径）。
 
 memorize 工具与 auto_capture 自动提取管线共用本模块。
 
-Model Experience：候选携带身份与主题标签，同身份候选内判断更新或重复。
-每候选增加少量标签 tokens，调用次数不变；内部判断与合成不改主对话稳定前缀。
+Model Experience：候选携带身份与主题标签，按相关性而非新旧排序，跨身份交判断模型裁决。
+Token 影响：候选预算和判断次数不变，关闭语义判重时不再召回候选。
+缓存影响：内部判断与合成不改主对话稳定前缀。
 """
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any, Dict, List, Optional
 
@@ -105,32 +106,46 @@ async def gather_dedup_candidates(
     embedder: Any,
     content: str,
 ) -> List[MemoryEntry]:
-    """召回去重候选：FTS + 向量双路并集（按 id 去重，准入见 _mergeable）。"""
+    """双路并行召回，按倒数名次融合限量；低向量分不排除 FTS 命中的事实演进。"""
+    if not get_config_bool("memory_llm_dedup_enabled", True):
+        return []
     limit: int = get_config_int("memory_dedup_candidate_limit", 8)
+    if limit <= 0:
+        return []
     vec_min: float = get_config_float("memory_dedup_vec_min_score", 0.45)
 
-    merged: Dict[int, MemoryEntry] = {}
-    try:
-        for entry, _score in await store.search_fts(content, limit=5):
-            if entry.id and _mergeable(entry):
-                merged[entry.id] = entry
-    except Exception as exc:
-        log(f"去重候选 FTS 召回失败: {exc}", "DEBUG", tag="记忆")
+    async def text_lane() -> list[tuple[MemoryEntry, float]]:
+        try:
+            return await store.search_fts(content, limit=5)
+        except Exception as exc:
+            log(f"去重候选 FTS 召回失败: {exc}", "DEBUG", tag="记忆")
+            return []
 
-    if embedder is not None:
+    async def vector_lane() -> list[tuple[MemoryEntry, float]]:
+        if embedder is None:
+            return []
         try:
             vec = await embedder.embed_query(content)
             if vec:
-                for entry, _score in await store.search_vector(vec, limit=5, min_score=vec_min):
-                    if entry.id and _mergeable(entry):
-                        merged.setdefault(entry.id, entry)
+                return await store.search_vector(vec, limit=5, min_score=vec_min)
         except Exception as exc:
             log(f"去重候选向量召回失败: {exc}", "DEBUG", tag="记忆")
+        return []
 
-    # 先排序后截断：FTS 路在前、向量路在后的插入序与相关性无关，
-    # 先截断会按插入序任意丢弃更新的候选
-    candidates = sorted(merged.values(), key=lambda e: e.timestamp, reverse=True)
-    return candidates[:limit]
+    merged: Dict[int, MemoryEntry] = {}
+    ranks: dict[int, float] = {}
+    for lane in await asyncio.gather(text_lane(), vector_lane()):
+        seen: set[int] = set()
+        for rank, (entry, _score) in enumerate(lane, start=1):
+            if not entry.id or not _mergeable(entry) or entry.id in seen:
+                continue
+            seen.add(entry.id)
+            previous = merged.get(entry.id)
+            if previous is None or entry.version > previous.version:
+                merged[entry.id] = entry
+            ranks[entry.id] = ranks.get(entry.id, 0.0) + 1.0 / (60 + rank)
+    ordered = sorted(merged, key=lambda key: (-ranks[key], -merged[key].timestamp, key))
+    return [merged[key] for key in ordered[:limit]]
 
 
 # ---------------------------------------------------------------------------
@@ -344,7 +359,7 @@ async def apply_update(
 _DEDUP_CONFIGS = {
     "memory/dedup": {
         "memory_llm_dedup_enabled": {
-            "description": "规则判重后是否再经语义裁决（store/skip/update/merge）",
+            "description": "规则判重后是否再经语义裁决（store/skip/update）",
             "default": True,
         },
         "memory_dedup_candidate_limit": {

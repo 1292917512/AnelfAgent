@@ -1,7 +1,7 @@
 """文件/chunks 索引与 embedding 缓存：memory.md + memory/*.md 分块索引存储。
 
 覆盖 files / chunks / chunks_fts / embedding_cache 表的 CRUD 与检索
-（sqlite-vec ANN 优先，keyset 分页全表扫描兜底，LIKE 为 FTS 不可用时的回退）。
+（sqlite-vec KNN 优先，keyset 分页批量评分兜底，LIKE 为 FTS 不可用时的回退）。
 连接与 vec 索引维护由 MemoryConnectionManager 提供，本模块不自建连接。
 
 模型可见：文件结果提供命中附近原文、实际行号和原始块范围。
@@ -20,7 +20,7 @@ import aiosqlite
 from core.log import log
 from core.text_passage import select_passage
 
-from ..memory_utils import cosine_similarity, pack_embedding, unpack_embedding
+from ..memory_utils import pack_embedding, rank_embedding_blobs, unpack_embedding
 from ._shared import (
     build_fts_query,
     escape_like,
@@ -183,7 +183,7 @@ class FileIndexStore:
             if not rows:
                 break
             scored = await asyncio.to_thread(
-                self._score_chunks_vector_rows, rows, query_vec, min_score,
+                self._score_chunks_vector_rows, rows, query_vec, min_score, limit,
             )
             merged.extend(scored)
             if len(rows) < batch_size:
@@ -214,21 +214,20 @@ class FileIndexStore:
         rows: list[Any],
         query_vec: list[float],
         min_score: float,
+        limit: int,
     ) -> list[Dict[str, Any]]:
         """对一批 chunk 行计算余弦相似度（纯 CPU，供 to_thread 调用）。"""
+        ranked = rank_embedding_blobs(query_vec, [row["embedding"] for row in rows],
+                                      limit=limit, min_score=min_score)
         scored: list[Dict[str, Any]] = []
-        for row in rows:
-            if not row["embedding"]:
-                continue
-            vec = unpack_embedding(row["embedding"])
-            score = cosine_similarity(query_vec, vec)
-            if score >= min_score:
-                scored.append({
-                    "id": row["id"], "path": row["path"],
-                    "start_line": row["start_line"], "end_line": row["end_line"],
-                    "snippet": row["text"], "score": score,
-                    "source": "file",
-                })
+        for index, score in ranked:
+            row = rows[index]
+            scored.append({
+                "id": row["id"], "path": row["path"],
+                "start_line": row["start_line"], "end_line": row["end_line"],
+                "snippet": row["text"], "score": score,
+                "source": "file",
+            })
         return scored
 
     async def _search_chunks_vector_vec(
@@ -237,7 +236,7 @@ class FileIndexStore:
         limit: int,
         min_score: float,
     ) -> list[Dict[str, Any]]:
-        """基于 sqlite-vec 的 chunks ANN 检索。"""
+        """基于 sqlite-vec 的 chunks 精确 KNN 检索。"""
         db = await self._conn.get_db()
         cursor = await db.execute(
             "SELECT chunk_id, distance FROM chunks_vec "
