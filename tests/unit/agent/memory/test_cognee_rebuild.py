@@ -97,6 +97,138 @@ async def settle(coordinator: CogneeCoordinator) -> None:
     pytest.fail("构建未在有限轮次内收敛")
 
 
+async def test_large_node_fragments_preserve_old_index_and_update_only_changed_ranges(coordinator, store, monkeypatch):
+    """旧文档不因启动改写；首次变更切分，随后修改、删除只替换受影响区间。"""
+    from agent.memory.graph import fragments
+    from agent.memory.projection_documents import mapped_documents
+
+    hub = "topic:中心"
+    evidence = {i: f"完整证据-{i}：" + "关系内容不能截断。" * 15 for i in range(70)}
+    for i in range(70):
+        await store.graph.add_relation(hub, "连接", f"topic:目标{i}", evidence=evidence[i])
+    node_id = (await store.graph.get_node(hub))["id"]
+    # 在同一个真实 SQLite 上模拟已有单文档部署，不改变源内容。
+    with monkeypatch.context() as patch:
+        patch.setattr(fragments, "MAX_DOCUMENT_CHARS", 1_000_000)
+        await coordinator._process_batch(await store.claim_cognee_sync_batch(100))
+    before = copy.deepcopy(coordinator.client.documents)
+    mapping = await store.get_cognee_mapping(node_id, entry_kind="graph_node")
+    assert not mapped_documents(mapping)
+    await coordinator.rebuild.initialize(coordinator.config)
+    assert coordinator.client.documents == before
+    assert (await store.get_cognee_sync_status())["pending"] == 0
+    # 仅强度变化也不会触发格式转换。
+    await store.graph.add_relation(hub, "连接", "topic:目标1", evidence=evidence[1], strength=0.9)
+    await coordinator._process_batch(await store.claim_cognee_sync_batch(100))
+    assert coordinator.client.documents == before
+
+    added, deleted = [], []
+    original_add, original_delete = coordinator.client.add, coordinator.client.delete_data
+
+    async def add(data, **kwargs):
+        added.extend(copy.deepcopy(data))
+        return await original_add(data, **kwargs)
+
+    async def delete(dataset_id, data_id, **kwargs):
+        deleted.append(str(data_id))
+        return await original_delete(dataset_id, data_id, **kwargs)
+
+    monkeypatch.setattr(coordinator.client, "add", add)
+    monkeypatch.setattr(coordinator.client, "delete_data", delete)
+    evidence[1] += "补充证据。"
+    await store.graph.add_relation(hub, "连接", "topic:目标1", evidence=evidence[1])
+    await coordinator._process_batch(await store.claim_cognee_sync_batch(100))
+    after = await store.get_cognee_mapping(node_id, entry_kind="graph_node")
+    parts = mapped_documents(after)
+    assert len(parts) > 2 and mapping["data_id"] in deleted
+    source_docs = [coordinator.client.documents[after["dataset_id"]][part.data_id] for part in parts]
+    assert all(len(doc["text"]) <= fragments.MAX_DOCUMENT_CHARS for doc in source_docs)
+    for value in evidence.values():
+        assert any(value in doc["text"] for doc in source_docs)
+    # 各片仅携带所属边和来源，不能把全节点标签复制到每一片。
+    assert max(len(doc["external_metadata"]["anelf_attribution"]["edges"]) for doc in source_docs) <= 32
+    assert (await store.projection_state.audit())["missing_or_stale"] == []
+    await coordinator.rebuild.verify_backend(coordinator.rebuild.state, await store.projection_state.mappings())
+
+    unchanged = {part.part_key: part.data_id for part in parts}
+    added.clear()
+    deleted.clear()
+    evidence[1] += "再次修订。"
+    await store.graph.add_relation(hub, "连接", "topic:目标1", evidence=evidence[1])
+    await coordinator._process_batch(await store.claim_cognee_sync_batch(100))
+    current = mapped_documents(await store.get_cognee_mapping(node_id, entry_kind="graph_node"))
+    changed = {part.part_key for part in current if unchanged.get(part.part_key) != part.data_id}
+    assert changed and all(key.startswith("edges-0-") for key in changed)
+    reindexed_hub = [doc for doc in added if doc["external_metadata"]["anelf_graph_node_id"] == str(node_id)]
+    assert len(reindexed_hub) == len(changed) < len(parts)
+    assert set(deleted) & {part.data_id for part in current} == set()
+    # 删除节点必须清理所有分片，并保留所有其他节点的有效映射。
+    await store.graph.set_node_archived(hub, True)
+    await coordinator._process_batch(await store.claim_cognee_sync_batch(100))
+    assert await store.get_cognee_mapping(node_id, entry_kind="graph_node") is None
+    assert not ({part.data_id for part in current} & set(coordinator.client.documents[after["dataset_id"]]))
+    assert (await store.projection_state.audit())["extra"] == []
+
+
+@pytest.mark.parametrize("failure", ["verify", "delete", "publish", "cancel"])
+async def test_fragment_replacement_failure_keeps_mapping_and_all_prior_documents(coordinator, store, monkeypatch, failure):
+    from agent.memory.graph import fragments
+
+    monkeypatch.setattr(fragments, "MAX_DOCUMENT_CHARS", 400)
+    await store.graph.add_relation("topic:甲", "连接", "topic:乙", evidence="必须保留的长证据。" * 80)
+    await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
+    before = copy.deepcopy(coordinator.client.documents)
+    mappings = await store.projection_state.mappings()
+
+    @asynccontextmanager
+    async def transactional():
+        snapshot = copy.deepcopy(coordinator.client.documents)
+        try:
+            yield
+            if failure == "publish":
+                raise OSError("publication failed")
+        except BaseException:
+            coordinator.client.documents = snapshot
+            raise
+
+    monkeypatch.setattr(coordinator.client, "write_transaction", transactional)
+    if failure in {"verify", "cancel"}:
+        async def stop(*args, **kwargs):
+            if failure == "cancel":
+                raise asyncio.CancelledError()
+            raise RuntimeError("missing chunk")
+        monkeypatch.setattr(coordinator.client, "verify_graph_documents", stop)
+    if failure == "delete":
+        original = coordinator.client.delete_data
+
+        async def delete_then_fail(*args, **kwargs):
+            await original(*args, **kwargs)
+            raise OSError("delete failed after mutation")
+
+        monkeypatch.setattr(coordinator.client, "delete_data", delete_then_fail)
+    await store.graph.add_relation("topic:甲", "连接", "topic:乙", evidence="更新证据。" * 90)
+    batch = await store.claim_cognee_sync_batch(10)
+    if failure == "cancel":
+        with pytest.raises(asyncio.CancelledError):
+            await coordinator._process_batch(batch)
+    else:
+        await coordinator._process_batch(batch)
+    assert coordinator.client.documents == before
+    assert await store.projection_state.mappings() == mappings
+    status = await store.get_cognee_sync_status()
+    assert status["pending"] + status["failed"] == 2
+
+
+def test_long_relation_document_split_is_lossless_and_bounded():
+    from agent.memory.graph.fragments import MAX_DOCUMENT_CHARS, split_document
+
+    header = "[关系节点] 甲（topic:甲，类型 topic）\n"
+    body = "- 连接 → 乙——" + "证据🙂\n" * 5000 + "结尾必须保留"
+    parts = split_document(header + body)
+    assert len(parts) > 1 and max(map(len, parts)) <= MAX_DOCUMENT_CHARS
+    assert "".join(part[len(header):] for part in parts) == body
+
+
 async def test_publication_failure_never_acknowledges_queue_or_replaces_mapping(coordinator, store, monkeypatch):
     mid = await store.add(MemoryEntry(content="必须保留的权威正文", memory_type=MemoryType.SEMANTIC))
 

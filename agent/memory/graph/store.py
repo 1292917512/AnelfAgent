@@ -1176,6 +1176,33 @@ class GraphStore:
         async with self._conn.write_lock:
             return await self._projection_document(node_id)
 
+    async def projection_fragments_snapshot(
+        self, node_id: int, *, fragmented: bool = False,
+    ) -> tuple[str, list[tuple[str, str, str, dict[str, Any]]]] | None:
+        """同一权威快照生成总指纹和分片；小节点沿用单文档，已拆分节点不来回合并。"""
+        from ..projection import projection_hash
+        from .fragments import MAX_DOCUMENT_CHARS, edge_ranges, split_document
+
+        db = await self._conn.get_db()
+        async with self._conn.write_lock:
+            node = await self.get_node_by_id(node_id)
+            if not node or node["archived"]:
+                return None
+            edges = await self._edges_for_node_ids(db, [node_id])
+            attribution = await self.projection_attribution(node_id, edges=edges)
+            text, fingerprint, _ = graph_document(node, edges, attribution)
+            if not fragmented and len(text) <= MAX_DOCUMENT_CHARS:
+                return fingerprint, [("", text, fingerprint, attribution)]
+            parts: list[tuple[str, str, str, dict[str, Any]]] = []
+            for identity, group in edge_ranges(edges):
+                local = await self.projection_attribution(node_id, edges=group)
+                document, _, _ = graph_document(node, group, local)
+                for index, fragment in enumerate(split_document(document)):
+                    key = f"edges-{identity}-{index}"
+                    digest = projection_hash({"part": key, "text": fragment, "attribution": local})
+                    parts.append((key, fragment, digest, local))
+            return fingerprint, parts
+
     async def render_node_document(self, node_id: int) -> Optional[str]:
         """渲染节点邻域文档（cognee 投影单元）；节点不存在或已归档返回 None。"""
         projection = await self.render_node_projection(node_id)

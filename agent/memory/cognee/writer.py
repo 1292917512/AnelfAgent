@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
@@ -14,6 +15,7 @@ from core.log import log
 
 from ..memory_store import MemoryStore
 from ..projection import PROJECTION_VERSION, canonical_tags, memory_is_projectable, projection_dataset
+from ..projection_documents import MappedDocument, expand_mapping, mapped_documents
 from ..store._shared import entry_projection_payload
 from ..store.cognee_queue import ENTRY_KIND_GRAPH_NODE
 from .adapters import retryable
@@ -101,16 +103,18 @@ class ProjectionWriter:
         except Exception as exc:
             await self._fail(item, exc)
 
-    async def _delete_superseded(self, item: dict[str, Any], *, keep: tuple[str, str] = ("", "")) -> None:
+    async def _delete_superseded(self, item: dict[str, Any], *, keep: set[tuple[str, str]] | None = None) -> None:
         """清理旧映射和失败写入副本；成功提交前保留日志，重复删除幂等。"""
         previous = await self.store.get_cognee_mapping(item["entry_id"], entry_kind=item["entry_kind"])
+        keep = keep or set()
         targets: set[tuple[str, str]] = set()
-        if previous and (previous["dataset_name"], previous["data_id"]) != keep:
-            if not previous.get("dataset_id") or not previous.get("data_id"):
-                raise RuntimeError("缺少 Cognee dataset/data ID，无法安全删除")
-            targets.add((previous["dataset_id"], previous["data_id"]))
+        for document in expand_mapping(previous) if previous else []:
+            if (document["dataset_name"], document["data_id"]) not in keep:
+                if not document.get("dataset_id") or not document.get("data_id"):
+                    raise RuntimeError("缺少 Cognee dataset/data ID，无法安全删除")
+                targets.add((document["dataset_id"], document["data_id"]))
         attempts = [row for row in await self.store.projection_state.staged(item["entry_kind"], item["entry_id"])
-                    if (row["dataset_name"], row["data_id"]) != keep]
+                    if (row["dataset_name"], row["data_id"]) not in keep]
         if attempts:
             datasets = {str(_value(row, "name", "")): str(_value(row, "id", ""))
                         for row in await self.client.list_datasets()}
@@ -137,15 +141,14 @@ class ProjectionWriter:
         """读取一致的邻域及出处快照；证据变化重投影，强度变化不重投影。"""
         grouped: dict[str, list[tuple[dict[str, Any], ProjectionDocument]]] = defaultdict(list)
         for item in items:
-            projection = await self.store.graph.projection_snapshot(item["entry_id"])
+            mapping = await self.store.get_cognee_mapping(item["entry_id"], entry_kind=item["entry_kind"])
+            projection = await self.store.graph.projection_fragments_snapshot(
+                item["entry_id"], fragmented=bool(mapped_documents(mapping)))
             if projection is None:
                 # 节点已归档/不存在：按删除处理
                 await self._process_delete({**item, "operation": "delete"})
                 continue
-            document, fingerprint, attribution = projection
-            mapping = await self.store.get_cognee_mapping(
-                item["entry_id"], entry_kind=item["entry_kind"],
-            )
+            fingerprint, fragments = projection
             if (not item["payload"].get("force") and mapping
                     and str(mapping.get("content_hash") or "") == fingerprint
                     and not await self.store.projection_state.staged(item["entry_kind"], item["entry_id"])):
@@ -157,7 +160,9 @@ class ProjectionWriter:
                 )
                 continue
             dataset = self.relations_dataset
-            grouped[dataset].append((item, ProjectionDocument(document, fingerprint, attribution)))
+            for key, text, digest, attribution in fragments:
+                grouped[dataset].append(({**item, "projection_hash": fingerprint},
+                    ProjectionDocument(text, digest, attribution, part_key=key)))
         for dataset_name, entries in grouped.items():
             await self._push_projection_group(dataset_name, entries, graph=True)
 
@@ -176,57 +181,79 @@ class ProjectionWriter:
         self.progress.stage(stage, dataset_name=dataset_name)
         try:
             data_items: list[InputDocument] = []
-            for item, document in entries:
+            sources: dict[int, list[int]] = defaultdict(list)
+            existing: set[tuple[str, str]] = set()
+            for index, (item, document) in enumerate(entries):
+                queue_id = int(item["queue_id"])
+                if queue_id not in sources:
+                    mapping = await self.store.get_cognee_mapping(item["entry_id"], entry_kind=item["entry_kind"])
+                    if mapping:
+                        existing.update((str(row["dataset_id"]), str(row["data_id"])) for row in expand_mapping(mapping))
+                sources[queue_id].append(index)
                 payload = item["payload"]
-                data_items.append(await self.client.make_data_item(
-                    document.text,
-                    label=f"anelf-{label_kind}-{item['entry_id']}",
-                    dataset_name=dataset_name,
-                    node_set=canonical_tags(document.attribution.get("tags", [])),
-                    external_metadata={
-                        "anelf_projection_version": PROJECTION_VERSION,
-                        "anelf_content_hash": document.fingerprint,
-                        metadata_key: str(item["entry_id"]),
-                        "memory_type": "graph_relation" if graph else str(payload.get("type", "semantic")),
-                        "source": "graph" if graph else str(payload.get("source", "")),
-                        "anelf_attribution": document.attribution,
-                    },
-                ))
-                data_id = str(_value(data_items[-1], "data_id", ""))
+                metadata = {
+                    "anelf_projection_version": PROJECTION_VERSION,
+                    "anelf_content_hash": document.fingerprint,
+                    metadata_key: str(item["entry_id"]),
+                    "memory_type": "graph_relation" if graph else str(payload.get("type", "semantic")),
+                    "source": "graph" if graph else str(payload.get("source", "")),
+                    "anelf_attribution": document.attribution,
+                }
+                if document.part_key:
+                    metadata["anelf_part_key"] = document.part_key
+                data_item = await self.client.make_data_item(
+                    document.text, label=f"anelf-{label_kind}-{item['entry_id']}",
+                    dataset_name=dataset_name, node_set=canonical_tags(document.attribution.get("tags", [])),
+                    external_metadata=metadata,
+                )
+                data_id = str(_value(data_item, "data_id", ""))
                 if not data_id:
                     raise RuntimeError("Cognee 投影缺少稳定文档 ID")
+                data_items.append(data_item)
                 await self.store.projection_state.stage(item["entry_kind"], item["entry_id"], dataset_name, data_id)
+            existing_ids = {identity for _, identity in existing}
+            additions = [data_item for (item, document), data_item in zip(entries, data_items, strict=True)
+                         if not document.part_key or item["payload"].get("force")
+                         or str(_value(data_item, "data_id", "")) not in existing_ids]
             self._observe_write()
             async with self.client.write_transaction():
-                stage = "add"
-                self.progress.stage(stage, dataset_name=dataset_name, timeout=self.config.pipeline_timeout_seconds)
-                ingestion = await self.client.add(
-                    data_items, dataset_name=dataset_name, incremental_loading=True,
-                )
-                dataset_id = str(_value(ingestion, "dataset_id", ""))
+                dataset_id = next(iter(existing))[0] if existing else ""
+                if additions:
+                    stage = "add"
+                    self.progress.stage(stage, dataset_name=dataset_name, timeout=self.config.pipeline_timeout_seconds)
+                    ingestion = await self.client.add(additions, dataset_name=dataset_name, incremental_loading=True)
+                    dataset_id = str(_value(ingestion, "dataset_id", ""))
+                    if not dataset_id:
+                        raise RuntimeError("Cognee 摄入未返回 dataset_id，保留旧投影")
+                    stage = "cognify"
+                    self.progress.stage(stage, dataset_name=dataset_name, dataset_id=dataset_id,
+                                        timeout=self.config.pipeline_timeout_seconds)
+                    await self.client.cognify(datasets=[dataset_name], incremental_loading=True)
+                    self._observe_write()
                 if not dataset_id:
-                    raise RuntimeError("Cognee 摄入未返回 dataset_id，保留旧投影")
-                stage = "cognify"
-                self.progress.stage(stage, dataset_name=dataset_name, dataset_id=dataset_id,
-                                    timeout=self.config.pipeline_timeout_seconds)
-                await self.client.cognify(datasets=[dataset_name], incremental_loading=True)
-                self._observe_write()
+                    raise RuntimeError("投影缺少目标数据集，保留旧映射")
                 stage = "verify"
                 self.progress.stage(stage, dataset_name=dataset_name)
                 await self.client.verify_graph_documents(dataset_id,
                     [str(_value(data_item, "data_id", "")) for data_item in data_items])
-                for (item, _document), data_item in zip(entries, data_items, strict=True):
-                    data_id = str(_value(data_item, "data_id", ""))
-                    await self._delete_superseded(item, keep=(dataset_name, data_id))
                 stage = "replace_projection"
                 self.progress.stage(stage, dataset_name=dataset_name)
-            # 发布前绝不更新权威映射；发布后中断则稳定 ID 重试，原文及队列仍在。
-            for (item, document), data_item in zip(entries, data_items, strict=True):
-                data_id = str(_value(data_item, "data_id", ""))
+                for indices in sources.values():
+                    item = entries[indices[0]][0]
+                    keep = {(dataset_name, str(_value(data_items[index], "data_id", ""))) for index in indices}
+                    await self._delete_superseded(item, keep=keep)
+            # 发布前绝不更新权威映射；分片清单与来源总指纹在原生事务内一起确认。
+            for indices in sources.values():
+                item, document = entries[indices[0]]
+                documents = [MappedDocument(part_key=entries[index][1].part_key,
+                    data_id=str(_value(data_items[index], "data_id", "")),
+                    content_hash=entries[index][1].fingerprint).model_dump() for index in indices] if document.part_key else []
                 await self.store.complete_cognee_sync(
                     item["queue_id"], item["entry_id"], entry_kind=item["entry_kind"],
-                    dataset_name=dataset_name, dataset_id=dataset_id, data_id=data_id,
-                    content_hash=document.fingerprint,
+                    dataset_name=dataset_name, dataset_id=dataset_id,
+                    data_id=str(_value(data_items[indices[0]], "data_id", "")),
+                    content_hash=item.get("projection_hash", document.fingerprint),
+                    documents_json=json.dumps(documents, ensure_ascii=False),
                 )
             self.progress.stage("enhance", dataset_name=dataset_name, timeout=self.config.pipeline_timeout_seconds)
             await self._after_write(dataset_name)
@@ -238,8 +265,11 @@ class ProjectionWriter:
                 f"{len(entries)} 条，耗时 {time.monotonic() - started:.1f}s: {self.last_error}",
                 "WARNING", tag="思维",
             )
+            failed: set[int] = set()
             for item, _document in entries:
-                await self._fail(item, exc)
+                if item["queue_id"] not in failed:
+                    await self._fail(item, exc)
+                    failed.add(item["queue_id"])
 
     async def _fail(self, item: dict[str, Any], error: str | Exception) -> None:
         attempts = int(item.get("attempts", 0))

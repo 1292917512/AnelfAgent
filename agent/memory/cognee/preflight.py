@@ -17,6 +17,7 @@ from urllib.request import url2pathname
 from uuid import UUID
 
 from ..projection import PROJECTION_VERSION
+from ..projection_documents import expand_mapping
 from ..store.projection_state import ProjectionState, ProjectionStateStore
 from .ports import ProjectionBackend
 
@@ -136,7 +137,7 @@ async def check_legacy_documents(
     store: ProjectionStateStore, client: ProjectionBackend, state: ProjectionState,
 ) -> None:
     """映射、写入日志和严格旧格式归属均不足时阻止重建，保留所有旧数据集。"""
-    mappings = await store.mappings()
+    mappings = [document for mapping in await store.mappings() for document in expand_mapping(mapping)]
     sources = await store.preserved_sources()
     known = {(_identity(r["dataset_id"]), _identity(r["data_id"])) for r in mappings
              if (str(r["entry_kind"]), int(r["entry_id"])) in sources}

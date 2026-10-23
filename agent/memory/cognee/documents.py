@@ -23,6 +23,7 @@ class ProjectionDocument:
     text: str
     fingerprint: str
     attribution: dict[str, Any]
+    part_key: str = ""
 
 
 def stored_node_tags(value: Any) -> list[str]:

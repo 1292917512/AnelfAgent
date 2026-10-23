@@ -417,6 +417,7 @@ class MemoryConnectionManager:
             "content_hash",
             "TEXT NOT NULL DEFAULT ''",
         )
+        await self._ensure_column(db, "cognee_entry_map", "documents_json", "TEXT NOT NULL DEFAULT '[]'")
         # 上次进程异常退出时可能遗留 processing，启动后安全重试。
         await db.execute("UPDATE cognee_sync_queue SET status='pending' WHERE status='processing'")
 

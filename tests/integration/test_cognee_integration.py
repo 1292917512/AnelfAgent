@@ -22,6 +22,82 @@ pytestmark = [
 ]
 
 
+@pytest.mark.timeout(900)
+async def test_real_relation_fragments_incremental_update_preserves_committed_documents(tmp_path, monkeypatch):
+    """真实模型和图/向量库验证分片增量、旧文档留存、变更提交与逐项验收。"""
+    from agent.memory.graph import fragments
+    from agent.memory.projection_documents import mapped_documents
+
+    config = load_cognee_config()
+    config.enabled = config.sync_enabled = True
+    config.project_memories_enabled = config.project_graph_enabled = True
+    config.data_root = str(tmp_path / "cognee")
+    config.timeout_seconds = config.pipeline_timeout_seconds = 180
+    config.write_breaker_enabled = False
+    config.improve_interval_seconds = 0
+    store = MemoryStore(str(tmp_path / "memory.sqlite3"))
+    store.set_cognee_projection_enabled(True)
+    client = CogneeClient(config, source_mappings=store.projection_state.publication_sources)
+    coordinator = CogneeCoordinator(store, client, config)
+    monkeypatch.setattr(fragments, "MAX_DOCUMENT_CHARS", 120)
+    monkeypatch.setattr(fragments, "EDGES_PER_RANGE", 1)
+    writes: list[list[str]] = []
+    original_add = client.add
+
+    async def record_add(data, **kwargs):
+        writes.append([item.data_id for item in data])
+        return await original_add(data, **kwargs)
+
+    monkeypatch.setattr(client, "add", record_add)
+
+    async def drain():
+        batch = await store.claim_cognee_sync_batch(10)
+        await coordinator._process_batch(batch)
+        status = await store.get_cognee_sync_status()
+        assert status["pending"] == status["failed"] == 0, coordinator.writer.last_error
+        audit = await store.projection_state.audit()
+        assert not audit["missing_or_stale"] and not audit["extra"]
+        await coordinator.rebuild.verify_backend(coordinator.rebuild.state, await store.projection_state.mappings())
+
+    try:
+        await coordinator.rebuild.initialize(config)
+        await store.graph.add_relation("project:蓝鸢", "部署于", "place:杭州",
+            evidence="蓝鸢服务部署在杭州机房，该地点是生产服务的实际运行位置。")
+        await store.graph.add_relation("project:蓝鸢", "维护者", "person:林舟",
+            evidence="林舟负责蓝鸢项目的日常发布、监控、故障处理和维护工作。")
+        node_id = (await store.graph.get_node("project:蓝鸢"))["id"]
+        with monkeypatch.context() as patch:
+            patch.setattr(fragments, "MAX_DOCUMENT_CHARS", 10000)
+            await drain()
+        old = await store.get_cognee_mapping(node_id, entry_kind="graph_node")
+        assert not mapped_documents(old)
+        await store.graph.add_relation("project:蓝鸢", "部署于", "place:杭州",
+            evidence="蓝鸢生产服务部署在杭州东区机房，由当地运维人员维护服务器。")
+        await drain()
+        mapping = await store.get_cognee_mapping(node_id, entry_kind="graph_node")
+        parts = mapped_documents(mapping)
+        assert len(parts) >= 2
+        assert old["data_id"] not in {row["id"] for row in await client.list_data(mapping["dataset_id"])}
+        writes.clear()
+        await store.graph.add_relation("project:蓝鸢", "部署于", "place:杭州",
+            evidence="蓝鸢生产服务部署在杭州西区机房，由当地运维人员维护服务器。")
+        await drain()
+        current = mapped_documents(await store.get_cognee_mapping(node_id, entry_kind="graph_node"))
+        retained = {part.data_id for part in parts} & {part.data_id for part in current}
+        assert retained and not retained.intersection(identity for batch in writes for identity in batch)
+        documents = await client.list_data(mapping["dataset_id"])
+        assert retained <= {row["id"] for row in documents}
+        # 断开重开仍可依据同一清单验证所有分片，不产生新代际。
+        await client.close()
+        client = CogneeClient(config, source_mappings=store.projection_state.publication_sources)
+        reopened = CogneeCoordinator(store, client, config)
+        await reopened.rebuild.initialize(config)
+        await reopened.rebuild.verify_backend(reopened.rebuild.state, await store.projection_state.mappings())
+    finally:
+        await client.close()
+        await store.close()
+
+
 async def test_real_ladybug_close_drains_cancelled_query_before_reopen(tmp_path):
     """真实 native 写入仍在途时取消等待方，关闭必须排空后才能重新打开文件。"""
     import threading

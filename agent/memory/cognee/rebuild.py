@@ -16,6 +16,7 @@ from agent.storage.volume_restore import backups_root
 
 from ..memory_store import MemoryStore
 from ..projection import PROJECTION_VERSION, canonical_tags, projection_dataset
+from ..projection_documents import expand_mapping
 from ..store.projection_state import ProjectionState
 from .config import CogneeConfig
 from .documents import stored_node_tags
@@ -165,6 +166,7 @@ class CogneeRebuild:
 
     async def verify_backend(self, state: ProjectionState, mappings: list[dict[str, Any]]) -> int:
         """核验内容、标签、抽取标记及实际图谱覆盖；构建与清理共用同一验收门。"""
+        mappings = [document for mapping in mappings for document in expand_mapping(mapping)]
         documents: dict[tuple[str, str], Any] = {}
         for dataset_id in sorted({str(row["dataset_id"]) for row in mappings}):
             for item in await self.client.list_data(dataset_id):

@@ -8,6 +8,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from ..projection_documents import expand_mapping
 from .documents import stored_node_tags
 from .node_sets import projected_node_tags
 from .wire import InputDocument
@@ -44,7 +45,7 @@ class IndexManifest(BaseModel):
 
     def check_sources(self, mappings: list[dict[str, Any]]) -> None:
         """现有权威映射必须可追溯；在途写入日志由提供方排除，允许崩溃后幂等续跑。"""
-        for row in mappings:
+        for row in (document for mapping in mappings for document in expand_mapping(mapping)):
             dataset = self.datasets.get(str(row["dataset_id"]))
             document = dataset.documents.get(str(row["data_id"])) if dataset else None
             if document is None or document.content_hash != str(row["content_hash"]):

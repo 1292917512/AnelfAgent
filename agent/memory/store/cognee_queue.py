@@ -239,6 +239,7 @@ class CogneeSyncQueue:
         data_id: str = "",
         content_hash: str = "",
         delete_mapping: bool = False,
+        documents_json: str = "[]",
     ) -> None:
         db = await self._conn.get_db()
         async with self._conn.tx(db):
@@ -258,10 +259,10 @@ class CogneeSyncQueue:
                 await db.execute(
                     "INSERT OR REPLACE INTO cognee_entry_map"
                     "(entry_kind, entry_id, dataset_name, dataset_id, data_id, synced_ns, "
-                    "content_hash) VALUES(?,?,?,?,?,?,?)",
+                    "content_hash, documents_json) VALUES(?,?,?,?,?,?,?,?)",
                     (
                         entry_kind, entry_id, dataset_name, dataset_id, data_id,
-                        time.time_ns(), content_hash,
+                        time.time_ns(), content_hash, documents_json,
                     ),
                 )
             if delete_mapping or dataset_name:
@@ -302,7 +303,7 @@ class CogneeSyncQueue:
         db = await self._conn.get_db()
         cursor = await db.execute(
             "SELECT entry_kind, entry_id, dataset_name, dataset_id, data_id, synced_ns, "
-            "content_hash FROM cognee_entry_map WHERE entry_kind=? AND entry_id=?",
+            "content_hash, documents_json FROM cognee_entry_map WHERE entry_kind=? AND entry_id=?",
             (entry_kind, entry_id),
         )
         row = await cursor.fetchone()

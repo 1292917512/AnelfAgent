@@ -549,6 +549,7 @@ class MemoryStore(BaseEntity):
         data_id: str = "",
         content_hash: str = "",
         delete_mapping: bool = False,
+        documents_json: str = "[]",
     ) -> None:
         await self._cognee.complete(
             queue_id,
@@ -559,6 +560,7 @@ class MemoryStore(BaseEntity):
             data_id=data_id,
             content_hash=content_hash,
             delete_mapping=delete_mapping,
+            documents_json=documents_json,
         )
 
     async def fail_cognee_sync(
