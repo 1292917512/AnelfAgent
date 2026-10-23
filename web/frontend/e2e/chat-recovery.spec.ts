@@ -1,6 +1,46 @@
 import { test, expect, openWebChat, closeWebChatOverlay, installEventStream } from "./fixtures";
 import type { ActivityRun } from "../src/lib/types/activity";
 
+test("history code highlights on reveal, including blocks below a collapsed message", async ({ page, context }, info) => {
+  await installEventStream(page);
+  await context.grantPermissions(["clipboard-read", "clipboard-write"]);
+  const code = Array.from({ length: 30 }, (_, i) => `value_${i} = ${i}`).join("\n");
+  const history = Array.from({ length: 20 }, (_, i) => ({ id: i + 1, role: "assistant", ts: i + 1,
+    content: `Example ${i + 1}\n\n\`\`\`python\n${code}\n\`\`\`\n\nHidden example\n\n\`\`\`python\nprint("revealed")\n\`\`\`` }));
+  await page.route("**/api/chat/history*", (route) => route.fulfill({ json: history }));
+  await page.goto("/webui/");
+  await openWebChat(page);
+  const list = page.locator(".message-list");
+  const rows = list.locator("[data-message-key]");
+  await expect(rows).toHaveCount(20);
+  const latest = rows.last();
+  await expect(latest.locator(".shiki")).toHaveCount(1);
+  await expect(latest.getByRole("button", { name: "Expand", exact: true })).toBeInViewport();
+  await expect(page.getByRole("button", { name: "Back to latest messages", exact: true })).toHaveCount(0);
+  await expect(rows.first().locator(".shiki")).toHaveCount(0);
+  const plainHeight = await rows.first().locator("pre").first().evaluate((element) => element.getBoundingClientRect().height);
+  await expect(latest.locator("pre").last()).toHaveText('print("revealed")');
+  await latest.getByRole("button", { name: "Expand", exact: true }).click();
+  await latest.locator("pre").last().scrollIntoViewIfNeeded();
+  await expect(latest.locator(".shiki")).toHaveCount(2);
+  const token = latest.locator(".shiki span[style]").last();
+  const lightColor = await token.evaluate((element) => getComputedStyle(element).color);
+  await expect(token).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+  await page.screenshot({ path: info.outputPath("expanded-code-light.png") });
+  await page.evaluate(() => { document.documentElement.classList.add("dark"); document.documentElement.dataset.theme = "dark"; });
+  await expect.poll(() => token.evaluate((element) => getComputedStyle(element).color)).not.toBe(lightColor);
+  await expect(token).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
+  await page.screenshot({ path: info.outputPath("expanded-code-dark.png") });
+  await page.evaluate(() => { document.documentElement.classList.remove("dark"); document.documentElement.dataset.theme = "light"; });
+  await list.evaluate((element) => element.scrollTo({ top: 0, behavior: "instant" }));
+  await expect(rows.first().locator(".shiki")).toHaveCount(1);
+  const highlightedHeight = await rows.first().locator("pre").first().evaluate((element) => element.getBoundingClientRect().height);
+  expect(Math.abs(highlightedHeight - plainHeight)).toBeLessThan(1);
+  await rows.first().getByRole("button", { name: "Copy", exact: true }).first().click();
+  expect((await page.evaluate(() => navigator.clipboard.readText())).replace(/\r\n/g, "\n")).toBe(code);
+  await page.screenshot({ path: info.outputPath("visible-code-history.png") });
+});
+
 test("chat pages load on demand, preserve the reading anchor and catch up beyond one missed page", async ({ page }) => {
   await installEventStream(page);
   const history = Array.from({ length: 240 }, (_, index) => ({ id: index + 1, role: "assistant", ts: index + 1,

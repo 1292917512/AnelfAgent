@@ -36,7 +36,7 @@ export function CollapsibleMarkdown({
   return (
     <div className="relative">
       <div
-        className={cn(collapsed && "max-h-[360px] overflow-hidden")}
+        className={cn(!expanded && "max-h-[360px] overflow-hidden")}
       >
         <div ref={ref}><Markdown content={content} /></div>
       </div>
@@ -45,8 +45,11 @@ export function CollapsibleMarkdown({
       )}
       {overflow && (
         <button
+          type="button"
+          aria-expanded={expanded}
           onClick={() => setExpanded(!expanded)}
-          className="mt-1 inline-flex items-center gap-1 text-[11px] text-muted hover:text-foreground transition-colors"
+          className={cn("inline-flex items-center gap-1 rounded-md border border-border bg-card px-2 py-1 text-xs text-muted hover:text-foreground hover:border-accent/40 transition-colors",
+            collapsed ? "absolute bottom-1 left-1 shadow-sm" : "mt-1")}
         >
           {expanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
           {expanded ? t("collapse") : t("expand")}

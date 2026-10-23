@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 /**
  * IntersectionObserver 懒挂载：元素进入视口才置 true（一次性，进入后不再回退）。
- * 用于聊天历史中的图片/视频等媒体延迟挂载，避免翻页时全部并发请求。
+ * 用于媒体延迟挂载与代码按需高亮，避免历史翻页时同时处理所有屏外内容。
  */
 export function useInViewport<T extends HTMLElement = HTMLDivElement>(rootMargin = "200px") {
   const ref = useRef<T>(null);

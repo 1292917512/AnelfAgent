@@ -5,6 +5,7 @@ import { Check, Copy, ExternalLink, Link2 } from "lucide-react";
 import { useLightbox } from "./Lightbox";
 import { highlightCode } from "@/lib/shiki";
 import { useCopyFeedback } from "@/hooks/useCopyFeedback";
+import { useInViewport } from "@/lib/useInViewport";
 import { resolveDocumentReference } from "@/lib/file-reference";
 import type { WorkspaceFileRef } from "@/lib/workspace-file";
 import { FileReferenceLink } from "./FileReferenceLink";
@@ -62,6 +63,7 @@ function LinkCard({ href, children, fileBase }: { href?: string; children?: Reac
 
 /** 代码块：Shiki 语法高亮 + 语言标签 + 复制按钮（高亮完成前用纯文本占位，避免布局跳动） */
 function CodeBlock({ className, children, live = false }: { className?: string; children?: ReactNode; live?: boolean }) {
+  const { ref, inView } = useInViewport();
   const [copied, triggerCopied] = useCopyFeedback(1500);
   const match = /language-(\w+)/.exec(className || "");
   const lang = match?.[1] || "";
@@ -71,14 +73,14 @@ function CodeBlock({ className, children, live = false }: { className?: string; 
   useEffect(() => {
     let alive = true;
     setHtml(null);
-    if (live) return;
+    if (live || !inView) return;
     highlightCode(code, lang).then((h) => {
       if (alive) setHtml(h);
     });
     return () => {
       alive = false;
     };
-  }, [code, lang, live]);
+  }, [code, lang, live, inView]);
 
   const copy = async () => {
     try {
@@ -88,7 +90,7 @@ function CodeBlock({ className, children, live = false }: { className?: string; 
   };
 
   return (
-    <div className="rounded-md overflow-hidden border border-border my-2">
+    <div ref={ref} className="rounded-md overflow-hidden border border-border my-2">
       <div className="flex items-center justify-between px-3 py-1.5 bg-elevated border-b border-border">
         <span className="text-[11px] font-mono text-muted">{lang || "text"}</span>
         <button
@@ -103,7 +105,7 @@ function CodeBlock({ className, children, live = false }: { className?: string; 
         // Shiki 产物（代码已转义），主题色由 .shiki 相关 CSS 变量接管
         <div className="bg-elevated" dangerouslySetInnerHTML={{ __html: html }} />
       ) : (
-        <pre className="m-0 px-3.5 py-2.5 overflow-x-auto bg-elevated text-[12.5px] font-mono text-foreground">
+        <pre className="m-0 px-3.5 py-2.5 overflow-x-auto bg-elevated text-[12.5px] leading-[1.6] font-mono text-foreground">
           <code>{code}</code>
         </pre>
       )}

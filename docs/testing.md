@@ -47,6 +47,11 @@ DOM/监听器计数、主线程耗时、事件到两次动画帧的延迟及刷�
 JSON 报告与截图保存在测试产物中。此测量隔离模型和网络延迟，不能当作真实模型端到端响应时间；
 比较版本时使用相同机器和构建模式，避免同时运行其他重负载任务。
 
+代码密集历史的刷新测量可设置 `$env:FRONTEND_RENDER_BENCH='1'`，运行
+`npx playwright test e2e/code-performance.spec.ts --project desktop --workers 1 --retries 0`。
+该测量使用 40 条、每条 120 行代码的隔离历史，记录首次加载耗时、长任务、帧间隔、GC 后堆大小
+及 DOM 数量；常规浏览器回归另行验证滚动、展开后高亮和完整原文复制。
+
 ## 测试防膨胀规约（写新测试前逐条自查）
 
 1. **先查共享层再动手**：think_loop 替身用 `tests/helpers/think_loop_fakes.py`

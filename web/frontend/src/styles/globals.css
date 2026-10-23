@@ -357,11 +357,9 @@ body {
 }
 .shiki span {
   color: var(--shiki-light);
-  background-color: var(--shiki-light-bg);
 }
 .dark .shiki span {
   color: var(--shiki-dark);
-  background-color: var(--shiki-dark-bg);
 }
 
 /* 交互反馈共享节奏；持续运行指示保持独立的循环动画。 */
