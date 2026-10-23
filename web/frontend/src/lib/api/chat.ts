@@ -53,12 +53,14 @@ export const chatApi = {
       headers: { "Content-Type": "multipart/form-data" },
     });
   },
-  history: (scopeId = "web_user", limit = 50, chatId?: string, beforeId?: number) =>
+  history: (scopeId = "web_user", limit = 40, chatId?: string, beforeId?: number, afterId?: number, signal?: AbortSignal) =>
     api.get<ChatHistoryMessage[]>(`/chat/history`, {
+      signal,
       params: {
         scope_id: scopeId, limit,
         ...(chatId ? { chat_id: chatId } : {}),
         ...(beforeId ? { before_id: beforeId } : {}),
+        ...(afterId != null ? { after_id: afterId } : {}),
       },
     }),
   /** 换向折叠：fromMessageId 之后的消息折叠出上下文（DB 保留可恢复） */

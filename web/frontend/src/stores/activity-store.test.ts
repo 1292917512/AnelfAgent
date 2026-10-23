@@ -11,6 +11,25 @@ const run = (id: string, revision: number, status = "running"): ActivityRun => (
 beforeEach(() => { vi.clearAllMocks(); useActivityStore.setState({ epoch: "", snapshotRevision: 0, syncedAt: 0, checkedAt: 0, runs: [], loaded: false, loading: false, clearing: false, error: null }); });
 afterEach(() => { vi.useRealTimers(); });
 
+it("merges HTTP deltas, removes evicted rounds and keeps newer live updates without resending old content", async () => {
+  const store = useActivityStore.getState();
+  const stable = run("stable", 1, "completed");
+  store.restore({ epoch: "p", revision: 3, runs: [stable, run("removed", 2), run("live", 3)] });
+  store.receive("p", run("live", 6, "completed"));
+  vi.mocked(api.get).mockResolvedValueOnce({ data: { epoch: "p", revision: 5, retained_ids: ["stable", "live"], runs: [run("live", 5)] } });
+  await store.load();
+  expect(api.get).toHaveBeenCalledWith("/workspace/activity", { params: { epoch: "p", since_revision: 3 } });
+  expect(useActivityStore.getState().runs.map((item) => item.id)).toEqual(["live", "stable"]);
+  expect(useActivityStore.getState().runs.find((item) => item.id === "stable")).toBe(stable);
+  expect(useActivityStore.getState().runs.find((item) => item.id === "live")?.status).toBe("completed");
+  const records = useActivityStore.getState().runs;
+  vi.mocked(api.get).mockResolvedValueOnce({ data: { epoch: "p", revision: 6, retained_ids: ["stable", "live"], runs: [] } });
+  await store.load();
+  expect(useActivityStore.getState().runs).toBe(records);
+  store.restore({ epoch: "new", revision: 0, runs: [] });
+  expect(useActivityStore.getState().runs).toEqual([]);
+});
+
 it("retains the entry list for metadata-only revisions and replaces it for content or order changes", () => {
   const store = useActivityStore.getState();
   const record = { ...run("a", 1), entries: [{ id: "text", kind: "text" as const, ts: 1, content: "First" }] };

@@ -22,7 +22,7 @@ test("execution controls follow runtime capability and only Web conversations ca
     source: { scope, kind: "user", channel: "webui", target: "web_user", session: "control" } });
   let stopCalls = 0;
   let resumeCalls = 0;
-  await page.route("**/api/workspace/activity", (route) => route.fulfill({ json: { epoch: "control", revision: run.revision, runs: [run] } }));
+  await page.route(/\/api\/workspace\/activity(?:\?.*)?$/, (route) => route.fulfill({ json: { epoch: "control", revision: run.revision, runs: [run] } }));
   await page.route("**/api/workspace/activity/web-control/stop", async (route) => {
     stopCalls++;
     Object.assign(run, { status: "cancelled", ended_at: Date.now() / 1000, revision: 2, control: "stopping" });
@@ -66,7 +66,7 @@ test("live notifications and tool inspections support hover, touch and keyboard"
   run.entries.push({ id: "recovery", kind: "notice", origin: "recovery", iteration: 3, count: 1, deferred: 0, ts: Date.now() / 1000,
     items: [{ source: run.source, role: "system", message_id: "", ts: 0,
       content: "Jev allows recovery: inspect the verified working directory before retrying (decision-model, 250ms)." }] });
-  await page.route("**/api/workspace/activity", (route) => route.fulfill({ json: { epoch: "test", revision: 2, runs: [run] } }));
+  await page.route(/\/api\/workspace\/activity(?:\?.*)?$/, (route) => route.fulfill({ json: { epoch: "test", revision: 2, runs: [run] } }));
   await page.goto("/webui/");
   const recovery = page.getByRole("button", { name: "View details: Tool recovery decision", exact: true });
   await expect(recovery).toHaveCount(1);
@@ -99,6 +99,8 @@ test("live notifications and tool inspections support hover, touch and keyboard"
   await expect(toolDialog.getByRole("region", { name: "Result", exact: true })).toContainText("Service is healthy");
   await expect(toolDialog).toContainText("request-review-1");
   await expect(toolDialog).toHaveCSS("animation-name", "surface-enter");
+  await expect(page.getByRole("dialog", { name: "Preview: inspect_service", exact: true })).toHaveCount(0);
+  await expect(toolDialog).toHaveCSS("opacity", "1");
   const accessibility = await new AxeBuilder({ page }).include('[role="dialog"]').analyze();
   expect(accessibility.violations).toEqual([]);
   const closingState = await toolDialog.getByRole("button", { name: "Close", exact: true }).evaluate((button) => {
@@ -125,7 +127,7 @@ test("memory tool references open the resolved project file instead of a workspa
     { id: "external-note", kind: "tool", name: "read_memory_file", status: "done", ts: Date.now() / 1000,
       arguments: '{"file_path":"memory/external.md"}', targets: [{ key: "file_path", value: "memory/external.md", path: "/data/external.md", root: "external" }], request_id: "external-note", result: "Memory content" },
   ] });
-  await page.route("**/api/workspace/activity", (route) => route.fulfill({ json: { epoch: "test", revision: 1, runs: [run] } }));
+  await page.route(/\/api\/workspace\/activity(?:\?.*)?$/, (route) => route.fulfill({ json: { epoch: "test", revision: 1, runs: [run] } }));
   const reads: string[] = [];
   page.on("request", (request) => { if (new URL(request.url()).pathname === "/api/workspace/file") reads.push(request.url()); });
   await page.goto("/webui/");
@@ -147,7 +149,7 @@ test("clearing earlier process keeps the current round and Web conversation", as
   const previous = activity("previous", { status: "completed", started_at: 1, ended_at: 2, updated_at: 2, entries: [] });
   const current = activity("current");
   let snapshot = { epoch: "test", revision: 2, runs: [previous, current] };
-  await page.route("**/api/workspace/activity", (route) => route.fulfill({ json: snapshot }));
+  await page.route(/\/api\/workspace\/activity(?:\?.*)?$/, (route) => route.fulfill({ json: snapshot }));
   await page.route("**/api/workspace/activity/history", (route) => {
     expect(route.request().method()).toBe("DELETE");
     snapshot = { ...snapshot, revision: 3, runs: [current] };
@@ -177,7 +179,7 @@ test("context evidence, tagged results and cache facts remain readable on narrow
     { id: "receipt", kind: "tool", name: "read_file", arguments: '{"file_path":"review/task-a.txt"}', targets: [], request_id: "request-42", status: "error", duration_ms: 12, ts: Date.now() / 1000,
       result: JSON.stringify({ error: "Missing file for [group_id:42]", hint: "Verify the path before retrying.", diagnostic: { request_id: "request-42" } }) },
   ] });
-  await page.route("**/api/workspace/activity", (route) => route.fulfill({ json: { epoch: "test", revision: 2, runs: [run] } }));
+  await page.route(/\/api\/workspace\/activity(?:\?.*)?$/, (route) => route.fulfill({ json: { epoch: "test", revision: 2, runs: [run] } }));
   await page.goto("/webui/");
   const execution = page.getByRole("region", { name: "Global execution", exact: true });
   await expect(execution.getByText("Cache not reported", { exact: true })).toBeVisible();
@@ -204,7 +206,7 @@ test("workspace shows the global live process beside actual Web messages", async
     { id: "child-thought", kind: "thinking", content: "Reviewing settings while the main conversation continues.", ts: Date.now() / 1000 - 10 },
     { id: "child-tool", kind: "tool", name: "read_deployment_settings", status: "running", ts: Date.now() / 1000 - 8, arguments: '{"path":"note.txt"}', targets: [{ key: "path", value: "note.txt" }], request_id: "child-request" },
   ] });
-  await page.route("**/api/workspace/activity", (route) => route.fulfill({ json: { epoch: "test", revision: 2, runs: [parent, child] } }));
+  await page.route(/\/api\/workspace\/activity(?:\?.*)?$/, (route) => route.fulfill({ json: { epoch: "test", revision: 2, runs: [parent, child] } }));
   await page.route("**/api/chat/history*", (route) => route.fulfill({ json: [{ id: 1, role: "assistant", content: "Your Web message was received.", ts: Date.now() / 1000,
     thinking: "Internal Web reasoning stays outside this pane", toolCalls: [{ call_id: "old", name: "old_web_tool", status: "done" }] }] }));
   await page.goto("/webui/");
@@ -263,7 +265,7 @@ test("workspace shows the global live process beside actual Web messages", async
 
 test("global activity snapshot failures are retryable without hiding Web messages", async ({ page }) => {
   let failed = true;
-  await page.route("**/api/workspace/activity", (route) => failed
+  await page.route(/\/api\/workspace\/activity(?:\?.*)?$/, (route) => failed
     ? route.fulfill({ status: 503, json: { detail: "Activity temporarily unavailable" } })
     : route.fulfill({ json: { epoch: "test", revision: 1, runs: [activity("recovered")] } }));
   await page.goto("/webui/");
@@ -280,7 +282,7 @@ test("long execution keeps its heading fixed while tools are opened", async ({ p
     arguments: '{"path":"note.txt"}', targets: [{ key: "path", value: "note.txt" }],
     result: "File content", duration_ms: 10, request_id: `request-${index}`,
   })) });
-  await page.route("**/api/workspace/activity", (route) => route.fulfill({ json: { epoch: "test", revision: 1, runs: [run] } }));
+  await page.route(/\/api\/workspace\/activity(?:\?.*)?$/, (route) => route.fulfill({ json: { epoch: "test", revision: 1, runs: [run] } }));
   await page.goto("/webui/");
   const execution = page.getByRole("region", { name: "Global execution", exact: true });
   await execution.getByRole("button", { name: "View details: read_file_23", exact: true }).click();
@@ -302,7 +304,7 @@ test("only the current round mounts until the user scrolls into transient histor
   const old = activity("old", { label: "Earlier completed request", status: "completed", started_at: 10, ended_at: 20, updated_at: 20, entries: [] });
   const current = activity("current", { label: "Current live request", started_at: 30, entries: [] });
   let restarted = false;
-  await page.route("**/api/workspace/activity", (route) => route.fulfill({ json: {
+  await page.route(/\/api\/workspace\/activity(?:\?.*)?$/, (route) => route.fulfill({ json: {
     epoch: restarted ? "restarted" : "test", revision: 2, runs: restarted ? [] : [old, current],
   } }));
   await page.goto("/webui/");
@@ -332,7 +334,7 @@ test("live bursts follow the tail, preserve reading position and expose reflecti
       { id: "model", kind: "model", generation: 1, name: "Test model", ts: now, status: "running" },
       { id: "reasoning", kind: "thinking", generation: 1, ts: now + 1, content: Array.from({ length: 60 }, (_, i) => `Step ${i}: checking execution evidence.\n\n`).join("") },
     ] });
-  await page.route("**/api/workspace/activity", (route) => route.fulfill({ json: { epoch: "follow", revision: run.revision, runs: [run] } }));
+  await page.route(/\/api\/workspace\/activity(?:\?.*)?$/, (route) => route.fulfill({ json: { epoch: "follow", revision: run.revision, runs: [run] } }));
   await page.route("**/api/workspace/activity/follow/stop", (route) => {
     Object.assign(run, { status: "cancelled", can_stop: false, revision: run.revision + 1, ended_at: Date.now() / 1000 });
     return route.fulfill({ json: { status: "ok", interrupted: true } });
@@ -423,7 +425,7 @@ test("streams through a busy workspace without remounting completed tool results
         content: "```python\n" + Array.from({ length: 60 }, (_, line) => `check_${line} = ${line}`).join("\n") + "\n```" },
     ],
   }));
-  await page.route("**/api/workspace/activity", (route) => route.fulfill({ json: { epoch: "stress", revision: 20, runs } }));
+  await page.route(/\/api\/workspace\/activity(?:\?.*)?$/, (route) => route.fulfill({ json: { epoch: "stress", revision: 20, runs } }));
   await page.goto("/webui/");
   await expect(page.locator(".activity-thought-content")).toHaveCount(20);
   const stableTool = await page.locator(".activity-tool").first().elementHandle();

@@ -17,7 +17,7 @@ test("idle runtime discovers Cognee maintenance without relying on a busy phase 
   await page.clock.install();
   let snapshots = 0;
   const snapshot: ActivitySnapshot = { epoch: "maintenance", revision: 0, runs: [] };
-  await page.route("**/api/workspace/activity", (route) => { snapshots++; return route.fulfill({ json: snapshot }); });
+  await page.route(/\/api\/workspace\/activity(?:\?.*)?$/, (route) => { snapshots++; return route.fulfill({ json: snapshot }); });
   await page.goto("/webui/");
   await expect(page.getByText("No execution records yet", { exact: true })).toBeVisible();
   const baseline = snapshots;
@@ -41,7 +41,7 @@ test("busy cross-channel streaming cannot mask a lost child terminal and snapsho
   const parent = run("parent", { kind: "conversation", status: "completed", ended_at: 2,
     entries: [{ id: "queued", kind: "delegation", ts: 1, goal: "Queued review", agent: "Reviewer", status: "queued", background: true }] });
   const snapshot: ActivitySnapshot = { epoch: "active", revision: 1, runs: [parent, child, channel] };
-  await page.route("**/api/workspace/activity", (route) => { snapshots++; return route.fulfill({ json: snapshot }); });
+  await page.route(/\/api\/workspace\/activity(?:\?.*)?$/, (route) => { snapshots++; return route.fulfill({ json: snapshot }); });
   await page.goto("/webui/");
   await expect(page.getByText("Child investigation", { exact: true })).toBeVisible();
   const baseline = snapshots;
@@ -70,7 +70,7 @@ test("reconnect restores compression and child state and removes missed legacy r
   const child = run("Recovered child", { kind: "delegation", owner_id: "worker" });
   const compact = run("Compression", { entries: [{ id: "phase", kind: "phase", name: "cognee_compact", ts: 1, status: "running", duration_ms: 0 }] });
   const snapshot: ActivitySnapshot = { epoch: "before", revision: 1, runs: [child, compact] };
-  await page.route("**/api/workspace/activity", (route) => { snapshots++; return route.fulfill({ json: snapshot }); });
+  await page.route(/\/api\/workspace\/activity(?:\?.*)?$/, (route) => { snapshots++; return route.fulfill({ json: snapshot }); });
   await page.route("**/api/chat/delegations*", (route) => { delegationRequests++; return route.fulfill({ json: { running: [] } }); });
   await page.goto("/webui/");
   await openWebChat(page);

@@ -1,6 +1,56 @@
 import { test, expect, openWebChat, closeWebChatOverlay, installEventStream } from "./fixtures";
 import type { ActivityRun } from "../src/lib/types/activity";
 
+test("chat pages load on demand, preserve the reading anchor and catch up beyond one missed page", async ({ page }) => {
+  await installEventStream(page);
+  const history = Array.from({ length: 240 }, (_, index) => ({ id: index + 1, role: "assistant", ts: index + 1,
+    content: `Message ${index + 1}\n\n${"Historical context. ".repeat(20)}` }));
+  const requests: { limit: number; before: number; after: number | null }[] = [];
+  await page.route("**/api/chat/history*", (route) => {
+    const params = new URL(route.request().url()).searchParams;
+    const limit = Number(params.get("limit"));
+    const before = Number(params.get("before_id") ?? Infinity);
+    const after = params.has("after_id") ? Number(params.get("after_id")) : null;
+    requests.push({ limit, before, after });
+    const result = after != null ? history.filter((message) => message.id > after).slice(0, limit)
+      : history.filter((message) => message.id < before).slice(-limit);
+    return route.fulfill({ json: result });
+  });
+  await page.goto("/webui/");
+  await openWebChat(page);
+  const list = page.locator(".message-list");
+  const rows = list.locator("[data-message-key]");
+  await expect(rows).toHaveCount(40);
+  await list.evaluate((element) => element.scrollTo({ top: 0, behavior: "instant" }));
+  const earlier = list.getByRole("button", { name: "Load earlier messages" });
+  await earlier.focus();
+  await earlier.click({ trial: true });
+  const anchor = rows.first();
+  const key = await anchor.getAttribute("data-message-key");
+  const anchorOffset = () => list.evaluate((element, anchorKey) => {
+    const row = element.querySelector(`[data-message-key="${anchorKey}"]`)!;
+    return row.getBoundingClientRect().top - element.getBoundingClientRect().top;
+  }, key);
+  const top = await anchorOffset();
+  await earlier.click();
+  await expect(rows).toHaveCount(80);
+  await expect.poll(async () => Math.abs(await anchorOffset() - top)).toBeLessThan(8);
+  for (let i = 241; i <= 333; i++) history.push({ id: i, role: "assistant", ts: i, content: `Recovered ${i}` });
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent("test-activity", { detail: { event: "turn_end", data: {} } })));
+  await expect(rows).toHaveCount(173);
+  await expect.poll(() => requests.some((request) => request.after === 320)).toBe(true);
+  await expect.poll(async () => Math.abs(await anchorOffset() - top)).toBeLessThan(8);
+  await page.getByRole("button", { name: "Back to latest messages" }).click();
+  await expect(rows).toHaveCount(40);
+  await expect(list.getByText("Recovered 333", { exact: true })).toBeInViewport();
+  expect(requests.every((request) => request.limit === 40)).toBe(true);
+  for (let i = 334; i <= 460; i++) history.push({ id: i, role: "assistant", ts: i, content: `Recovered ${i}` });
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent("test-activity", { detail: { event: "turn_end", data: {} } })));
+  await expect(list.getByText("Recovered 460", { exact: true })).toBeAttached();
+  await expect(rows).toHaveCount(120);
+  await page.screenshot({ path: test.info().outputPath("bounded-chat-history.png") });
+});
+
 test("a closed connection recovers missed Web replies and runtime without reloading or resending", async ({ page }) => {
   let recovered = false;
   let messageId = "";
@@ -22,7 +72,7 @@ test("a closed connection recovers missed Web replies and runtime without reload
     { id: 1, cid: messageId, role: "user", content: "Recover this reply", ts: 1 },
     { id: 2, role: "assistant", content: "Reply delivered while connection was closed", ts: 2 },
   ] : [] }));
-  await page.route("**/api/workspace/activity", (route) => route.fulfill({ json: { epoch: "recovery", revision: 1, runs: recovered ? [{
+  await page.route(/\/api\/workspace\/activity(?:\?.*)?$/, (route) => route.fulfill({ json: { epoch: "recovery", revision: 1, runs: recovered ? [{
     id: "recovered", revision: 1, kind: "conversation", scope: "", origin_scope: "", parent_id: "", owner_id: "", actor: "", label: "Recovered execution", input: "",
     source: { channel: "webui", kind: "user", target: "web_user", session: "default", scope: "" },
     status: "completed", started_at: 1, updated_at: 2, ended_at: 2, entry_count: 0, truncated: false, entries: [],
@@ -78,7 +128,7 @@ test("accepted messages remain visible while global decisions have no execution 
   await page.route("**/api/status/thinking", (route) => route.fulfill({ json: {
     pending_messages: [{ scope: "user_webui:web_user", adapter_key: "webui", preview: "Check the pending work" }], general_tasks: [],
   } }));
-  await page.route("**/api/workspace/activity", (route) => {
+  await page.route(/\/api\/workspace\/activity(?:\?.*)?$/, (route) => {
     snapshots++;
     return route.fulfill({ json: { epoch: "pending", revision: 0, runs: [] } });
   });
@@ -128,7 +178,7 @@ test("runtime facts recover other channel work when heartbeats arrive but activi
     entries: [{ id: "progress", kind: "text", ts: Date.now() / 1000, content: "Other project progress recovered" }],
   };
   await page.route("**/api/status/", (route) => route.fulfill({ json: { ready: true, status: { mind_phase: started && run.status === "running" ? "llm_calling" : "idle", queue_size: 0 } } }));
-  await page.route("**/api/workspace/activity", (route) => {
+  await page.route(/\/api\/workspace\/activity(?:\?.*)?$/, (route) => {
     snapshots++;
     return route.fulfill({ json: { epoch: "other", revision: started ? run.revision : 0, runs: started ? [run] : [] } });
   });

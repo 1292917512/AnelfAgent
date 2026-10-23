@@ -10,7 +10,7 @@ function run(id: string, started: number, patch: Partial<ActivityRun> = {}): Act
 
 async function liveFixture(page: Page, initial: ActivityRun[]) {
   let snapshot: ActivitySnapshot = { epoch: "follow", revision: 1, runs: initial };
-  await page.route("**/api/workspace/activity", (route) => route.fulfill({ json: snapshot }));
+  await page.route(/\/api\/workspace\/activity(?:\?.*)?$/, (route) => route.fulfill({ json: snapshot }));
   await installEventStream(page);
   await page.addInitScript(() => {
     for (const [name, event] of [["fixture-activity", "activity"], ["fixture-activity-delta", "activity_delta"]]) {

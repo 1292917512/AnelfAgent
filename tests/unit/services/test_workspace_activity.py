@@ -108,6 +108,26 @@ async def test_background_completion_updates_original_turn_after_reply_finishes(
     await registry.close()
 
 
+async def test_http_snapshots_only_copy_changed_runs_and_include_retained_ids(activity):
+    service, _ = activity
+    async with activity_scope("first", "user_webui:1"):
+        pass
+    baseline = service.snapshot()
+    unchanged = service.snapshot(epoch=baseline["epoch"], since_revision=baseline["revision"])
+    assert unchanged["runs"] == []
+    assert unchanged["retained_ids"] == ["first"]
+    async with activity_scope("second", "user_webui:1"):
+        pass
+    changed = service.snapshot(epoch=baseline["epoch"], since_revision=baseline["revision"])
+    assert [run["id"] for run in changed["runs"]] == ["second"]
+    assert changed["retained_ids"] == ["first", "second"]
+    changed["runs"][0]["label"] = "Mutated client copy"
+    assert service.snapshot()["runs"][-1]["label"] != "Mutated client copy"
+    assert "retained_ids" not in service.snapshot(epoch="old-process", since_revision=baseline["revision"])
+    service.clear_history()
+    assert service.snapshot(epoch=baseline["epoch"], since_revision=changed["revision"])["retained_ids"] == ["second"]
+
+
 async def test_threaded_background_registration_and_completion_publish_on_bound_loop(activity):
     from agent.mind.background.tasks import BackgroundTaskRegistry
 

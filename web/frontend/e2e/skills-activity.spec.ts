@@ -26,7 +26,7 @@ const run: ActivityRun = {
 test("skill evidence distinguishes suggestions from reads and links to a readable catalog", async ({ page }, info) => {
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  await page.route("**/api/workspace/activity", (route) => route.fulfill({ json: { epoch: "skills-test", revision: 1, runs: [run] } }));
+  await page.route(/\/api\/workspace\/activity(?:\?.*)?$/, (route) => route.fulfill({ json: { epoch: "skills-test", revision: 1, runs: [run] } }));
   await page.route("**/api/skills/**", (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path.endsWith("/health")) return route.fulfill({ json: { counts: { active: 1, stale: 0, archived: 1, pinned: 1 }, capacity_reference: 100, zero_engagement: [], high_match_low_use: [], trigger_collisions: {}, parse_errors: {} } });
@@ -122,7 +122,7 @@ test("skill MCP links are editable locally and execution shows compact status sn
     await route.fulfill({ json: [{ ...skill, mcp_servers: selected }] });
   });
   const states = [{ ...available[0], activation: "sleeping" }];
-  await page.route("**/api/workspace/activity", (route) => route.fulfill({ json: { epoch: "links", revision: 1, runs: [{ ...run,
+  await page.route(/\/api\/workspace\/activity(?:\?.*)?$/, (route) => route.fulfill({ json: { epoch: "links", revision: 1, runs: [{ ...run,
     skills: [{ name: skill.name, description: skill.description, mode: "read", mcp_status: states }],
     entries: [{ ...run.entries[1], result: JSON.stringify({ ok: true, name: skill.name, content: "Steps", mcp_status: states }) }],
   }] } }));

@@ -54,6 +54,7 @@
   "toolCallsFailed": "with failures",
   "expand": "Expand",
   "collapse": "Collapse",
+  "showLatest": "Back to latest messages",
   "loadEarlier": "Load earlier messages",
   "call": {
     "start": "Voice call",

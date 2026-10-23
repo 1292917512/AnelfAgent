@@ -16,7 +16,7 @@ test("background hook details show real execution and update without cluttering 
   let snapshot = { epoch: "hooks", revision: 1, runs: [parent, child] };
   const errors: string[] = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  await page.route("**/api/workspace/activity", (route) => route.fulfill({ json: snapshot }));
+  await page.route(/\/api\/workspace\/activity(?:\?.*)?$/, (route) => route.fulfill({ json: snapshot }));
   await page.goto("/webui/");
   const feed = page.getByRole("region", { name: "Global execution" });
   await expect(page.locator('.activity-feed [data-activity-run="hook-child"]')).toHaveCount(0);
@@ -56,7 +56,7 @@ test("hooks page opens the same execution details and explains expired memory", 
   await page.route("**/api/hooks", (route) => route.fulfill({ json: { execution: { active: [hook], recent: [] } } }));
   let reads = 0;
   let fail = false;
-  await page.route("**/api/workspace/activity", (route) => {
+  await page.route(/\/api\/workspace\/activity(?:\?.*)?$/, (route) => {
     reads++;
     return route.fulfill(fail ? { status: 503, json: { detail: "Activity temporarily unavailable" } }
       : { json: { epoch: "new-process", revision: 0, runs: [] } });
@@ -87,7 +87,7 @@ test("Jev decisions remain visible after later work and expose slow responses", 
   const review = { ...hook, name: "memory.probe", status: "done", phase: "done", operation: "Later retrieval completed", detail: "Subsequent work finished", judgments: [assessment,
     { ...assessment, id: "jev-2", task: "Skill review", status: "fallback" as const, probability: null, basis: "", basis_probability: null,
       input_tokens: 0, output_tokens: 0, duration_ms: 2001, slow: true, reason: "Request timed out; original work continues" }] };
-  await page.route("**/api/workspace/activity", (route) => route.fulfill({ json: { epoch: "jev", revision: 1, runs: [
+  await page.route(/\/api\/workspace\/activity(?:\?.*)?$/, (route) => route.fulfill({ json: { epoch: "jev", revision: 1, runs: [
     { ...parent, entries: [{ ...review, ts: review.started_at, kind: "hook" }] },
   ] } }));
   const errors: string[] = [];

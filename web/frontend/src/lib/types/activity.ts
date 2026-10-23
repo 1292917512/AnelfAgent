@@ -56,7 +56,13 @@ export interface ActivityRun {
   truncated: boolean;
 }
 
-export interface ActivitySnapshot { epoch: string; revision: number; runs: ActivityRun[] }
+export interface ActivitySnapshot {
+  epoch: string;
+  revision: number;
+  runs: ActivityRun[];
+  /** HTTP 增量快照的存续轮次；缺省表示完整快照。 */
+  retained_ids?: string[];
+}
 
 export interface ActivityReadingPosition {
   mode: "follow" | "reading" | "paused";

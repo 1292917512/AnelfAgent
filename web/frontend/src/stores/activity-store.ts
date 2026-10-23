@@ -38,7 +38,7 @@ interface ActivityState {
   clearing: boolean;
   error: unknown;
   load: () => Promise<void>;
-  /** 合并前台健康检查与会话静默核对；持续收帧也不能无限推迟完整快照。 */
+  /** 合并前台健康检查与会话静默核对；持续收帧也不能无限推迟快照核对。 */
   reconcile: (waiting?: boolean) => Promise<void>;
   clearHistory: () => Promise<void>;
   receive: (epoch: string, run: ActivityRun) => void;
@@ -54,10 +54,13 @@ export const useActivityStore = create<ActivityState>((set, get) => {
     load: () => {
       if (pendingLoad) return pendingLoad;
       const epoch = get().epoch;
+      const revision = get().loaded ? get().snapshotRevision : undefined;
       set({ loading: true, checkedAt: Date.now(), error: null });
       pendingLoad = (async () => {
         try {
-          const { data } = await api.get<ActivitySnapshot>("/workspace/activity");
+          const { data } = await api.get<ActivitySnapshot>("/workspace/activity", {
+            params: revision != null ? { epoch, since_revision: revision } : undefined,
+          });
           if (get().epoch === epoch || get().epoch === data.epoch) get().restore(data);
         } catch (error) { if (get().epoch === epoch) set({ error }); }
         finally { pendingLoad = null; set({ loading: false }); }
@@ -99,10 +102,11 @@ export const useActivityStore = create<ActivityState>((set, get) => {
       if (state.epoch === snapshot.epoch && snapshot.revision < state.snapshotRevision) return state;
       const current = state.epoch === snapshot.epoch ? state.runs : [];
       const records = new Map(snapshot.runs.map((run) => [run.id, run]));
+      const retained = new Set(snapshot.retained_ids);
       for (const run of current) {
         const incoming = records.get(run.id);
         if (incoming) records.set(run.id, run.revision >= incoming.revision ? run : reconcileRun(run, incoming));
-        else if (run.revision > snapshot.revision) records.set(run.id, run);
+        else if (run.revision > snapshot.revision || retained.has(run.id)) records.set(run.id, run);
       }
       const ordered = retainRuns([...records.values()]);
       const runs = ordered.length === state.runs.length && ordered.every((run, index) => run === state.runs[index]) ? state.runs : ordered;

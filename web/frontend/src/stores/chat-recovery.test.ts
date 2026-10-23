@@ -43,6 +43,27 @@ afterEach(() => {
   vi.useRealTimers(); vi.unstubAllGlobals(); vi.restoreAllMocks();
 });
 
+it("bounds inactive history caches while keeping drafts, attachments and running conversations", async () => {
+  const store = useChatStore.getState();
+  const message = { role: "user", content: "Awaiting acknowledgement", cid: "pending", delivery: "unknown" as const };
+  const file = { file: new File(["draft"], "draft.txt"), type: "file", uploading: false };
+  const historyMessages = Array.from({ length: 180 }, (_, i) => ({ id: i + 1, role: "assistant", content: `History ${i}` }));
+  useChatStore.setState({ activeChatId: "A", buckets: {
+    A: { ...emptyBucket(), historyLoaded: true, historyExpanded: true, messages: [...historyMessages, message], inputDraft: "Keep draft", pendingFiles: [file] },
+    B: emptyBucket(), C: emptyBucket(), D: emptyBucket(),
+    running: { ...emptyBucket(), historyLoaded: true, sending: true, messages: [message] },
+  } });
+  store.setActiveChat("B"); await store.loadHistory("B");
+  expect(useChatStore.getState().buckets.A?.messages).toHaveLength(41);
+  store.setActiveChat("C"); await store.loadHistory("C");
+  store.setActiveChat("D"); await store.loadHistory("D");
+  expect(useChatStore.getState().buckets.A).toMatchObject({ messages: [message], historyLoaded: false, inputDraft: "Keep draft", pendingFiles: [file] });
+  expect(useChatStore.getState().buckets.running?.messages).toEqual([message]);
+  vi.mocked(chatApi.history).mockResolvedValueOnce(response(historyMessages.slice(-40)));
+  store.setActiveChat("A"); await store.loadHistory("A");
+  expect(useChatStore.getState().buckets.A?.messages).toHaveLength(41);
+});
+
 it("rebuilds a closed stream, recovers replies in every waiting chat and preserves drafts", async () => {
   const store = useChatStore.getState();
   store.startSSE();

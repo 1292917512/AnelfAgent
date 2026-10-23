@@ -188,10 +188,13 @@ async def get_history(
     chat_id: Optional[str] = Query(None, description="多会话 chat_id，拼接为 scope_id#{chat_id}"),
     limit: int = Query(50, ge=1, le=500),
     before_id: Optional[int] = Query(None, description="分页游标：仅取 id 早于该值的消息"),
+    after_id: Optional[int] = Query(None, ge=0, description="增量游标：按 id 升序获取后续消息"),
 ) -> List[Dict[str, Any]]:
+    if before_id is not None and after_id is not None:
+        raise HTTPException(422, "before_id and after_id cannot be combined")
     base_scope = normalize_web_scope_id(scope_id)
     effective_scope = f"{base_scope}#{chat_id}" if chat_id else base_scope
-    raw = await _chat_svc.load_history(scope_id=effective_scope, limit=limit, before_id=before_id)
+    raw = await _chat_svc.load_history(scope_id=effective_scope, limit=limit, before_id=before_id, after_id=after_id)
     return [clean_message_for_display(m) for m in raw]
 
 

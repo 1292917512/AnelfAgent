@@ -14,7 +14,7 @@ export function HistoryStatus() {
   const load = useChatStore((state) => state.loadHistory);
   const refresh = useChatStore((state) => state.refreshAfterReconnect);
   const earlier = useChatStore((state) => state.loadEarlier);
-  return <>{loading && <p role="status" className="flex items-center justify-center gap-2 py-2 text-xs text-muted">
+  return <>{loading && !loaded && <p role="status" className="flex items-center justify-center gap-2 py-2 text-xs text-muted">
     <Loader2 size={13} className="animate-spin" />{t("historyLoading")}
   </p>}
     {error != null && <QueryError compact error={error} retry={() => void (loaded ? refresh(id) : load(id))} />}

@@ -119,9 +119,14 @@ class WorkspaceActivityService:
                         entry["duration_ms"] = max(0, round((run["ended_at"] - entry["ts"]) * 1000))
                 self._changed(run, immediate=True)
 
-    def snapshot(self) -> dict[str, Any]:
-        """返回本进程有界的脱敏过程快照，进程结束后不保留。"""
-        return {"epoch": self._epoch, "revision": self._revision, "runs": deepcopy(list(self._runs.values()))}
+    def snapshot(self, *, epoch: str = "", since_revision: int | None = None) -> dict[str, Any]:
+        """返回脱敏快照；同进程增量只复制变化轮次，并附存续 ID 以同步淘汰。"""
+        incremental = epoch == self._epoch and since_revision is not None and 0 <= since_revision <= self._revision
+        runs = [run for run in self._runs.values() if not incremental or run["revision"] > since_revision]
+        snapshot: dict[str, Any] = {"epoch": self._epoch, "revision": self._revision, "runs": deepcopy(runs)}
+        if incremental:
+            snapshot["retained_ids"] = list(self._runs)
+        return snapshot
 
     def get_run(self, run_id: str) -> dict[str, Any] | None:
         """读取单轮快照；控制操作不持有展示状态的可变引用。"""

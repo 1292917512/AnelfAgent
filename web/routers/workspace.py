@@ -21,11 +21,14 @@ _svc = WorkspaceService()
 
 
 @router.get("/activity")
-async def activity_snapshot() -> Dict[str, Any]:
+async def activity_snapshot(
+    epoch: str = Query("", max_length=64),
+    since_revision: int | None = Query(None, ge=0),
+) -> Dict[str, Any]:
     """获取独立于详细追踪的近期实时执行过程。"""
     from services.workspace_activity import workspace_activity
 
-    return workspace_activity.snapshot()
+    return workspace_activity.snapshot(epoch=epoch, since_revision=since_revision)
 
 
 @router.delete("/activity/history")

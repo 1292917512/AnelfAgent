@@ -103,6 +103,10 @@ export interface ChatBucket {
   unread: number;
   /** 已加载历史中最早一条的 DB id（"加载更早"分页游标） */
   earliestId?: number;
+  /** 已归并的服务端高水位，只由历史响应推进。 */
+  latestId?: number;
+  /** 主动上翻期间保留已展开历史，返回最新或离开会话时释放。 */
+  historyExpanded?: boolean;
   /** 是否可能还有更早历史（上次分页拉满 limit 时置真） */
   hasMore?: boolean;
   /** "加载更早"请求进行中 */

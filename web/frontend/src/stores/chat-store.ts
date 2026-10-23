@@ -36,7 +36,7 @@ import {
   persistActiveChatId,
   persistChats,
 } from "./chat-shared";
-import { createChatHistory } from "./chat-history";
+import { compactHistory, createChatHistory, HISTORY_PAGE_SIZE } from "./chat-history";
 import { attachChatSseHandlers } from "./chat-sse-handlers";
 import {
   classifyFile,
@@ -64,9 +64,11 @@ interface ChatState {
   loadChats: () => Promise<void>;
   loadHistory: (chatId?: string) => Promise<void>;
   loadEarlier: (chatId?: string) => Promise<void>;
+  showLatest: () => void;
+  holdHistory: () => void;
   startSSE: () => void;
   stopSSE: () => void;
-  /** 断线重连后补拉当前会话最近一页（错过的落地帧经历史补齐） */
+  /** 断线重连后按游标逐批补齐当前会话的新增历史 */
   refreshAfterReconnect: (chatId?: string) => Promise<void>;
   clearMessages: () => void;
   addFiles: (files: FileList | null) => Promise<void>;
@@ -89,6 +91,7 @@ interface ChatState {
 export const useChatStore = create<ChatState>((set, get) => {
   const initialChatId = loadActiveChatId();
   const initialChats = loadChatsFromStorage();
+  let recentChats = [initialChatId];
   const initialBuckets: Record<string, ChatBucket> = {};
   if (initialChats.length === 0) {
     initialBuckets[DEFAULT_CHAT_ID] = emptyBucket();
@@ -115,8 +118,10 @@ export const useChatStore = create<ChatState>((set, get) => {
   function updateBucket(chatId: string, fn: (b: ChatBucket) => Partial<ChatBucket>) {
     set((s) => {
       const bucket = s.buckets[chatId] ?? emptyBucket();
+      const next = { ...bucket, ...fn(bucket) };
+      if (next.messages !== bucket.messages && !next.historyExpanded) Object.assign(next, compactHistory(next));
       return {
-        buckets: { ...s.buckets, [chatId]: { ...bucket, ...fn(bucket) } },
+        buckets: { ...s.buckets, [chatId]: next },
       };
     });
   }
@@ -209,6 +214,19 @@ export const useChatStore = create<ChatState>((set, get) => {
     },
 
     setActiveChat: (chatId) => {
+      const previousId = get().activeChatId;
+      if (previousId !== chatId) {
+        history.cancel(previousId);
+        updateBucket(previousId, (bucket) => ({ ...compactHistory(bucket, HISTORY_PAGE_SIZE), historyExpanded: false }));
+      }
+      recentChats = [...new Set([chatId, previousId, ...recentChats])].slice(0, 3);
+      for (const [id, bucket] of Object.entries(get().buckets)) {
+        if (recentChats.includes(id) || bucket.sending || bucket.submitting || !bucket.historyLoaded) continue;
+        history.cancel(id);
+        updateBucket(id, (current) => ({ messages: current.messages.filter((message) => message.id == null),
+          historyLoaded: false, historyExpanded: false, earliestId: undefined, latestId: undefined, hasMore: undefined,
+          historyError: null, earlierError: null, folds: undefined }));
+      }
       if (!get().buckets[chatId]) {
         updateBucket(chatId, () => ({}));
       }
@@ -218,9 +236,7 @@ export const useChatStore = create<ChatState>((set, get) => {
       updateBucket(chatId, (b) => (b.unread ? { unread: 0 } : {}));
       // 切换 chat 时按需加载历史
       const bucket = get().buckets[chatId];
-      if (bucket && !bucket.historyLoaded) {
-        void get().loadHistory(chatId);
-      }
+      if (bucket) void (bucket.historyLoaded ? history.refresh(chatId) : history.load(chatId));
     },
 
     newChat: (title) => {
@@ -304,6 +320,16 @@ export const useChatStore = create<ChatState>((set, get) => {
 
     loadHistory: history.load,
     loadEarlier: history.earlier,
+    holdHistory: () => {
+      const id = get().activeChatId;
+      if (!get().buckets[id]?.historyExpanded) updateBucket(id, () => ({ historyExpanded: true }));
+    },
+    showLatest: () => {
+      const id = get().activeChatId;
+      history.cancel(id);
+      updateBucket(id, (bucket) => ({ ...compactHistory(bucket, HISTORY_PAGE_SIZE), historyExpanded: false }));
+      void history.refresh(id);
+    },
 
     interrupt: async () => {
       const chatId = get().activeChatId;
@@ -375,7 +401,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     clearMessages: () => {
       const chatId = get().activeChatId;
       history.cancel(chatId);
-      updateBucket(chatId, () => ({ messages: [], historyLoaded: true, historyError: null, earlierError: null, hasMore: false, earliestId: undefined }));
+      updateBucket(chatId, () => ({ messages: [], historyLoaded: true, historyExpanded: false, historyError: null, earlierError: null, hasMore: false, earliestId: undefined }));
     },
 
     addFiles: async (files) => {

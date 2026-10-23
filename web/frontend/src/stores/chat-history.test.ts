@@ -2,7 +2,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { AxiosHeaders, type AxiosResponse } from "axios";
 import { chatApi } from "@/lib/api";
 import type { ChatBucket, ChatHistoryMessage } from "@/lib/types";
-import { createChatHistory } from "./chat-history";
+import { compactHistory, createChatHistory, HISTORY_PAGE_SIZE } from "./chat-history";
 import { emptyBucket } from "./chat-shared";
 
 vi.mock("@/lib/api", () => ({ chatApi: { history: vi.fn() } }));
@@ -140,4 +140,58 @@ it("does not treat a reply to an older message as acknowledgement of newer input
   await history.refresh();
   expect(buckets.A.sending).toBe(true);
   expect(buckets.A.messages[buckets.A.messages.length - 1]?.cid).toBe("new");
+});
+
+it("catches up every missed page using the last committed cursor and retries from a successful page", async () => {
+  const history = makeHistory();
+  buckets.A = { ...emptyBucket(), historyLoaded: true, latestId: 10, messages: [{ id: 10, role: "user", content: "Start", ts: 10 }] };
+  const missed = Array.from({ length: 93 }, (_, i) => ({ id: 11 + i, role: "assistant", content: `Reply ${i}`, ts: 11 + i }));
+  vi.mocked(chatApi.history).mockResolvedValueOnce(response(missed.slice(0, HISTORY_PAGE_SIZE))).mockRejectedValueOnce(new Error("Disconnected"));
+  await history.refresh();
+  expect(buckets.A.latestId).toBe(50);
+  expect(buckets.A.historyError).toBeInstanceOf(Error);
+  vi.mocked(chatApi.history).mockImplementation(async (_scope, limit, _id, _before, after) => response(missed.filter((message) => message.id > (after ?? 0)).slice(0, limit)));
+  await history.refresh();
+  expect(buckets.A.messages.map((message) => message.id)).toEqual(Array.from({ length: 94 }, (_, i) => i + 10));
+  expect(buckets.A.latestId).toBe(103);
+  expect(vi.mocked(chatApi.history).mock.calls.map((call) => call[4])).toEqual([10, 50, 50, 90]);
+});
+
+it("merges only confirmed live text and preserves unpersisted replies, media and pending input", async () => {
+  const history = makeHistory();
+  const media = { role: "assistant", content: "Photo", media_type: "image", url: "/image.png", ts: 4 };
+  const pending = { role: "user", content: "Next", cid: "pending", delivery: "unknown" as const, ts: 5 };
+  buckets.A = { ...emptyBucket(), historyLoaded: true, latestId: 1, messages: [
+    { id: 1, role: "user", content: "Question", ts: 1 }, { role: "assistant", content: "Done", ts: 2 },
+    { role: "assistant", content: "Not persisted yet", ts: 3 }, media, pending,
+  ] };
+  vi.mocked(chatApi.history).mockResolvedValue(response([{ id: 2, role: "assistant", content: "Done", ts: 2 }]));
+  await history.refresh();
+  await history.refresh();
+  expect(buckets.A.messages).toHaveLength(5);
+  expect(buckets.A.messages).toContain(media);
+  expect(buckets.A.messages).toContain(pending);
+  expect(buckets.A.messages.filter((message) => message.content === "Done")).toHaveLength(1);
+});
+
+it("releases persisted history without discarding local state and aborts the pending network request", async () => {
+  const messages = Array.from({ length: 180 }, (_, id) => ({ id: id + 1, role: "assistant", content: "History" }));
+  const local = { role: "user", content: "Draft submission", cid: "local" };
+  const bucket = { ...emptyBucket(), messages: [local, ...messages] };
+  const compacted = compactHistory(bucket);
+  expect(compacted.messages).toHaveLength(121);
+  expect(compacted.messages?.[0]).toBe(local);
+  expect(compacted.earliestId).toBe(61);
+  expect(compacted.hasMore).toBe(true);
+  expect(bucket.messages).toHaveLength(181);
+  const history = makeHistory();
+  let release!: (value: AxiosResponse<ChatHistoryMessage[]>) => void;
+  vi.mocked(chatApi.history).mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+  const loading = history.load();
+  const signal = vi.mocked(chatApi.history).mock.calls[0]?.[5];
+  history.cancel("A");
+  expect(signal?.aborted).toBe(true);
+  release(response(messages));
+  await loading;
+  expect(buckets.A?.messages).toHaveLength(0);
 });
