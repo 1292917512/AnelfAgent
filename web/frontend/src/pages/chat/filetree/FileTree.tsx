@@ -7,20 +7,17 @@ import type { WorkspaceNode, WorkspaceRoot } from "@/lib/types";
 import { useWorkbenchStore } from "@/stores/workbench-store";
 import { ConfirmDialog } from "@/components/ui";
 import { useFileTreeStore } from "./file-tree-store";
-import { chainTailPath, compactChains, filterChangedTree, findNode, parentPath, treeChildren } from "./file-tree-utils";
+import { chainTailPath, compactChains, filterChangedTree, findNode, treeChildren } from "./file-tree-utils";
 import { useTreeChangesStore } from "@/stores/tree-changes-store";
 import { useElementSize } from "@/hooks/useElementSize";
 import { FileTreeContext, FileTreeNode, FileTreeRow } from "./FileTreeNode";
 import { registerTreeRoot, sharedDndManager } from "../tree-dnd";
 import { FileTreeDragPreview } from "./FileTreeDragPreview";
 import { FileTreeContextMenu, type MenuState } from "./FileTreeContextMenu";
+import { useTreeChangeRefresh } from "./useTreeChangeRefresh";
 
 /** 下一渲染周期（setTimeout 实现——部分 WebView 中 requestAnimationFrame 不触发） */
 const nextFrame = () => new Promise<void>((r) => setTimeout(r, 50));
-
-/** AI 变更触发目录局部刷新的防抖窗口与单次上限（防大批量改动刷爆请求） */
-const REFRESH_DEBOUNCE_MS = 600;
-const REFRESH_MAX_DIRS = 8;
 
 interface Props {
   root: WorkspaceRoot;
@@ -64,51 +61,7 @@ export function FileTree({ root, onUpload, changedOnly }: Props) {
     return compactChains(filtered);
   }, [tree.children, changedOnly, changeEntries]);
 
-  // ------------------------------------------------------------------
-  // AI 变更 → 已加载目录的局部刷新（新建/删除的文件不靠手动刷新出现）
-  // ------------------------------------------------------------------
-  const seenChangeTs = useRef<Record<string, number>>({});
-  const pendingRefresh = useRef<Set<string>>(new Set());
-  const refreshTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => {
-    // AI 编辑只落在工作区根，project 根不做变更联动刷新
-    if (root !== "workspace") return;
-    let hasFresh = false;
-    for (const [p, e] of Object.entries(changeEntries)) {
-      if (e.ts > (seenChangeTs.current[p] ?? 0)) {
-        seenChangeTs.current[p] = e.ts;
-        pendingRefresh.current.add(p);
-        hasFresh = true;
-      }
-    }
-    if (!hasFresh) return;
-    if (refreshTimer.current) clearTimeout(refreshTimer.current);
-    refreshTimer.current = setTimeout(() => {
-      refreshTimer.current = null;
-      // 取累积批次并清空（防抖窗口内多批到达合并为一次刷新）；
-      // rename 的源父目录一并刷新（否则旧文件在原地滞留）
-      const paths = [...pendingRefresh.current];
-      pendingRefresh.current.clear();
-      const children = useFileTreeStore.getState().trees[root].children;
-      if (children === null) return;
-      const dirs = [...new Set(paths.flatMap((p) => {
-        const parents = [parentPath(p)];
-        const moveFrom = changeEntries[p]?.move_from;
-        if (moveFrom) parents.push(parentPath(moveFrom));
-        return parents;
-      }))].slice(0, REFRESH_MAX_DIRS);
-      for (const dir of dirs) {
-        if (dir === "") {
-          void store.refreshDir(root, "");
-          continue;
-        }
-        const node = findNode(children, dir);
-        // 仅刷新已加载目录（未加载目录展开时自会拉取新数据）
-        if (node?.children !== undefined) void store.refreshDir(root, dir);
-      }
-    }, REFRESH_DEBOUNCE_MS);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [changeEntries, root]);
+  useTreeChangeRefresh(root);
 
   /** 沿路径逐段加载并展开祖先目录，等待渲染窗口刷新后返回目标节点 */
   const revealPath = useCallback(

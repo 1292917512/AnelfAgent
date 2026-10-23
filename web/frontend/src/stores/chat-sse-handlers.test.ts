@@ -4,9 +4,41 @@ import type { ChatBucket } from "@/lib/types";
 import { attachChatSseHandlers } from "./chat-sse-handlers";
 import { emptyBucket } from "./chat-shared";
 import { useActivityStore } from "./activity-store";
+import { useChangesStore } from "./changes-store";
+import { useTreeChangesStore } from "./tree-changes-store";
+import { useFileEditorStore } from "./file-editor-store";
+import { workspaceFileId } from "@/lib/workspace-file";
 
 beforeEach(() => { vi.useFakeTimers(); useActivityStore.setState({ epoch: "", snapshotRevision: 0, runs: [] }); });
 afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); });
+
+it("bounds file signal history while preserving open editors and repeated edits within one millisecond", () => {
+  const events = new EventTarget();
+  const detach = attachChatSseHandlers(events as EventSource, { updateBucket: vi.fn(), getActiveChatId: () => "default", setContextUsage: vi.fn() }, () => true, vi.fn());
+  useChangesStore.setState({ fileVersions: {}, revision: 0 });
+  useTreeChangesStore.getState().clear();
+  const file = { path: "open.md", name: "open.md", content: "saved", version: "v1", size: 5, modified: 0, binary: false, truncated: false };
+  useFileEditorStore.setState({ tabs: new Map([[workspaceFileId({ root: "workspace", path: file.path }), { file, draft: "Keep draft" }]]) });
+  const emit = (path: string) => events.dispatchEvent(new MessageEvent("file_diff", { data: JSON.stringify({ path, additions: 1, removals: 0 }) }));
+  try {
+    emit("open.md");
+    const revision = useChangesStore.getState().fileVersions["open.md"];
+    for (let i = 0; i < 1500; i++) emit(`part-${i}.ts`);
+    expect(Object.keys(useChangesStore.getState().fileVersions)).toHaveLength(512);
+    expect(Object.keys(useTreeChangesStore.getState().entries)).toHaveLength(200);
+    expect(useChangesStore.getState().fileVersions["open.md"]).toBe(revision);
+    emit("open.md");
+    expect(useChangesStore.getState().fileVersions["open.md"]).toBeGreaterThan(revision!);
+    const entry = useTreeChangesStore.getState().entries["open.md"]!;
+    emit("open.md");
+    expect(useTreeChangesStore.getState().entries["open.md"]).toMatchObject({ ts: entry.ts, additions: 2 });
+    expect(useTreeChangesStore.getState().entries["open.md"]!.revision).toBeGreaterThan(entry.revision);
+    expect([...useFileEditorStore.getState().tabs.values()][0]?.draft).toBe("Keep draft");
+  } finally {
+    detach(); useFileEditorStore.setState({ tabs: new Map() }); useTreeChangesStore.getState().clear();
+    useChangesStore.setState({ fileVersions: {}, revision: 0 });
+  }
+});
 
 it("rebuilds connection deltas independently of newer HTTP snapshots and never duplicates text", () => {
   const events = new EventTarget();

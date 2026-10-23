@@ -202,3 +202,32 @@ test("failed workspace file reads can be retried without reopening the tab", asy
   await page.getByRole("button", { name: "Retry", exact: true }).click();
   await expect(page.locator(".cm-content")).toHaveText("workspace content");
 });
+
+test("continuous file changes refresh the visible tree before traffic stops and detach on close", async ({ page, isMobile }) => {
+  await installEventStream(page);
+  await page.clock.install();
+  let reads = 0;
+  await page.route("**/api/workspace/tree*", (route) => route.fulfill({ json: {
+    path: "", children: [{ name: `updated-${++reads}.txt`, path: "updated.txt", type: "file", size: 8, modified: reads }], truncated: false,
+  } }));
+  await page.goto("/webui/");
+  await page.getByRole("button", { name: "Workspace files", exact: true }).click();
+  await expect(page.getByRole("treeitem")).toContainText("updated-1.txt");
+  for (let i = 0; i < 20; i++) {
+    await page.evaluate((i) => window.dispatchEvent(new CustomEvent("test-activity", { detail: {
+      event: "file_diff", data: { path: `part-${i}.ts`, additions: 1, removals: 0 },
+    } })), i);
+    await page.clock.runFor(100);
+  }
+  await expect.poll(() => reads).toBeGreaterThan(2);
+  await expect(page.getByRole("treeitem")).toContainText(`updated-${reads}.txt`);
+  if (isMobile) await page.getByRole("dialog", { name: "Workspace files", exact: true }).getByRole("button", { name: "Close", exact: true }).click();
+  else await page.getByRole("button", { name: "Workspace files", exact: true }).click();
+  await page.clock.runFor(1000);
+  const closedReads = reads;
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent("test-activity", { detail: {
+    event: "file_diff", data: { path: "closed.ts", additions: 1, removals: 0 },
+  } })));
+  await page.clock.runFor(1000);
+  expect(reads).toBe(closedReads);
+});

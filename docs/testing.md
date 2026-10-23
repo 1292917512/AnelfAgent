@@ -29,6 +29,24 @@ uv run pytest -m integration           # 集成
 
 加 `-n auto` 并行（已装 pytest-xdist，全量约 64s→26s，CI 已启用；单测调试/`--pdb` 时去掉）。
 
+## 前端持续负载测量
+
+前端持续负载验收使用生产构建和隔离 API 数据，显式启用后运行；常规 CI 跳过耗时测量：
+
+```powershell
+cd web/frontend
+npm run build
+$env:CI='1'
+$env:FRONTEND_SOAK='1'
+$env:FRONTEND_SOAK_SECONDS='600'
+npx playwright test e2e/performance.spec.ts --project desktop --workers 1 --retries 0
+```
+
+测试按真实时间持续投递 Web 消息、实时过程和不同路径的文件变更，采集 Chromium GC 后堆大小、
+DOM/监听器计数、主线程耗时、事件到两次动画帧的延迟及刷新恢复时间；结束时验证展开历史后的释放。
+JSON 报告与截图保存在测试产物中。此测量隔离模型和网络延迟，不能当作真实模型端到端响应时间；
+比较版本时使用相同机器和构建模式，避免同时运行其他重负载任务。
+
 ## 测试防膨胀规约（写新测试前逐条自查）
 
 1. **先查共享层再动手**：think_loop 替身用 `tests/helpers/think_loop_fakes.py`

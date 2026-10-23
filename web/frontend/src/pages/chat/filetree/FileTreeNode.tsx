@@ -75,7 +75,7 @@ export function FileTreeNode(props: NodeRendererProps<WorkspaceNode>) {
   const openFile = useWorkbenchStore((s) => s.openFile);
   const loading = useFileTreeStore((s) => s.loadingDirs[`${root}:${node.data.path}`] === true);
   const changeEntries = useTreeChangesStore((s) => s.entries);
-  const flashSeq = useTreeChangesStore((s) => s.flashSeqs[node.data.path] ?? 0);
+  const flashSeq = useTreeChangesStore((s) => s.entries[node.data.path]?.revision ?? 0);
 
   const data = node.data;
   const isDir = data.type === "dir";
@@ -94,7 +94,7 @@ export function FileTreeNode(props: NodeRendererProps<WorkspaceNode>) {
   // 变更闪现：seq 变化时播放一次高亮动画（仅工作区根）
   const [flashing, setFlashing] = useState(false);
   useEffect(() => {
-    if (!flashSeq || !decorate) return;
+    if (!flashSeq || !decorate) { setFlashing(false); return; }
     setFlashing(true);
     const timer = setTimeout(() => setFlashing(false), 1200);
     return () => clearTimeout(timer);
