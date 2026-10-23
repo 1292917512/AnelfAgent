@@ -2,6 +2,69 @@ import AxeBuilder from "@axe-core/playwright";
 import { test, expect, openWebChat, closeWebChatOverlay } from "./fixtures";
 import type { UiStateReport } from "../src/lib/types";
 
+test("overflowing memory tabs stay reachable by arrows, wheel, touch and keyboard", async ({ page, isMobile }, info) => {
+  await page.route("**/api/memory/health", route => route.fulfill({ json: { type_counts: {}, total_memories: 0 } }));
+  await page.route("**/api/memory/index/status", route => route.fulfill({ json: {} }));
+  await page.setViewportSize({ width: isMobile ? 390 : 700, height: 850 });
+  await page.goto("/webui/memory");
+  const strip = page.getByRole("tablist");
+  const previous = page.getByRole("button", { name: "Scroll tabs left", exact: true });
+  const next = page.getByRole("button", { name: "Scroll tabs right", exact: true });
+  const last = strip.getByRole("tab").last();
+  const selectedIsVisible = () => strip.evaluate((element) => {
+    const selected = element.querySelector('[aria-selected="true"]')?.getBoundingClientRect();
+    const bounds = element.getBoundingClientRect();
+    return !!selected && selected.left >= bounds.left - 1 && selected.right <= bounds.right + 1;
+  });
+  await expect(previous).toBeDisabled();
+  await expect(next).toBeEnabled();
+  if (isMobile) {
+    const bounds = await strip.boundingBox();
+    if (!bounds) throw new Error("Tab strip is missing");
+    const session = await page.context().newCDPSession(page);
+    const x = bounds.x + bounds.width - 15;
+    const y = bounds.y + bounds.height / 2;
+    await session.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y }] });
+    for (let step = 1; step <= 5; step++) {
+      await session.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: x - step * 30, y }] });
+    }
+    await session.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    await session.detach();
+  } else {
+    await strip.hover();
+    await page.mouse.wheel(0, 220);
+  }
+  await expect.poll(() => strip.evaluate(element => element.scrollLeft)).toBeGreaterThan(50);
+  for (let step = 0; step < 12 && await next.isEnabled(); step++) {
+    const target = await strip.evaluate(element => Math.min(element.scrollLeft + element.clientWidth * 0.8, element.scrollWidth - element.clientWidth));
+    await next.click();
+    await expect.poll(() => strip.evaluate((element, end) => Math.abs(element.scrollLeft - end), target)).toBeLessThanOrEqual(1);
+  }
+  await expect(next).toBeDisabled();
+  await last.click();
+  await expect(page).toHaveURL(/tab=cognee/);
+  await expect.poll(selectedIsVisible).toBe(true);
+  await page.screenshot({ path: info.outputPath("memory-tabs-end.png") });
+  await last.press("Home");
+  await expect(previous).toBeDisabled();
+  await expect.poll(selectedIsVisible).toBe(true);
+  await strip.getByRole("tab").first().press("End");
+  await expect(last).toBeFocused();
+  await expect.poll(selectedIsVisible).toBe(true);
+  await page.setViewportSize({ width: 3200, height: 1000 });
+  await expect(next).toBeHidden();
+  await page.setViewportSize({ width: 360, height: 800 });
+  await expect(next).toBeDisabled();
+  await expect.poll(selectedIsVisible).toBe(true);
+  await page.reload();
+  await expect(last).toHaveAttribute("aria-selected", "true");
+  await expect.poll(selectedIsVisible).toBe(true);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await previous.click();
+  await expect(next).toBeEnabled();
+});
+
 test("workspace keeps folders and drafts across focused panels and viewport changes", async ({ page, isMobile }, info) => {
   let reported: UiStateReport | undefined;
   await page.route("**/api/chat/ui-state", (route) => {

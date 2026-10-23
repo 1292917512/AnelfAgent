@@ -27,6 +27,8 @@
   "clear": "Clear",
   "prev": "Previous",
   "next": "Next",
+  "scrollTabsLeft": "Scroll tabs left",
+  "scrollTabsRight": "Scroll tabs right",
   "merge": "Merge",
   "reset": "Reset",
   "all": "All",

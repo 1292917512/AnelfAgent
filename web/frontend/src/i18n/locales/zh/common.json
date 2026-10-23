@@ -27,6 +27,8 @@
   "clear": "清空",
   "prev": "上一页",
   "next": "下一页",
+  "scrollTabsLeft": "向左滚动页签",
+  "scrollTabsRight": "向右滚动页签",
   "merge": "合并",
   "reset": "重置",
   "all": "全部",

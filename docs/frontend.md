@@ -22,7 +22,7 @@ pages/
 ├── Thinking.tsx         # 思维链路
 └── ...
 
-components/common/TabBar.tsx  # 统一标签栏（溢出横向滚动 + 边缘渐隐提示）
+components/common/TabBar.tsx  # 统一标签栏（溢出时左右翻动按钮、滚轮/触屏横向滚动、选中项自动可见）
 lib/types.ts / api.ts         # API 接口类型（api 实例已导出供插件复用）
 lib/core-routes.ts            # 核心路由注册表（Sidebar 据此识别插件导航项）
 lib/channel-plugins.ts        # 频道前端插件注册表
