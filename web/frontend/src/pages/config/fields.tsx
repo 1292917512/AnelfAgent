@@ -1,3 +1,4 @@
+import { Select } from "@/components/ui/Select";
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Switch } from "@/components/ui";
@@ -9,7 +10,7 @@ interface CommonProps {
   disabled?: boolean;
 }
 
-const INPUT_CLS = "bg-card border border-input rounded-lg px-2.5 py-1.5 text-sm text-foreground outline-none focus:border-ring disabled:opacity-50";
+const INPUT_CLS = "form-control px-3 py-1.5";
 
 export function SwitchField({ value, label, disabled, onCommit }: CommonProps & {
   value: boolean; onCommit: (value: boolean) => void;
@@ -21,9 +22,9 @@ export function SelectField({ value, options, label, disabled, onCommit }: Commo
   value: string; options: string[]; onCommit: (value: string) => void;
 }) {
   const { t } = useTranslation("config");
-  return <select aria-label={label} value={value} disabled={disabled} onChange={(event) => onCommit(event.target.value)} className={cn(INPUT_CLS, "max-w-full")}>
+  return <Select aria-label={label} value={value} disabled={disabled} onChange={(event) => onCommit(event.target.value)} className="max-w-full">
     {options.map((option) => <option key={option} value={option}>{option === "" ? t("enumEmptyOption") : option}</option>)}
-  </select>;
+  </Select>;
 }
 
 export function ModelField({ value, allowEmpty, label, disabled, onCommit }: CommonProps & {

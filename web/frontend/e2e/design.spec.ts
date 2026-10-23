@@ -2,6 +2,38 @@ import AxeBuilder from "@axe-core/playwright";
 import { test, expect, openWebChat, closeWebChatOverlay } from "./fixtures";
 import type { UiStateReport } from "../src/lib/types";
 
+test("shared selects animate inside dialogs without closing the editor or losing the draft", async ({ page }, info) => {
+  await page.goto("/webui/tasks");
+  await page.getByRole("button", { name: "Edit", exact: true }).click();
+  const editor = page.getByRole("dialog");
+  const select = editor.locator("select").first();
+  await select.click();
+  await expect.poll(() => select.evaluate(element => element.matches(":open"))).toBe(true);
+  await expect(select).toHaveCSS("appearance", "base-select");
+  await page.screenshot({ path: info.outputPath("select-dialog.png") });
+  await page.keyboard.press("Escape");
+  await expect.poll(() => select.evaluate(element => element.matches(":open"))).toBe(false);
+  await expect(editor).toBeVisible();
+  await expect(select).toBeFocused();
+  await select.click();
+  await select.getByRole("option").nth(1).click();
+  await expect.poll(() => select.evaluate(element => element.matches(":open"))).toBe(false);
+  await expect(editor).toBeVisible();
+  await editor.getByRole("spinbutton").fill("0.3");
+  await editor.getByRole("button", { name: "Cancel", exact: true }).click();
+  const confirmation = page.getByRole("dialog", { name: "Unsaved changes", exact: true });
+  await expect(confirmation).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(confirmation).toBeHidden();
+  await expect(editor.getByRole("spinbutton")).toHaveValue("0.3");
+  await expect(editor.getByRole("button", { name: "Cancel", exact: true })).toBeFocused();
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await select.click();
+  expect(await select.evaluate(element => getComputedStyle(element, "::picker(select)").transitionDuration)).toBe("0s");
+  await page.keyboard.press("Escape");
+  await expect(editor).toBeVisible();
+});
+
 test("overflowing memory tabs stay reachable by arrows, wheel, touch and keyboard", async ({ page, isMobile }, info) => {
   await page.route("**/api/memory/health", route => route.fulfill({ json: { type_counts: {}, total_memories: 0 } }));
   await page.route("**/api/memory/index/status", route => route.fulfill({ json: {} }));
@@ -35,6 +67,14 @@ test("overflowing memory tabs stay reachable by arrows, wheel, touch and keyboar
     await page.mouse.wheel(0, 220);
   }
   await expect.poll(() => strip.evaluate(element => element.scrollLeft)).toBeGreaterThan(50);
+  let lastPosition = -1;
+  let stableSamples = 0;
+  await expect.poll(async () => {
+    const position = await strip.evaluate(element => element.scrollLeft);
+    stableSamples = Math.abs(position - lastPosition) < 1 ? stableSamples + 1 : 0;
+    lastPosition = position;
+    return stableSamples;
+  }, { intervals: [100] }).toBeGreaterThanOrEqual(3);
   for (let step = 0; step < 12 && await next.isEnabled(); step++) {
     const target = await strip.evaluate(element => Math.min(element.scrollLeft + element.clientWidth * 0.8, element.scrollWidth - element.clientWidth));
     await next.click();

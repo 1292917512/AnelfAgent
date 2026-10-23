@@ -1,3 +1,4 @@
+import { PopoverContent } from "@/components/ui/PopoverContent";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { Expand } from "lucide-react";
@@ -34,17 +35,17 @@ export function ActivityInspector({ title, preview, children, trigger, className
           {trigger ?? <Expand size={14} aria-hidden="true" />}
         </button>
       </Popover.Anchor>
-      <Popover.Portal>
-        <Popover.Content side="top" align="end" sideOffset={8} collisionPadding={16}
-          className="activity-hover-card floating-surface" aria-label={t("activity.preview", { title })}
+
+        <PopoverContent side="top" align="end" sideOffset={8} collisionPadding={16}
+          className="activity-hover-card" aria-label={t("activity.preview", { title })}
           aria-hidden={!hovered || open ? true : undefined}
           onPointerEnter={clearTimer} onPointerLeave={hidePreview}
           onOpenAutoFocus={(event) => event.preventDefault()} onCloseAutoFocus={(event) => event.preventDefault()}>
           <p className="activity-hover-title">{title}</p>
           <div className="activity-hover-content">{preview}</div>
           <p className="activity-note">{t("activity.previewHint")}</p>
-        </Popover.Content>
-      </Popover.Portal>
+        </PopoverContent>
+
     </Popover.Root>
     <Modal open={open} onClose={() => setOpenedAt(null)} title={title} width="max-w-3xl">
       <div className="activity-inspection-content">{children}</div>

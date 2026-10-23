@@ -1,3 +1,4 @@
+import { Select } from "@/components/ui/Select";
 /** 设备能力驱动的控制区，所有参数范围来自后端描述。 */
 import { useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -49,12 +50,12 @@ export function DeviceControls({ device, domainKey, disabled, onControl }: { dev
     {domainKey === "light" && actions.set_brightness && <ValueSlider label={t("device.brightness")} value={brightness === null ? null : Math.round(brightness / 255 * 100)} disabled={disabled} onCommit={(v) => control("set_brightness", String(v))} />}
     {domainKey === "light" && actions.set_color_temp && <ValueSlider label={t("device.colorTemp")} value={number("color_temp_kelvin")} min={actions.set_color_temp.min ?? 1500} max={actions.set_color_temp.max ?? 8000} step={actions.set_color_temp.step ?? 100} unit=" K" disabled={disabled} onCommit={(v) => control("set_color_temp", String(v))} />}
     {domainKey === "climate" && <>
-      {modes.length > 0 && <select aria-label={t("device.mode")} value={modes.includes(device.state) ? device.state : ""} disabled={disabled}
-        className="h-9 w-full rounded-lg border border-border bg-elevated px-3 text-xs text-foreground disabled:opacity-50"
+      {modes.length > 0 && <Select aria-label={t("device.mode")} value={modes.includes(device.state) ? device.state : ""} disabled={disabled}
+        className="w-full"
         onChange={(e) => void control("set_hvac_mode", e.target.value)}>
         {!modes.includes(device.state) && <option value="" disabled>{t("device.chooseMode")}</option>}
         {modes.map((mode) => <option key={mode} value={mode}>{t("hvac." + mode, { defaultValue: mode })}</option>)}
-      </select>}
+      </Select>}
       {temperature && target !== null && <div className="flex items-center justify-between gap-2 rounded-xl border border-border bg-elevated/50 p-2">
         <Button size="icon" variant="ghost" title={t("device.decrease")} disabled={disabled || target - (temperature.step ?? 1) < (temperature.min ?? 5)} onClick={() => void control("set_temperature", String(target - (temperature.step ?? 1)))}><Minus size={16} /></Button>
         <div className="text-center"><p className="text-[10px] text-muted">{t("device.targetTemp")}</p><p className="text-lg font-semibold tabular-nums text-heading">{target}<span className="ml-1 text-xs font-normal">{String(attrs.temperature_unit ?? "°C")}</span></p></div>

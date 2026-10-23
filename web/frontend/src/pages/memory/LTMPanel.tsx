@@ -1,3 +1,4 @@
+import { Select } from "@/components/ui/Select";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -73,15 +74,15 @@ export function LTMPanel() {
     <div className="space-y-4">
       <Card title={t("ltmTitle")} subtitle={isSearching ? `${t("searchResults")}: ${items.length}` : `${paginated?.total || 0} · ${page}/${totalPages} ${t("pages")}`} actions={
         <div className="flex gap-2 items-center">
-          <select value={memType} onChange={(e) => { setMemType(e.target.value); setPage(1); setIsSearching(false); }}
-            className="bg-elevated border border-input rounded-md px-2 py-1 text-xs text-foreground outline-none">
+          <Select value={memType} onChange={(e) => { setMemType(e.target.value); setPage(1); setIsSearching(false); }}
+            >
             <option value="">{t("allTypes")}</option>
             <option value="episodic">{t("episodic")}</option>
             <option value="semantic">{t("semantic")}</option>
             <option value="entity">{t("entity")}</option>
             <option value="reflection">{t("reflection")}</option>
             <option value="permanent">{t("permanent")}</option>
-          </select>
+          </Select>
           {selectedIds.size >= 2 && (
             <button onClick={() => setShowMerge(true)} className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md bg-ok-subtle text-ok border border-[var(--ok)]">
               <Merge size={14} /> {t("mergeSelected")} ({selectedIds.size})
@@ -118,9 +119,9 @@ export function LTMPanel() {
         {showCreate && (
           <div className="mb-4 p-3 rounded-md bg-elevated border border-accent space-y-2">
             <div className="flex gap-2">
-              <select value={newType} onChange={(e) => setNewType(e.target.value)} className="bg-card border border-input rounded-md px-2 py-1 text-xs text-foreground outline-none">
+              <Select value={newType} onChange={(e) => setNewType(e.target.value)} >
                 <option value="semantic">{t("semantic")}</option><option value="episodic">{t("episodic")}</option><option value="permanent">{t("permanent")}</option><option value="reflection">{t("reflection")}</option>
-              </select>
+              </Select>
               <input type="number" step="0.1" min="0" max="1" value={newImportance} onChange={(e) => setNewImportance(Number(e.target.value))}
                 className="w-20 bg-card border border-input rounded-md px-2 py-1 text-xs text-foreground outline-none" placeholder={t("importanceLabel")} />
             </div>

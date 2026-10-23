@@ -1,3 +1,4 @@
+import { Select } from "@/components/ui/Select";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
@@ -40,11 +41,11 @@ export function DiagnosticsTab() {
 
   return <section className="space-y-4">
     <div className="flex flex-wrap items-center gap-3">
-      <select aria-label={t("diagnostics.scope")} value={scope} onChange={(event) => { setScope(event.target.value); setExpanded(null); setDetailOpen(false); }}
-        className="min-w-0 max-w-full flex-1 rounded-lg border border-border bg-card p-2 text-sm">
+      <Select aria-label={t("diagnostics.scope")} value={scope} onChange={(event) => { setScope(event.target.value); setExpanded(null); setDetailOpen(false); }}
+        className="min-w-0 max-w-full flex-1">
         <option value="">{t("diagnostics.all")}</option>
         {Array.from(new Set([...(data?.scopes ?? []), ...(scope ? [scope] : [])])).filter(Boolean).map((item) => <option key={item} value={item}>{item}</option>)}
-      </select>
+      </Select>
       <label className="flex items-center gap-2 text-xs text-muted"><input type="checkbox" checked={auto} onChange={(e) => setAuto(e.target.checked)} />{t("diagnostics.auto")}</label>
       <Button size="icon" title={t("diagnostics.refresh")} onClick={() => void query.refetch()} disabled={query.isFetching}><RefreshCw size={15} /></Button>
       <Button size="icon" title={t("monitor.export")} disabled={!data} onClick={() => data && downloadJson(data, "conversation-diagnostics.json")}><Download size={15} /></Button>

@@ -1,3 +1,4 @@
+import { PopoverContent } from "@/components/ui/PopoverContent";
 import { useEffect, useMemo, useState, type RefObject } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { useTranslation } from "react-i18next";
@@ -14,12 +15,12 @@ function StageMarker({ stage, active, navigate }: { stage: ActivityStage; active
       onPointerEnter={(event) => { if (event.pointerType === "mouse") setOpen(true); }}
       onPointerLeave={() => setOpen(false)} onFocus={() => setOpen(true)} onBlur={() => setOpen(false)}
       onClick={() => { setOpen(false); navigate(); }}><span /></button></Popover.Anchor>
-    <Popover.Portal><Popover.Content side="right" sideOffset={6} collisionPadding={12}
-      className="activity-stage-preview floating-surface" aria-label={label} onOpenAutoFocus={(event) => event.preventDefault()} onCloseAutoFocus={(event) => event.preventDefault()}
+    <PopoverContent side="right" sideOffset={6} collisionPadding={12}
+      className="activity-stage-preview" aria-label={label} onOpenAutoFocus={(event) => event.preventDefault()} onCloseAutoFocus={(event) => event.preventDefault()}
       onPointerEnter={() => setOpen(true)} onPointerLeave={() => setOpen(false)}>
       <strong>{t(`activity.stages.${stage.kind}`)}{stage.count > 1 && ` · ${stage.count}`}</strong>
       <p>{stage.title}</p><small>{stage.preview}</small>
-    </Popover.Content></Popover.Portal>
+    </PopoverContent>
   </Popover.Root>;
 }
 

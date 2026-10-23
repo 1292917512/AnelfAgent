@@ -1,3 +1,4 @@
+import { Select } from "@/components/ui/Select";
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
@@ -84,22 +85,22 @@ export function PortablePanel() {
         <div className="space-y-3">
           <div>
             <label className={labelCls}>{t("portable.format")}</label>
-            <select value={importFormat}
+            <Select value={importFormat}
               onChange={(e) => setImportFormat(e.target.value as VaultImportFormat)}
-              className={inputCls}>
+              className="w-full">
               {IMPORT_FORMATS.map((f) => (
                 <option key={f} value={f}>{t(`portable.formats.${f}`)}</option>
               ))}
-            </select>
+            </Select>
           </div>
           <div>
             <label className={labelCls}>{t("portable.strategy")}</label>
-            <select value={strategy}
+            <Select value={strategy}
               onChange={(e) => setStrategy(e.target.value as "skip" | "overwrite")}
-              className={inputCls}>
+              className="w-full">
               <option value="skip">{t("portable.strategySkip")}</option>
               <option value="overwrite">{t("portable.strategyOverwrite")}</option>
-            </select>
+            </Select>
           </div>
           {importFormat === "encrypted" && (
             <div>
@@ -144,13 +145,13 @@ export function PortablePanel() {
         <div className="space-y-3">
           <div>
             <label className={labelCls}>{t("portable.format")}</label>
-            <select value={exportFormat}
+            <Select value={exportFormat}
               onChange={(e) => setExportFormat(e.target.value as VaultExportFormat)}
-              className={inputCls}>
+              className="w-full">
               {EXPORT_FORMATS.map((f) => (
                 <option key={f} value={f}>{t(`portable.exportFormats.${f}`)}</option>
               ))}
-            </select>
+            </Select>
           </div>
           {exportFormat === "encrypted" && (
             <div>

@@ -53,10 +53,10 @@ export function ExecPanel() {
           <div className="flex flex-wrap gap-3">
             <div className="flex-1 min-w-[180px]">
               <label className="block text-xs font-medium text-muted mb-1">{t("exec.connection")}</label>
-              <select
+              <Select
                 value={effectiveSelected}
                 onChange={(e) => setSelected(e.target.value)}
-                className="w-full px-3 py-2 text-sm rounded-md border border-border bg-elevated text-foreground focus:outline-none focus:ring-1 focus:ring-accent"
+                className="w-full"
               >
                 {connections.length === 0 && <option value="">{t("exec.noConnections")}</option>}
                 {connections.map((c) => (
@@ -64,7 +64,7 @@ export function ExecPanel() {
                     {c.name} ({c.username}@{c.host})
                   </option>
                 ))}
-              </select>
+              </Select>
             </div>
             <div className="w-28">
               <label className="block text-xs font-medium text-muted mb-1">{t("exec.timeout")}</label>

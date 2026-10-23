@@ -17,7 +17,7 @@ export const Card = forwardRef<HTMLDivElement, CardProps>(function Card({ title,
           {title && <h2 className="text-sm font-semibold text-heading">{title}</h2>}
           {subtitle && <p className="mt-1 text-xs leading-relaxed text-muted">{subtitle}</p>}
         </div>
-        {actions && <div className="flex items-center gap-2">{actions}</div>}
+        {actions && <div className="flex min-w-0 max-w-full flex-wrap items-center gap-2">{actions}</div>}
       </div>}
       {children}
     </section>

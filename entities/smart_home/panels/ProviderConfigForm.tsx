@@ -1,3 +1,4 @@
+import { Select } from "@/components/ui/Select";
 /** 元数据驱动的连接表单，批量保存；空密码保持现值。 */
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
@@ -45,9 +46,9 @@ export function ProviderConfigForm({ items, onSaved }: { items: EntityConfigItem
     {editable.map((item) => <div key={item.key} className="space-y-2">
       <label htmlFor={item.key} className="block text-xs leading-relaxed text-muted">{item.description}</label>
       {item.type === "boolean" ? <Switch label={item.description} checked={current(item) === "true"} disabled={saving} onChange={(v) => setDrafts((old) => ({ ...old, [item.key]: String(v) }))} />
-        : item.enum_options?.length ? <select id={item.key} value={current(item)} disabled={saving} onChange={(event) => setDrafts((old) => ({ ...old, [item.key]: event.target.value }))} className="h-9 w-full rounded-lg border border-border bg-elevated px-3 text-xs text-foreground">
+        : item.enum_options?.length ? <Select id={item.key} value={current(item)} disabled={saving} onChange={(event) => setDrafts((old) => ({ ...old, [item.key]: event.target.value }))} className="w-full">
           {item.enum_options.map((value) => <option key={value} value={value}>{t("configValues." + value, { defaultValue: value })}</option>)}
-        </select>
+        </Select>
         : <Input id={item.key} className="h-9 w-full text-xs" type={item.type === "password" ? "password" : NUMERIC_TYPES.includes(item.type) ? "number" : "text"}
           autoComplete={item.type === "password" ? "new-password" : "off"}
           min={item.min ?? undefined} max={item.max ?? undefined} step={item.type === "integer" ? 1 : "any"}

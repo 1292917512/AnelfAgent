@@ -1,3 +1,4 @@
+import { PopoverContent } from "@/components/ui/PopoverContent";
 import { useRef, useState } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { Command } from "cmdk";
@@ -89,7 +90,7 @@ export function ModelSelect({
   }}>
     <Popover.Trigger asChild>
       <button ref={triggerRef} type="button" id={id} disabled={disabled || pin.isPending} aria-label={label ?? t("selectModel")}
-        className={cn("flex min-w-0 items-center gap-2 rounded-lg border bg-elevated text-sm transition-colors hover:bg-hover disabled:cursor-not-allowed disabled:opacity-50",
+        className={cn("form-control flex items-center gap-2 bg-elevated hover:bg-hover",
           unavailable ? "border-warn/60" : "border-border hover:border-border-strong",
           compact ? "h-8 max-w-52 px-2.5 text-xs" : "h-9 w-full px-3", className)}>
         <span className="truncate" title={display}>{display}</span>
@@ -98,14 +99,14 @@ export function ModelSelect({
         <ChevronsUpDown size={13} className="ml-auto shrink-0 text-muted" />
       </button>
     </Popover.Trigger>
-    <Popover.Portal>
-      <Popover.Content aria-label={label ?? t("selectModel")} align="start" sideOffset={6} collisionPadding={12}
+
+      <PopoverContent aria-label={label ?? t("selectModel")} align="start" sideOffset={6} collisionPadding={12}
         onKeyDown={(event) => {
           if (event.key !== "Escape") return;
           event.preventDefault(); event.stopPropagation(); setOpen(false);
           triggerRef.current?.focus({ preventScroll: true });
         }}
-        className="floating-surface z-[120] flex max-h-[var(--radix-popover-content-available-height)] w-[360px] max-w-[calc(100vw-24px)] flex-col overflow-hidden rounded-xl border border-border bg-card text-foreground shadow-lg outline-none">
+        className="flex w-[360px] flex-col overflow-hidden">
         <Command label={t("searchModels")} value={highlighted} onValueChange={setHighlighted} loop className="flex min-h-0 flex-col">
           <div className="integrated-field palette-search flex shrink-0 items-center gap-2 border-b border-border px-3">
             <Search size={15} className="shrink-0 text-muted" />
@@ -141,7 +142,7 @@ export function ModelSelect({
             <Pin size={13} /><span className="truncate">{t(focusedDefault ? "alreadyDefault" : "pinSelected", { model: focused.id })}</span>
           </Button>
         </div>}
-      </Popover.Content>
-    </Popover.Portal>
+      </PopoverContent>
+
   </Popover.Root>;
 }

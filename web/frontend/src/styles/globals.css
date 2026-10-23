@@ -5,6 +5,7 @@
 @import "./skills.css";
 @import "./management.css";
 @import "./dashboard.css";
+@import "./controls.css";
 @source not "../**/*.test.{ts,tsx}";
 @source not "../../e2e";
 @source "../../../../entities/*/panel.tsx";

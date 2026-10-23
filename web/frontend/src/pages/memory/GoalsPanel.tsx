@@ -1,3 +1,7 @@
+import { Input, Textarea } from "@/components/ui";
+import { Select } from "@/components/ui/Select";
+import { Switch } from "@/components/ui/Switch";
+import { Button } from "@/components/ui/Button";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -86,24 +90,20 @@ export function GoalsPanel() {
 
   const isDue = (goal: GoalData) => goal.due_time && new Date(goal.due_time) <= new Date();
 
-  const inputCls = "w-full bg-card border border-input rounded-md px-3 py-2 text-sm text-foreground outline-none focus:border-ring";
-  const toggleCls = (on: boolean) => cn("relative inline-flex h-5 w-9 items-center rounded-full transition-colors", on ? "bg-accent" : "bg-secondary border border-border");
-  const dotCls = (on: boolean) => cn("inline-block h-3.5 w-3.5 rounded-full bg-white shadow-sm transition-transform", on ? "translate-x-[18px]" : "translate-x-[3px]");
 
   return (
-    <div className="flex gap-4" style={{ minHeight: 400 }}>
+    <div className="flex flex-col gap-4 md:flex-row" style={{ minHeight: 400 }}>
       {/* Left: goal list */}
-      <div className="w-72 flex-shrink-0 space-y-3">
+      <div className="w-full shrink-0 space-y-3 md:w-72">
         <div className="flex items-center gap-2">
-          <select value={filter} onChange={(e) => setFilter(e.target.value as GoalFilter)}
-            className="flex-1 bg-card border border-input rounded-md px-2 py-1.5 text-xs text-foreground outline-none">
+          <Select aria-label={t("common:status")} value={filter} onChange={(e) => setFilter(e.target.value as GoalFilter)}
+            className="flex-1">
             <option value="active">{t("goalStatusActive")}</option>
             <option value="all">{t("goalStatusAll")}</option>
-          </select>
-          <button onClick={() => { setShowCreate(!showCreate); setSelectedGoalId(null); setEditing(false); }}
-            className="flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-md bg-accent text-primary-foreground hover:bg-[var(--accent-hover)] transition-[color,background-color,border-color,box-shadow,opacity]">
+          </Select>
+          <Button variant="primary" onClick={() => { setShowCreate(!showCreate); setSelectedGoalId(null); setEditing(false); }}>
             <Plus size={13} /> {t("common:create")}
-          </button>
+          </Button>
         </div>
 
         <div className="space-y-1.5 max-h-[500px] overflow-y-auto">
@@ -144,17 +144,17 @@ export function GoalsPanel() {
         {showCreate ? (
           <Card title={t("createGoal")}>
             <div className="space-y-3">
-              <input value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder={t("goalTitlePlaceholder")} className={inputCls} />
-              <textarea value={newDesc} onChange={(e) => setNewDesc(e.target.value)} placeholder={t("goalDescPlaceholder")} rows={2} className={inputCls + " resize-y"} />
-              <div className="flex items-center gap-3">
-                <div className="flex items-center gap-2 flex-1">
+              <Input value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder={t("goalTitlePlaceholder")} className="w-full" />
+              <Textarea value={newDesc} onChange={(e) => setNewDesc(e.target.value)} placeholder={t("goalDescPlaceholder")} rows={2} className="w-full" />
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="flex min-w-0 items-center gap-2 flex-1">
                   <Clock size={14} className="text-muted" />
-                  <input type="datetime-local" value={newDueTime} onChange={(e) => setNewDueTime(e.target.value)}
-                    className="flex-1 bg-card border border-input rounded-md px-3 py-1.5 text-xs text-foreground outline-none focus:border-ring" />
+                  <Input type="datetime-local" value={newDueTime} onChange={(e) => setNewDueTime(e.target.value)}
+                    className="flex-1" />
                   {newDueTime && <button onClick={() => setNewDueTime("")} className="p-1 text-muted hover:text-danger"><X size={14} /></button>}
                 </div>
                 <div className="flex items-center gap-2">
-                  <button onClick={() => setNewRecurring(!newRecurring)} className={toggleCls(newRecurring)}><span className={dotCls(newRecurring)} /></button>
+                  <Switch checked={newRecurring} onChange={setNewRecurring} label={t("recurring")} />
                   <span className="text-xs text-muted">{t("recurring")}</span>
                   <span title={t("recurringHint")} className="text-muted hover:text-accent cursor-help transition-colors"><Info size={12} /></span>
                 </div>
@@ -163,17 +163,16 @@ export function GoalsPanel() {
                 {newSteps.map((step, i) => (
                   <div key={`new-step-${i}`} className="flex gap-2">
                     <span className="text-xs text-muted w-5 text-right mt-1">{i + 1}.</span>
-                    <input value={step} onChange={(e) => { const u = [...newSteps]; u[i] = e.target.value; setNewSteps(u); }} placeholder={t("stepPlaceholder")}
-                      className="flex-1 bg-card border border-input rounded-md px-2 py-1 text-xs text-foreground outline-none" />
+                    <Input value={step} onChange={(e) => { const u = [...newSteps]; u[i] = e.target.value; setNewSteps(u); }} placeholder={t("stepPlaceholder")}
+                      className="flex-1" />
                     <button onClick={() => setNewSteps(newSteps.filter((_, idx) => idx !== i))} className="p-1 text-muted hover:text-danger"><X size={14} /></button>
                   </div>
                 ))}
                 <button onClick={() => setNewSteps([...newSteps, ""])} className="text-xs text-accent hover:underline ml-7">+ {t("addStep")}</button>
               </div>
-              <div className="flex justify-end gap-2 pt-2">
-                <button onClick={() => setShowCreate(false)} className="px-3 py-1.5 text-xs text-muted">{t("common:cancel")}</button>
-                <button onClick={() => newTitle && createMutation.mutate()} disabled={!newTitle}
-                  className="px-4 py-1.5 text-xs font-medium rounded-md bg-accent text-primary-foreground disabled:opacity-50">{t("common:create")}</button>
+              <div className="flex flex-wrap justify-end gap-2 pt-2">
+                <Button onClick={() => setShowCreate(false)} disabled={createMutation.isPending}>{t("common:cancel")}</Button>
+                <Button variant="primary" onClick={() => newTitle && createMutation.mutate()} disabled={!newTitle} loading={createMutation.isPending}>{t("common:create")}</Button>
               </div>
             </div>
           </Card>
@@ -200,27 +199,27 @@ export function GoalsPanel() {
           }>
             {editing ? (
               <div className="space-y-3">
-                <input value={editTitle} onChange={(e) => setEditTitle(e.target.value)} className={inputCls} />
-                <textarea value={editDesc} onChange={(e) => setEditDesc(e.target.value)} rows={2} className={inputCls + " resize-y"} />
-                <div className="flex items-center gap-3">
-                  <div className="flex items-center gap-2 flex-1">
+                <Input value={editTitle} onChange={(e) => setEditTitle(e.target.value)} className="w-full" />
+                <Textarea value={editDesc} onChange={(e) => setEditDesc(e.target.value)} rows={2} className="w-full" />
+                <div className="flex flex-wrap items-center gap-3">
+                  <div className="flex min-w-0 items-center gap-2 flex-1">
                     <Clock size={14} className="text-muted" />
-                    <input type="datetime-local" value={editDueTime} onChange={(e) => setEditDueTime(e.target.value)}
-                      className="flex-1 bg-card border border-input rounded-md px-3 py-1.5 text-xs text-foreground outline-none focus:border-ring" />
+                    <Input type="datetime-local" value={editDueTime} onChange={(e) => setEditDueTime(e.target.value)}
+                      className="flex-1" />
                     {editDueTime && <button onClick={() => setEditDueTime("")} className="p-1 text-muted hover:text-danger"><X size={14} /></button>}
                   </div>
                   <div className="flex items-center gap-2">
-                    <button onClick={() => setEditRecurring(!editRecurring)} className={toggleCls(editRecurring)}><span className={dotCls(editRecurring)} /></button>
+                    <Switch checked={editRecurring} onChange={setEditRecurring} label={t("recurring")} />
                     <span className="text-xs text-muted">{t("recurring")}</span>
                     <span title={t("recurringHint")} className="text-muted hover:text-accent cursor-help transition-colors"><Info size={12} /></span>
                   </div>
                 </div>
-                <div className="flex justify-end gap-2 pt-2">
-                  <button onClick={() => setEditing(false)} className="px-3 py-1.5 text-xs text-muted">{t("common:cancel")}</button>
-                  <button onClick={() => updateMutation.mutate({
+                <div className="flex flex-wrap justify-end gap-2 pt-2">
+                  <Button onClick={() => setEditing(false)} disabled={updateMutation.isPending}>{t("common:cancel")}</Button>
+                  <Button variant="primary" loading={updateMutation.isPending} onClick={() => updateMutation.mutate({
                     goalId: selectedGoal.goal_id, title: editTitle, description: editDesc,
                     due_time: editDueTime || null, recurring: editRecurring,
-                  })} className="px-4 py-1.5 text-xs font-medium rounded-md bg-accent text-primary-foreground">{t("common:save")}</button>
+                  })}>{t("common:save")}</Button>
                 </div>
               </div>
             ) : (

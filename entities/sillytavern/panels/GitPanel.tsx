@@ -1,3 +1,4 @@
+import { Select } from "@/components/ui/Select";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -106,15 +107,15 @@ export function GitPanel() {
             <span className="block text-xs font-medium text-muted">
               {t("sillytavern:git.remote")}
             </span>
-            <select
+            <Select
               value={remote}
               onChange={(e) => setRemote(e.target.value)}
-              className="mt-1 h-9 w-44 rounded-md border border-input bg-elevated px-2 text-sm text-foreground"
+              className="mt-1 w-44"
             >
               {(versions?.remotes ?? [{ name: remote, url: "" }]).map((r) => (
                 <option key={r.name} value={r.name}>{r.name}</option>
               ))}
-            </select>
+            </Select>
           </label>
           <Button
             variant="primary"

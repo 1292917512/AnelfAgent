@@ -1,3 +1,4 @@
+import { Select } from "@/components/ui/Select";
 /**
  * BuiltinTierSection — 内置难度档（easy/medium/hard）的候选池管理。
  *
@@ -124,16 +125,16 @@ export function BuiltinTierSection({
           <span className="text-xs text-muted">{t(`subagents.${labelKey}Hint`)}</span>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
-          <select
+          <Select
             value={pick}
             onChange={(e) => setPick(e.target.value)}
-            className="bg-elevated border border-input rounded-md px-2 py-1.5 text-xs text-foreground outline-none focus:border-accent max-w-40"
+            className="max-w-40"
           >
             <option value="">{t("subagents.selectModel")}</option>
             {candidates.map((c) => (
               <option key={c.id} value={c.id}>{c.id}</option>
             ))}
-          </select>
+          </Select>
           <button
             disabled={!pick}
             onClick={() => {

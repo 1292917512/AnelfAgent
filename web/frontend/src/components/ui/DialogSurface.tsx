@@ -1,4 +1,4 @@
-import { useRef, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { cn } from "@/lib/utils";
 
@@ -25,11 +25,22 @@ export function DialogSurface({
   open, onClose, title, children, className, placement = "center", dismissible = true, onAfterClose,
 }: DialogSurfaceProps) {
   const returnFocus = useRef<HTMLElement | null>(null);
+  const surface = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open || typeof CSS === "undefined" || !CSS.supports("selector(select:open)")) return;
+    // Radix 在 document 捕获阶段取消 Esc 的默认行为；原生选择器先消费该键才能正常收起。
+    const onPickerEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && surface.current?.querySelector("select:open")) event.stopPropagation();
+    };
+    window.addEventListener("keydown", onPickerEscape, true);
+    return () => window.removeEventListener("keydown", onPickerEscape, true);
+  }, [open]);
   return (
     <Dialog.Root open={open} onOpenChange={(next) => { if (!next && dismissible) onClose(); }}>
       <Dialog.Portal>
         <Dialog.Overlay className="dialog-overlay fixed inset-0 z-[100] bg-black/45" />
         <Dialog.Content
+          ref={surface}
           aria-describedby={undefined}
           data-placement={placement}
           className={cn("dialog-surface fixed z-[100] w-full border border-border bg-card text-foreground shadow-lg outline-none flex flex-col", PLACEMENT[placement], className)}

@@ -37,6 +37,7 @@
   "syncFailed": "Failed Sync",
   "retryFailedSync": "Retry Failed",
   "stmTitle": "Short-term Memory",
+  "clearStmConfirm": "Clear all temporary short-term memories? This cannot be undone. Pending tasks and analysis are retained.",
   "autoRefresh": "Auto Refresh",
   "temporary": "Temporary Memory",
   "pendingFilter": "Pending",

@@ -1,3 +1,4 @@
+import { Select } from "@/components/ui/Select";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -112,19 +113,19 @@ export function LinksPanel() {
               className="flex-1 px-3 py-1.5 text-sm rounded-md border border-border bg-elevated text-foreground placeholder:text-muted focus:outline-none focus:ring-1 focus:ring-accent"
             />
           </div>
-          <select
+          <Select
             value={status}
             onChange={(e) => {
               setStatus(e.target.value);
               setPage(1);
             }}
-            className="px-3 py-1.5 text-sm rounded-md border border-border bg-elevated text-foreground focus:outline-none focus:ring-1 focus:ring-accent"
+
           >
             <option value="active">{t("status.active")}</option>
             <option value="expired">{t("status.expired")}</option>
             <option value="revoked">{t("status.revoked")}</option>
             <option value="all">{t("stats.total")}</option>
-          </select>
+          </Select>
         </div>
 
         {/* 链接列表 */}

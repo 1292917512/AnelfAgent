@@ -1,3 +1,4 @@
+import { Select } from "@/components/ui/Select";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -259,17 +260,17 @@ export function CreateDialog() {
             <label className="block text-sm font-medium text-heading mb-2">
               {t("fields.expiresAt")}
             </label>
-            <select
+            <Select
               value={expiresIn}
               onChange={(e) => setExpiresIn(e.target.value)}
-              className="w-full px-3 py-2 text-sm rounded-md border border-border bg-elevated text-foreground focus:outline-none focus:ring-1 focus:ring-accent"
+              className="w-full"
             >
               {EXPIRES_OPTIONS.map((opt) => (
                 <option key={opt} value={opt}>
                   {t(`expires.${opt}`)}
                 </option>
               ))}
-            </select>
+            </Select>
           </div>
 
           {/* 访问上限 */}

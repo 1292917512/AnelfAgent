@@ -7,7 +7,7 @@
 .activity-stage-marker:hover span, .activity-stage-marker[aria-current="step"] span { width: 22px; background: var(--accent); }
 .activity-stage-marker[data-running="true"] span { background: var(--accent); }
 .activity-stage-marker[data-failed="true"] span { background: var(--warn); }
-.activity-stage-preview { z-index: 80; width: min(300px, calc(100vw - 32px)); padding: 12px 14px; border: 1px solid var(--border); border-radius: 12px; background: var(--card); box-shadow: 0 8px 30px #0002; pointer-events: auto; font-size: 12px; }
+.activity-stage-preview { z-index: 80; width: min(300px, calc(100vw - 32px)); padding: 12px 14px; pointer-events: auto; font-size: 12px; }
 .activity-stage-preview strong { color: var(--accent); font-size: 11px; }
 .activity-stage-preview p, .activity-stage-preview small { margin-top: 6px; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
 .activity-stage-preview small { color: var(--muted); }
@@ -19,7 +19,7 @@
 .activity-side-count { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .activity-side-trigger:hover, .activity-side-trigger[data-state="open"] { color: var(--accent); background: var(--accent-subtle); }
 .activity-side-trigger[data-running="true"]::after { content: ""; position: absolute; right: 4px; top: 4px; width: 4px; height: 4px; border-radius: 50%; background: var(--accent); }
-.activity-side-window { z-index: 60; display: flex; flex-direction: column; width: min(430px, calc(100vw - 28px), var(--radix-popover-content-available-width)); max-height: min(76dvh, 680px, var(--radix-popover-content-available-height)); border: 1px solid var(--border); border-radius: 14px; background: var(--card); box-shadow: 0 12px 44px #0003; overflow: hidden; }
+.activity-side-window { z-index: 60; display: flex; flex-direction: column; width: min(430px, calc(100vw - 28px), var(--radix-popover-content-available-width)); max-height: min(76dvh, 680px, var(--radix-popover-content-available-height)); overflow: hidden; }
 .activity-side-window > header { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px 10px 16px; border-bottom: 1px solid var(--border); background: var(--panel); }
 .activity-side-window h3 { font-size: 13px; font-weight: 600; }
 .activity-side-window > header button { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 7px; color: var(--muted); }
@@ -148,7 +148,7 @@
 .activity-targets.is-compact { flex-wrap: nowrap; overflow: hidden; }
 .activity-targets.is-compact .activity-tag { min-width: 0; flex-shrink: 1; }
 .activity-targets.is-compact .activity-tag b { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; max-width: 180px; }
-.activity-hover-card { z-index: 120; width: min(360px, calc(100vw - 32px)); padding: 15px 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--card); color: var(--text); box-shadow: var(--shadow-md); pointer-events: auto; }
+.activity-hover-card { z-index: 120; width: min(360px, calc(100vw - 32px)); padding: 15px 16px; color: var(--text); pointer-events: auto; }
 .activity-hover-title { margin-bottom: 9px; color: var(--text-strong); font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
 .activity-hover-content { display: -webkit-box; -webkit-line-clamp: 6; -webkit-box-orient: vertical; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.75; margin-bottom: 10px; }
 .activity-inspection-content { min-width: 0; font-size: 13px; line-height: 1.85; overflow-wrap: anywhere; }

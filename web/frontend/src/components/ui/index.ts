@@ -3,6 +3,7 @@ export type { ButtonProps, ButtonVariant, ButtonSize } from "./Button";
 export { Input } from "./Input";
 export { Textarea } from "./Textarea";
 export { Select } from "./Select";
+export { PopoverContent } from "./PopoverContent";
 export { Badge } from "./Badge";
 export type { BadgeProps, BadgeVariant } from "./Badge";
 export { Spinner, LoadingBlock } from "./Spinner";

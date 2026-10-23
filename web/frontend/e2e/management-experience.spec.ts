@@ -102,6 +102,50 @@ test("document indexing reports partial coverage and allows retry after failure"
   await expect(page.getByRole("alert")).toHaveCount(0);
 });
 
+test("temporary memory clearing requires confirmation and preserves pending work", async ({ page }) => {
+  let clears = 0;
+  let fail = true;
+  await page.route("**/api/memory/stm/status", route => route.fulfill({ json: [{ role: "task", content: "Pending work remains" }] }));
+  await page.route("**/api/memory/stm", route => {
+    if (route.request().method() === "DELETE") {
+      clears++;
+      return route.fulfill({ status: fail ? 503 : 200, json: fail ? { detail: "Memory busy" } : { cleared: 1 } });
+    }
+    return route.fulfill({ json: fail ? [{ content: "Temporary note", role: "memory" }] : [] });
+  });
+  await page.goto("/webui/memory?tab=stm");
+  const clear = page.getByRole("button", { name: "Clear", exact: true });
+  await clear.click();
+  const dialog = page.getByRole("dialog", { name: "Clear", exact: true });
+  await expect(dialog).toContainText("Pending tasks and analysis are retained");
+  await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(clear).toBeFocused();
+  expect(clears).toBe(0);
+  await clear.click();
+  await dialog.getByRole("button", { name: "Confirm", exact: true }).click();
+  await expect(dialog.getByRole("alert")).toContainText("Memory busy");
+  fail = false;
+  await dialog.getByRole("button", { name: "Confirm", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect(clear).toBeDisabled();
+  await expect(page.getByText("Pending work remains", { exact: true })).toBeVisible();
+  expect(clears).toBe(2);
+});
+
+test("goal forms fit narrow screens and share keyboard-accessible switches", async ({ page, isMobile }) => {
+  await page.route("**/api/memory/goals?*", route => route.fulfill({ json: { goals: [] } }));
+  await page.goto("/webui/memory?tab=goals");
+  await page.getByRole("button", { name: "Create", exact: true }).click();
+  const recurring = page.getByRole("switch", { name: "Recurring", exact: true });
+  await recurring.press("Space");
+  await expect(recurring).toHaveAttribute("aria-checked", "true");
+  await recurring.press("Space");
+  await expect(recurring).toHaveAttribute("aria-checked", "false");
+  if (isMobile) await page.setViewportSize({ width: 360, height: 800 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await expect(page.getByPlaceholder("Goal title")).toBeVisible();
+});
+
 test("maintenance confirmations retain their content while exiting and only submit after confirmation", async ({ page }, info) => {
   let rebuilds = 0;
   await page.route("**/api/memory/health", (route) => route.fulfill({ json: { type_counts: {}, total_memories: 0 } }));

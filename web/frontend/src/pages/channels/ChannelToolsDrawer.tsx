@@ -1,3 +1,4 @@
+import { Select } from "@/components/ui/Select";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -224,15 +225,15 @@ function ToolTestForm({ channelKey, tool }: { channelKey: string; tool: ChannelT
             {p.description && <span className="block opacity-70 truncate">{p.description}</span>}
           </label>
           {p.type === "boolean" ? (
-            <select
+            <Select
               value={values[p.name] ?? ""}
               onChange={(e) => setValues((prev) => ({ ...prev, [p.name]: e.target.value }))}
-              className="flex-1 h-8 px-2 text-xs rounded-md border border-border bg-card text-foreground"
+              className="flex-1"
             >
               <option value="">{t("tools.unset")}</option>
               <option value="true">true</option>
               <option value="false">false</option>
-            </select>
+            </Select>
           ) : (
             <Input
               type={p.type === "integer" || p.type === "number" ? "number" : "text"}

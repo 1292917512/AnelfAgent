@@ -37,6 +37,7 @@
   "syncFailed": "同步失败",
   "retryFailedSync": "重试失败项",
   "stmTitle": "短期记忆",
+  "clearStmConfirm": "清空所有临时短期记忆？此操作无法撤销，待处理任务与分析会保留。",
   "autoRefresh": "自动刷新",
   "temporary": "临时记忆",
   "pendingFilter": "待处理",
