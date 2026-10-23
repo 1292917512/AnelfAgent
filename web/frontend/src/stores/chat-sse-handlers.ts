@@ -62,8 +62,12 @@ function dispatchUiCommand(data: UiCommandPayload) {
           question: data.question,
           options: data.options || [],
           ts: data.ts || Date.now() / 1000,
+          expires_at: data.expires_at,
         });
       }
+      break;
+    case "ask_closed":
+      if (data.ask_id) wb.resolveAsk(data.ask_id);
       break;
     case "open_panel":
       if (data.panel) wb.openPanel(data.panel, data.payload || "");

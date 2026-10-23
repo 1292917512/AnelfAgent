@@ -23,7 +23,7 @@ export function Modal({
   const { t } = useTranslation("common");
   return (
     <DialogSurface open={open} onClose={onClose} title={title ?? t("dialog")}
-      placement={placement} dismissible={dismissible} className={width} onAfterClose={onAfterClose}>
+      placement={placement} dismissible={dismissible} className={cn("overflow-hidden", width)} onAfterClose={onAfterClose}>
       <div className="flex items-center gap-3 border-b border-border px-5 py-4 shrink-0">
         <div className="min-w-0 flex-1 text-base font-semibold text-heading">{title}</div>
         <Button variant="ghost" size="icon" onClick={onClose} disabled={!dismissible} aria-label={t("close")}>
@@ -31,7 +31,7 @@ export function Modal({
         </Button>
       </div>
       <div className={cn("min-h-0 overflow-y-auto overscroll-contain px-5 py-5", placement !== "center" && "flex-1")}>{children}</div>
-      {footer && <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border bg-elevated/50 px-5 py-4 shrink-0 safe-area-bottom">{footer}</div>}
+      {footer && <div className="flex flex-wrap items-center justify-end gap-2 border-t border-border bg-elevated/50 px-5 pt-4 pb-[max(1rem,env(safe-area-inset-bottom))] shrink-0">{footer}</div>}
     </DialogSurface>
   );
 }
@@ -53,8 +53,8 @@ export function ConfirmDialog({
   return (
     <Modal open={open} onClose={onClose} title={title} width="max-w-md" dismissible={!loading}
       footer={<>
-        <Button variant="secondary" disabled={loading} onClick={onClose}>{cancelText ?? t("cancel")}</Button>
-        <Button variant={danger ? "danger" : "primary"} loading={loading} onClick={onConfirm}>
+        <Button className="min-w-24" variant="secondary" disabled={loading} onClick={onClose}>{cancelText ?? t("cancel")}</Button>
+        <Button className="min-w-24" variant={danger ? "danger" : "primary"} loading={loading} onClick={onConfirm}>
           {confirmText ?? t("confirm")}
         </Button>
       </>}>

@@ -31,9 +31,9 @@ export const statusApi = {
 
 export const uiApi = {
   answer: (askId: string, answer: string) =>
-    api.post<{ status: "ok" | "expired" }>("/chat/ui-answer", { ask_id: askId, answer }),
+    api.post<{ status: "ok" | "expired" }>("/chat/ui-answer", { ask_id: askId, answer }, { errorFeedback: "local" }),
   reportState: (state: UiStateReport) =>
-    api.post("/chat/ui-state", { state }),
+    api.post("/chat/ui-state", { state }, { errorFeedback: "local" }),
 };
 
 // Tags

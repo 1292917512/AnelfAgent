@@ -1,4 +1,61 @@
-import { test, expect, persona } from "./fixtures";
+import { test, expect, persona, installEventStream } from "./fixtures";
+
+test("AI questions align actions, preserve drafts on failure and animate between queued questions", async ({ page }, info) => {
+  await installEventStream(page);
+  let fail = true;
+  const answers: string[] = [];
+  await page.route("**/api/chat/ui-answer", (route) => {
+    answers.push(route.request().postDataJSON().answer);
+    return route.fulfill(fail ? { status: 503, json: { detail: "Try again" } } : { json: { status: "ok" } });
+  });
+  await page.goto("/webui/");
+  await expect(page.getByText("No execution records yet", { exact: true })).toBeVisible();
+  await page.evaluate(() => {
+    const animations: string[] = [];
+    Reflect.set(window, "askAnimations", animations);
+    document.addEventListener("animationstart", (event) => {
+      if (event.target instanceof Element && event.target.matches(".dialog-surface")) animations.push(event.animationName);
+    });
+  });
+  const question = { ask_id: "layout-check", question: "Which changes should I verify before continuing?", options: ["Check layout, button alignment and transitions on desktop and mobile", "Review the changes first"], ts: Date.now() / 1000, expires_at: Date.now() / 1000 + 600 };
+  await page.evaluate((data) => window.dispatchEvent(new CustomEvent("test-activity", { detail: { event: "ui_command", data: { command: "ask", ...data } } })), question);
+  const dialog = page.getByRole("dialog", { name: "AI needs your input" });
+  await expect(dialog).toBeVisible();
+  const submit = dialog.getByRole("button", { name: "Submit", exact: true });
+  const skip = dialog.getByRole("button", { name: "Skip", exact: true });
+  await expect(submit).toBeDisabled();
+  await dialog.getByText(question.options[0]!, { exact: true }).click();
+  await expect(dialog.getByRole("radio").first()).toBeChecked();
+  expect(answers).toHaveLength(0);
+  const submitBox = await submit.boundingBox();
+  const skipBox = await skip.boundingBox();
+  expect(submitBox).not.toBeNull(); expect(skipBox).not.toBeNull();
+  expect(Math.abs(submitBox!.y - skipBox!.y)).toBeLessThan(1);
+  expect(Math.abs(submitBox!.height - skipBox!.height)).toBeLessThan(1);
+  const dialogBox = await dialog.boundingBox();
+  expect(dialogBox!.y + dialogBox!.height - submitBox!.y - submitBox!.height).toBeGreaterThanOrEqual(16);
+  expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await page.screenshot({ path: info.outputPath("ai-question-light.png"), animations: "disabled" });
+  await dialog.getByRole("textbox").fill("Verify both screen sizes\nKeep my draft on failure");
+  await submit.click();
+  await expect(dialog.getByRole("alert")).toContainText("Try again");
+  await expect(dialog.getByRole("textbox")).toHaveValue("Verify both screen sizes\nKeep my draft on failure");
+  await page.evaluate(() => {
+    document.documentElement.dataset.theme = "dark";
+    document.documentElement.classList.add("dark");
+  });
+  await page.screenshot({ path: info.outputPath("ai-question-dark.png"), animations: "disabled" });
+  await page.evaluate((data) => window.dispatchEvent(new CustomEvent("test-activity", { detail: { event: "ui_command", data: { command: "ask", ...data, ask_id: "next", question: "Second question" } } })), question);
+  fail = false;
+  await submit.click();
+  await expect(dialog.getByText("Second question", { exact: true })).toBeVisible();
+  await expect(dialog.getByRole("textbox")).toHaveValue("");
+  await expect(submit).toBeDisabled();
+  await skip.click();
+  await expect(dialog).toHaveCount(0);
+  expect(await page.evaluate(() => Reflect.get(window, "askAnimations"))).toEqual(expect.arrayContaining(["surface-enter", "surface-exit"]));
+  expect(answers).toEqual(["Verify both screen sizes\nKeep my draft on failure", "Verify both screen sizes\nKeep my draft on failure", "__skipped__"]);
+});
 
 test("persona drafts stay with their owner, accept incomplete JSON, and guard navigation", async ({ page }) => {
   await page.goto("/webui/personas?persona=daily");

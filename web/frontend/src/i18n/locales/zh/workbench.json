@@ -155,6 +155,14 @@
     "spreadsheetTruncated": "每个工作表最多预览 {{rows}} 行、{{columns}} 列。"
   },
   "ask": {
+    "title": "AI 需要你的意见",
+    "waiting": "等待你的回答",
+    "queued": "{{count}} 个问题待回答",
+    "remaining": "剩余 {{seconds}} 秒",
+    "choose": "选择一个选项",
+    "custom": "或填写其他回答",
+    "answer": "你的回答",
+    "hint": "选择后点击提交。跳过或超时不会视为同意。",
     "inputPlaceholder": "输入你的回答…",
     "submit": "提交",
     "skip": "跳过",

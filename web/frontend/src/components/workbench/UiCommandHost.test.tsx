@@ -35,11 +35,24 @@ it("allows custom answers alongside choices and preserves a failed submission", 
 it("does not claim delivery for an expired question", async () => {
   vi.spyOn(uiApi, "answer").mockResolvedValue(response("expired"));
   await mount();
-  await userEvent.click(screen.getByRole("button", { name: "This file" }));
+  await userEvent.click(screen.getByRole("radio", { name: "This file" }));
+  expect(uiApi.answer).not.toHaveBeenCalled();
+  await userEvent.click(screen.getByRole("button", { name: "Submit" }));
   await screen.findByText("This question has expired. Your answer was not delivered.");
   expect(useWorkbenchStore.getState().asks).toHaveLength(1);
-  await userEvent.click(screen.getByRole("button", { name: "Close" }));
-  expect(useWorkbenchStore.getState().asks).toHaveLength(0);
+  await userEvent.keyboard("{Escape}");
+  await waitFor(() => expect(useWorkbenchStore.getState().asks).toHaveLength(0));
+});
+
+it("closes a remotely resolved question before showing the next one with a fresh draft", async () => {
+  await mount();
+  await userEvent.type(screen.getByRole("textbox"), "Unsent draft");
+  act(() => {
+    useWorkbenchStore.getState().pushAsk({ ask_id: "two", question: "Next question", options: [], ts: 2 });
+    useWorkbenchStore.getState().resolveAsk("one");
+  });
+  await screen.findByText("Next question");
+  expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("");
 });
 
 it("opens requested workbench panels from other pages without navigating on unrelated updates", async () => {

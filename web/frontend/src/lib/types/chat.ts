@@ -145,6 +145,7 @@ export interface UiCommandPayload {
   ask_id?: string;
   question?: string;
   options?: string[];
+  expires_at?: number;
   panel?: string;
   payload?: string;
   text?: string;
@@ -152,6 +153,13 @@ export interface UiCommandPayload {
 
 /** 工作台状态上报（POST /chat/ui-state 的 state 字段，供 AI ui_get_state 查询） */
 export interface UiStateReport {
+  client_id: string;
+  sequence: number;
+  connected: boolean;
+  visible: boolean;
+  focused: boolean;
+  idle_seconds: number;
+  closed?: boolean;
   chat_visible: boolean;
   execution_visible: boolean;
   page: string;
@@ -165,6 +173,14 @@ export interface UiStateReport {
   active_file?: string | null;
   selection?: EditorSelectionPayload | null;
   open_tabs?: { label: string; path: string }[];
+}
+
+export interface UiAsk {
+  ask_id: string;
+  question: string;
+  options: string[];
+  ts: number;
+  expires_at?: number;
 }
 
 /** 编辑器选区上报负载（与后端 services/workspace_context 的渲染契约一致） */

@@ -16,13 +16,13 @@ export function PageSkeleton() {
   );
 }
 
-export function QueryError({ error, retry, compact = false }: { error: unknown; retry?: () => void; compact?: boolean }) {
+export function QueryError({ error, retry, compact = false, title }: { error: unknown; retry?: () => void; compact?: boolean; title?: string }) {
   const { t } = useTranslation("common");
   return (
     <div role="alert" className={compact ? "flex flex-wrap items-center gap-3 rounded-lg border border-danger/20 bg-danger-subtle p-3" : "flex flex-col items-center gap-3 rounded-xl border border-border bg-card px-6 py-12 text-center"}>
       <AlertCircle size={compact ? 18 : 28} className="shrink-0 text-danger" />
       <div className="min-w-0 flex-1">
-        <p className="text-sm font-medium text-heading">{t("loadFailed")}</p>
+        <p className="text-sm font-medium text-heading">{title ?? t("loadFailed")}</p>
         <p className="mt-1 text-sm text-muted break-words">{apiErrorMessage(error, t("requestFailed"))}</p>
       </div>
       {retry && <Button size="sm" onClick={retry}><RefreshCw size={14} />{t("retry")}</Button>}

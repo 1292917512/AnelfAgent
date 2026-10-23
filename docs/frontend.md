@@ -188,6 +188,19 @@ Web 与思维链共用 SSE 连接生命周期实现，终止连接退避重建�
 | 时间戳 hover 浮现 | MessageList | 行级 hover 浮现 + focus-within 兜底（键盘可达） |
 | SSE 断线可见性与恢复 | `chat-store.ts`（streamStatus + refreshRealtime）+ MessageList 横幅 | 连接恢复补齐当前及等待会话的历史与活动快照；静默会话复用原有核对任务，不把缺少事件视作执行结束 |
 
+## AI 提问与页面在场信号
+
+`UiCommandHost` 在各页面承接 `ui_ask`，选项选择与自由输入统一通过底部提交；
+失败保留草稿，跳过和超时均不代表同意。宿主保留正文到退场动画及焦点恢复结束，再展示下一问题。
+问题携带截止时间，`ask_closed` 同步多页面终态，过期问题不可再提交。
+
+`ui-state-reporting` 每 15 秒按页面实例上报连接、可见性、焦点和距最近操作的秒数；
+可见性和连接变化立即上报，关闭使用 keepalive 请求，序号防止迟到请求覆盖新状态。
+后端租约 45 秒失效，优先选择可交互页面，后台页面不会覆盖另一页面的活跃状态。
+`ui_get_state` 区分 `active / background / idle / offline`；5 分钟无操作标记 idle。
+`ui_ask` 仅在存在近期操作的前台页面时发起，等待期间所有页面离线则提前返回未回答。
+这些信号仅表示页面可能可交互，不能证明用户在场、已阅读或已授权。
+
 ## 前端开发约定
 
 - 页面超过 300 行拆为子面板目录、统一用 TabBar、i18n 覆盖所有文本、`Record<string, unknown>`

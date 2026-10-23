@@ -2,7 +2,8 @@ import { useFileEditorStore } from "./file-editor-store";
 import { isFileUnder, workspaceFileId, type WorkspaceFileRef } from "@/lib/workspace-file";
 import { create } from "zustand";
 import type { WorkbenchSurface } from "@/lib/workbench-layout";
-import type { WorkspaceRoot } from "@/lib/types";
+import type { UiAsk, WorkspaceRoot } from "@/lib/types";
+export type { UiAsk } from "@/lib/types";
 import { parseFileReference } from "@/lib/file-reference";
 
 export type DockTab = "status" | "context" | "tasks" | "search" | "settings";
@@ -13,13 +14,6 @@ export interface UiNotification {
   title: string;
   content: string;
   level: "info" | "success" | "warning" | "error";
-  ts: number;
-}
-
-export interface UiAsk {
-  ask_id: string;
-  question: string;
-  options: string[];
   ts: number;
 }
 

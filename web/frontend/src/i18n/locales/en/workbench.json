@@ -155,6 +155,14 @@
     "spreadsheetTruncated": "Preview limited to {{rows}} rows and {{columns}} columns per sheet."
   },
   "ask": {
+    "title": "AI needs your input",
+    "waiting": "Waiting for your answer",
+    "queued": "{{count}} questions waiting",
+    "remaining": "{{seconds}}s remaining",
+    "choose": "Choose an option",
+    "custom": "Or write another answer",
+    "answer": "Your answer",
+    "hint": "Submit when ready. Skipping or timing out does not mean approval.",
     "inputPlaceholder": "Type your answer…",
     "submit": "Submit",
     "skip": "Skip",

@@ -3,8 +3,9 @@
 所有命令经 core.event_bus 的 EVENT_UI_COMMAND 事件发出，
 由 web 层桥接到 SSE 推送给前端，本模块不依赖 web。
 
-Model Experience：提问超时返回明确的失败归因，未回答不等于授权。
-反馈只占当前工具结果，不改变缓存前缀；取消或投递失败及时释放等待状态。
+Model Experience：模型经工具结果看到页面在线/后台/空闲状态与未回答归因，未回答不等于授权。
+Token 影响：状态与错误结果增加约几十 token，无人值守时避免无效等待与重复提问。
+缓存影响：只进入当前工具结果的动态区，不改变缓存前缀。
 """
 
 from __future__ import annotations
@@ -17,7 +18,9 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from core.event_bus import EVENT_UI_COMMAND, event_bus
+from core.log import log
 from entities._sdk import ErrorCause, entity, error_from_exception, tool, tool_error
+from entities.ui.presence import get_presence, update_state
 
 entity("ui", "界面交互 - 向 Web 工作台投递通知、弹窗提问、切换面板、注入草稿、查询界面状态")
 
@@ -31,37 +34,31 @@ class _PendingAsk:
 
     future: "asyncio.Future[str]"
     created_at: float
+    expires_at: float
 
 
 # 挂起的提问：ask_id -> _PendingAsk
 _pending_asks: Dict[str, _PendingAsk] = {}
 _ASK_MAX_AGE = 600.0
 
-# 前端上报的工作台状态快照
-_ui_state: Dict[str, Any] = {}
-
-# _ui_state / _pending_asks 读写锁（异步工具侧使用；
-# web 层同步入口 update_ui_state/resolve_ask 均为单次原子字典操作，不加锁）
+# 挂起提问的异步写入锁；同步入口均在同一事件循环内完成。
 _state_lock = asyncio.Lock()
 
 
 def update_ui_state(state: Dict[str, Any]) -> None:
     """web 层调用：更新前端上报的工作台状态快照。"""
-    global _ui_state
-    new_state = dict(state)
-    new_state["updated_at"] = time.time()
-    _ui_state = new_state
+    update_state(state)
 
 
 def get_ui_state_snapshot() -> Dict[str, Any]:
     """web 层调用：读取工作台状态快照。"""
-    return dict(_ui_state)
+    return get_presence().get("state", {})
 
 
 def resolve_ask(ask_id: str, answer: str) -> bool:
     """web 层调用：以用户回答解决挂起的提问，返回是否命中。"""
     pending = _pending_asks.pop(ask_id, None)
-    if pending is None or pending.future.done():
+    if pending is None or pending.future.done() or time.monotonic() >= pending.expires_at:
         return False
     pending.future.set_result(answer)
     return True
@@ -108,7 +105,7 @@ async def ui_notify(title: str, content: str = "", level: str = "info") -> str:
 
 @tool(name="ui_ask", group="ui", tags=["always"], timeout=630.0)
 async def ui_ask(question: str, options: Optional[List[str]] = None, timeout: int = 120) -> str:
-    """向 Web 工作台弹窗提问并等待用户回答（选项式或自由输入）。无用户在线时会超时。
+    """向有近期操作的前台 Web 工作台提问；离线、后台或久未操作时直接返回未回答。
 
     Args:
         question: 要问用户的问题
@@ -116,12 +113,19 @@ async def ui_ask(question: str, options: Optional[List[str]] = None, timeout: in
         timeout: 等待回答的超时秒数（最大 600）
     """
     try:
+        presence = get_presence()
+        if not presence["can_ask"]:
+            return _unavailable(presence["status"])
+        wait_seconds = min(max(timeout, 5), 600)
         async with _state_lock:
             _cleanup_stale_asks()
             ask_id = uuid.uuid4().hex[:12]
             loop = asyncio.get_running_loop()
             future: asyncio.Future[str] = loop.create_future()
-            _pending_asks[ask_id] = _PendingAsk(future=future, created_at=time.time())
+            deadline = time.monotonic() + wait_seconds
+            _pending_asks[ask_id] = _PendingAsk(
+                future=future, created_at=time.time(), expires_at=deadline,
+            )
 
         try:
             await _emit("ask", {
@@ -129,8 +133,16 @@ async def ui_ask(question: str, options: Optional[List[str]] = None, timeout: in
                 "question": question,
                 "options": options or [],
                 "ts": time.time(),
+                "expires_at": time.time() + wait_seconds,
             })
-            answer = await asyncio.wait_for(future, timeout=min(max(timeout, 5), 600))
+            while not future.done():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise asyncio.TimeoutError
+                await asyncio.wait({future}, timeout=min(5.0, remaining))
+                if not future.done() and not get_presence()["available"]:
+                    return _unavailable("offline")
+            answer = future.result()
             if answer == "__skipped__":
                 return tool_error("用户跳过了问题", cause=ErrorCause.USER_CANCEL, retryable=False)
             return json.dumps({"success": True, "answer": answer}, ensure_ascii=False)
@@ -142,8 +154,21 @@ async def ui_ask(question: str, options: Optional[List[str]] = None, timeout: in
                 _pending_asks.pop(ask_id, None)
             if not future.done():
                 future.cancel()
+            try:
+                await _emit("ask_closed", {"ask_id": ask_id})
+            except Exception as exc:
+                log(f"同步界面提问结束状态失败: {exc}", "DEBUG")
     except Exception as e:
         return error_from_exception(e, action="弹窗提问")
+
+
+def _unavailable(status: str) -> str:
+    """未检测到可交互页面时，返回可归因的非授权结果。"""
+    return tool_error(
+        "工作台离线或未检测到近期前台操作，本次未获得回答", cause=ErrorCause.STATE,
+        retryable=False, ui_status=status,
+        hint="页面在场信号不代表有人阅读。不得视为同意；继续不依赖回答的工作，待用户返回后再提问",
+    )
 
 
 @tool(name="ui_open_panel", group="ui", tags=["always"])
@@ -183,12 +208,8 @@ async def ui_compose(text: str) -> str:
 
 @tool(name="ui_get_state", concurrency_safe=True, group="ui", tags=["always"])
 async def ui_get_state() -> str:
-    """获取 Web 工作台界面状态快照（当前面板、打开的文件、输入框草稿等）。"""
+    """获取页面在线、前台与近期操作信号及界面快照；can_ask 不代表用户已阅读或同意。"""
     try:
-        async with _state_lock:
-            snapshot = dict(_ui_state)
-        if not snapshot:
-            return json.dumps({"available": False, "hint": "前端尚未上报状态"}, ensure_ascii=False)
-        return json.dumps({"available": True, "state": snapshot}, ensure_ascii=False)
+        return json.dumps(get_presence(), ensure_ascii=False)
     except Exception as e:
         return error_from_exception(e, action="获取界面状态")
