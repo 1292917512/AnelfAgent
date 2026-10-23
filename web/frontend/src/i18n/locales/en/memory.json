@@ -440,7 +440,15 @@
     "generationView": "View generation details",
     "storageLogical": "Logical directory size includes shared blocks; it is not exclusive disk usage.",
     "storageHelp": "Storage and protection details",
-    "buildDetails": "Build details"
+    "buildDetails": "Build details",
+    "coverageRepair": {
+      "action": "Repair coverage differences",
+      "hint": "Compare native memory with this generation and requeue only missing or stale content. Keep completed indexes and previous generations, then repeat full validation.",
+      "busy": "Wait for the current batch, maintenance or configuration update to finish.",
+      "queued": "Requeued {{count}} coverage differences.",
+      "paused": "Sync remains paused. Click Resume sync to process them.",
+      "running": "Sync will continue automatically. The new graph stays unavailable until validation passes."
+    }
   },
   "docs": {
     "title": "Document Index",

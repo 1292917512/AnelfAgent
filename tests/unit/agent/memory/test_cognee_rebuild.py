@@ -97,6 +97,154 @@ async def settle(coordinator: CogneeCoordinator) -> None:
     pytest.fail("构建未在有限轮次内收敛")
 
 
+@pytest.mark.parametrize("side", ["subject", "object"])
+async def test_relation_rename_requeues_existing_neighbors_even_with_inflight_projection(coordinator, store, side):
+    await store.graph.add_relation("topic:hub", "连接", "topic:old", subject_label="旧名称")
+    await coordinator._process_batch(await store.claim_cognee_sync_batch(20))
+    old = await store.graph.get_node("topic:old")
+    # 在途邻居仍持有旧名称快照；改名必须另外保留一条 pending，不能被旧批次 ACK 吃掉。
+    await store.graph.add_relation("topic:hub", "连接", "topic:old")
+    inflight = await store.claim_cognee_sync_batch(20)
+    args = ("topic:hub", "连接", "topic:new") if side == "subject" else ("topic:new", "连接", "topic:hub")
+    await store.graph.add_relation(*args, **{f"{side}_label": "新名称"})
+    db = await store._conn.get_db()
+    rows = await (await db.execute("SELECT status FROM cognee_sync_queue WHERE entry_kind='graph_node' AND entry_id=?",
+                                   (old["id"],))).fetchall()
+    assert {row["status"] for row in rows} == {"processing", "pending"}
+    await coordinator._process_batch(inflight)
+    batch = await store.claim_cognee_sync_batch(20)
+    assert old["id"] in {item["entry_id"] for item in batch}
+    await coordinator._process_batch(batch)
+    assert (await store.projection_state.audit())["missing_or_stale"] == []
+    mapping = await store.get_cognee_mapping(old["id"], entry_kind="graph_node")
+    assert "新名称" in coordinator.client.documents[mapping["dataset_id"]][mapping["data_id"]]["text"]
+
+
+async def _coverage_failure(coordinator, store):
+    mid = await store.add(MemoryEntry(content="不得重复抽取的原文", memory_type=MemoryType.SEMANTIC))
+    legacy_document(coordinator, mid, legacy_memory_text(mid, "旧轮保留的正文"))
+    await store.graph.add_relation("topic:hub", "连接", "topic:a", subject_label="旧名称")
+    await store.graph.add_relation("topic:hub", "连接", "topic:b")
+    await coordinator.rebuild.request(coordinator.config)
+    await settle(coordinator)
+    state = coordinator.rebuild.state
+    db = await store._conn.get_db()
+    # 模拟升级前留下的改名漏队，不修改任何已提交文档或指纹。
+    async with store._conn.tx(db):
+        await db.execute("UPDATE graph_nodes SET label='新名称' WHERE node_key='topic:hub'")
+    state.phase = "building"
+    await coordinator.rebuild.advance()
+    assert state.phase == "failed" and "权威覆盖不一致" in state.error
+    return state
+
+
+async def test_coverage_repair_resumes_same_generation_and_keeps_completed_documents(coordinator, store):
+    state = await _coverage_failure(coordinator, store)
+    before = await store.projection_state.mappings()
+    preserved = copy.deepcopy(coordinator.client.documents)
+    namespace, backup, previous = state.namespace, state.backup_path, list(state.previous_namespaces)
+    coordinator.config.sync_enabled = False
+    result = await coordinator.repair_coverage(namespace)
+    assert result == {"queued": 3, "namespace": namespace, "paused": True}
+    assert not coordinator.client.projection_ready and state.phase == "building"
+    assert await store.projection_state.mappings() == before
+    assert coordinator.client.documents == preserved
+    batch = await store.claim_cognee_sync_batch(20)
+    assert len(batch) == 3 and all(item["entry_kind"] == "graph_node" and not item["payload"].get("force") for item in batch)
+    await store.requeue_stale_cognee_sync(0)
+    # 入队持久化后重启，仍续同一轮次；最终验收才允许召回新图。
+    await coordinator.rebuild.initialize(coordinator.config)
+    coordinator.config.sync_enabled = True
+    await settle(coordinator)
+    state = coordinator.rebuild.state
+    assert state.phase == "ready" and coordinator.client.projection_ready
+    assert (state.namespace, state.backup_path, state.previous_namespaces) == (namespace, backup, previous)
+    after = await store.projection_state.mappings()
+    assert [m for m in after if m["entry_kind"] == "memory"] == [m for m in before if m["entry_kind"] == "memory"]
+    assert (await store.get_cognee_sync_status())["pending"] == 0
+    assert not (await store.projection_state.audit())["missing_or_stale"]
+    with pytest.raises(ValueError, match="当前失败轮次"):
+        await coordinator.repair_coverage(namespace)
+    coordinator.config.sync_enabled = False
+    current = copy.deepcopy(coordinator.client.documents)
+    await coordinator.retirement.request_generation(previous[0])
+    await coordinator.retirement._task
+    assert coordinator.retirement.status.stage == "completed", coordinator.retirement.status.error
+    assert coordinator.rebuild.state.previous_namespaces == []
+    assert coordinator.client.projection_ready
+    for name, documents in current.items():
+        if name.startswith(namespace):
+            assert coordinator.client.documents[name] == documents
+    assert await store.projection_state.mappings() == after
+    assert (await store.get(before[0]["entry_id"])).content == "不得重复抽取的原文"
+
+
+async def test_coverage_repair_keeps_new_pending_work_and_still_requires_backend_validation(coordinator, store):
+    state = await _coverage_failure(coordinator, store)
+    mid = await store.add(MemoryEntry(content="验收失败后新增的记忆也不能丢", memory_type=MemoryType.SEMANTIC))
+    result = await coordinator.repair_coverage(state.namespace)
+    assert result["queued"] == 4  # 新增记忆缺少映射，同样属于实时覆盖差异。
+    await coordinator._process_batch(await store.claim_cognee_sync_batch(20))
+    mapping = await store.get_cognee_mapping(mid)
+    coordinator.client.missing_graph.add(mapping["data_id"])
+    await coordinator.rebuild.advance()
+    assert state.phase == "failed" and not coordinator.client.projection_ready
+    assert "图谱缺少" in state.error
+    with pytest.raises(ValueError, match="未发现原生覆盖差异"):
+        await coordinator.repair_coverage(state.namespace)
+    assert (await store.get(mid)).content == "验收失败后新增的记忆也不能丢"
+
+
+@pytest.mark.parametrize("block", ["revision", "generation", "requested", "inconsistent", "extra", "backend", "rollback", "cancel", "busy"])
+async def test_coverage_repair_rejects_races_and_rolls_back_partial_enqueues(coordinator, store, monkeypatch, block):
+    state = await _coverage_failure(coordinator, store)
+    db = await store._conn.get_db()
+    audit = await store.projection_state.audit()
+    assert len(audit["missing_or_stale"]) == 3
+    if block == "revision":
+        async with store._conn.tx(db):
+            await db.execute("UPDATE graph_nodes SET label='再次改名' WHERE node_key='topic:hub'")
+    elif block == "generation":
+        state.namespace += "_changed"
+        await store.projection_state.save(state)
+    elif block == "requested":
+        await coordinator.request_rebuild()
+    elif block == "inconsistent":
+        audit["consistent"] = False
+    elif block == "extra":
+        audit["extra"] = ["graph_node:999"]
+    elif block == "backend":
+        audit["missing_or_stale"] = []
+    elif block in {"rollback", "cancel"}:
+        enqueue = store._cognee.enqueue_sync
+        count = 0
+
+        async def fail_after_insert(*args, **kwargs):
+            nonlocal count
+            await enqueue(*args, **kwargs)
+            count += 1
+            if count == 2:
+                if block == "cancel":
+                    raise asyncio.CancelledError()
+                raise OSError("disk full")
+
+        monkeypatch.setattr(store._cognee, "enqueue_sync", fail_after_insert)
+    monkeypatch.setattr(store.projection_state, "audit", AsyncMock(return_value=audit))
+    original = copy.deepcopy(state.model_dump())
+    if block == "busy":
+        await coordinator._projection_lock.acquire()
+    try:
+        error = asyncio.CancelledError if block == "cancel" else OSError if block == "rollback" else ValueError
+        with pytest.raises(error):
+            await coordinator.repair_coverage(state.namespace.removesuffix("_changed"))
+    finally:
+        if block == "busy":
+            coordinator._projection_lock.release()
+    assert (await store.get_cognee_sync_status())["pending"] == 0
+    assert (await store.projection_state.load()).model_dump() == original
+    assert state.model_dump() == original and not coordinator.client.projection_ready
+
+
 async def test_large_node_fragments_preserve_old_index_and_update_only_changed_ranges(coordinator, store, monkeypatch):
     """旧文档不因启动改写；首次变更切分，随后修改、删除只替换受影响区间。"""
     from agent.memory.graph import fragments

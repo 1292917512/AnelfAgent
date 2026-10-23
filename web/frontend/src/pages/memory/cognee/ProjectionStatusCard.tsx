@@ -5,6 +5,7 @@ import { Button, Modal } from "@/components/ui";
 import type { CogneeProjectionState, CogneeStatus } from "@/lib/types";
 import { BatchProgress } from "./BatchProgress";
 import { SyncControl } from "./SyncControl";
+import { CoverageRepair } from "./CoverageRepair";
 
 export function ProjectionStatusCard({ state, sync, updatedAt, stale, enabled }: {
   state?: CogneeProjectionState | null;
@@ -65,6 +66,7 @@ export function ProjectionStatusCard({ state, sync, updatedAt, stale, enabled }:
         {(state.legacy_preserved ?? 0) > 0 && <p>{t("cognee.projectionLegacyPreserved", { count: state.legacy_preserved })}</p>}
         {state.previous_namespaces.length > 0 && <p>{t("cognee.projectionRetained", { count: state.previous_namespaces.length })}</p>}
         {state.error && <p role="alert" className="text-danger">{state.error}</p>}
+        <CoverageRepair key={state.namespace} state={state} sync={sync} enabled={enabled} stale={stale} />
       </div>
       <Modal open={open} onClose={() => setOpen(false)} title={t("cognee.buildDetails")} width="max-w-2xl">
         <div className="space-y-4 text-sm leading-relaxed text-muted">

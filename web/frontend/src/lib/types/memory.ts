@@ -117,6 +117,12 @@ export interface CogneeProjectionState {
   graph_scanned: boolean;
 }
 
+export interface CogneeCoverageRepairResult {
+  queued: number;
+  namespace: string;
+  paused: boolean;
+}
+
 export interface CogneeBatchProgress {
   stage: string;
   items: number;

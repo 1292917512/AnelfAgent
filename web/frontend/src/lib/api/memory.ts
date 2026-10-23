@@ -3,6 +3,7 @@
 import { api } from "./client";
 import type {
   CogneeConfig,
+  CogneeCoverageRepairResult,
   CogneeDatasetCatalog,
   CogneeStatus,
   GoalData,
@@ -27,6 +28,8 @@ export const memoryApi = {
     retireDataset: (id: string) => api.delete(`/memory/cognee/datasets/${encodeURIComponent(id)}`),
     retireGeneration: (namespace: string) => api.delete(`/memory/cognee/generations/${encodeURIComponent(namespace)}`),
     retry: () => api.post("/memory/cognee/retry"),
+    repairCoverage: (namespace: string) => api.post<CogneeCoverageRepairResult>(
+      "/memory/cognee/repair-coverage", null, { params: { namespace }, errorFeedback: "local" }),
     rebuild: (restart = false) => api.post<{ ok: boolean; scheduled: boolean }>("/memory/cognee/rebuild", null, { params: { restart } }),
     compact: () =>
       api.post<{ ok: boolean; scheduled?: boolean; result?: { bytes_reclaimed?: number }; error?: string }>(

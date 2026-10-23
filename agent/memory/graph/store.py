@@ -229,6 +229,8 @@ class GraphStore:
                     (label, time.time_ns(), node["id"]),
                 )
                 node["label"] = label
+                # 名称嵌入所有邻居的投影文本，随关系写入改名也必须传播。
+                await self._enqueue_projection(db, await self._neighbor_node_ids(db, node["id"]))
             if node["archived"]:
                 await db.execute(
                     "UPDATE graph_nodes SET archived=0, updated_ns=? WHERE id=?",

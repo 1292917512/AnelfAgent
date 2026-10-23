@@ -232,6 +232,42 @@ class ProjectionStateStore:
         return {"revision": revision, "consistent": consistent, "expected": len(expected), "mapped": len(mappings), "missing_or_stale": mismatches,
                 "extra": extra, "pending": status["pending"], "failed": status["failed"]}
 
+    async def repair_coverage(self, state: ProjectionState, audit: dict[str, Any]) -> int:
+        """按一致审计补入缺失或过期投影；队列与状态原子提交，不改源内容及既有映射。"""
+        if not audit["consistent"]:
+            raise ValueError("原生数据正在变化，请重新执行覆盖修复")
+        if audit["extra"]:
+            raise ValueError("存在多余映射，需要先核对来源；覆盖修复不会自动删除数据")
+        if not audit["missing_or_stale"]:
+            raise ValueError("未发现原生覆盖差异；请检查后端验收错误，不能跳过验收")
+        db = await self._conn.get_db()
+        async with self._conn.tx(db):
+            persisted = await self.load()
+            if (persisted is None or persisted.namespace != state.namespace or persisted.phase != "failed"
+                    or persisted.rebuild_requested or not persisted.memory_scanned or not persisted.graph_scanned):
+                raise ValueError("构建状态已变化，请刷新后重试")
+            if audit["revision"] != await self._revision(db):
+                raise ValueError("审计后原生数据已变化，请重新执行覆盖修复")
+            for reference in audit["missing_or_stale"]:
+                kind, raw_id = reference.split(":", 1)
+                entry_id = int(raw_id)
+                if kind == "memory":
+                    row = await (await db.execute(
+                        f"SELECT {MEM_COLUMNS} FROM memories WHERE id=?", (entry_id,),
+                    )).fetchone()
+                    if row is None:
+                        raise ValueError("待修复记忆已不存在，请重新审计")
+                    payload = entry_projection_payload(row_to_entry(row), entry_id)
+                elif kind == "graph_node":
+                    payload = {"node_id": entry_id}
+                else:
+                    raise ValueError(f"不支持的投影类型: {kind}")
+                await self._queue.enqueue_sync(db, entry_id, "upsert", payload, entry_kind=kind)
+            resumed = state.model_copy(update={"phase": "building", "error": "", "verified": 0, "completed_at": 0.0})
+            await self._save(db, resumed)
+        state.phase, state.error, state.verified, state.completed_at = "building", "", 0, 0.0
+        return len(audit["missing_or_stale"])
+
     async def finish(self, state: ProjectionState, verified: int, *, revision: int) -> bool:
         """以常数时间持锁比较审计版本；后端验收期间的任何新写入都会推迟切换。"""
         db = await self._conn.get_db()

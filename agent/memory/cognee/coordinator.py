@@ -352,6 +352,17 @@ class CogneeCoordinator:
         self.wake()
         return count
 
+    async def repair_coverage(self, namespace: str) -> dict[str, Any]:
+        """空闲时审计并原子补队；同步暂停时只入队，继续同步后消费。"""
+        self._require_open()
+        if self._projection_lock.locked() or self.retirement.status.running or self._pending_config:
+            raise ValueError("索引正在同步、维护或应用配置，请等待完成后重试")
+        async with self._projection_lock:
+            self._require_open()
+            count = await self.rebuild.repair_coverage(self.config, namespace)
+        self.wake()
+        return {"queued": count, "namespace": namespace, "paused": not self.config.sync_enabled}
+
     async def request_rebuild(self, *, restart: bool = False) -> dict[str, Any]:
         """持久化构建请求；不等待耗时的在途批次，完成状态由验收产生。"""
         self._require_open()

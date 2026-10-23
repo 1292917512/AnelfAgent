@@ -23,6 +23,88 @@ pytestmark = [
 
 
 @pytest.mark.timeout(900)
+async def test_real_coverage_repair_api_validation_and_old_generation_retirement(tmp_path, monkeypatch):
+    """真实模型与索引贯通 HTTP 修复、同轮验收、旧轮清理及当前图召回。"""
+    import httpx
+    from fastapi import FastAPI
+
+    from web.routers.memory import router
+
+    config = load_cognee_config()
+    config.enabled = config.sync_enabled = True
+    config.project_memories_enabled = config.project_graph_enabled = True
+    config.data_root = str(tmp_path / "cognee")
+    config.timeout_seconds = config.pipeline_timeout_seconds = 180
+    config.write_breaker_enabled = False
+    config.improve_interval_seconds = 0
+    monkeypatch.setattr("agent.memory.cognee.rebuild.backups_root", lambda: tmp_path / "backups")
+    monkeypatch.setattr("agent.memory.cognee.retirement.backups_root", lambda: tmp_path / "backups")
+    store = MemoryStore(str(tmp_path / "memory.sqlite3"))
+    store.set_cognee_projection_enabled(True)
+    client = CogneeClient(config, source_mappings=store.projection_state.publication_sources)
+    coordinator = CogneeCoordinator(store, client, config)
+    monkeypatch.setattr("agent.memory.cognee.runtime.get_cognee_coordinator", lambda: coordinator)
+    app = FastAPI()
+    app.include_router(router, prefix="/api")
+
+    async def finish():
+        for _ in range(8):
+            await coordinator.rebuild.advance()
+            batch = await store.claim_cognee_sync_batch(10)
+            if batch:
+                await coordinator._process_batch(batch)
+            assert not coordinator.writer.last_error, coordinator.writer.last_error
+            assert coordinator.rebuild.state.phase != "failed", coordinator.rebuild.state.error
+            if coordinator.rebuild.state.phase == "ready":
+                return
+        pytest.fail("真实索引未完成验收")
+
+    try:
+        await coordinator.rebuild.initialize(config)
+        mid = await store.add(MemoryEntry(content="蓝鸢项目由林舟维护，部署在杭州。", memory_type=MemoryType.SEMANTIC))
+        await store.graph.add_relation("project:蓝鸢", "维护者", "person:林舟", subject_label="蓝 鸢",
+                                       evidence="林舟负责蓝鸢项目的发布和维护。")
+        await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
+        assert not coordinator.writer.last_error
+        await coordinator.rebuild.request(config)
+        await finish()
+        state = coordinator.rebuild.state
+        namespace, old = state.namespace, list(state.previous_namespaces)
+        memory_before = await store.get_cognee_mapping(mid)
+        db = await store._conn.get_db()
+        async with store._conn.tx(db):
+            await db.execute("UPDATE graph_nodes SET label='蓝鸢' WHERE node_key='project:蓝鸢'")
+        state.phase = "building"
+        await coordinator.rebuild.advance()
+        assert state.phase == "failed" and not client.projection_ready
+        config.sync_enabled = False
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as http:
+            wrong = await http.post("/api/memory/cognee/repair-coverage", params={"namespace": "old-page"})
+            assert wrong.status_code == 409
+            response = await http.post("/api/memory/cognee/repair-coverage", params={"namespace": namespace})
+            assert response.status_code == 200, response.text
+            assert response.json() == {"queued": 2, "namespace": namespace, "paused": True}
+        config.sync_enabled = True
+        await finish()
+        assert state.namespace == namespace and client.projection_ready
+        assert await store.get_cognee_mapping(mid) == memory_before
+        config.sync_enabled = False
+        for previous in old:
+            await coordinator.retirement.request_generation(previous)
+            await coordinator.retirement._task
+            assert coordinator.retirement.status.stage == "completed", coordinator.retirement.status.error
+        assert state.previous_namespaces == []
+        assert (await store.get(mid)).content == "蓝鸢项目由林舟维护，部署在杭州。"
+        await coordinator.rebuild.verify_backend(state, await store.projection_state.mappings())
+        rows = await client.recall("谁维护蓝鸢项目？", query_type=client.search_type("GRAPH_COMPLETION"),
+            datasets=[namespace + "_relations"], only_context=True, include_references=True, auto_route=False)
+        assert any("林舟" in row.content for row in rows), rows
+    finally:
+        await client.close()
+        await store.close()
+
+
+@pytest.mark.timeout(900)
 async def test_real_relation_fragments_incremental_update_preserves_committed_documents(tmp_path, monkeypatch):
     """真实模型和图/向量库验证分片增量、旧文档留存、变更提交与逐项验收。"""
     from agent.memory.graph import fragments

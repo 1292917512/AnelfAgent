@@ -1,7 +1,7 @@
 """Cognee 全量构建编排：保留旧数据集、原生快照、续跑与逐项验收。
 
 模型看到什么：构建期间继续使用原生召回，验收后启用新图谱证据。
-token 影响：显式重建对活跃记忆和关系证据重新抽取及嵌入。
+token 影响：显式重建对活跃记忆和关系证据重新抽取及嵌入；覆盖修复仅重投影差异条目。
 缓存影响：不改主对话稳定前缀。
 """
 
@@ -97,6 +97,18 @@ class CogneeRebuild:
         await self.store.projection_state.save(state)
         self.bind()
         return state
+
+    async def repair_coverage(self, config: CogneeConfig, namespace: str) -> int:
+        """修复当前失败轮次的权威覆盖差异，保留同一代际并重新走完整验收。"""
+        await self._validate_request(config)
+        state = self.state
+        if (state is None or state.namespace != namespace or state.phase != "failed"
+                or not state.memory_scanned or not state.graph_scanned or state.rebuild_requested):
+            raise ValueError("仅支持已完成扫描的当前失败轮次，请刷新状态后重试")
+        audit = await self.store.projection_state.audit()
+        count = await self.store.projection_state.repair_coverage(state, audit)
+        self.bind()
+        return count
 
     async def schedule(self, config: CogneeConfig, *, restart: bool = False) -> ProjectionState:
         """持久化请求后立即返回；worker 在当前批次结束后切换构建代际。"""

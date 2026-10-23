@@ -220,7 +220,7 @@ class CogneeSyncQueue:
         async with self._conn.tx(db):
             cursor = await db.execute(
                 "UPDATE cognee_sync_queue SET status='pending', updated_ns=? "
-                "WHERE status='processing' AND updated_ns<?",
+                "WHERE status='processing' AND updated_ns<=?",
                 (time.time_ns(), cutoff_ns),
             )
         requeued = cursor.rowcount or 0

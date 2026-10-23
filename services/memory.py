@@ -704,6 +704,14 @@ class MemoryService:
             return {"error": "Cognee 运行时未初始化"}
         return await coordinator.request_compact()
 
+    async def repair_cognee_coverage(self, namespace: str) -> Dict[str, Any]:
+        """同一轮次定向补同步权威覆盖差异，不创建新图。"""
+        from agent.memory.cognee.runtime import get_cognee_coordinator
+        coordinator = get_cognee_coordinator()
+        if coordinator is None:
+            raise RuntimeError("Cognee 未初始化")
+        return await coordinator.repair_coverage(namespace)
+
     async def rebuild_cognee(self, *, restart: bool = False) -> Dict[str, Any]:
         """保留原始内容与旧数据集，后台构建并验收新代际。"""
         from agent.memory.cognee.runtime import get_cognee_coordinator

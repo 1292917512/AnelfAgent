@@ -82,6 +82,15 @@ async def rebuild_cognee(restart: bool = False) -> Dict[str, Any]:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
+@router.post("/cognee/repair-coverage")
+async def repair_cognee_coverage(namespace: str) -> Dict[str, Any]:
+    """按实时审计补入差异条目，保留旧图和当前轮次的已完成内容。"""
+    try:
+        return await _mem_svc.repair_cognee_coverage(namespace)
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @router.post("/cognee/compact")
 async def compact_cognee() -> Dict[str, Any]:
     """压缩 cognee LanceDB 向量库，回收删除/更新遗留的历史版本（不动逻辑数据）。"""

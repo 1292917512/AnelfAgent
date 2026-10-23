@@ -182,6 +182,45 @@ test("Cognee generation cleanup preserves a fallback until acceptance and confir
   await page.screenshot({ path: info.outputPath("cognee-generations.png"), fullPage: true });
 });
 
+test("Cognee repairs coverage in the same generation and preserves paused sync", async ({ page }, info) => {
+  const state = {
+    availability: { installed: true, enabled: true, ready: true, version: "1.6.5" },
+    sync: { enabled: false, running: false, pending: 0, processing: 0, synced: 4380, failed: 0, active: null },
+    projection: { phase: "failed", rebuild_requested: false, namespace: "current-generation", verified: 0,
+      memory_scanned: true, graph_scanned: true, counts: { memories: 1826, graph_nodes: 2506 },
+      previous_namespaces: ["old"], error: "Coverage mismatch", backup_path: "/backup/memory.sqlite3", completed_at: 0 },
+  };
+  let calls = 0;
+  let rebuilds = 0;
+  await page.route("**/api/memory/cognee/status", route => route.fulfill({ json: state }));
+  await page.route("**/api/memory/cognee/rebuild**", route => { rebuilds++; return route.fulfill({ json: {} }); });
+  await page.route("**/api/memory/cognee/repair-coverage?**", route => {
+    expect(new URL(route.request().url()).searchParams.get("namespace")).toBe("current-generation");
+    expect(route.request().method()).toBe("POST");
+    calls++;
+    if (calls === 1) return route.fulfill({ status: 409, json: { detail: "Source changed; retry audit" } });
+    state.projection.phase = "building";
+    state.projection.error = "";
+    state.sync.pending = 34;
+    return route.fulfill({ json: { queued: 34, namespace: state.projection.namespace, paused: true } });
+  });
+  await page.goto("/webui/memory?tab=cognee");
+  const button = page.getByRole("button", { name: "Repair coverage differences", exact: true });
+  await expect(button).toBeEnabled();
+  await button.click();
+  await expect(page.getByText("Source changed; retry audit", { exact: true }).first()).toBeVisible();
+  await expect(button).toBeEnabled();
+  await button.click();
+  await expect(page.getByText(/Requeued 34 coverage differences/)).toBeVisible();
+  await expect(page.getByText(/Sync remains paused. Click Resume sync/)).toBeVisible();
+  await expect(button).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Resume sync", exact: true })).toBeEnabled();
+  expect(calls).toBe(2);
+  expect(rebuilds).toBe(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.getByTestId("cognee-coverage-repair").screenshot({ path: info.outputPath("cognee-coverage-repair.png") });
+});
+
 test("Cognee exposes in-flight progress, retries and stale observations", async ({ page }, info) => {
   test.setTimeout(60000);
   const now = Date.now() / 1000;
