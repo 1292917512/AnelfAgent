@@ -41,7 +41,7 @@ def _isolated(monkeypatch: pytest.MonkeyPatch):
     )
     monkeypatch.setattr(
         output_tools, "_resolve_send_target",
-        lambda _cid, _tid: ("1292917512", "private"),
+        lambda _cid, _tid: ("1292917512", "private", ""),
     )
     monkeypatch.setattr(output_tools, "_get_channel", lambda _ak: None)
 
@@ -61,7 +61,7 @@ class _Channel:
 async def _send(content: str = "hello", *, record_content: str = "") -> tuple[str, _Channel]:
     channel = _Channel()
 
-    async def _invoke(_ch, target_id: str, channel_type: str):
+    async def _invoke(_ch, target_id: str, channel_type: str, session: str):
         return await channel.send_text(target_id, content, channel_type=channel_type)
 
     result = await execute_send_action(

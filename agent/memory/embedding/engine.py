@@ -37,6 +37,10 @@ from .usage import record_embedding_call
 
 _ENGINE_CONFIGS = {
     "memory/embedding": {
+        "embed_request_concurrency": {
+            "description": "同域向量请求并发上限；1 适合串行端点，云端支持并发时可设 2，为交互查询预留容量；后台最多一个请求",
+            "default": 1, "min": 1, "max": 8, "advanced": True,
+        },
         "embed_query_timeout_seconds": {
             "description": "交互式 embedding（召回查询等单条调用）超时，超时降级为 FTS-only",
             "default": 15.0,
@@ -88,7 +92,7 @@ register_configs_safe(_ENGINE_CONFIGS)
 
 
 class _PriorityGate:
-    """端点访问门：同一时刻只允许一个 in-flight 调用，交互式查询优先于批量。
+    """有界端点访问门：查询优先，后台单飞，并发容量允许时为查询留位。
 
     低速端点服务端本身串行处理，若客户端不做调度，查询会排在批量任务
     之后超时；此门保证查询最多等待一个进行中的调用。
@@ -96,25 +100,36 @@ class _PriorityGate:
 
     def __init__(self) -> None:
         self._cond = asyncio.Condition()
-        self._in_flight = False
+        self._in_flight = 0
+        self._background = 0
         self._waiting_queries = 0
+        self._keys: set[str] = set()
 
-    async def acquire(self, *, priority: bool) -> None:
+    async def acquire(self, *, priority: bool, key: str = "") -> None:
         async with self._cond:
             if priority:
                 self._waiting_queries += 1
             try:
+                capacity = max(1, min(8, get_config_int("embed_request_concurrency", 1)))
                 await self._cond.wait_for(
-                    lambda: not self._in_flight and (priority or self._waiting_queries == 0)
+                    lambda: self._in_flight < (capacity if priority else max(1, capacity - 1))
+                    and (priority or self._background == 0 and self._waiting_queries == 0)
+                    and (not key or key not in self._keys)
                 )
-                self._in_flight = True
+                self._in_flight += 1
+                self._background += int(not priority)
+                if key:
+                    self._keys.add(key)
             finally:
                 if priority:
                     self._waiting_queries -= 1
+                self._cond.notify_all()
 
-    async def release(self) -> None:
+    async def release(self, *, priority: bool, key: str = "") -> None:
         async with self._cond:
-            self._in_flight = False
+            self._in_flight -= 1
+            self._background -= int(not priority)
+            self._keys.discard(key)
             self._cond.notify_all()
 
 
@@ -348,8 +363,8 @@ class Embedder:
         multimodal: bool = False,
         query_key: str = "",
     ) -> list[list[float]]:
-        """经优先级门调度后执行 API 调用（查询优先于批量，单飞串行）。"""
-        await self._gate.acquire(priority=priority)
+        """经有界优先级门执行 API 调用；缓存复核防止重复请求。"""
+        await self._gate.acquire(priority=priority, key=query_key)
         try:
             cache = self._query_cache
             if query_key:
@@ -363,7 +378,7 @@ class Embedder:
                 self._cache_put(query_key, results[0])
             return results
         finally:
-            await self._gate.release()
+            await self._gate.release(priority=priority, key=query_key)
 
     async def probe(self) -> bool:
         """故障恢复探测（后台 worker 调用）：单条试嵌，成功则恢复可用状态。"""

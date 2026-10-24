@@ -188,7 +188,7 @@ class TestSpeakerTagging:
         monkeypatch.setattr(ac, "gather_dedup_candidates", fake_gather)
         monkeypatch.setattr(ac, "judge_write", fake_judge)
 
-        pipeline = ac.AutoCapturePipeline(SimpleNamespace(memory_store=store, embedder=None))
+        pipeline = ac.AutoCapturePipeline(SimpleNamespace(memory_store=store, embedder=None), _FakeSqlite([]))
         monkeypatch.setattr(ac, "get_config_bool", lambda key, default=True: False)
         ts = int(time.time() * 10**9)
         messages = [
@@ -248,7 +248,7 @@ class TestSpeakerTagging:
         monkeypatch.setattr(ac, "gather_dedup_candidates", fake_gather)
         monkeypatch.setattr(ac, "judge_write", fake_judge)
 
-        pipeline = ac.AutoCapturePipeline(SimpleNamespace(memory_store=store, embedder=None))
+        pipeline = ac.AutoCapturePipeline(SimpleNamespace(memory_store=store, embedder=None), _FakeSqlite([]))
         monkeypatch.setattr(ac, "get_config_bool", lambda key, default=True: False)
         messages = [
             {"id": 1, "role": "user", "ts_ns": int(time.time() * 10**9),
@@ -267,7 +267,7 @@ def capture(store, monkeypatch):
     monkeypatch.setattr(ac, "get_config_bool", lambda key, default=True: False)
     monkeypatch.setattr(ac, "gather_dedup_candidates", AsyncMock(return_value=[]))
     monkeypatch.setattr(ac, "judge_write", AsyncMock(return_value={"action": "store"}))
-    return ac, ac.AutoCapturePipeline(SimpleNamespace(memory_store=store, embedder=None))
+    return ac, ac.AutoCapturePipeline(SimpleNamespace(memory_store=store, embedder=None), _FakeSqlite([]))
 
 
 def _rows(count):
@@ -289,15 +289,11 @@ async def test_capture_resumes_persisted_conversations_with_scope_budget(
     from agent.memory.capture_state import CaptureState
     from core.config import ConfigManager
 
-    monkeypatch.setattr(
-        "agent.runtime.singleton.require_runtime",
-        lambda: SimpleNamespace(data_center=SimpleNamespace(sqlite=sqlite)),
-    )
     llm = AsyncMock(return_value="[]")
     monkeypatch.setattr(ac, "light_llm", llm)
     ConfigManager.set("memory_auto_capture_max_scopes", 1)
     ConfigManager.set("memory_auto_capture_extract_relations", False)
-    pipeline = ac.AutoCapturePipeline(SimpleNamespace(memory_store=store, embedder=None))
+    pipeline = ac.AutoCapturePipeline(SimpleNamespace(memory_store=store, embedder=None), sqlite)
     for scope_id in ("webui:a", "webui:b"):
         await pipeline._journal.save(f"user:{scope_id}", CaptureState(warmup_threshold=5))
         await sqlite.append_conversation(
@@ -356,7 +352,7 @@ async def test_restart_resumes_saved_items_without_duplicate_write(capture, stor
     monkeypatch.setattr(store, "add", failing_add)
     assert await _process(pipeline, _rows(1)) is CaptureOutcome.FAILED
     await store.close()
-    restarted = ac.AutoCapturePipeline(SimpleNamespace(memory_store=store, embedder=None))
+    restarted = ac.AutoCapturePipeline(SimpleNamespace(memory_store=store, embedder=None), _FakeSqlite([]))
     assert await _process(restarted, _rows(1)) is CaptureOutcome.COMPLETED
     entries = await store.list_recent(limit=10)
     assert sorted(e.content for e in entries) == sorted(["第一条完整事实", "第二条完整事实"])
@@ -369,7 +365,7 @@ async def test_invalid_output_is_bounded_across_restart_and_new_arrivals(capture
     monkeypatch.setattr(ac, "light_llm", AsyncMock(return_value="invalid"))
     assert await _process(pipeline, _rows(1)) is CaptureOutcome.FAILED
     for attempt in range(2, ac._MAX_BATCH_FAILURES + 1):
-        pipeline = ac.AutoCapturePipeline(SimpleNamespace(memory_store=store, embedder=None))
+        pipeline = ac.AutoCapturePipeline(SimpleNamespace(memory_store=store, embedder=None), _FakeSqlite([]))
         assert await _process(pipeline, _rows(2)) is CaptureOutcome.FAILED
         state = await pipeline._journal.load("user:qq:123")
         assert state.last_msg_id == (1 if attempt == ac._MAX_BATCH_FAILURES else 0)
@@ -409,7 +405,7 @@ async def test_cancel_after_write_recovers_without_extracting_again(capture, sto
         await _process(pipeline, _rows(1))
     state = await pipeline._journal.load("user:qq:123")
     assert state.batch.failures == 0 and state.last_msg_id == 0
-    restarted = ac.AutoCapturePipeline(SimpleNamespace(memory_store=store, embedder=None))
+    restarted = ac.AutoCapturePipeline(SimpleNamespace(memory_store=store, embedder=None), _FakeSqlite([]))
     assert await _process(restarted, _rows(1)) is CaptureOutcome.COMPLETED
     assert len(await store.list_recent(limit=10)) == 1
     assert llm.await_count == 1
@@ -447,7 +443,117 @@ async def test_duplicate_receipt_survives_checkpoint_failure(capture, store, mon
 
     monkeypatch.setattr(ac, "retain_duplicate_origin", failed_checkpoint)
     assert await _process(pipeline, _rows(1)) is CaptureOutcome.FAILED
-    assert await _process(ac.AutoCapturePipeline(SimpleNamespace(memory_store=store, embedder=None)),
+    assert await _process(ac.AutoCapturePipeline(SimpleNamespace(memory_store=store, embedder=None), _FakeSqlite([])),
                           _rows(1)) is CaptureOutcome.COMPLETED
     assert len(await store.list_recent(limit=10)) == 1
     assert judge.await_count == 1
+
+
+@pytest.mark.parametrize("restart", [False, True])
+async def test_capture_yields_after_durable_item_and_foreground_flush_can_resume(capture, store, monkeypatch, restart):
+    ac, pipeline = capture
+    llm = AsyncMock(return_value='[{"content":"第一条完整事实"},{"content":"第二条完整事实"}]')
+    monkeypatch.setattr(ac, "light_llm", llm)
+    waiting = False
+    store_item = pipeline._store_item
+
+    async def item(*args):
+        nonlocal waiting
+        result = await store_item(*args)
+        waiting = True
+        return result
+
+    monkeypatch.setattr(pipeline, "_store_item", item)
+    outcome = await pipeline._process_scope(_FakeSqlite(_rows(1)), "user", "qq:123", every_n=5,
+                                             idle_seconds=0, now=time.time(), should_yield=lambda: waiting)
+    assert outcome is CaptureOutcome.YIELDED
+    assert not pipeline._scope_locks["user:qq:123"].locked()
+    state = await pipeline._journal.load("user:qq:123")
+    assert state.last_msg_id == 0 and state.batch.next_item == 1 and state.batch.failures == 0
+    if restart:
+        await store.close()
+        pipeline = ac.AutoCapturePipeline(SimpleNamespace(memory_store=store, embedder=None), _FakeSqlite([]))
+    assert await _process(pipeline, _rows(1)) is CaptureOutcome.COMPLETED
+    assert await _process(pipeline, _rows(1)) is CaptureOutcome.IDLE
+    assert sorted(e.content for e in await store.list_recent(limit=10)) == ["第一条完整事实", "第二条完整事实"]
+    assert llm.await_count == 1
+
+
+async def test_capture_makes_durable_progress_even_when_messages_keep_waiting(capture, monkeypatch):
+    ac, pipeline = capture
+    llm = AsyncMock(return_value='[{"content":"第一条完整事实"},{"content":"第二条完整事实"}]')
+    monkeypatch.setattr(ac, "light_llm", llm)
+    outcomes = []
+    for _ in range(6):
+        outcome = await pipeline._process_scope(_FakeSqlite(_rows(1)), "user", "qq:123", every_n=5,
+                                                 idle_seconds=0, now=time.time(), should_yield=lambda: True)
+        outcomes.append(outcome)
+        if outcome is CaptureOutcome.COMPLETED:
+            break
+    assert outcomes[-1] is CaptureOutcome.COMPLETED
+    assert llm.await_count == 1
+    assert (await pipeline._journal.load("user:qq:123")).last_msg_id == 1
+
+
+async def test_capture_scan_rotates_across_channels_with_continuous_new_messages(store, sqlite, monkeypatch):
+    import agent.memory.auto_capture as ac
+    from core.config import ConfigManager
+    monkeypatch.setattr(ac, "get_config_bool", lambda key, default=True: key == "memory_auto_capture_enabled")
+    monkeypatch.setattr(ac, "light_llm", AsyncMock(return_value="[]"))
+    ConfigManager.set("memory_auto_capture_max_scopes", 1)
+    pipeline = ac.AutoCapturePipeline(SimpleNamespace(memory_store=store, embedder=None), sqlite)
+    for scope in ("qq:42", "telegram:42"):
+        await sqlite.append_conversation(scope_type="user", scope_id=scope, role="user",
+                                         content="请记住这项长期约定", ts_ns=1)
+    await pipeline.run()
+    await sqlite.append_conversation(scope_type="user", scope_id="qq:42", role="user",
+                                     content="还有一项新的长期约定", ts_ns=2)
+    await pipeline.run()
+    states = [await pipeline._journal.load("user:" + scope) for scope in ("qq:42", "telegram:42")]
+    assert all(state.last_msg_id > 0 for state in states)
+
+
+async def test_foreground_flush_and_new_arrival_during_yield_resume_one_journal(store, sqlite, monkeypatch):
+    import agent.memory.auto_capture as ac
+    from agent.memory.capture_state import CaptureItem
+
+    monkeypatch.setattr(ac, "get_config_bool", lambda key, default=True: key == "memory_auto_capture_enabled")
+    monkeypatch.setattr(ac, "gather_dedup_candidates", AsyncMock(return_value=[]))
+    monkeypatch.setattr(ac, "judge_write", AsyncMock(return_value={"action": "store"}))
+    pipeline = ac.AutoCapturePipeline(SimpleNamespace(memory_store=store, embedder=None), sqlite)
+    extraction = AsyncMock(side_effect=[
+        [CaptureItem(content="first fact"), CaptureItem(content="second fact")],
+        [CaptureItem(content="new fact during reply")],
+    ])
+    monkeypatch.setattr(pipeline, "_extract", extraction)
+    waiting = False
+    flushed = False
+    store_item = pipeline._store_item
+
+    async def item(*args):
+        nonlocal waiting
+        result = await store_item(*args)
+        if not flushed:
+            waiting = True
+        return result
+
+    async def checkpoint():
+        nonlocal waiting, flushed
+        if not waiting:
+            return
+        assert not pipeline._scope_locks["user:arbitrary:shared#window"].locked()
+        flushed = True
+        assert await pipeline._process_scope(sqlite, "user", "arbitrary:shared#window", every_n=5,
+                                               idle_seconds=0, now=time.time()) is CaptureOutcome.COMPLETED
+        await sqlite.append_conversation(scope_type="user", scope_id="arbitrary:shared#window", role="user",
+                                         content="new meaningful instruction received during reply", ts_ns=2)
+        waiting = False
+
+    monkeypatch.setattr(pipeline, "_store_item", item)
+    await sqlite.append_conversation(scope_type="user", scope_id="arbitrary:shared#window", role="user",
+                                     content="original meaningful instruction", ts_ns=1)
+    await pipeline.run(checkpoint=checkpoint, should_yield=lambda: waiting)
+    assert flushed and extraction.await_count == 2
+    assert sorted(e.content for e in await store.list_recent(limit=10)) == ["first fact", "new fact during reply", "second fact"]
+    state = await pipeline._journal.load("user:arbitrary:shared#window")
+    assert state.batch is None and state.last_msg_id == 2

@@ -42,7 +42,7 @@ class _LayerEntry:
     content_hash: str = ""
     content: str = ""
     # 引用本条目的 scope 集合（按 scope 失效与观测用）
-    scopes: set = field(default_factory=set)
+    scopes: OrderedDict[str, None] = field(default_factory=OrderedDict)
 
 
 class PromptCacheManager:
@@ -88,17 +88,25 @@ class PromptCacheManager:
         if entry is not None:
             # LRU: 访问时移到末尾
             self._entries.move_to_end(key)
-            entry.scopes.add(scope)
+            entry.scopes[scope] = None
+            entry.scopes.move_to_end(scope)
+            if len(entry.scopes) > _MAX_CACHED_ENTRIES:
+                entry.scopes.popitem(last=False)
             self.hits += 1
             return entry.content, True
 
         content = builder()
         self._entries[key] = _LayerEntry(
-            content_hash=content_hash, content=content, scopes={scope},
+            content_hash=content_hash, content=content, scopes=OrderedDict.fromkeys([scope]),
         )
         self._evict_if_needed()
         self.misses += 1
         return content, False
+
+    def release_scope(self, scope: str) -> None:
+        """释放结束会话的引用，保留可供其他会话复用的不可变内容。"""
+        for entry in self._entries.values():
+            entry.scopes.pop(scope, None)
 
     def invalidate(self, scope: str = "", layer: Optional[str] = None) -> None:
         """使缓存失效。

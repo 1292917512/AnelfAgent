@@ -14,6 +14,8 @@ from core.log import log
 from core.sqlite_utils import required_row
 from core.tags import etag_all, get_time_tag, tag_label
 
+from .conversation_search import ConversationSearch
+
 # 连接健康检查节流间隔（秒）：避免每次 _get_db 都执行 SELECT 1
 _HEALTH_CHECK_INTERVAL = 30.0
 _LIVE_SCOPES = 128
@@ -99,6 +101,7 @@ class SqliteBackend:
         self._conversation_windows: OrderedDict[tuple[str, str], _ConversationWindow] = OrderedDict()
         self._conversation_generation = 0
         self._last_health_check = 0.0
+        self._search = ConversationSearch(self._get_db)
         self._register_embedding_backlog()
 
     def _register_embedding_backlog(self) -> None:
@@ -1615,59 +1618,9 @@ class SqliteBackend:
         min_score: float = 0.25,
         scan_limit: int = 500,
     ) -> list[dict]:
-        """向量语义搜索历史对话（跳过最近 skip_recent 条避免与上下文窗口重叠）。
-
-        返回列表按相关度降序排列，每项包含 id / role / content / ts_ns / score。
-        """
-        db = await self._get_db()
-
-        # 计算时间截断点：第 skip_recent 条的 ts_ns
-        cutoff_cursor = await db.execute(
-            "SELECT ts_ns FROM conversation_messages "
-            "WHERE scope_type=? AND scope_id=? ORDER BY ts_ns DESC LIMIT 1 OFFSET ?",
-            (scope_type, scope_id, skip_recent),
-        )
-        cutoff_row = await cutoff_cursor.fetchone()
-        if not cutoff_row:
-            return []  # 历史消息不足 skip_recent 条，无需深度检索
-        cutoff_ts: int = cutoff_row[0]
-
-        # 加载截断点之前有 embedding 的消息（scan_limit 防止内存压力）
-        rows_cursor = await db.execute(
-            "SELECT id, role, content, ts_ns, embedding_blob FROM conversation_messages "
-            "WHERE scope_type=? AND scope_id=? AND ts_ns<=? AND embedding_blob IS NOT NULL "
-            "AND role IN ('user','assistant') ORDER BY ts_ns DESC LIMIT ?",
-            (scope_type, scope_id, cutoff_ts, scan_limit),
-        )
-        rows = await rows_cursor.fetchall()
-        if not rows:
-            return []
-
-        from agent.memory.memory_utils import cosine_similarity, unpack_embedding
-
-        def _score_rows() -> list[dict]:
-            # 纯 Python 余弦（500×1024 维约 50 万次乘加）：在 worker 线程执行，
-            # 避免阻塞事件循环
-            scored: list[dict] = []
-            for row in rows:
-                try:
-                    vec = unpack_embedding(row[4])
-                    score = cosine_similarity(query_vec, vec)
-                    if score >= min_score:
-                        scored.append({
-                            "id": row[0],
-                            "role": row[1],
-                            "content": row[2],
-                            "ts_ns": row[3],
-                            "score": score,
-                        })
-                except Exception as e:
-                    log(f"对话向量解析失败 (id={row[0]}): {e}", "DEBUG")
-                    continue
-            scored.sort(key=lambda x: x["score"], reverse=True)
-            return scored[:limit]
-
-        return await asyncio.to_thread(_score_rows)
+        """按原窗口语义检索对话向量；评分与证据筛选由检索子模块负责。"""
+        return await self._search.search_vector(scope_type, scope_id, query_vec, limit=limit,
+                                                skip_recent=skip_recent, min_score=min_score, scan_limit=scan_limit)
 
     async def search_conversation_keyword(
         self,
@@ -1678,36 +1631,8 @@ class SqliteBackend:
         limit: int = 5,
         skip_recent: int = 30,
     ) -> list[dict]:
-        """关键词搜索历史对话（无 embedding 时的 fallback）。"""
-        if not keywords:
-            return []
-        db = await self._get_db()
-
-        cutoff_cursor = await db.execute(
-            "SELECT ts_ns FROM conversation_messages "
-            "WHERE scope_type=? AND scope_id=? ORDER BY ts_ns DESC LIMIT 1 OFFSET ?",
-            (scope_type, scope_id, skip_recent),
-        )
-        cutoff_row = await cutoff_cursor.fetchone()
-        if not cutoff_row:
-            return []
-        cutoff_ts: int = cutoff_row[0]
-
-        like_clauses = " AND ".join("content LIKE ?" for _ in keywords)
-        like_params = [f"%{kw}%" for kw in keywords]
-
-        rows_cursor = await db.execute(
-            f"SELECT id, role, content, ts_ns FROM conversation_messages "
-            f"WHERE scope_type=? AND scope_id=? AND ts_ns<=? "
-            f"AND role IN ('user','assistant') AND {like_clauses} "
-            f"ORDER BY ts_ns DESC LIMIT ?",
-            (scope_type, scope_id, cutoff_ts, *like_params, limit),
-        )
-        rows = await rows_cursor.fetchall()
-        return [
-            {"id": r[0], "role": r[1], "content": r[2], "ts_ns": r[3], "score": 0.0}
-            for r in rows
-        ]
+        """在指定会话的历史范围内执行关键词兜底检索。"""
+        return await self._search.search_keyword(scope_type, scope_id, keywords, limit=limit, skip_recent=skip_recent)
 
     async def delete_conversation_by_id(self, row_id: int) -> None:
         """按 id 删除单条会话记录。"""

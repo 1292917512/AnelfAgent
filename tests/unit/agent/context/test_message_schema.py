@@ -453,3 +453,14 @@ def test_sensitive_result_marker_is_internal_and_does_not_change_model_content()
     assert sent[1]["content"] == messages[1]["content"]
     assert "_sensitive_result" not in sent[1]
     assert messages[1]["_sensitive_result"] is True
+
+
+def test_pair_diagnostics_preserve_order_and_require_later_results():
+    from agent.context.message_schema import orphan_tool_call_ids
+    messages = [
+        {"role": "tool", "tool_call_id": "earlier"},
+        {"role": "assistant", "tool_calls": [{"id": "earlier"}, {"id": "good"}, {"id": "missing"}, {"id": ""}]},
+        {"role": "tool", "tool_call_id": "good"},
+        {"role": "assistant", "tool_calls": [{"id": "later"}]},
+    ]
+    assert orphan_tool_call_ids(messages) == ["earlier", "missing", "later"]

@@ -275,6 +275,31 @@ class TestSwitchSession:
         finally:
             mind_port.unbind()
 
+    async def test_repeated_handoff_preserves_pending_message_and_notification_watermark(self, monkeypatch) -> None:
+        from agent.mind.tools import session_tools
+        from core.conversation_scope import bind_scope, reset_scope
+
+        pfc = _pfc()
+        append = AsyncMock(return_value=True)
+        monkeypatch.setattr(pfc, "append_notification", append)
+        mind = SimpleNamespace(pfc=pfc, _active_scopes=set(), driver=SimpleNamespace(request_cycle=MagicMock()))
+        mind_port.set(mind)
+        token = bind_scope("user_webui:shared#origin")
+        try:
+            first = json.loads(await session_tools.switch_session("user_webui:shared#target"))
+            signal = pfc.get_pending_signal("user_webui:shared#target")
+            assert signal is not None
+            timestamp = signal.created_ts_ns
+            second = json.loads(await session_tools.switch_session("user_webui:shared#target"))
+            assert first["status"] == second["status"] == "queued"
+            assert second["current_scope"] == "user_webui:shared#origin"
+            assert list(pfc.pending_user.queue) == ["user_webui:shared#target"]
+            assert pfc.get_pending_signal("user_webui:shared#target").created_ts_ns == timestamp
+            append.assert_awaited_once()
+        finally:
+            reset_scope(token)
+            mind_port.unbind()
+
     async def test_switch_unknown_scope_rejected(self) -> None:
         from agent.mind.tools import session_tools
 
@@ -311,3 +336,24 @@ class TestSwitchSession:
             assert entry["channel"] == "webui"
         finally:
             mind_port.unbind()
+
+
+def test_internal_session_releases_observation_state_even_on_failure():
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    import pytest
+
+    from agent.context.prefix_guard import prefix_guard
+    from agent.context.prompt_layers import prompt_cache_manager
+    from agent.mind.think_session import think_session
+
+    scope = "reflect:disposable-cache-test"
+    messages = [{"role": "system", "content": "stable", "_layer": "stable"}]
+    with pytest.raises(RuntimeError, match="interrupted"):
+        with think_session(SimpleNamespace(clear_dynamic_tools=Mock()), scope, with_token=False):
+            prefix_guard.check(scope, messages, kind="reflect")
+            prompt_cache_manager.get_or_build(scope, "stable", "transient-test", lambda: "stable")
+            raise RuntimeError("interrupted")
+    assert (scope, "reflect") not in prefix_guard._chains
+    assert all(scope not in entry.scopes for entry in prompt_cache_manager._entries.values())

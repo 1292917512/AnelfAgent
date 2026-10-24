@@ -208,17 +208,8 @@ class ModelInvoker:
         messages = normalize_for_send(messages)
 
         # 配对自检（诊断用，命中即 WARNING）：assistant(tool_calls) 缺 tool 响应的 id
-        _orphan_ids = []
-        for _i, _m in enumerate(messages):
-            if _m.get("role") == "assistant" and _m.get("tool_calls"):
-                _ids = [tc.get("id") for tc in _m["tool_calls"] if isinstance(tc, dict)]
-                _results = {
-                    m2.get("tool_call_id") for m2 in messages[_i+1:]
-                    if m2.get("role") == "tool"
-                }
-                for _tid in _ids:
-                    if _tid and _tid not in _results:
-                        _orphan_ids.append(_tid)
+        from agent.context.message_schema import orphan_tool_call_ids
+        _orphan_ids = orphan_tool_call_ids(messages)
         if _orphan_ids:
             log(f"配对自检失败：assistant tool_calls 缺响应 {_orphan_ids}", "WARNING", tag="思维")
             # 打印最近 5 条消息形态

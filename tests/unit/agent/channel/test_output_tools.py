@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 import agent.channel.output_tools as output_tools
@@ -68,7 +70,7 @@ class TestResolveSendTarget:
         monkeypatch.setattr(
             output_tools, "_resolve_channel_type", lambda _cid, _tid: "private",
         )
-        final_id, channel_type = _resolve_send_target("qq", 1292917512)  # type: ignore[arg-type]
+        final_id, channel_type, session = _resolve_send_target("qq", 1292917512)  # type: ignore[arg-type]
         assert final_id == "1292917512"
         assert channel_type == "private"
 
@@ -76,7 +78,7 @@ class TestResolveSendTarget:
         monkeypatch.setattr(
             output_tools, "_resolve_channel_type", lambda _cid, _tid: "private",
         )
-        final_id, channel_type = _resolve_send_target("qq", "group:1104224649")
+        final_id, channel_type, session = _resolve_send_target("qq", "group:1104224649")
         assert final_id == "1104224649"
         assert channel_type == "group"
 
@@ -219,3 +221,59 @@ async def test_text_uses_same_pipeline_and_live_history(sqlite, monkeypatch, sco
     review.assert_not_awaited()
     rows = await sqlite.fetch_live_conversation(scope_type=scope_type, scope_id=scope_id, limit=10)
     assert [(row["role"], row["content"]) for row in rows] == [("user", "问题"), ("assistant", "答案[at_uid:1]")]
+
+
+@pytest.mark.parametrize("tool", ["send_message", "send_photo", "send_voice", "send_file", "bridge"])
+@pytest.mark.parametrize("target", ["user_webui:shared#target", "webui:shared#target", "shared#target"])
+async def test_explicit_subsession_routes_delivery_and_history_together(monkeypatch, tool, target):
+    import json
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from agent.channel import manager, tool_bridge
+    from agent.channel.channel_types import ChannelStatus
+    from core.conversation_scope import bind_scope, reset_scope
+    from core.tags import etag_all
+
+    router = _FakeRouter()
+    send = AsyncMock(return_value={"success": True})
+    channel = SimpleNamespace(status=ChannelStatus.RUNNING, send_text=send, send_photo=send,
+                              send_voice=send, send_file=send, conversation_scope_for_target=lambda *_: None)
+    monkeypatch.setattr(output_tools, "_get_channel", lambda _: channel)
+    monkeypatch.setattr(manager, "get_channel_manager", lambda: SimpleNamespace(list_channels=lambda: {"webui": channel}))
+    monkeypatch.setattr(output_tools, "_resolve_channel_type", lambda *_: "private")
+    monkeypatch.setattr(output_tools, "guard_empty_conversation", AsyncMock(return_value=""))
+    monkeypatch.setattr(output_tools, "guard_outbound", lambda *_: "")
+    monkeypatch.setattr(output_tools, "_speak_if_on_call", AsyncMock(return_value=""))
+    monkeypatch.setattr(output_tools, "conversation_data_port", _FakePort(router))
+    token = bind_scope("user_webui:shared#origin")
+    try:
+        if tool == "bridge":
+            async def bound(chat_id: str, content: str, **kwargs):
+                return await send(chat_id, content, **kwargs)
+            raw = await tool_bridge._run_outbound("webui", "send_text", bound, {"target_id": target, "content": "answer"})
+        else:
+            raw = await getattr(output_tools, tool)("webui", target, "answer")
+    finally:
+        reset_scope(token)
+    result = json.loads(raw)
+    assert result["success"] is True
+    assert dict(etag_all(result["delivery"]))["delivery_scope"] == "user_webui:shared#target"
+    assert send.await_args.args[0] == "shared"
+    assert send.await_args.kwargs["session_id"] == "target"
+    assert router.appended[0]["scope_id"] == "webui:shared#target"
+
+
+@pytest.mark.parametrize("channel,target,session", [
+    ("qq", "user_webui:shared#target", ""),
+    ("webui", "user_webui:shared#target", "conflict"),
+])
+async def test_conflicting_explicit_address_rejected_before_delivery(monkeypatch, channel, target, session):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    send = AsyncMock(return_value={"success": True})
+    monkeypatch.setattr(output_tools, "_validate_channel", lambda _: (SimpleNamespace(send_text=send), None))
+    result = json.loads(await output_tools.send_text_to_channel(channel, target, "answer", session_id=session))
+    assert result["success"] is False
+    send.assert_not_awaited()

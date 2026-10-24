@@ -325,3 +325,47 @@ class TestOrphanSafeReset:
         assert reloaded.task_schedules[0].beat_count == 0
         assert schedules[0].beat_count == 1
 
+
+
+@pytest.mark.parametrize("change", ["disable", "delete", "keep"])
+async def test_driver_rechecks_queued_task_definition_after_running_task(change, monkeypatch):
+    import asyncio
+    from unittest.mock import Mock
+
+    from agent.mind.driver import MindDriver
+
+    tasks = {name: _task(name) for name in ("running", "queued")}
+    engine = _make_engine([], tasks, monkeypatch)
+    mind = engine.mind
+    mind.heartbeat_engine = engine
+    mind._reset_phase_if_idle = Mock()
+    mind._autonomous_cycle = AsyncMock()
+    mind.driver = MindDriver(mind)
+    entered, release = asyncio.Event(), asyncio.Event()
+    executed = []
+
+    async def run(task, entity, **kwargs):
+        executed.append(task.name)
+        if task.name == "running":
+            entered.set()
+            await release.wait()
+        return _result(task.name)
+
+    engine.executor.run.side_effect = run
+    first = mind.driver.submit_task("running")[2]
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        second = mind.driver.submit_task("queued")[2]
+        if change == "disable":
+            tasks["queued"].enabled = False
+        elif change == "delete":
+            del tasks["queued"]
+        release.set()
+        assert await asyncio.wait_for(first, 2) == "产出"
+        assert await asyncio.wait_for(second, 2) == ("产出" if change == "keep" else None)
+        await mind.driver.when_idle()
+        assert executed == (["running", "queued"] if change == "keep" else ["running"])
+        assert not engine._task_inflight
+    finally:
+        release.set()
+        await mind.driver.close()

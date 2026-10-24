@@ -55,6 +55,7 @@ class MindDriver:
         self._running = False
         self._current_work = ""
         self._closed = False
+        self._interleaved_cycle = False
 
     # ------------------------------------------------------------------
     # 只读状态
@@ -234,8 +235,10 @@ class MindDriver:
             elif request is not None:
                 await self._run_task(request)
             elif work == "heartbeat":
-                await self._mind.heartbeat_engine.tick()
-                if self._cycle_requested:
+                self._interleaved_cycle = False
+                await self._mind.heartbeat_engine.tick(
+                    checkpoint=self._maintenance_checkpoint, should_yield=self._user_waiting)
+                if self._cycle_requested or self._interleaved_cycle:
                     log("心跳任务已收束，先处理新消息；自主决策留待后续周期", "DEBUG", tag="思维")
                 else:
                     await self._mind._autonomous_cycle(is_heartbeat=True)
@@ -256,7 +259,9 @@ class MindDriver:
 
     async def _run_tick(self) -> None:
         try:
-            executed = await self._mind.heartbeat_engine.tick()
+            self._interleaved_cycle = False
+            executed = await self._mind.heartbeat_engine.tick(
+                checkpoint=self._maintenance_checkpoint, should_yield=self._user_waiting)
         except asyncio.CancelledError:
             for future in self._tick_waiters:
                 if not future.done():
@@ -291,3 +296,27 @@ class MindDriver:
             result = None
         if not request.future.done():
             request.future.set_result(result)
+
+    def _user_waiting(self) -> bool:
+        return self._cycle_requested
+
+    async def _maintenance_checkpoint(self) -> None:
+        """安全边界内串行处理一次新消息，随后从当前维护阶段继续。"""
+        if self._closed:
+            raise asyncio.CancelledError
+        if not self._cycle_requested:
+            return
+        self._cycle_requested = False
+        self._interleaved_cycle = True
+        previous = self._current_work
+        self._current_work = "cycle"
+        try:
+            await self._mind._autonomous_cycle(is_heartbeat=False)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log(f"维护让路期间用户周期异常: {exc}", "WARNING", tag="思维")
+            if self._mind.pfc.has_pending_tasks() or self._mind.pfc.pending_analysis:
+                self._mind._schedule_next_cycle("用户周期异常后仍有待办", backoff=True)
+        finally:
+            self._current_work = previous

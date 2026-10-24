@@ -407,9 +407,11 @@ async def send_sticker(
 
     from entities._sdk import execute_send_action
 
-    async def _invoke(ch: Any, resolved_target_id: str, channel_type: str) -> Any:
-        return await ch.send_photo(
-            resolved_target_id, file_path, caption=caption, channel_type=channel_type)
+    async def _invoke(ch: Any, resolved_target_id: str, channel_type: str, session_id: str) -> Any:
+        kwargs: dict[str, Any] = {"caption": caption, "channel_type": channel_type}
+        if session_id:
+            kwargs["session_id"] = session_id
+        return await ch.send_photo(resolved_target_id, file_path, **kwargs)
 
     def _enrich(parsed: dict, ok: bool) -> None:
         parsed["sticker_id"] = sticker_id

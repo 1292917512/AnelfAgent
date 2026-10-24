@@ -1,4 +1,4 @@
-"""批次观测：只在状态查询时读取 SDK，不创建后台任务或改变写入语义。
+"""批次观测：状态读取立即返回快照，SDK 观测任务由宿主收束，不改变写入语义。
 
 模型看到什么：状态工具按需返回进度，不主动注入对话。
 token 影响：查询时增加少量状态字段，不调用模型。
@@ -26,7 +26,8 @@ class ProjectionProgress:
         self._documents: dict[str, bool] | None = None
         self._started = self._stage_started = self._changed = 0.0
         self._read_after = 0.0
-        self._read_lock = asyncio.Lock()
+        self._read_task: asyncio.Task[None] | None = None
+        self._closed = False
 
     @contextmanager
     def batch(self, entries: list[dict[str, Any]]) -> Iterator[None]:
@@ -39,6 +40,7 @@ class ProjectionProgress:
         try:
             yield
         finally:
+            self._cancel_read()
             self._active = None
             self._dataset_id = ""
             self._documents = None
@@ -47,6 +49,7 @@ class ProjectionProgress:
               documents: dict[str, bool] | None = None) -> None:
         if self._active is None:
             return
+        self._cancel_read()
         # 用新对象隔离尚未完成的观测请求，避免上一阶段的响应污染下一阶段。
         self._active = self._active.model_copy(update={
             "stage": name, "dataset_name": dataset_name, "timeout_seconds": timeout,
@@ -89,35 +92,10 @@ class ProjectionProgress:
         self, read: Callable[..., Awaitable[CogneePipelineProgress]],
     ) -> CogneeBatchProgress | None:
         active = self._active
-        if active is None:
-            return None
-        if active.stage == "cognify" and self._dataset_id:
-            async with self._read_lock:
-                if active is self._active and time.monotonic() >= self._read_after:
-                    try:
-                        async with asyncio.timeout(3):
-                            pipeline = (await read(self._dataset_id, documents=self._documents)
-                                        if self._documents is not None else await read(self._dataset_id))
-                        if active is self._active:
-                            # SDK 当前阶段是聚合报告，不能解释为每篇文档都正在此阶段。
-                            changed = (pipeline.documents != active.documents if self._documents is not None
-                                       and pipeline.documents is not None else
-                                       self._documents is None and pipeline != active.pipeline)
-                            if changed:
-                                self._changed = time.monotonic()
-                                active.last_change_at = time.time()
-                            if pipeline.documents is not None:
-                                active.documents = pipeline.documents
-                                active.documents_checked_at = time.time()
-                            active.pipeline = pipeline
-                            active.progress_error = pipeline.observation_error
-                            active.progress_checked_at = time.time()
-                    except Exception as exc:
-                        if active is self._active:
-                            active.progress_error = error_text(exc)
-                    finally:
-                        if active is self._active:
-                            self._read_after = time.monotonic() + 2
+        if (not self._closed and active is not None and active.stage == "cognify" and self._dataset_id
+                and time.monotonic() >= self._read_after and (self._read_task is None or self._read_task.done())):
+            self._read_task = asyncio.create_task(self._refresh(read, active, self._dataset_id, self._documents),
+                                                 name="memory.cognee.observe")
         active = self._active
         if active is None:
             return None
@@ -127,3 +105,48 @@ class ProjectionProgress:
             "stage_elapsed_seconds": max(0, now - self._stage_started),
             "quiet_seconds": max(0, now - self._changed),
         })
+
+    async def _refresh(
+        self, read: Callable[..., Awaitable[CogneePipelineProgress]], active: CogneeBatchProgress,
+        dataset_id: str, documents: dict[str, bool] | None,
+    ) -> None:
+        try:
+            async with asyncio.timeout(3):
+                pipeline = (await read(dataset_id, documents=documents)
+                            if documents is not None else await read(dataset_id))
+            if active is self._active:
+                # SDK 当前阶段是聚合报告，不能解释为每篇文档都正在此阶段。
+                changed = (pipeline.documents != active.documents if self._documents is not None
+                           and pipeline.documents is not None else
+                           self._documents is None and pipeline != active.pipeline)
+                if changed:
+                    self._changed = time.monotonic()
+                    active.last_change_at = time.time()
+                if pipeline.documents is not None:
+                    active.documents = pipeline.documents
+                    active.documents_checked_at = time.time()
+                active.pipeline = pipeline
+                active.progress_error = pipeline.observation_error
+                active.progress_checked_at = time.time()
+        except Exception as exc:
+            if active is self._active:
+                active.progress_error = error_text(exc)
+        finally:
+            if active is self._active:
+                self._read_after = time.monotonic() + 2
+
+    def _cancel_read(self) -> None:
+        if self._read_task is not None and not self._read_task.done():
+            self._read_task.cancel()
+
+    def quiesce(self) -> None:
+        """停止受理观测；写入进度仍由宿主阶段更新。"""
+        self._closed = True
+        self._cancel_read()
+
+    async def close(self) -> None:
+        """宿主释放 RPC 进程前收束最后一个观测任务。"""
+        self.quiesce()
+        if self._read_task is not None:
+            await asyncio.gather(self._read_task, return_exceptions=True)
+            self._read_task = None

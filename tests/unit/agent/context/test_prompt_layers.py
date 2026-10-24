@@ -86,3 +86,15 @@ class TestPromptCacheManager:
         h2 = PromptCacheManager.compute_hash("a", "b")
         h3 = PromptCacheManager.compute_hash("a", "c")
         assert h1 == h2 and h1 != h3
+
+
+def test_scope_references_are_bounded_and_release_preserves_shared_bytes():
+    manager = PromptCacheManager()
+    for i in range(1000):
+        manager.get_or_build(str(i), LAYER_STABLE, "shared", lambda: "same bytes")
+    entry = next(iter(manager._entries.values()))
+    assert len(entry.scopes) <= 256 and "999" in entry.scopes
+    manager.release_scope("999")
+    assert "999" not in entry.scopes
+    manager.invalidate("999")
+    assert manager.get_or_build("other", LAYER_STABLE, "shared", lambda: "wrong") == ("same bytes", True)

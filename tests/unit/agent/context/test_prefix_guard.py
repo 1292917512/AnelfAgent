@@ -177,3 +177,16 @@ class TestPrefixGuardRobustness:
         assert stats["check_count"] == 2
         assert stats["drift_count"] == 1
         assert stats["tracked_scopes"] == 1
+
+
+def test_guard_bounds_cold_scopes_and_keeps_active_baseline():
+    guard = PrefixGuard()
+    messages = [{"role": "system", "content": "same", "_layer": "stable"}]
+    for i in range(2000):
+        guard.check(str(i), messages)
+        guard.check("active", messages)
+    assert guard.stats()["tracked_scopes"] <= guard._MAX_SCOPES
+    assert guard.check("active", [{**messages[0], "content": "changed"}]) is not None
+    guard.note_legal_break("finished", "compress")
+    guard.reset("finished")
+    assert guard.legal_break_reason("finished") is None

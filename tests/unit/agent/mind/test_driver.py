@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from itertools import permutations
 from types import MethodType, SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, Mock
@@ -83,7 +84,7 @@ async def test_heartbeat_yields_at_completed_tick_before_starting_another_model_
     mind = _fake_mind()
     entered, release = asyncio.Event(), asyncio.Event()
 
-    async def tick():
+    async def tick(**kwargs):
         entered.set()
         await release.wait()
         return ["completed maintenance"]
@@ -148,7 +149,7 @@ async def test_tick_waiters_share_one_inflight_tick(fails: bool) -> None:
     release = asyncio.Event()
     error = RuntimeError("tick failed")
 
-    async def _tick() -> list[str]:
+    async def _tick(**kwargs) -> list[str]:
         entered.set()
         await release.wait()
         if fails:
@@ -183,7 +184,7 @@ async def test_close_cancels_inflight_tick_waiters() -> None:
     mind = _fake_mind()
     entered = asyncio.Event()
 
-    async def _tick() -> list[str]:
+    async def _tick(**kwargs) -> list[str]:
         entered.set()
         await asyncio.Event().wait()
         return []
@@ -298,3 +299,344 @@ async def test_close_releases_running_and_queued_task_claims() -> None:
     assert running.cancelled()
     assert queued.cancelled()
     assert mind.heartbeat_engine.claimed == set()
+
+
+async def test_maintenance_checkpoint_services_messages_serially_and_preserves_merged_tick():
+    mind = _fake_mind()
+    entered, release = asyncio.Event(), asyncio.Event()
+    user_started, user_release = asyncio.Event(), asyncio.Event()
+    events = []
+
+    async def tick(*, checkpoint, should_yield):
+        events.append("maintenance_committed")
+        entered.set()
+        await release.wait()
+        assert should_yield()
+        await checkpoint()
+        events.append("maintenance_resumed")
+        return ["scheduled"]
+
+    async def cycle(*, is_heartbeat):
+        assert not is_heartbeat
+        assert mind.driver.current_work == "cycle"
+        events.append("user_started")
+        user_started.set()
+        await user_release.wait()
+        events.append("user_finished")
+
+    mind.heartbeat_engine.tick.side_effect = tick
+    mind._autonomous_cycle.side_effect = cycle
+    first = mind.driver.submit_tick()
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        mind.driver.request_cycle()
+        release.set()
+        await asyncio.wait_for(user_started.wait(), 2)
+        second = mind.driver.submit_tick()
+        assert events == ["maintenance_committed", "user_started"]
+        user_release.set()
+        assert await asyncio.wait_for(first, 2) == await asyncio.wait_for(second, 2) == ["scheduled"]
+        await mind.driver.when_idle()
+        assert events[-2:] == ["user_finished", "maintenance_resumed"]
+        mind.heartbeat_engine.tick.assert_awaited_once()
+        mind._autonomous_cycle.assert_awaited_once()
+    finally:
+        user_release.set()
+        release.set()
+        await mind.driver.close()
+
+
+async def test_multichannel_bursts_during_maintenance_are_never_lost_or_parallelized():
+    mind = _fake_mind()
+    scopes = [build_entity_scope("user", "qq", "42"), build_entity_scope("user", "telegram", "42"),
+              build_entity_scope("group", "feishu", "42"), build_entity_scope("user", "webui", "42", session_id="a")]
+    handled = []
+    active = 0
+
+    async def cycle(*, is_heartbeat):
+        nonlocal active
+        assert not is_heartbeat and active == 0
+        active += 1
+        try:
+            for queue in (mind.pfc.pending_user, mind.pfc.pending_group):
+                while not queue.is_empty():
+                    handled.append(queue.popleft())
+            await asyncio.sleep(0)
+        finally:
+            active -= 1
+
+    async def tick(*, checkpoint, should_yield):
+        for scope in scopes:
+            (mind.pfc.pending_group if scope.startswith("group_") else mind.pfc.pending_user).append(scope)
+            for _ in range(4):
+                mind.driver.request_cycle()
+            assert should_yield()
+            await checkpoint()
+            assert active == 0
+        return []
+
+    mind._autonomous_cycle.side_effect = cycle
+    mind.heartbeat_engine.tick.side_effect = tick
+    try:
+        mind.driver.request_cycle(is_heartbeat=True)
+        await asyncio.wait_for(mind.driver.when_idle(), 3)
+        assert handled == scopes and len(set(handled)) == 4
+        assert mind._autonomous_cycle.await_count == 4  # 心跳末尾不再补一次元决策。
+    finally:
+        await mind.driver.close()
+
+
+async def test_close_during_interleaved_reply_cancels_tick_without_resuming_writes():
+    mind = _fake_mind()
+    entered = asyncio.Event()
+    resumed = False
+
+    async def cycle(*, is_heartbeat):
+        entered.set()
+        await asyncio.Event().wait()
+
+    async def tick(*, checkpoint, should_yield):
+        nonlocal resumed
+        mind.driver.request_cycle()
+        await checkpoint()
+        resumed = True
+        return []
+
+    mind._autonomous_cycle.side_effect = cycle
+    mind.heartbeat_engine.tick.side_effect = tick
+    waiter = mind.driver.submit_tick()
+    await asyncio.wait_for(entered.wait(), 2)
+    await asyncio.wait_for(mind.driver.close(), 2)
+    assert waiter.cancelled() and not resumed
+
+
+@pytest.mark.parametrize("arrival_order", list(permutations(("message", "task", "tick"))))
+@pytest.mark.parametrize("task_fails", [False, True])
+async def test_task_in_flight_orders_mixed_arrivals_without_losing_claims(arrival_order, task_fails):
+    mind = _fake_mind()
+    entered, release = asyncio.Event(), asyncio.Event()
+    events: list[str] = []
+    active = 0
+    scopes = [build_entity_scope("user", adapter, "shared", "window") for adapter in ("first", "second")]
+
+    async def run(name, *, trigger):
+        nonlocal active
+        assert active == 0
+        active += 1
+        events.append(name)
+        try:
+            if name == "running":
+                entered.set()
+                await release.wait()
+                if task_fails:
+                    raise RuntimeError("running task failed")
+            return name
+        finally:
+            active -= 1
+            mind.heartbeat_engine.release_task_claim(name)
+
+    async def cycle(*, is_heartbeat):
+        nonlocal active
+        assert active == 0
+        active += 1
+        try:
+            events.append("heartbeat" if is_heartbeat else "message")
+            if not is_heartbeat:
+                assert [mind.pfc.pending_user.popleft() for _ in scopes] == scopes
+        finally:
+            active -= 1
+
+    async def tick(**kwargs):
+        assert active == 0
+        events.append("tick")
+        return ["maintenance"]
+
+    mind.heartbeat_engine.run_claimed_task = run
+    mind.heartbeat_engine.tick.side_effect = tick
+    mind._autonomous_cycle.side_effect = cycle
+    first = mind.driver.submit_task("running")[2]
+    queued = waiter = None
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        for kind in arrival_order:
+            if kind == "message":
+                for scope in scopes:
+                    mind.pfc.pending_user.append(scope)
+                for _ in range(5):
+                    mind.driver.request_cycle()
+            elif kind == "task":
+                accepted, _, queued = mind.driver.submit_task("queued")
+                assert accepted
+                assert mind.driver.submit_task("running")[0] is False
+                assert mind.driver.submit_task("queued")[0] is False
+            else:
+                waiter = mind.driver.submit_tick()
+                abandoned = mind.driver.submit_tick()
+                abandoned.cancel()
+        mind.driver.request_cycle(is_heartbeat=True)
+        assert events == ["running"] and mind.driver.current_work == "task:running"
+        release.set()
+        await asyncio.wait_for(mind.driver.when_idle(), 2)
+        assert await first == (None if task_fails else "running")
+        assert await queued == "queued" and await waiter == ["maintenance"]
+        assert events == ["running", "message", "queued", "tick", "tick", "heartbeat"]
+        assert not mind.heartbeat_engine.claimed and not mind.pfc.has_pending_tasks()
+    finally:
+        release.set()
+        await mind.driver.close()
+
+
+async def test_message_arriving_in_interleaved_reply_is_latched_for_next_boundary():
+    mind = _fake_mind()
+    scope = build_entity_scope("user", "arbitrary", "shared", "window")
+    entered, release = asyncio.Event(), asyncio.Event()
+    handled: list[str] = []
+    stages: list[str] = []
+    queued = None
+
+    async def cycle(*, is_heartbeat):
+        assert not is_heartbeat
+        assert mind.pfc.pending_user.popleft() == scope
+        handled.append("first" if len(handled) == 0 else "new arrival")
+        if len(handled) == 1:
+            entered.set()
+            await release.wait()
+
+    async def tick(*, checkpoint, should_yield):
+        stages.append("committed first")
+        mind.pfc.pending_user.append(scope)
+        mind.driver.request_cycle()
+        await checkpoint()
+        stages.append("committed second")
+        assert should_yield()
+        await checkpoint()
+        stages.append("finished")
+        return stages.copy()
+
+    async def run(name, *, trigger):
+        assert stages[-1] == "finished"
+        mind.heartbeat_engine.release_task_claim(name)
+        return name
+
+    mind.heartbeat_engine.tick.side_effect = tick
+    mind.heartbeat_engine.run_claimed_task = run
+    mind._autonomous_cycle.side_effect = cycle
+    waiter = mind.driver.submit_tick()
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        mind.pfc.pending_user.append(scope)
+        for _ in range(10):
+            mind.driver.request_cycle()
+        queued = mind.driver.submit_task("after-maintenance")[2]
+        cancelled = mind.driver.submit_tick()
+        cancelled.cancel()
+        release.set()
+        assert await asyncio.wait_for(waiter, 2) == ["committed first", "committed second", "finished"]
+        await asyncio.wait_for(mind.driver.when_idle(), 2)
+        assert await queued == "after-maintenance"
+        assert handled == ["first", "new arrival"]
+        mind.heartbeat_engine.tick.assert_awaited_once()
+        assert not mind.pfc.has_pending_tasks() and not mind.heartbeat_engine.claimed
+    finally:
+        release.set()
+        await mind.driver.close()
+
+
+async def test_shutdown_rejects_new_work_and_preserves_unconsumed_messages():
+    mind = _fake_mind()
+    entered = asyncio.Event()
+    scope = build_entity_scope("group", "arbitrary", "room")
+
+    async def run(name, *, trigger):
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            mind.heartbeat_engine.release_task_claim(name)
+
+    mind.heartbeat_engine.run_claimed_task = run
+    running = mind.driver.submit_task("running")[2]
+    await asyncio.wait_for(entered.wait(), 2)
+    queued = mind.driver.submit_task("queued")[2]
+    tick = mind.driver.submit_tick()
+    mind.pfc.pending_group.append(scope)
+    mind.driver.request_cycle()
+    mind.driver.request_cycle(delay=1)
+    await asyncio.wait_for(mind.driver.close(), 2)
+    assert running.cancelled() and queued.cancelled() and tick.cancelled()
+    assert list(mind.pfc.pending_group.queue) == [scope]
+    assert mind.driver.submit_task("late")[0] is False
+    assert mind.driver.submit_tick().cancelled()
+    mind.driver.request_cycle()
+    mind.driver._fire_delayed_cycle()
+    await mind.driver.when_idle()
+    assert mind._autonomous_cycle.await_count == 0 and not mind.heartbeat_engine.claimed
+    assert not mind.driver.is_busy
+
+
+async def test_failed_interleaved_reply_keeps_work_and_recovers_without_repeating_maintenance():
+    mind = _fake_mind()
+    scope = build_entity_scope("user", "arbitrary", "shared")
+    mind.pfc.pending_user.append(scope)
+    stages = []
+    mind._schedule_next_cycle = Mock()
+
+    async def cycle(*, is_heartbeat):
+        assert not is_heartbeat
+        if mind._autonomous_cycle.await_count == 1:
+            raise RuntimeError("model unavailable before consuming message")
+        assert mind.pfc.pending_user.popleft() == scope
+
+    async def tick(*, checkpoint, should_yield):
+        stages.append("before")
+        mind.driver.request_cycle()
+        await checkpoint()
+        stages.append("after")
+        return ["maintenance complete"]
+
+    mind.heartbeat_engine.tick.side_effect = tick
+    mind._autonomous_cycle.side_effect = cycle
+    try:
+        assert await asyncio.wait_for(mind.driver.submit_tick(), 2) == ["maintenance complete"]
+        assert list(mind.pfc.pending_user.queue) == [scope]
+        mind._schedule_next_cycle.assert_called_once_with("用户周期异常后仍有待办", backoff=True)
+        mind.driver.request_cycle()
+        await asyncio.wait_for(mind.driver.when_idle(), 2)
+        assert stages == ["before", "after"] and mind._autonomous_cycle.await_count == 2
+        mind.heartbeat_engine.tick.assert_awaited_once()
+        assert not mind.pfc.has_pending_tasks()
+    finally:
+        await mind.driver.close()
+
+
+async def test_cancelled_task_waiters_do_not_release_claims_or_duplicate_admitted_work():
+    mind = _fake_mind()
+    entered, release = asyncio.Event(), asyncio.Event()
+    executed = []
+
+    async def run(name, *, trigger):
+        executed.append(name)
+        try:
+            if name == "running":
+                entered.set()
+                await release.wait()
+            return name
+        finally:
+            mind.heartbeat_engine.release_task_claim(name)
+
+    mind.heartbeat_engine.run_claimed_task = run
+    first = mind.driver.submit_task("running")[2]
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        second = mind.driver.submit_task("queued")[2]
+        first.cancel()
+        second.cancel()
+        assert mind.driver.submit_task("running")[0] is False
+        assert mind.driver.submit_task("queued")[0] is False
+        release.set()
+        await asyncio.wait_for(mind.driver.when_idle(), 2)
+        assert executed == ["running", "queued"]
+        assert not mind.heartbeat_engine.claimed
+    finally:
+        release.set()
+        await mind.driver.close()

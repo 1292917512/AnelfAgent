@@ -269,3 +269,39 @@ class TestDomainFactory:
         assert text is not vision
         # 未知用途归一为 text 域
         assert get_embedder("unknown") is text
+
+
+async def test_reserved_query_capacity_does_not_duplicate_same_query_or_parallelize_backfills(monkeypatch):
+    original = engine_module.get_config_int
+    monkeypatch.setattr(engine_module, "get_config_int", lambda key, default=0:
+                        2 if key == "embed_request_concurrency" else original(key, default))
+    entered, release = asyncio.Event(), asyncio.Event()
+    query_entered, query_release = asyncio.Event(), asyncio.Event()
+
+    class Client(FakeClient):
+        async def embed(self, texts):
+            self.calls.append(texts)
+            if texts[0] == "batch1":
+                entered.set()
+                await release.wait()
+            elif texts[0] == "query":
+                query_entered.set()
+                await query_release.wait()
+            return [[1., 0., 0., 0.] for _ in texts]
+
+    client = Client()
+    embedder = _make_embedder(client)
+    background = asyncio.create_task(embedder.embed_text(["batch1"]))
+    await asyncio.wait_for(entered.wait(), 2)
+    background2 = asyncio.create_task(embedder.embed_text(["batch2"]))
+    queries = [asyncio.create_task(embedder.embed_query("query")) for _ in range(4)]
+    try:
+        await asyncio.wait_for(query_entered.wait(), 2)
+        assert not background.done() and ["batch2"] not in client.calls
+        query_release.set()
+        assert all(v == [1., 0., 0., 0.] for v in await asyncio.wait_for(asyncio.gather(*queries), 2))
+        assert client.calls.count(["query"]) == 1
+    finally:
+        query_release.set()
+        release.set()
+        await asyncio.gather(background, background2, *queries, return_exceptions=True)

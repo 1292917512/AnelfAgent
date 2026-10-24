@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Tuple
 
 from core.config import get_config
@@ -75,11 +76,13 @@ class PrefixGuard:
     无需加锁；哈希链按 scope 隔离，跨频道互不干扰。
     """
 
+    _MAX_SCOPES = 1024
+
     def __init__(self) -> None:
         # (scope, kind) → 上一次调用的前缀层哈希链 [(layer, msg_hash), ...]
         # 按调用用途分键：reply/reflect/compress 各自前缀族独立，
         # 避免主对话与辅助调用交替时跨族误报断裂
-        self._chains: Dict[Tuple[str, str], List[Tuple[str, str]]] = {}
+        self._chains: OrderedDict[Tuple[str, str], List[Tuple[str, str]]] = OrderedDict()
         # scope → (合法断裂原因, 窗口截止时刻)：折叠与压缩是已知的前缀重写，
         # 登记后下次校验重建基线（不误报断裂），并把原因带给快照记录——
         # 缓存命中率列表借此与"平台波动"（前缀稳定但命中低）准确区分
@@ -121,6 +124,9 @@ class PrefixGuard:
         key = (scope, kind)
         previous = self._chains.get(key)
         self._chains[key] = current
+        self._chains.move_to_end(key)
+        while len(self._chains) > self._MAX_SCOPES:
+            self._chains.popitem(last=False)
 
         if previous is None:
             return None  # 无基线（该 scope 首次调用）
@@ -165,9 +171,11 @@ class PrefixGuard:
         压缩/折叠/人设切换后可主动重置，避免把已知的整体重写误报为断裂。"""
         if scope is None:
             self._chains.clear()
+            self._legal_breaks.clear()
         else:
             for key in [k for k in self._chains if k[0] == scope]:
                 self._chains.pop(key, None)
+            self._legal_breaks.pop(scope, None)
 
     def note_legal_break(self, scope: str, reason: str) -> None:
         """登记合法断裂（fold=对话折叠 / compress=上下文压缩）。
@@ -182,6 +190,8 @@ class PrefixGuard:
         self.reset(scope)
         self._legal_breaks[scope] = (
             reason, time.monotonic() + _LEGAL_BREAK_TTL_SECONDS)
+        while len(self._legal_breaks) > self._MAX_SCOPES:
+            self._legal_breaks.pop(next(iter(self._legal_breaks)))
 
     def legal_break_reason(self, scope: str) -> Optional[str]:
         """该 scope 当前是否处于合法断裂窗口内（窥视不消耗；过期惰性清除）。

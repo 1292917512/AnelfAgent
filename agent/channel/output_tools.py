@@ -6,6 +6,10 @@
 
 频道能力工具由 ``tool_bridge`` 负责：适配器用 ``@channel_tool`` 标记方法，
 频道注册时自动扫描注册（通用能力跨频道共享路由，特有方法按频道 tag 注入）。
+
+模型可见：发送回执保留明确的目标子会话；显式地址与频道冲突时返回参数错误。
+Token 影响：仅回执中的目标信息，无额外模型调用。
+缓存影响：仅工具结果，不改变稳定前缀。
 """
 
 from __future__ import annotations
@@ -145,9 +149,9 @@ def _normalize_target_id(target_id: str) -> tuple[str, Optional[str]]:
     # 完整 entity_scope 形式：剥离为原生 ID + 明确类型
     if raw.startswith(("user_", "group_")):
         from agent.messages import parse_entity_scope
-        scope_type, _adapter, base_id, _session = parse_entity_scope(raw)
+        scope_type, _adapter, base_id, session = parse_entity_scope(raw)
         if scope_type and base_id:
-            return base_id, "group" if scope_type == "group" else "private"
+            return base_id + (f"#{session}" if session else ""), "group" if scope_type == "group" else "private"
 
     if ":" not in raw:
         return raw, None
@@ -169,12 +173,25 @@ def _normalize_target_id(target_id: str) -> tuple[str, Optional[str]]:
     return raw, None
 
 
-def _resolve_send_target(channel_id: str, target_id: str) -> tuple[str, str]:
-    """统一解析发送目标 ID 与 channel_type。"""
-    resolved_target_id, forced_ct = _normalize_target_id(target_id)
-    final_target_id = resolved_target_id or (str(target_id) if target_id is not None else "").strip()
-    channel_type = forced_ct or _resolve_channel_type(channel_id, final_target_id)
-    return final_target_id, channel_type
+def _resolve_send_target(channel_id: str, target_id: str) -> tuple[str, str, str]:
+    """解析原生 ID、会话类型与显式子会话；拒绝冲突的频道地址。"""
+    from agent.messages import parse_entity_scope
+
+    raw = (str(target_id) if target_id is not None else "").strip()
+    _kind, adapter, _base, _session = parse_entity_scope(raw)
+    if not adapter and ":" in raw:
+        from .manager import get_channel_manager
+        prefix = raw.split(":", 1)[0].lower()
+        if prefix in get_channel_manager().list_channels():
+            adapter = prefix
+    if adapter and adapter != channel_id:
+        raise ValueError(f"目标频道 {adapter} 与 channel_id={channel_id} 不一致")
+    resolved, forced_ct = _normalize_target_id(raw)
+    final_target, separator, session = resolved.partition("#")
+    if not final_target or (separator and not session):
+        raise ValueError("目标 ID 或子会话不能为空")
+    channel_type = forced_ct or _resolve_channel_type(channel_id, final_target)
+    return final_target, channel_type, session
 
 
 def _attach_target_resolution_meta(
@@ -285,7 +302,7 @@ async def execute_send_action(
         channel_id: str,
         target_id: str,
         operation: str,
-        invoke: Callable[[Any, str, str], Awaitable[Any]],
+        invoke: Callable[[Any, str, str, str], Awaitable[Any]],
         enrich: Optional[Callable[[dict, bool], None]] = None,
         success_suffix: str = "",
         outbound_preview: str = "",
@@ -305,10 +322,10 @@ async def execute_send_action(
 
     target_scope = ""
     try:
-        resolved_target_id, channel_type = _resolve_send_target(channel_id, target_id)
-        # 未显式带 session 时从当前思维 scope 继承（多会话窗口路由 + 持久化对齐）
-        if not session_id:
-            session_id = inherit_current_session(channel_id, resolved_target_id)
+        resolved_target_id, channel_type, target_session = _resolve_send_target(channel_id, target_id)
+        if session_id and target_session and session_id != target_session:
+            raise ValueError("目标子会话与 session_id 不一致")
+        session_id = target_session or session_id or inherit_current_session(channel_id, resolved_target_id)
         scope_type, scope_id = _resolve_conversation_scope(
             channel_id, resolved_target_id, channel_type, session_id,
         )
@@ -324,7 +341,7 @@ async def execute_send_action(
         if rejection:
             return _delivery_rejection(rejection, target_scope, delivery_mode)
         seen_through = delivery_watermark(target_scope)
-        raw = await invoke(ch, resolved_target_id, channel_type)
+        raw = await invoke(ch, resolved_target_id, channel_type, session_id)
         parsed, ok = _check_send_result(raw, channel_id, target_id)
         parsed["delivery"] = delivery_tags(
             delivery_mode, "sent" if ok else "unknown" if parsed.get("outcome") == "unknown" else "failed",
@@ -439,7 +456,7 @@ async def send_text_to_channel(
     resolved_channel_type = "private"
     resolved_target = target_id
 
-    async def _invoke(ch: Any, resolved_target_id: str, channel_type: str) -> Any:
+    async def _invoke(ch: Any, resolved_target_id: str, channel_type: str, session: str) -> Any:
         nonlocal resolved_channel_type, resolved_target
         resolved_channel_type = channel_type
         resolved_target = resolved_target_id
@@ -447,8 +464,6 @@ async def send_text_to_channel(
         kwargs: dict[str, Any] = {"channel_type": channel_type}
         if reply_to_message_id:
             kwargs["reply_to"] = reply_to_message_id
-        # 多会话窗口路由（webui chat_id）：未显式带 session 时继承当前会话
-        session = session_id or inherit_current_session(channel_id, resolved_target_id)
         if session:
             kwargs["session_id"] = session
         return await ch.send_text(resolved_target_id, content, **kwargs)
@@ -524,9 +539,8 @@ async def send_photo(channel_id: str, target_id: str, photo: str, caption: str =
         photo: 图片文件路径或 URL
         caption: 图片说明文字
     """
-    async def _invoke(ch: Any, resolved_target_id: str, channel_type: str) -> Any:
+    async def _invoke(ch: Any, resolved_target_id: str, channel_type: str, session: str) -> Any:
         kwargs: dict[str, Any] = {"caption": caption, "channel_type": channel_type}
-        session = inherit_current_session(channel_id, resolved_target_id)
         if session:
             kwargs["session_id"] = session
         return await ch.send_photo(resolved_target_id, photo, **kwargs)
@@ -558,9 +572,8 @@ async def send_voice(channel_id: str, target_id: str, voice: str) -> str:
         target_id: 目标会话 ID（用户 uid 或群组 group_id）
         voice: 语音文件路径
     """
-    async def _invoke(ch: Any, resolved_target_id: str, channel_type: str) -> Any:
+    async def _invoke(ch: Any, resolved_target_id: str, channel_type: str, session: str) -> Any:
         kwargs: dict[str, Any] = {"channel_type": channel_type}
-        session = inherit_current_session(channel_id, resolved_target_id)
         if session:
             kwargs["session_id"] = session
         return await ch.send_voice(resolved_target_id, voice, **kwargs)
@@ -591,9 +604,8 @@ async def send_file(channel_id: str, target_id: str, file_path: str, caption: st
         file_path: 文件路径
         caption: 文件说明文字
     """
-    async def _invoke(ch: Any, resolved_target_id: str, channel_type: str) -> Any:
+    async def _invoke(ch: Any, resolved_target_id: str, channel_type: str, session: str) -> Any:
         kwargs: dict[str, Any] = {"caption": caption, "channel_type": channel_type}
-        session = inherit_current_session(channel_id, resolved_target_id)
         if session:
             kwargs["session_id"] = session
         return await ch.send_file(resolved_target_id, file_path, **kwargs)

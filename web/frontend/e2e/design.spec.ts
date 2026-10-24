@@ -75,7 +75,10 @@ test("overflowing memory tabs stay reachable by arrows, wheel, touch and keyboar
     lastPosition = position;
     return stableSamples;
   }, { intervals: [100] }).toBeGreaterThanOrEqual(3);
-  for (let step = 0; step < 12 && await next.isEnabled(); step++) {
+  for (let step = 0; step < 12; step++) {
+    // The scroll position can reach its end before React renders the disabled arrow.
+    const remaining = await strip.evaluate(element => element.scrollWidth - element.clientWidth - element.scrollLeft);
+    if (remaining <= 1) break;
     const target = await strip.evaluate(element => Math.min(element.scrollLeft + element.clientWidth * 0.8, element.scrollWidth - element.clientWidth));
     await next.click();
     await expect.poll(() => strip.evaluate((element, end) => Math.abs(element.scrollLeft - end), target)).toBeLessThanOrEqual(1);

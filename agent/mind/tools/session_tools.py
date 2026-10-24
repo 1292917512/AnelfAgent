@@ -3,7 +3,7 @@
 - list_sessions：列出活跃会话（未读消息 + 近期活动），供 AI 感知其他窗口动态。
 - switch_session：将目标会话排入回复队列，以其独立隔离的上下文开启一轮 REPLY。
 
-模型可见：get_conversation_diagnostics 按需返回消息摘录、耗时和执行回执。
+模型可见：诊断工具按需返回摘录、耗时和回执；会话交接明确返回当前与目标 scope，保持当前上下文。
 Token 影响：仅工具查询时提供有界结果，不自动注入诊断或调用模型总结。
 缓存影响：不改变稳定前缀、已读水位或实时会话内容。
 
@@ -173,11 +173,11 @@ async def list_sessions() -> str:
 
 @deferred_tool(
     group="session", tags=["always"], source="mind.session",
-    description="切换到另一个会话窗口处理其消息。目标会话将以独立上下文开启一轮新回复；"
-                "你当前的回复仍发往当前会话。scope 格式：user_qq:123 / group_qq:456 / user_webui:u#chat_id。",
+    description="将另一个会话排队，由后续独立回复处理。调用不会切换当前上下文或默认收件人；"
+                "已排队时无需重复调用，完成当前工作后结束本轮即可。scope 格式：user_qq:123 / group_qq:456 / user_webui:u#chat_id。",
 )
 async def switch_session(scope: str, reason: str = "") -> str:
-    """切换到指定会话窗口处理其未读消息。
+    """请求指定会话的独立回复，不改变调用方会话。
 
     Args:
         scope: 目标会话标识（user_qq:123 / group_qq:456 / user_webui:u#chat_id，可由 list_sessions 获取）
@@ -195,16 +195,24 @@ async def switch_session(scope: str, reason: str = "") -> str:
             "hint": "格式应为 user_qq:123 / group_qq:456 / user_webui:u#chat_id，可先调用 list_sessions 获取",
         }, ensure_ascii=False)
 
-    if scope == _current_scope():
+    current = _current_scope()
+    if scope == current:
         return json.dumps({
-            "ok": True, "scope": scope,
+            "ok": True, "scope": scope, "current_scope": current, "status": "current",
             "hint": "已处于该会话，无需切换；直接回复即可",
         }, ensure_ascii=False)
 
     if scope in getattr(mind, "_active_scopes", set()):
         return json.dumps({
-            "ok": True, "scope": scope,
+            "ok": True, "scope": scope, "current_scope": current, "status": "active",
             "hint": "该会话正在处理中，无需重复切换",
+        }, ensure_ascii=False)
+
+    if scope in mind.pfc.pending_user.queue or scope in mind.pfc.pending_group.queue:
+        mind.driver.request_cycle()
+        return json.dumps({
+            "ok": True, "scope": scope, "current_scope": current, "status": "queued",
+            "hint": "目标已在队列中，无需重复交接或代发；当前上下文和默认收件人未改变，完成当前工作后结束本轮即可",
         }, ensure_ascii=False)
 
     preview = _snapshot_activities(mind.pfc).get(scope, {}).get("last_preview", "")
@@ -226,5 +234,7 @@ async def switch_session(scope: str, reason: str = "") -> str:
         "ok": True,
         "scope": scope,
         "channel": scope_adapter,
-        "hint": "该会话已排入处理队列，将以独立上下文开启新回复；你当前的回复仍发往当前会话",
+        "current_scope": current,
+        "status": "queued",
+        "hint": "目标已排队，将由独立回复处理；当前上下文和默认收件人未改变，无需重复交接或代发，完成当前工作后结束本轮即可",
     }, ensure_ascii=False)

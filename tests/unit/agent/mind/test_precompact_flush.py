@@ -96,21 +96,18 @@ class TestFlushScopeCapture:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("outcome", list(auto_capture.CaptureOutcome))
-    async def test_forces_idle_zero_and_delegates(self, monkeypatch, outcome):
+    async def test_forces_idle_zero_and_delegates(self, outcome):
         """有待提取内容即到期（idle_seconds=0），委托给管线的单 scope 处理。"""
         calls: dict = {}
 
         class _FakePipeline:
+            _source = object()
+
             async def _process_scope(self, sqlite, scope_type, scope_id, *, every_n, idle_seconds, now):
                 calls.update(scope_type=scope_type, scope_id=scope_id, idle_seconds=idle_seconds)
                 return outcome
 
-        class _FakeRT:
-            class data_center:
-                sqlite = object()
-
         auto_capture.auto_capture_port.set(_FakePipeline())
-        monkeypatch.setattr("agent.runtime.singleton.require_runtime", lambda: _FakeRT())
         assert await auto_capture.flush_scope_capture(_MindStub(), "user:qq:123") is (
             outcome is auto_capture.CaptureOutcome.COMPLETED
         )

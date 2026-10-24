@@ -29,6 +29,19 @@ if TYPE_CHECKING:
     from agent.llm.types import ChatResult
 
 
+def orphan_tool_call_ids(messages: List[Dict]) -> list[str]:
+    """线性检查后续是否有对应工具结果，保留原调用顺序和缺失项。"""
+    results: set[str] = set()
+    missing: list[list[str]] = []
+    for message in reversed(messages):
+        if message.get("role") == "tool":
+            results.add(message.get("tool_call_id", ""))
+        elif message.get("role") == "assistant" and message.get("tool_calls"):
+            missing.append([call["id"] for call in message["tool_calls"]
+                            if isinstance(call, dict) and call.get("id") and call["id"] not in results])
+    return [identity for group in reversed(missing) for identity in group]
+
+
 class FunctionCall(BaseModel):
     """工具调用的函数部分。"""
 

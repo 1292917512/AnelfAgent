@@ -69,6 +69,12 @@ def think_session(
         if token_ctx is not None:
             reset_token(token_ctx)
         reset_current_channel(channel_token)
+        if not with_token:
+            from agent.context.prefix_guard import prefix_guard
+            from agent.context.prompt_layers import prompt_cache_manager
+
+            prefix_guard.reset(scope)
+            prompt_cache_manager.release_scope(scope)
         if clear_dynamic_tools:
             # 传入 scope：非主会话（如后台评审 reflect）不清理全局动态工具，避免踩踏
             tool_assembly.clear_dynamic_tools(scope=scope, force=not with_token)

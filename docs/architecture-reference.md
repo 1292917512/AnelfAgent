@@ -33,6 +33,10 @@
 | `web/frontend/src/` | React 前端 | 页面壳组件 + 子面板目录拆分 |
 | `config/` | JSON 配置 + SQLite 数据 + Markdown 便签 | 路径统一用 `ConfigPaths` |
 
+对话存储由 `agent/storage/sqlite_backend.py` 持有连接、迁移和写事务；
+`conversation_search.py` 通过构造注入借用连接，只负责历史检索和有界批量评分，
+不另建数据库、连接池或写入路径。上层仍通过 `ConversationData` 与存储门面访问。
+
 ## 依赖方向
 
 ```

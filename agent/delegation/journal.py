@@ -15,7 +15,7 @@
   与 reply_checkpoints 同范式（at-least-once：注入成功才闭合）。
 
 容量纪律：retention 天数滚动清理（新委托启动时顺带执行，mtime 扫描，
-目录不遍历进热路径）；写入全部 fail-open——日志失败绝不影响委托执行。
+目录扫描按十分钟节流）；写入全部 fail-open——日志失败绝不影响委托执行。
 """
 
 from __future__ import annotations
@@ -34,6 +34,7 @@ from core.tool_results import redact_tool_messages
 
 # transcript 消息链的序列化上限（超出则不落 messages，标记不可续跑）
 TRANSCRIPT_MAX_BYTES = 262_144
+_purge_after: dict[Path, float] = {}
 
 # 账本事件类型（读取方按词消费）
 LEDGER_STARTED = "started"
@@ -303,6 +304,12 @@ def _purge_expired() -> None:
     root = delegation_dir()
     if days <= 0 or not root.is_dir():
         return
+    now = time.monotonic()
+    if now < _purge_after.get(root, 0):
+        return
+    if len(_purge_after) >= 16:
+        _purge_after.pop(next(iter(_purge_after)))
+    _purge_after[root] = now + 600
     cutoff = time.time() - days * 86400
     try:
         for entry in root.iterdir():

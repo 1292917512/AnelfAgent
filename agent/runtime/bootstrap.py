@@ -387,7 +387,7 @@ def create_bootstrap() -> FlowMachine:
         workflow_engine = WorkflowEngine(mind.background_tasks, runtime.delegation_manager)
         count = activate_group("workflow", "工作流 - 可恢复的多步骤编排（断点续跑/门控重跑）")
         log(f"🧩 工作流工具已注册 ({count} 个)", tag="工作流")
-        auto_capture_pipeline = AutoCapturePipeline(runtime)
+        auto_capture_pipeline = AutoCapturePipeline(runtime, runtime.data_center.sqlite)
         assistant = AgentAssistant(mind)
         pipeline.register_agent(assistant)
 

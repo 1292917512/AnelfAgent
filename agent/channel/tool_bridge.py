@@ -373,17 +373,13 @@ async def _run_outbound(
         }, ensure_ascii=False)
     content = str(kwargs.get("content") or kwargs.get("text") or "")
 
-    async def _invoke(ch: Any, resolved_target_id: str, channel_type: str) -> Any:
-        call_kwargs = _prepare_call(fn, dict(kwargs), channel_id)
-        # 多会话窗口路由：fn 声明 session_id 且 LLM 未给时继承当前会话
-        from .output_tools import inherit_current_session
-        session = inherit_current_session(channel_id, resolved_target_id)
-        if session and "session_id" not in call_kwargs:
-            try:
-                if "session_id" in inspect.signature(fn).parameters:
-                    call_kwargs["session_id"] = session
-            except (TypeError, ValueError):
-                pass
+    async def _invoke(ch: Any, resolved_target_id: str, channel_type: str, session: str) -> Any:
+        parameters = dict(kwargs)
+        parameters.pop("target_id", None)
+        parameters["chat_id"] = resolved_target_id
+        if session:
+            parameters["session_id"] = session
+        call_kwargs = _prepare_call(fn, parameters, channel_id)
         raw = fn(**call_kwargs)
         if inspect.isawaitable(raw):
             raw = await raw
@@ -396,6 +392,7 @@ async def _run_outbound(
         invoke=_invoke,
         outbound_preview=content[:80] if content else tool_name,
         record_content=content,
+        session_id=str(kwargs.get("session_id") or ""),
     )
     return result
 
@@ -552,8 +549,8 @@ def _make_common_handler(cap_value: str, method_name: str) -> Callable:
                 payload["success"] = False
                 payload["channel_id"] = channel_id
                 return json.dumps(payload, ensure_ascii=False)
-        call_kwargs = _prepare_call(fn, kwargs, channel_id)
         try:
+            call_kwargs = _prepare_call(fn, kwargs, channel_id)
             raw = fn(**call_kwargs)
             if inspect.isawaitable(raw):
                 raw = await raw
@@ -577,7 +574,11 @@ def _prepare_call(fn: Callable, kwargs: Dict[str, Any], channel_id: str) -> Dict
         kwargs["chat_id"] = kwargs.pop("target_id")
     accepts_kwargs = _accepts_var_kwargs(fn)
     if "chat_id" in kwargs and isinstance(kwargs["chat_id"], str):
-        resolved, channel_type = _resolve_send_target(channel_id, kwargs["chat_id"])
+        resolved, channel_type, session = _resolve_send_target(channel_id, kwargs["chat_id"])
+        if session and (accepts_kwargs or _has_param(fn, "session_id")):
+            if kwargs.get("session_id") and kwargs["session_id"] != session:
+                raise ValueError("目标子会话与 session_id 不一致")
+            kwargs["session_id"] = session
         kwargs["chat_id"] = resolved
         if "channel_type" not in kwargs and (accepts_kwargs or _has_param(fn, "channel_type")):
             kwargs["channel_type"] = channel_type

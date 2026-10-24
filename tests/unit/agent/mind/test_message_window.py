@@ -339,7 +339,7 @@ class TestThinkLoopMerge:
         other = MessageUser(uid="1", adapter_key="qq", text_content="B 的请求")
         monkeypatch.setattr("agent.channel.outbound_guard._recent", {})
         monkeypatch.setattr("agent.channel.output_tools._validate_channel", lambda key: (object(), None))
-        monkeypatch.setattr("agent.channel.output_tools._resolve_send_target", lambda *args: ("1", "private"))
+        monkeypatch.setattr("agent.channel.output_tools._resolve_send_target", lambda *args: ("1", "private", ""))
         monkeypatch.setattr("agent.channel.output_tools.guard_outbound", lambda *args: None)
         monkeypatch.setattr("agent.channel.output_tools.guard_empty_conversation", AsyncMock(return_value=None))
 

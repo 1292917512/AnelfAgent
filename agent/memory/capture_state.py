@@ -19,6 +19,7 @@ class CaptureOutcome(Enum):
     IDLE = "idle"
     COMPLETED = "completed"
     FAILED = "failed"
+    YIELDED = "yielded"
 
 
 class CaptureItem(BaseModel):
@@ -45,6 +46,7 @@ class CaptureBatch(BaseModel):
     next_item: int = Field(default=0, ge=0)
     failures: int = Field(default=0, ge=0)
     feedback_done: bool = False
+    relations_done: bool = False
 
     def item_key(self, scope: str, index: int) -> str:
         payload = [scope, [row["id"] for row in self.rows], index]

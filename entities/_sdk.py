@@ -885,7 +885,7 @@ async def execute_send_action(
     channel_id: str,
     target_id: str,
     operation: str,
-    invoke: Callable[[Any, str, str], Awaitable[Any]],
+    invoke: Callable[[Any, str, str, str], Awaitable[Any]],
     enrich: Optional[Callable[[dict, bool], None]] = None,
     success_suffix: str = "",
     outbound_preview: str = "",
@@ -896,7 +896,7 @@ async def execute_send_action(
         channel_id: 目标频道 ID
         target_id: 目标会话 ID（uid 或群号）
         operation: 操作名（日志与错误归因用，如 "表情包"）
-        invoke: 真实发送回调 invoke(ch, resolved_target_id, channel_type)
+        invoke: 真实发送回调 invoke(ch, resolved_target_id, channel_type, session_id)
         enrich: 结果补充回调 enrich(parsed, ok)，向返回 JSON 附加调用方字段
         success_suffix: 成功日志的附加信息
         outbound_preview: 发送内容短摘要（出站哨兵近期窗口判定与拒绝回执展示）

@@ -55,6 +55,13 @@ async def test_public_pipeline_progress_preserves_unknown_and_zero(progress):
     read.assert_awaited_once_with([UUID(identity)], pipeline_names=["cognify_pipeline"])
 
 
+async def _observed_snapshot(monitor, read):
+    await monitor.snapshot(read)
+    if monitor._read_task is not None:
+        await monitor._read_task
+    return await monitor.snapshot(read)
+
+
 async def test_progress_reads_are_cached_and_do_not_fake_activity_or_control_writes():
     from agent.memory.cognee.progress import ProjectionProgress
     from agent.memory.cognee.types import CogneePipelineProgress
@@ -63,23 +70,23 @@ async def test_progress_reads_are_cached_and_do_not_fake_activity_or_control_wri
     read = AsyncMock(return_value=CogneePipelineProgress(completed_items=9, total_items=10))
     with monitor.batch([{"attempts": 1}]):
         monitor.stage("cognify", dataset_id="dataset", timeout=3600)
-        first, second = await asyncio.gather(monitor.snapshot(read), monitor.snapshot(read))
+        first, second = await asyncio.gather(_observed_snapshot(monitor, read), _observed_snapshot(monitor, read))
         assert first.pipeline.completed_items == second.pipeline.completed_items == 9
         assert first.attempt == 2
         read.assert_awaited_once()
         monitor._changed -= 600
         monitor._read_after = 0
-        same = await monitor.snapshot(read)
+        same = await _observed_snapshot(monitor, read)
         assert same.last_change_at == first.last_change_at and same.quiet_seconds >= 600
         read.side_effect = TimeoutError("progress unavailable")
         monitor._read_after = 0
-        failed = await monitor.snapshot(read)
+        failed = await _observed_snapshot(monitor, read)
         assert "progress unavailable" in failed.progress_error
         assert failed.pipeline.completed_items == 9  # 保留快照并标记不可用，不伪造零进度。
         monitor.stage("replace_projection")
-        committed = await monitor.snapshot(read)
+        committed = await _observed_snapshot(monitor, read)
         assert committed.stage == "replace_projection" and committed.pipeline is None
-    assert await monitor.snapshot(read) is None
+    assert await _observed_snapshot(monitor, read) is None
 
 
 async def test_cleanup_progress_advances_only_on_success_and_does_not_change_stage_timer():
@@ -90,23 +97,23 @@ async def test_cleanup_progress_advances_only_on_success_and_does_not_change_sta
     with monitor.batch([{}]):
         monitor.stage("replace_projection")
         monitor.cleanup(2)
-        initial = await monitor.snapshot(read)
+        initial = await _observed_snapshot(monitor, read)
         assert initial.cleanup.total == 2 and initial.cleanup.completed == 0
         monitor._stage_started -= 600
         monitor._changed -= 600
         monitor.deleted()
-        advanced = await monitor.snapshot(read)
+        advanced = await _observed_snapshot(monitor, read)
         assert advanced.cleanup.completed == 1 and advanced.cleanup.last_completed_at
         assert advanced.quiet_seconds < 1 and advanced.stage_elapsed_seconds >= 600
         read.assert_not_awaited()  # 管理页不为清理进度读取正在写入的原生图。
         monitor.deleted()
         with pytest.raises(RuntimeError, match="超出"):
             monitor.deleted()
-        assert (await monitor.snapshot(read)).cleanup.completed == 2
+        assert (await _observed_snapshot(monitor, read)).cleanup.completed == 2
         monitor.stage("enhance")
-        assert (await monitor.snapshot(read)).cleanup is None
+        assert (await _observed_snapshot(monitor, read)).cleanup is None
     with monitor.batch([{}]):
-        assert (await monitor.snapshot(read)).cleanup is None
+        assert (await _observed_snapshot(monitor, read)).cleanup is None
 
 
 async def test_late_progress_response_cannot_leak_into_next_batch():
@@ -123,11 +130,14 @@ async def test_late_progress_response_cannot_leak_into_next_batch():
 
     with monitor.batch([{}]):
         monitor.stage("cognify", dataset_id="old")
-        request = asyncio.create_task(monitor.snapshot(read))
-        await entered.wait()
+        first = await monitor.snapshot(read)
+        await asyncio.wait_for(entered.wait(), 1)
+        assert first.items == 1 and first.pipeline is None
+        request = monitor._read_task
     with monitor.batch([{}, {}]):
         release.set()
-        result = await request
+        await asyncio.gather(request, return_exceptions=True)
+        result = await monitor.snapshot(read)
         assert result.items == 2 and result.pipeline is None and result.stage == "prepare"
 
 
@@ -141,28 +151,28 @@ async def test_actual_progress_ignores_sdk_ticks_and_preserves_failed_observatio
     read = AsyncMock(return_value=CogneePipelineProgress(completed_items=1, total_items=2885, documents=docs))
     with monitor.batch([{}]):
         monitor.stage("cognify", dataset_id="dataset", documents={"new": True})
-        first = await monitor.snapshot(read)
+        first = await _observed_snapshot(monitor, read)
         read.assert_awaited_once_with("dataset", documents={"new": True})
         monitor._changed -= 400
         monitor._read_after = 0
         read.return_value = CogneePipelineProgress(completed_items=144, total_items=2885, documents=docs)
-        same = await monitor.snapshot(read)
+        same = await _observed_snapshot(monitor, read)
         assert same.last_change_at == first.last_change_at and same.quiet_seconds >= 400
         monitor._read_after = 0
         read.return_value = CogneePipelineProgress(documents=docs.model_copy(update={
             "completed": 22, "fragments_completed": 22, "last_completed_at": 1042}))
-        advanced = await monitor.snapshot(read)
+        advanced = await _observed_snapshot(monitor, read)
         assert advanced.quiet_seconds < 1 and advanced.documents.completed == 22
         checked = advanced.documents_checked_at
         monitor._read_after = 0
         read.return_value = CogneePipelineProgress(observation_error="documents: database busy")
-        failed = await monitor.snapshot(read)
+        failed = await _observed_snapshot(monitor, read)
         assert failed.documents.completed == 22 and failed.documents_checked_at == checked
         assert "database busy" in failed.progress_error
         monitor.stage("verify")
-        assert (await monitor.snapshot(read)).documents.completed == 22
+        assert (await _observed_snapshot(monitor, read)).documents.completed == 22
         monitor.stage("add")
-        assert (await monitor.snapshot(read)).documents is None
+        assert (await _observed_snapshot(monitor, read)).documents is None
 
 
 async def test_document_progress_queries_only_selected_ids_without_writes(tmp_path, monkeypatch):
@@ -2175,3 +2185,29 @@ async def test_configuration_failure_is_visible_and_recoverable(store: MemorySto
     await coordinator.reconfigure(CogneeConfig(sync_enabled=False))
     await coordinator._configuration_task
     assert not (await coordinator.status()).configuration_error
+
+
+async def test_slow_progress_observation_does_not_delay_status_and_is_owned_until_close():
+    from agent.memory.cognee.progress import ProjectionProgress
+    monitor = ProjectionProgress()
+    entered, cancelled = asyncio.Event(), asyncio.Event()
+
+    async def read(_):
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    with monitor.batch([{}]):
+        monitor.stage("cognify", dataset_id="dataset")
+        state = await asyncio.wait_for(monitor.snapshot(read), 1)
+        assert state.pipeline is None and state.progress_checked_at == 0
+        await asyncio.wait_for(entered.wait(), 1)
+        task = monitor._read_task
+        await asyncio.wait_for(monitor.snapshot(read), 1)
+        assert monitor._read_task is task
+        await asyncio.wait_for(monitor.close(), 1)
+        assert cancelled.is_set() and task.done()
+        await monitor.snapshot(read)
+        assert monitor._read_task is None

@@ -29,11 +29,12 @@ import asyncio
 import json
 import re
 import time
+from collections.abc import Awaitable, Callable
 from typing import Any, Dict, List, Tuple
 
 from agent.messages import build_entity_scope, parse_entity_scope
 from core.config import get_config_bool, get_config_int, register_configs_safe
-from core.latebind import LateBinding
+from core.latebind import LateBinding, WireError
 from core.log import log
 from core.tags import tag_label
 
@@ -46,7 +47,7 @@ from .dedup import (
     retain_duplicate_origin,
 )
 from .memory_types import MemoryEntry, MemoryType
-from .ports import MemoryHost
+from .ports import CaptureSource, MemoryHost
 from .provenance import capture_origin
 from .tag_gate import enforce_tag_gate, topic_vocab_line
 
@@ -145,9 +146,11 @@ def parse_extraction(raw: str, *, max_items: int) -> list[CaptureItem]:
 class AutoCapturePipeline:
     """按会话串行消费消息，恢复已保存的提取结果与逐条写入进度。"""
 
-    def __init__(self, memory: MemoryHost) -> None:
+    def __init__(self, memory: MemoryHost, source: CaptureSource) -> None:
         self._memory = memory
+        self._source = source
         self._scope_locks: Dict[str, asyncio.Lock] = {}
+        self._last_scope: tuple[str, str] | None = None
 
     @property
     def _journal(self) -> CaptureJournal:
@@ -156,7 +159,10 @@ class AutoCapturePipeline:
             raise RuntimeError("记忆存储未初始化")
         return CaptureJournal(store)
 
-    async def run(self) -> None:
+    async def run(
+        self, *, checkpoint: Callable[[], Awaitable[None]] | None = None,
+        should_yield: Callable[[], bool] | None = None,
+    ) -> None:
         """按预算扫描会话；未消费消息及在途批次在后续心跳继续。"""
         if not get_config_bool("memory_auto_capture_enabled", True):
             return
@@ -164,9 +170,7 @@ class AutoCapturePipeline:
         if not store:
             return
         try:
-            from agent.runtime.singleton import require_runtime
-
-            sqlite = require_runtime().data_center.sqlite
+            sqlite = self._source
             # 轻量枚举（无 COUNT）：每 tick 调用，避免全表 GROUP BY
             scopes = await sqlite.list_conversation_scope_keys()
         except Exception as exc:
@@ -179,18 +183,25 @@ class AutoCapturePipeline:
 
         processed = 0
         now = time.time()
+        keys = [(str(scope["scope_type"]), str(scope["scope_id"])) for scope in scopes]
+        if self._last_scope in keys:
+            start = keys.index(self._last_scope) + 1
+            scopes = scopes[start:] + scopes[:start]
         for scope in scopes:
             if processed >= max_scopes:
                 break
             try:
-                outcome = await self._process_scope(
-                    sqlite,
-                    scope["scope_type"],
-                    scope["scope_id"],
-                    every_n=every_n,
-                    idle_seconds=idle_seconds,
-                    now=now,
-                )
+                self._last_scope = (scope["scope_type"], scope["scope_id"])
+                while True:
+                    outcome = await self._process_scope(
+                        sqlite, scope["scope_type"], scope["scope_id"],
+                        every_n=every_n, idle_seconds=idle_seconds, now=now, should_yield=should_yield,
+                    )
+                    # _process_scope 已退出锁和事务，用户压缩时可安全刷新同一会话。
+                    if checkpoint is not None:
+                        await checkpoint()
+                    if outcome is not CaptureOutcome.YIELDED:
+                        break
                 if outcome is not CaptureOutcome.IDLE:
                     processed += 1
             except Exception as exc:
@@ -202,7 +213,7 @@ class AutoCapturePipeline:
 
     async def _fetch_pending(
         self,
-        sqlite: Any,
+        sqlite: CaptureSource,
         scope_type: str,
         scope_id: str,
         after_id: int,
@@ -227,13 +238,14 @@ class AutoCapturePipeline:
 
     async def _process_scope(
         self,
-        sqlite: Any,
+        sqlite: CaptureSource,
         scope_type: str,
         scope_id: str,
         *,
         every_n: int,
         idle_seconds: int,
         now: float,
+        should_yield: Callable[[], bool] | None = None,
     ) -> CaptureOutcome:
         """串行消费一个会话批次，返回实际消费结果。"""
         lock = self._scope_locks.setdefault(f"{scope_type}:{scope_id}", asyncio.Lock())
@@ -245,17 +257,19 @@ class AutoCapturePipeline:
                 every_n=every_n,
                 idle_seconds=idle_seconds,
                 now=now,
+                should_yield=should_yield,
             )
 
     async def _process_scope_locked(
         self,
-        sqlite: Any,
+        sqlite: CaptureSource,
         scope_type: str,
         scope_id: str,
         *,
         every_n: int,
         idle_seconds: int,
         now: float,
+        should_yield: Callable[[], bool] | None = None,
     ) -> CaptureOutcome:
         """消费一个有界批次；失败检查点保留，终止的批次写入审计。"""
         scope_key = f"{scope_type}:{scope_id}"
@@ -297,7 +311,7 @@ class AutoCapturePipeline:
 
         metrics.incr("capture.batches")
         try:
-            stored = await self._consume_batch(scope_key, state, messages)
+            stored = await self._consume_batch(scope_key, state, messages, should_yield=should_yield)
         except asyncio.CancelledError:
             # 关停不是提取失败；重复重启不能耗尽重试额度或推进消息游标。
             await journal.save(scope_key, state)
@@ -321,19 +335,16 @@ class AutoCapturePipeline:
             await journal.save(scope_key, state, failure=detail)
             log(f"自动捕获失败: {detail}", "WARNING", tag="记忆")
             return CaptureOutcome.FAILED
-        self._advance(state, batch)
-        state.warmup_threshold = min(state.warmup_threshold * 2, every_n)
-        await journal.save(scope_key, state)
         metrics.incr("capture.extracted", stored)
         if stored:
             from .embedding import wake_embedding_worker
 
             wake_embedding_worker()
-        if get_config_bool("memory_auto_capture_extract_relations", True):
-            try:
-                await self._extract_relations(scope_key, messages)
-            except Exception as exc:
-                log(f"关系提取失败 [{scope_key}]: {exc}", "WARNING", tag="记忆")
+        if batch.next_item < len(batch.items or []) or not batch.feedback_done or not batch.relations_done:
+            return CaptureOutcome.YIELDED
+        self._advance(state, batch)
+        state.warmup_threshold = min(state.warmup_threshold * 2, every_n)
+        await journal.save(scope_key, state)
         return CaptureOutcome.COMPLETED
 
     @staticmethod
@@ -349,6 +360,7 @@ class AutoCapturePipeline:
         scope_key: str,
         state: CaptureState,
         messages: list[dict[str, Any]],
+        *, should_yield: Callable[[], bool] | None = None,
     ) -> int:
         """先保存提取结果，再按出处回执恢复写入，反馈独立于新事实数量。"""
         batch = state.batch
@@ -357,6 +369,8 @@ class AutoCapturePipeline:
         if batch.items is None:
             batch.items = await self._extract(messages, batch.background) if should_extract(messages) else []
             await journal.save(scope_key, state)
+            if should_yield is not None and should_yield():
+                return 0
         stored = 0
         while batch.next_item < len(batch.items):
             key = batch.item_key(scope_key, batch.next_item)
@@ -366,12 +380,24 @@ class AutoCapturePipeline:
                 )
             batch.next_item += 1
             await journal.save(scope_key, state)
+            if should_yield is not None and should_yield():
+                return stored
         if not batch.feedback_done:
             if get_config_bool("memory_reflection_feedback_enabled", True):
                 from .reflection_lifecycle import classify_reflection_feedback
 
                 await classify_reflection_feedback(journal.store, scope_key, messages)
             batch.feedback_done = True
+            await journal.save(scope_key, state)
+            if should_yield is not None and should_yield():
+                return stored
+        if not batch.relations_done:
+            if get_config_bool("memory_auto_capture_extract_relations", True):
+                try:
+                    await self._extract_relations(scope_key, messages)
+                except Exception as exc:
+                    log(f"关系提取失败 [{scope_key}]: {exc}", "WARNING", tag="记忆")
+            batch.relations_done = True
             await journal.save(scope_key, state)
         return stored
 
@@ -543,9 +569,12 @@ def _pipeline() -> "AutoCapturePipeline":
     return auto_capture_port.get()
 
 
-async def run_auto_capture(mind: MemoryHost) -> None:
+async def run_auto_capture(
+    mind: MemoryHost, *, checkpoint: Callable[[], Awaitable[None]] | None = None,
+    should_yield: Callable[[], bool] | None = None,
+) -> None:
     """心跳入口；按轮数、空闲门槛和会话预算恢复持久化进度。"""
-    await _pipeline().run()
+    await _pipeline().run(checkpoint=checkpoint, should_yield=should_yield)
 
 
 async def flush_scope_capture(mind: MemoryHost, scope_key: str) -> bool:
@@ -563,14 +592,12 @@ async def flush_scope_capture(mind: MemoryHost, scope_key: str) -> bool:
     if scope_type not in ("user", "group") or not scope_id:
         return False
     try:
-        from agent.runtime.singleton import require_runtime
-
-        sqlite = require_runtime().data_center.sqlite
-    except Exception:
+        pipeline = _pipeline()
+    except WireError:
         return False
     every_n = max(1, get_config_int("memory_auto_capture_every_n", 5))
-    outcome = await _pipeline()._process_scope(
-        sqlite,
+    outcome = await pipeline._process_scope(
+        pipeline._source,
         scope_type,
         scope_id,
         every_n=every_n,

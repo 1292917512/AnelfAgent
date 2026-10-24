@@ -484,10 +484,13 @@ class CogneeClient:
             self._plan.retired.add(dataset_id)
 
     async def verify_graph_documents(self, dataset_id: str, data_ids: list[str]) -> None:
-        await self._invoke("verify_graph_documents", dataset_id, data_ids)
+        """发布事务合并到独立清单验收；独立读取仍即时检查原生图。"""
         if self._inside_transaction():
             assert self._plan is not None
             self._plan.require_processed(dataset_id, data_ids)
+            if self._transaction_writes:
+                return
+        await self._invoke("verify_graph_documents", dataset_id, data_ids)
 
     async def compact_vector_storage(
         self, retention_days: float, *, rotation: int | None = None, prune_only: bool = False,

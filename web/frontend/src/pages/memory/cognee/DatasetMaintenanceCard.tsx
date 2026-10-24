@@ -31,7 +31,7 @@ export function DatasetMaintenanceCard({ ready, status }: { ready: boolean; stat
   const { data: catalog, error, refetch } = useQuery({
     queryKey: ["cogneeDatasets"],
     queryFn: () => memoryApi.cognee.datasets().then((r) => r.data),
-    refetchInterval: 10000,
+    refetchInterval: status?.retirement?.running ? 5000 : 30000,
     throwOnError: false,
   });
   const retirementStage = status?.retirement?.stage;

@@ -311,36 +311,26 @@ class CogneeSyncQueue:
         return dict(row) if row else None
 
     async def get_status(self) -> Dict[str, int]:
-        db = await self._conn.get_db()
-        cursor = await db.execute(
-            "SELECT status, COUNT(*) AS cnt FROM cognee_sync_queue GROUP BY status"
-        )
-        counts = {str(row["status"]): int(row["cnt"]) for row in await cursor.fetchall()}
-        mapped = await db.execute("SELECT COUNT(*) AS cnt FROM cognee_entry_map")
-        mapped_row = await mapped.fetchone()
-        return {
-            "pending": counts.get("pending", 0) + counts.get("processing", 0),
-            "failed": counts.get("failed", 0),
-            "synced": int(mapped_row["cnt"]) if mapped_row else 0,
-        }
+        snapshot = await self.activity()
+        return {key: int(snapshot[key]) for key in ("pending", "failed", "synced")}
 
     async def activity(self) -> dict[str, Any]:
-        """持久队列的在途、重试与最近未解决错误；进程重启仍可观测。"""
+        """一次 SQLite 快照读取队列、映射和错误，避免跨查询状态不一致。"""
         db = await self._conn.get_db()
         row = await (await db.execute(
-            "SELECT COUNT(CASE WHEN status='processing' THEN 1 END) AS processing, "
+            "SELECT COUNT(CASE WHEN status IN ('pending','processing') THEN 1 END) AS pending, "
+            "COUNT(CASE WHEN status='failed' THEN 1 END) AS failed, "
+            "COUNT(CASE WHEN status='processing' THEN 1 END) AS processing, "
             "COUNT(CASE WHEN attempts>0 AND status IN ('pending','processing') THEN 1 END) AS retrying, "
-            "MIN(CASE WHEN status='pending' AND attempts>0 THEN next_retry_ns END) AS next_retry_ns "
-            "FROM cognee_sync_queue"
-        )).fetchone()
-        error = await (await db.execute(
-            "SELECT last_error FROM cognee_sync_queue WHERE last_error<>'' ORDER BY updated_ns DESC LIMIT 1"
+            "MIN(CASE WHEN status='pending' AND attempts>0 THEN next_retry_ns END) AS next_retry_ns, "
+            "(SELECT COUNT(*) FROM cognee_entry_map) AS synced, "
+            "(SELECT last_error FROM cognee_sync_queue WHERE last_error<>'' "
+            "ORDER BY updated_ns DESC LIMIT 1) AS last_error FROM cognee_sync_queue"
         )).fetchone()
         return {
-            "processing": int(row["processing"]) if row else 0,
-            "retrying": int(row["retrying"]) if row else 0,
-            "next_retry_at": (int(row["next_retry_ns"] or 0) / 1e9) if row else 0,
-            "last_error": str(error[0]) if error else "",
+            **{key: int(row[key]) if row else 0 for key in ("pending", "failed", "synced", "processing", "retrying")},
+            "next_retry_at": int(row["next_retry_ns"] or 0) / 1e9 if row else 0,
+            "last_error": str(row["last_error"] or "") if row else "",
         }
 
     async def reset(self) -> Dict[str, int]:

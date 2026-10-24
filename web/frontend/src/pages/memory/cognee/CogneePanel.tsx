@@ -24,7 +24,11 @@ export function CogneePanel() {
   const { data: status, error: statusError, dataUpdatedAt, refetch: refreshStatus } = useQuery({
     queryKey: ["cogneeStatus"],
     queryFn: () => memoryApi.cognee.status().then((r) => r.data),
-    refetchInterval: 5000,
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      return data?.sync.processing || data?.sync.pending || data?.sync.configuration_pending
+        || data?.retirement?.running || data?.projection?.phase === "building" ? 5000 : 15000;
+    },
     throwOnError: false,
   });
   const invalidate = () => {

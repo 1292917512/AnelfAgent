@@ -1115,3 +1115,40 @@ def test_native_imports_stay_inside_worker_adapters():
                     if path.parent != root / "agent/memory/cognee" or path.name not in allowed:
                         violations.append(str(path.relative_to(root)))
     assert violations == []
+
+
+@pytest.mark.parametrize("processed,chunks", [(True, "full"), (True, ""), (False, "full")])
+async def test_transaction_graph_check_is_coalesced_without_weakening_publication(tmp_path, monkeypatch, processed, chunks):
+    client = CogneeClient(CogneeConfig(data_root=str(tmp_path)))
+    checkpoints = IndexCheckpoints(tmp_path)
+    checkpoints.load()
+    committed = checkpoints.state["committed"]
+    client._checkpoints = checkpoints
+    monkeypatch.setattr(client, "initialize", AsyncMock(return_value=CogneeAvailability(
+        installed=True, enabled=True, ready=True)))
+    process = AsyncMock()
+    monkeypatch.setattr(client, "_worker", AsyncMock(return_value=process))
+    monkeypatch.setattr(client, "_stop", AsyncMock())
+    baseline = IndexManifest(datasets={"dataset": DatasetStamp(name="current", documents={
+        "doc": DocumentStamp(identity="original", processed=False),
+    })})
+    candidate = baseline.model_copy(deep=True)
+    candidate.datasets["dataset"].documents["doc"].processed = processed
+    candidate.datasets["dataset"].documents["doc"].chunks = chunks
+    inspect = AsyncMock(side_effect=[baseline, candidate, candidate])
+    monkeypatch.setattr(client, "_inspect", inspect)
+
+    async def publish():
+        async with client.write_transaction():
+            await client.cognify()
+            await client.verify_graph_documents("dataset", ["doc"])
+            assert [call.args[0] for call in process.call.await_args_list] == ["cognify"]
+
+    if not processed or not chunks:
+        with pytest.raises(RuntimeError, match="尚未完成抽取"):
+            await publish()
+        assert checkpoints.state["committed"] == committed
+    else:
+        await publish()
+        assert checkpoints.state["committed"] != committed
+        assert inspect.await_count == 3  # 基线、发布前、关闭重开后仍独立检查。

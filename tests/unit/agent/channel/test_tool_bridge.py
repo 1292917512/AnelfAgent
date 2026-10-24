@@ -429,3 +429,14 @@ class TestOutboundPipeline:
             "delete_message", '{"target_id":"123","message_id":"9"}'))
         assert res["success"] is True
         assert "user_fake:123" not in outbound_guard._recent
+
+
+async def test_common_tool_address_validation_returns_structured_error(channel_manager):
+    from agent.channel.tool_bridge import _make_common_handler
+
+    cm, created = channel_manager
+    _make(cm, created)
+    handler = _make_common_handler("delete_message", "delete_message")
+    result = json.loads(await handler(channel_id="fake", target_id="user_different:shared", message_id="m1"))
+    assert result["success"] is False
+    assert result["cause"] == "param"

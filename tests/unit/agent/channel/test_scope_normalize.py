@@ -53,7 +53,7 @@ class TestNormalizeTargetId:
         """_resolve_send_target 对泄漏形式给出可用的 (原生 ID, 类型)。"""
         from agent.channel import output_tools
         monkeypatch.setattr(output_tools, "_resolve_channel_type", lambda cid, tid: "private")
-        target_id, channel_type = _resolve_send_target("qq", "qq:1292917512")
+        target_id, channel_type, session = _resolve_send_target("qq", "qq:1292917512")
         assert target_id == "1292917512"
         assert channel_type == "private"
 

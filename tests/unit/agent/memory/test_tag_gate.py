@@ -6,6 +6,7 @@ import asyncio
 import json
 import time
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -284,7 +285,7 @@ class TestAutoCaptureIntegration:
 
         monkeypatch.setattr(ac, "gather_dedup_candidates", fake_gather)
         monkeypatch.setattr(ac, "judge_write", fake_judge)
-        pipeline = ac.AutoCapturePipeline(SimpleNamespace(memory_store=store, embedder=None))
+        pipeline = ac.AutoCapturePipeline(SimpleNamespace(memory_store=store, embedder=None), AsyncMock())
         item = CaptureItem(content="群里聊了新出的桌游", type="fact", topic="游戏　", importance=0.7)
         await pipeline._store_item("group:qq:789", [], item, "a" * 64)
 
@@ -302,7 +303,7 @@ class TestAutoCaptureIntegration:
             return "[]"
 
         monkeypatch.setattr(ac, "light_llm", fake_llm)
-        pipeline = ac.AutoCapturePipeline(SimpleNamespace(memory_store=store, embedder=None))
+        pipeline = ac.AutoCapturePipeline(SimpleNamespace(memory_store=store, embedder=None), AsyncMock())
         message = {
             "id": 1,
             "role": "user",
@@ -323,7 +324,7 @@ class TestAutoCaptureIntegration:
 
         monkeypatch.setattr(ac, "light_llm", fake_llm)
         monkeypatch.setattr(ac, "get_config_bool", lambda key, default=True: False)
-        pipeline = ac.AutoCapturePipeline(SimpleNamespace(memory_store=store, embedder=None))
+        pipeline = ac.AutoCapturePipeline(SimpleNamespace(memory_store=store, embedder=None), AsyncMock())
         message = {"id": 1, "role": "user", "ts_ns": int(time.time() * 1e9), "content": "闲聊"}
         await pipeline._extract([message], [])
         assert "既有主题标签词表" not in captured["prompt"]

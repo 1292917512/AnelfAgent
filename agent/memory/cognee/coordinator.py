@@ -135,6 +135,7 @@ class CogneeCoordinator:
         self._wake.set()
         self._pending_config = None
         self.client.quiesce()
+        self.writer.progress.quiesce()
         for task in (self._task, self._configuration_task, self._maintenance_task):
             if task and not task.done():
                 task.cancel()
@@ -145,6 +146,7 @@ class CogneeCoordinator:
 
     async def close(self) -> None:
         self.quiesce()
+        await self.writer.progress.close()
         await self.retirement.close()
         if self._configuration_task:
             await asyncio.gather(self._configuration_task, return_exceptions=True)
@@ -242,7 +244,6 @@ class CogneeCoordinator:
 
     async def status(self) -> CogneeSyncStatus:
         active = await self.writer.progress.snapshot(self.client.pipeline_progress)
-        counts = await self.store.get_cognee_sync_status()
         activity = await self.store.get_cognee_sync_activity()
         paused = self._pause_until_ns > time.monotonic_ns()
         paused_until = 0.0
@@ -251,9 +252,9 @@ class CogneeCoordinator:
         return CogneeSyncStatus(
             enabled=self.config.enabled and self.config.sync_enabled,
             running=bool(self._task and not self._task.done()),
-            pending=counts["pending"],
-            failed=counts["failed"],
-            synced=counts["synced"],
+            pending=activity["pending"],
+            failed=activity["failed"],
+            synced=activity["synced"],
             processing=activity["processing"],
             retrying=activity["retrying"],
             next_retry_at=activity["next_retry_at"],
