@@ -1645,6 +1645,7 @@ async def test_cleanup_has_its_own_interval_and_does_not_rewrite_fragments(store
     await coordinator._maybe_compact()
     assert client.cleanup_modes == [False, True]
     await coordinator.request_compact()
+    await coordinator._maintenance_task
     assert client.cleanup_modes == [False, True, False]
 
 
@@ -1671,6 +1672,76 @@ async def test_nonempty_queue_still_yields_to_maintenance_between_batches(store,
     assert events == ["batch", "maintenance"]
 
 
+async def test_manual_cleanup_returns_while_batch_busy_and_deduplicates_requests(store, tmp_path, monkeypatch):
+    entered, release = asyncio.Event(), asyncio.Event()
+    client = _CompactFakeClient()
+    compact = client.compact_vector_storage
+
+    async def maintain(*args, **kwargs):
+        entered.set()
+        await release.wait()
+        return await compact(*args, **kwargs)
+
+    monkeypatch.setattr(client, "compact_vector_storage", maintain)
+    monkeypatch.setattr("agent.memory.cognee.coordinator.cognee_storage_stats.schedule_refresh", lambda _: None)
+    coordinator = CogneeCoordinator(store, client, CogneeConfig(
+        data_root=str(tmp_path), sync_enabled=False, write_breaker_enabled=False))
+    try:
+        async with coordinator._projection_lock:
+            response = await asyncio.wait_for(coordinator.request_compact(prune_only=True), 2)
+            assert response == {"ok": True, "scheduled": True}
+            task = coordinator._maintenance_task
+            assert coordinator._maintenance_status.model_dump() == {"mode": "cleanup", "phase": "queued"}
+            assert (await coordinator.request_compact(prune_only=True))["ok"]
+            assert not (await coordinator.request_compact())["ok"]
+            await coordinator._maybe_compact()
+            assert coordinator._maintenance_task is task and not entered.is_set()
+        await asyncio.wait_for(entered.wait(), 2)
+        assert coordinator._maintenance_status.phase == "running"
+        memory_id = await asyncio.wait_for(store.add(MemoryEntry(
+            memory_type=MemoryType.SEMANTIC, content="saved during cleanup")), 5)
+        assert not task.done()
+    finally:
+        release.set()
+        await asyncio.wait_for(coordinator._maintenance_task, 5)
+    assert client.cleanup_modes == [True]
+    assert coordinator._maintenance_status is None
+    assert (await store.get(memory_id)).content == "saved during cleanup"
+
+
+@pytest.mark.parametrize("running", [False, True])
+async def test_shutdown_cancels_owned_maintenance_without_starting_another_write(store, tmp_path, monkeypatch, running):
+    client = _CompactFakeClient()
+    entered = asyncio.Event()
+
+    async def maintain(*args, **kwargs):
+        entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(client, "compact_vector_storage", maintain)
+    monkeypatch.setattr(client, "quiesce", Mock(), raising=False)
+    monkeypatch.setattr(client, "close", AsyncMock(), raising=False)
+    coordinator = CogneeCoordinator(store, client, CogneeConfig(data_root=str(tmp_path), write_breaker_enabled=False))
+    await coordinator._projection_lock.acquire()
+    try:
+        await coordinator.request_compact(prune_only=True)
+        task = coordinator._maintenance_task
+        if running:
+            coordinator._projection_lock.release()
+            await asyncio.wait_for(entered.wait(), 2)
+        coordinator.quiesce()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert entered.is_set() is running
+        with pytest.raises(RuntimeError, match="关停"):
+            await coordinator.request_compact()
+    finally:
+        if coordinator._projection_lock.locked():
+            coordinator._projection_lock.release()
+        await asyncio.wait_for(coordinator.close(), 5)
+    assert coordinator._maintenance_task is None and coordinator._maintenance_status is None
+
+
 async def test_slow_maintenance_yields_to_sync_and_defers_fragment_rewrites(store, tmp_path, monkeypatch):
     clock_ns = 1_000_000_000
     monkeypatch.setattr("agent.memory.cognee.coordinator.time.monotonic_ns", lambda: clock_ns)
@@ -1695,6 +1766,7 @@ async def test_slow_maintenance_yields_to_sync_and_defers_fragment_rewrites(stor
     await coordinator._maybe_compact()
     assert client.cleanup_modes == [True, True, False]  # 空闲时完成到期的碎片合并。
     await coordinator.request_compact()
+    await coordinator._maintenance_task
     assert client.cleanup_modes == [True, True, False, False]  # 显式请求不受自动冷却拦截。
 
 
@@ -1749,22 +1821,23 @@ async def test_coordinator_compact_idle_scheduling(tmp_path) -> None:
         await coordinator._maybe_compact()
         assert client.compact_calls == []
 
-        await coordinator.request_compact()  # worker 未运行 → 内联执行
+        await coordinator.request_compact()  # 同步暂停时也立即返回，由后台任务执行。
+        await coordinator._maintenance_task
         assert client.compact_calls == [3.0]
         assert coordinator.last_compact_at > 0
         assert "回收" in coordinator.last_compact_summary
 
-        coordinator._compact_requested = True
-        await coordinator._maybe_compact()  # 刚执行过，间隔未到期但被显式请求 → 仍执行
+        await coordinator.request_compact()  # 显式请求不受自动冷却限制。
+        await coordinator._maintenance_task
         assert client.compact_calls == [3.0, 3.0]
 
         coordinator.config.compact_enabled = False
         await coordinator._maybe_compact()
         assert client.compact_calls == [3.0, 3.0]
-        coordinator._compact_requested = True
-        await coordinator._maybe_compact()
+        await coordinator.request_compact()
+        await coordinator._maintenance_task
         assert client.compact_calls == [3.0, 3.0, 3.0]
-        assert coordinator._compact_requested is False
+        assert coordinator._maintenance_status is None
         from agent.memory.cognee.storage import cognee_storage_stats
 
         await asyncio.wait_for(asyncio.gather(*cognee_storage_stats._tasks), timeout=5)

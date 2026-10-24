@@ -175,6 +175,8 @@ export interface CogneeBatchProgress {
   } | null;
 }
 
+export type CogneeMaintenanceAction = "cleanup" | "compact" | "backfill" | "rebuild" | "freshRebuild";
+
 export interface CogneeStatus {
   retirement?: {
     running: boolean;
@@ -224,6 +226,7 @@ export interface CogneeStatus {
     configuration_error?: string;
     last_compact_at?: number;
     last_compact_summary?: string;
+    maintenance?: { mode: "cleanup" | "compact"; phase: "queued" | "running" } | null;
   };
 }
 

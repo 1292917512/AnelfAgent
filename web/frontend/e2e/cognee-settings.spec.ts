@@ -2,6 +2,61 @@ import { expect } from "@playwright/test";
 import { test } from "./fixtures";
 import type { CogneeSettingField } from "../src/lib/types";
 
+test("Cognee maintenance is hidden, explained, confirmed and tracked without holding the page", async ({ page }, info) => {
+  let maintenance: { mode: "cleanup" | "compact"; phase: "queued" | "running" } | null = null;
+  let summary = "";
+  const requests: boolean[] = [];
+  await page.route("**/api/memory/cognee/status", route => route.fulfill({ json: {
+    availability: { installed: true, enabled: true, ready: true },
+    sync: { enabled: false, running: false, pending: 10, failed: 0, synced: 30,
+      maintenance, last_compact_summary: summary },
+  } }));
+  await page.route("**/api/memory/cognee/compact?*", route => {
+    const prune = new URL(route.request().url()).searchParams.get("prune_only") === "true";
+    requests.push(prune);
+    maintenance = { mode: prune ? "cleanup" : "compact", phase: "queued" };
+    return route.fulfill({ json: { ok: true, scheduled: true } });
+  });
+  await page.goto("/webui/memory?tab=cognee");
+  await expect(page.getByRole("button", { name: "Clean expired versions", exact: true })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Start a fresh full rebuild", exact: true })).toHaveCount(0);
+  await page.getByRole("button", { name: "Index maintenance", exact: true }).click();
+  const panel = page.getByRole("dialog", { name: "Index maintenance", exact: true });
+  const cleanup = panel.getByRole("button", { name: "Clean expired versions", exact: true });
+  await expect(cleanup).toHaveAttribute("title", /without merging fragments/);
+  await expect(cleanup).toHaveAccessibleDescription(/Keep current memories/);
+  expect(await panel.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await page.screenshot({ path: info.outputPath("cognee-maintenance.png"), animations: "disabled" });
+  await cleanup.click();
+  const confirm = page.getByRole("dialog", { name: "Clean expired versions", exact: true });
+  await expect(confirm).toContainText("Current memories and native data are retained");
+  expect(requests).toEqual([]);
+  await confirm.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(confirm).toBeHidden();
+  await expect(cleanup).toBeFocused();
+  expect(requests).toEqual([]);
+  await cleanup.click();
+  await confirm.getByRole("button", { name: "Confirm", exact: true }).click();
+  await expect.poll(() => requests).toEqual([true]);
+  await expect(panel.getByRole("status")).toContainText("waiting for the current batch");
+  await expect(cleanup).toBeDisabled();
+  await panel.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(panel).toBeHidden();
+  await expect(page.getByRole("status").filter({ hasText: "Clean expired versions:" })).toContainText("waiting");
+  maintenance = { mode: "cleanup", phase: "running" };
+  await expect(page.getByRole("status").filter({ hasText: "Clean expired versions:" })).toContainText("running", { timeout: 10000 });
+  maintenance = null;
+  summary = "Maintenance completed; current data retained";
+  await expect(page.getByText(/Maintenance completed; current data retained/)).toBeVisible({ timeout: 10000 });
+  await page.getByRole("button", { name: "Index maintenance", exact: true }).click();
+  const compact = panel.getByRole("button", { name: "Compact Storage", exact: true });
+  await expect(compact).toHaveAttribute("title", /temporary space/);
+  await compact.click();
+  const compactConfirm = page.getByRole("dialog", { name: "Compact Storage", exact: true });
+  await compactConfirm.getByRole("button", { name: "Confirm", exact: true }).click();
+  await expect.poll(() => requests).toEqual([true, false]);
+});
+
 test("Cognee settings separate deadlines and preserve overrides across edits and tabs", async ({ page }, info) => {
   const fields: CogneeSettingField[] = [
     { key: "enabled", type: "bool", section: "models" },

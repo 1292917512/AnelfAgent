@@ -14,6 +14,24 @@ from agent.memory.cognee.llm_bridge import CogneeConfigError
 from services.memory import MemoryService
 
 
+@pytest.mark.parametrize("prune_only", [False, True])
+async def test_maintenance_http_forwards_mode_and_returns_background_acceptance(monkeypatch, prune_only):
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+
+    from web.routers.memory import router
+
+    request = AsyncMock(return_value={"ok": True, "scheduled": True})
+    monkeypatch.setattr("agent.memory.cognee.runtime.get_cognee_coordinator",
+                        lambda: SimpleNamespace(request_compact=request))
+    app = FastAPI()
+    app.include_router(router)
+    async with AsyncClient(transport=ASGITransport(app), base_url="http://test") as http:
+        response = await http.post("/memory/cognee/compact", params={"prune_only": str(prune_only).lower()})
+    assert response.status_code == 200 and response.json() == {"ok": True, "scheduled": True}
+    request.assert_awaited_once_with(prune_only=prune_only)
+
+
 async def test_dataset_http_uses_observation_without_waiting_for_sync(monkeypatch, tmp_path):
     from fastapi import FastAPI
     from httpx import ASGITransport, AsyncClient

@@ -99,10 +99,11 @@ test("Cognee explicitly starts a fresh generation during an unfinished build", a
     return route.fulfill({ json: { ok: true, scheduled: true } });
   });
   await page.goto("/webui/memory?tab=cognee");
+  await page.getByRole("button", { name: "Index maintenance", exact: true }).click();
   await expect(page.getByRole("button", { name: "Build / Resume", exact: true })).toBeDisabled();
   const fresh = page.getByRole("button", { name: "Start a fresh full rebuild", exact: true });
   await fresh.click();
-  const dialog = page.getByRole("dialog");
+  const dialog = page.getByRole("dialog", { name: "Start a fresh full rebuild", exact: true });
   await expect(dialog.getByText(/Source content, previous datasets and backups are retained/)).toBeVisible();
   expect(requests).toEqual([]);
   await dialog.getByRole("button", { name: "Confirm", exact: true }).click();
@@ -395,7 +396,9 @@ test("Cognee catalog distinguishes initial loading and keeps confirmed datasets 
   });
   await page.goto("/webui/memory?tab=cognee");
   await expect(page.getByText("Awaiting configuration", { exact: true })).toHaveCount(2);
+  await page.getByRole("button", { name: "Index maintenance", exact: true }).click();
   await expect(page.getByRole("button", { name: "Compact Storage", exact: true })).toBeDisabled();
+  await page.getByRole("dialog", { name: "Index maintenance", exact: true }).getByRole("button", { name: "Close", exact: true }).click();
   await expect(page.getByText(/Waiting for the first catalog observation/)).toBeVisible();
   expect(datasetReads).toBe(1);
   catalogReady = true;

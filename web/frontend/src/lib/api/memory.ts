@@ -31,9 +31,10 @@ export const memoryApi = {
     repairCoverage: (namespace: string) => api.post<CogneeCoverageRepairResult>(
       "/memory/cognee/repair-coverage", null, { params: { namespace }, errorFeedback: "local" }),
     rebuild: (restart = false) => api.post<{ ok: boolean; scheduled: boolean }>("/memory/cognee/rebuild", null, { params: { restart } }),
-    compact: () =>
+    compact: (pruneOnly = false) =>
       api.post<{ ok: boolean; scheduled?: boolean; result?: { bytes_reclaimed?: number }; error?: string }>(
         "/memory/cognee/compact",
+        null, { params: { prune_only: pruneOnly }, errorFeedback: "local" },
       ),
     backfill: (limit = 0, dryRun = true) =>
       api.post("/memory/cognee/backfill", { limit, dry_run: dryRun }),

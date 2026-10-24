@@ -19,7 +19,7 @@ from .errors import error_text as _error_text
 from .rebuild import CogneeRebuild
 from .retirement import DatasetRetirement
 from .storage import cognee_storage_stats
-from .types import CogneeSyncStatus
+from .types import CogneeMaintenanceStatus, CogneeSyncStatus
 from .write_breaker import WriteBreaker
 from .writer import ProjectionWriter
 
@@ -47,7 +47,8 @@ class CogneeCoordinator:
         self._configuration_error = ""
         self._last_error = ""
         self._last_improve_ns: dict[str, int] = {}
-        self._compact_requested = False
+        self._maintenance_task: asyncio.Task[dict[str, Any]] | None = None
+        self._maintenance_status: CogneeMaintenanceStatus | None = None
         self._last_compact_ns: int | None = None
         self._last_cleanup_ns: int | None = None
         self._maintenance_cost_ns = 0
@@ -134,7 +135,7 @@ class CogneeCoordinator:
         self._wake.set()
         self._pending_config = None
         self.client.quiesce()
-        for task in (self._task, self._configuration_task):
+        for task in (self._task, self._configuration_task, self._maintenance_task):
             if task and not task.done():
                 task.cancel()
 
@@ -152,6 +153,10 @@ class CogneeCoordinator:
         if self._task:
             await asyncio.gather(self._task, return_exceptions=True)
             self._task = None
+        if self._maintenance_task:
+            await asyncio.gather(self._maintenance_task, return_exceptions=True)
+            self._maintenance_task = None
+        self._maintenance_status = None
         # 唤醒可能仍在等待空闲窗口作业的调用方，避免关停悬挂
         if self._idle_job is not None:
             if asyncio.iscoroutine(self._idle_job):
@@ -261,29 +266,52 @@ class CogneeCoordinator:
             last_error=activity["last_error"] or self._last_error,
             last_compact_at=self.last_compact_at,
             last_compact_summary=self.last_compact_summary,
+            maintenance=self._maintenance_status,
             paused=paused,
             paused_until=paused_until,
             pause_reason=self._pause_reason if paused else "",
         )
 
-    async def request_compact(self) -> dict[str, Any]:
-        """请求一次 LanceDB 物理压缩。
-
-        worker 存活时仅登记请求，由 worker 在当前批次结束后执行
-        （与写入互斥，避免 Lance 提交冲突）；worker 未运行（同步关闭）
-        时直接内联执行并返回结果。
-        """
+    async def request_compact(self, *, prune_only: bool = False) -> dict[str, Any]:
+        """登记单次后台维护；立即响应，在批次边界互斥执行，重复请求不累积。"""
         self._require_open()
         if not self.config.enabled:
             return {"ok": False, "error": "cognee 未启用"}
         if not self._projection_allowed():
             return {"ok": False, "error": self._pause_reason}
-        if self._task and not self._task.done():
-            self._compact_requested = True
-            self.wake()
-            return {"ok": True, "scheduled": True}
-        result = await self._run_compact()
-        return {"ok": "error" not in result, "scheduled": False, "result": result}
+        mode = "cleanup" if prune_only else "compact"
+        if self._maintenance_status and self._maintenance_status.mode != mode:
+            return {"ok": False, "error": "已有其他索引维护任务，请等待完成后再操作"}
+        self._start_maintenance(prune_only=prune_only)
+        return {"ok": True, "scheduled": True}
+
+    def _start_maintenance(self, *, prune_only: bool) -> asyncio.Task[dict[str, Any]]:
+        """自动与手动维护共用单槽任务，由协调器生命周期回收。"""
+        if self._maintenance_task and not self._maintenance_task.done():
+            return self._maintenance_task
+        self._maintenance_status = CogneeMaintenanceStatus(mode="cleanup" if prune_only else "compact")
+
+        async def run() -> dict[str, Any]:
+            try:
+                result = await self._run_compact(prune_only=prune_only)
+                if "error" in result:
+                    self.last_compact_at = time.time()
+                    self.last_compact_summary = f"失败: {result['error']}"
+                return result
+            except Exception as exc:
+                self.last_compact_at = time.time()
+                self.last_compact_summary = f"失败: {_error_text(exc)}"
+                log(f"Cognee 后台维护失败: {self.last_compact_summary}", "WARNING", tag="记忆")
+                return {"error": self.last_compact_summary}
+
+        def finished(task: asyncio.Task[dict[str, Any]]) -> None:
+            # 创建后尚未运行即被取消时，协程内部 finally 不会执行。
+            if self._maintenance_task is task:
+                self._maintenance_status = None
+
+        self._maintenance_task = asyncio.create_task(run(), name="memory.cognee.maintenance")
+        self._maintenance_task.add_done_callback(finished)
+        return self._maintenance_task
 
     async def run_in_idle_window(self, job: Any, *, check_cancel: Callable[[], None] | None = None) -> Any:
         """在队列排空后的空闲窗口执行 job（协程，与写入互斥）。
@@ -495,10 +523,7 @@ class CogneeCoordinator:
 
     async def _maybe_compact(self, *, busy: bool = False) -> None:
         """繁忙时只清理版本；自动维护冷却至少为上次总耗时的九倍，避免抢占同步。"""
-        if not self.config.enabled:
-            self._compact_requested = False
-            return
-        if not self.config.compact_enabled and not self._compact_requested:
+        if not self.config.enabled or not self.config.compact_enabled or self._maintenance_status is not None:
             return
         now_ns = time.monotonic_ns()
         interval_ns = int(self.config.compact_interval_seconds * 1e9)
@@ -506,17 +531,20 @@ class CogneeCoordinator:
         cleanup_interval = max(int(self.config.compact_cleanup_interval_seconds * 1e9),
                                self._maintenance_cost_ns * 9)
         cleanup_due = self._last_cleanup_ns is None or now_ns - self._last_cleanup_ns >= cleanup_interval
-        full = self._compact_requested or (due and not busy)
+        full = due and not busy
         if not (full or cleanup_due):
             return
-        self._compact_requested = False
-        await self._run_compact(prune_only=not full)
+        await self._start_maintenance(prune_only=not full)
 
     async def _run_compact(self, *, prune_only: bool = False) -> dict[str, Any]:
         with activity_owner(kind="maintenance", label="Cognee", owner_id="cognee"):
             async with activity_scope(uuid.uuid4().hex[:8], "") as activity, activity_step("cognee_compact") as step:
                 async with self._projection_lock:
                     self._require_open()
+                    if not self.config.enabled:
+                        raise RuntimeError("Cognee 已停用，取消尚未执行的维护")
+                    if self._maintenance_status:
+                        self._maintenance_status.phase = "running"
                     if not self._projection_allowed():
                         step.status, step.detail = "error", self._pause_reason
                         activity.status, activity.error = "failed", self._pause_reason

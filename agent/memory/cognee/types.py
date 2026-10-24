@@ -76,6 +76,13 @@ class CogneeBatchProgress(BaseModel):
     documents_checked_at: float = 0
 
 
+class CogneeMaintenanceStatus(BaseModel):
+    """唯一维护任务的模式与阶段；不参与索引提交或恢复判断。"""
+
+    mode: Literal["cleanup", "compact"]
+    phase: Literal["queued", "running"] = "queued"
+
+
 class CogneeSyncStatus(BaseModel):
     enabled: bool
     running: bool
@@ -93,6 +100,7 @@ class CogneeSyncStatus(BaseModel):
     publication: dict[str, Any] = Field(default_factory=dict)
     last_compact_at: float = 0.0
     last_compact_summary: str = ""
+    maintenance: CogneeMaintenanceStatus | None = None
     # 写盘熔断暂停（投影认领与自动压缩暂缓，冷却到期自动恢复）
     paused: bool = False
     paused_until: float = 0.0

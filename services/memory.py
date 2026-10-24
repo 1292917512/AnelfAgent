@@ -693,17 +693,13 @@ class MemoryService:
         }
 
     @staticmethod
-    async def compact_cognee() -> Dict[str, Any]:
-        """请求一次 cognee LanceDB 物理压缩（回收删除/更新的历史版本）。
-
-        同步 worker 运行中仅登记请求、待队列排空的空闲窗口执行（与写入互斥）；
-        worker 未运行时直接执行并返回回收统计。逻辑数据不受影响。
-        """
+    async def compact_cognee(*, prune_only: bool = False) -> Dict[str, Any]:
+        """登记后台索引维护；仅清理版本或同时合并碎片，在批次边界互斥执行。"""
         from agent.memory.cognee.runtime import get_cognee_coordinator
         coordinator = get_cognee_coordinator()
         if not coordinator:
             return {"error": "Cognee 运行时未初始化"}
-        return await coordinator.request_compact()
+        return await coordinator.request_compact(prune_only=prune_only)
 
     async def repair_cognee_coverage(self, namespace: str) -> Dict[str, Any]:
         """同一轮次定向补同步权威覆盖差异，不创建新图。"""

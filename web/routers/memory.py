@@ -92,9 +92,9 @@ async def repair_cognee_coverage(namespace: str) -> Dict[str, Any]:
 
 
 @router.post("/cognee/compact")
-async def compact_cognee() -> Dict[str, Any]:
-    """压缩 cognee LanceDB 向量库，回收删除/更新遗留的历史版本（不动逻辑数据）。"""
-    return await _mem_svc.compact_cognee()
+async def compact_cognee(prune_only: bool = False) -> Dict[str, Any]:
+    """后台清理过期版本；prune_only=False 时还合并碎片，不删除当前逻辑数据。"""
+    return await _mem_svc.compact_cognee(prune_only=prune_only)
 
 
 @router.post("/cognee/backfill")
