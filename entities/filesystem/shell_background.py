@@ -24,7 +24,7 @@ import subprocess
 import tempfile
 import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, TextIO
 
 from core.config import get_config_int
 from core.log import log
@@ -54,19 +54,31 @@ def launch_background(command: str, cwd: str, workspace: str,
     registry = get_background_registry()
     scope = get_owner_scope()
 
-    out_dir = os.path.join(os.path.abspath(workspace), ".tool-results")
-    os.makedirs(out_dir, exist_ok=True)
-    fd, output_file = tempfile.mkstemp(prefix="shell-bg-", suffix=".log", dir=out_dir)
-    out_fp = os.fdopen(fd, "w", encoding="utf-8", errors="replace")
-
     popen_kwargs: Dict[str, Any] = {}
     if os.name != "nt":
         # 独立进程组：AI 终止时整组击杀，防 shell 孙进程泄漏（对齐前台 run_command）
         popen_kwargs["start_new_session"] = True
+    else:
+        popen_kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     # 环境变量卫生：NO_COLOR/pager/locale 等（用户环境值优先，见 shell_env）
     from core.shell_env import shell_env_defaults
     env = {**shell_env_defaults(), **os.environ}
+    if timeout_sec <= 0:
+        timeout_sec = float(max(0, get_config_int("background_shell_alert_after", 1800)))
+    desc = description or command[:60]
+    task_id = ""
+    out_fp: Optional[TextIO] = None
     try:
+        if registry is not None:
+            task_id = registry.register(scope, "shell", desc, expected_seconds=timeout_sec)
+        out_dir = os.path.join(os.path.abspath(workspace), ".tool-results")
+        os.makedirs(out_dir, exist_ok=True)
+        fd, output_file = tempfile.mkstemp(prefix="shell-bg-", suffix=".log", dir=out_dir)
+        try:
+            out_fp = os.fdopen(fd, "w", encoding="utf-8", errors="replace")
+        except BaseException:
+            os.close(fd)
+            raise
         proc = subprocess.Popen(
             command,
             shell=True,
@@ -78,15 +90,14 @@ def launch_background(command: str, cwd: str, workspace: str,
             **popen_kwargs,
         )
     except Exception as exc:
-        out_fp.close()
-        return json.loads(error_from_exception(exc, action="启动后台任务"))
+        if out_fp is not None:
+            out_fp.close()
+        error = error_from_exception(exc, action="启动后台任务")
+        if task_id and registry is not None:
+            registry.complete(task_id, False, error, claimed=True)
+        return json.loads(error)
 
-    if timeout_sec <= 0:
-        timeout_sec = float(max(0, get_config_int("background_shell_alert_after", 1800)))
-
-    desc = description or command[:60]
     if registry is not None:
-        task_id = registry.register(scope, "shell", desc, expected_seconds=timeout_sec)
         # 关联输出文件：check_background_tasks(task_id=...) 即可增量消费输出，
         # 轮询长任务不再全量重读日志文件（单游标增量语义）
         registry.attach_output_file(task_id, output_file)
@@ -111,9 +122,9 @@ def launch_background(command: str, cwd: str, workspace: str,
         name=f"shell-bg-{task_id}",
         daemon=True,
     )
-    thread.start()
     # 子进程看护登记（独立进程组的 owner-death 守卫：启动清扫孤儿 + 关停终止）
     register_child(proc.pid, desc)
+    thread.start()
     log(f"后台 shell 任务已启动: {task_id} (pid={proc.pid}, 预期={timeout_sec or '不限'}) {desc}", tag="后台")
 
     expect_note = (

@@ -32,6 +32,29 @@ def registry(monkeypatch):
 
 
 class TestLaunchBackground:
+    async def test_shutdown_rejects_launch_before_process_or_output_creation(self, workspace, registry, monkeypatch):
+        from unittest.mock import Mock
+
+        await registry.close()
+        spawn = Mock()
+        monkeypatch.setattr(shell_background.subprocess, "Popen", spawn)
+        result = shell_background.launch_background("must not execute", str(workspace), str(workspace))
+        assert result.get("error")
+        spawn.assert_not_called()
+        assert not (workspace / ".tool-results").exists()
+
+    def test_failed_launch_settles_admitted_task_without_unclaimed_notification(self, workspace, registry, monkeypatch):
+        from unittest.mock import Mock
+
+        notify = Mock()
+        registry.set_unclaimed_callback(notify)
+        monkeypatch.setattr(shell_background.subprocess, "Popen", Mock(side_effect=OSError("spawn failed")))
+        result = shell_background.launch_background("cannot start", str(workspace), str(workspace))
+        assert result.get("error")
+        assert not registry.running("_global")
+        assert len(registry.completed("_global")) == 1 and not registry.completed("_global")[0].success
+        notify.assert_not_called()
+
     def test_returns_task_info_immediately(self, workspace, registry):
         result = shell_background.launch_background(python_command("import time; time.sleep(0.2); print('done')"), str(workspace), str(workspace))
         assert result["ok"] and result["background"]
