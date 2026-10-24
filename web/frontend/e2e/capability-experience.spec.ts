@@ -473,6 +473,9 @@ test("Cognee reasoning edits survive failures and independent saves", async ({ p
   await expect(chat.getByRole("alert")).toHaveText("Thinking budget must be lower than the output limit");
   await expect(effort).toHaveValue("off");
   rejectSave = false;
+  await expect(embedding.getByRole("button", { name: "Custom", exact: true })).toBeDisabled();
+  await embedding.getByRole("switch", { name: "Allow embedding model edits", exact: true }).click();
+  await page.getByRole("dialog", { name: "Unlock embedding model settings?", exact: true }).getByRole("button", { name: "Confirm", exact: true }).click();
   await embedding.getByRole("button", { name: "Custom", exact: true }).click();
   await embedding.getByRole("textbox", { name: "Model identifier", exact: true }).fill("openai/embedding-test");
   await chat.getByRole("button", { name: "Save", exact: true }).click();

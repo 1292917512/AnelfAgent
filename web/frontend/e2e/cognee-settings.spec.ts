@@ -80,10 +80,15 @@ test("Cognee settings separate deadlines and preserve overrides across edits and
       reasoning_efforts: ["", "low", "high"], settings_fields: fields },
   };
   const patches: Record<string, unknown>[] = [];
+  let rejectNextSave = false;
   await page.route("**/api/memory/cognee/config", async (route) => {
     if (route.request().method() === "PUT") {
       const patch = route.request().postDataJSON();
       patches.push(patch);
+      if (rejectNextSave) {
+        rejectNextSave = false;
+        return route.fulfill({ status: 400, json: { detail: "Embedding compatibility check rejected this change" } });
+      }
       config = { ...config, ...patch };
     }
     await route.fulfill({ json: config });
@@ -145,6 +150,18 @@ test("Cognee settings separate deadlines and preserve overrides across edits and
   await page.screenshot({ path: info.outputPath("cognee-storage-settings.png") });
 
   await dialog.getByRole("tab", { name: "Extraction models", exact: true }).click();
+  const unlock = models.getByRole("switch", { name: "Allow embedding model edits", exact: true });
+  const unlockDialog = page.getByRole("dialog", { name: "Unlock embedding model settings?", exact: true });
+  await expect(unlock).not.toBeChecked();
+  await expect(models.getByRole("button", { name: "Pinned model", exact: true }).nth(1)).toBeDisabled();
+  await unlock.click();
+  await expect(unlockDialog).toContainText("full rebuild and verification");
+  await unlockDialog.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(unlock).not.toBeChecked();
+  expect(patches).toHaveLength(4);
+  await unlock.click();
+  await unlockDialog.getByRole("button", { name: "Confirm", exact: true }).click();
+  await expect(unlock).toBeChecked();
   await models.getByRole("button", { name: "Pinned model", exact: true }).first().click();
   await models.getByRole("button", { name: "Pinned model", exact: true }).nth(1).click();
   const cards = models.locator("section").filter({ has: page.getByRole("button", { name: "Auto", exact: true }) });
@@ -165,6 +182,10 @@ test("Cognee settings separate deadlines and preserve overrides across edits and
   await page.keyboard.press("Escape");
   await expect(dialog).toBeVisible();
   await page.screenshot({ path: info.outputPath("cognee-model-layout.png"), animations: "disabled" });
+  await unlock.click();
+  await expect(unlock).not.toBeChecked();
+  expect(patches).toHaveLength(4);
+  expect(config.embedding.source).toBe("auto");
 
   const toggle = models.getByRole("switch", { name: "Enable Cognee", exact: true });
   await expect(toggle).toBeChecked();
@@ -189,6 +210,34 @@ test("Cognee settings separate deadlines and preserve overrides across edits and
   await models.locator("section").filter({ has: page.getByRole("switch", { name: "Enable Cognee", exact: true }) }).getByRole("button", { name: "Save", exact: true }).click();
   await expect.poll(() => patches.length).toBe(6);
   expect(patches[5]).toEqual({ enabled: true });
+  await toggle.click();
+  await disable.getByRole("button", { name: "Confirm", exact: true }).click();
+  await unlock.click();
+  await unlockDialog.getByRole("button", { name: "Confirm", exact: true }).click();
+  const embedding = cards.nth(1);
+  await embedding.getByRole("button", { name: "Custom", exact: true }).click();
+  await embedding.getByRole("textbox", { name: "Model identifier", exact: true }).fill("openai/new-embedding");
+  await expect(embedding.getByRole("button", { name: "Save", exact: true })).toHaveCount(1);
+  rejectNextSave = true;
+  await embedding.getByRole("button", { name: "Save", exact: true }).click();
+  await expect.poll(() => patches.length).toBe(7);
+  await expect(embedding.getByRole("alert")).toContainText("Embedding compatibility check rejected");
+  await expect(unlock).toBeChecked();
+  await expect(toggle).not.toBeChecked();
+  expect(config.enabled).toBe(true);
+  expect(config.embedding.model).toBe("");
+  await expect(embedding.getByRole("textbox", { name: "Model identifier", exact: true })).toHaveValue("openai/new-embedding");
+  await embedding.getByRole("button", { name: "Save", exact: true }).click();
+  await expect.poll(() => patches.length).toBe(8);
+  expect(patches[7]).toEqual({ enabled: false, embedding: config.embedding });
+  expect(config.embedding.model).toBe("openai/new-embedding");
+  await expect(unlock).not.toBeChecked();
+  await expect(embedding.getByRole("textbox", { name: "Model identifier", exact: true })).toBeDisabled();
+  await unlock.click();
+  await unlockDialog.getByRole("button", { name: "Confirm", exact: true }).click();
+  await dialog.getByRole("button", { name: "Close", exact: true }).click();
+  await page.getByRole("button", { name: "Models and configuration", exact: true }).click();
+  await expect(unlock).not.toBeChecked();
   if (info.project.name === "desktop") {
     await dialog.getByRole("button", { name: "Close", exact: true }).click();
     await page.getByRole("button", { name: "Appearance & language", exact: true }).click();
@@ -198,7 +247,7 @@ test("Cognee settings separate deadlines and preserve overrides across edits and
     await page.getByRole("button", { name: "模型与配置", exact: true }).click();
     const chineseDialog = page.getByRole("dialog", { name: "模型与配置", exact: true });
     await chineseDialog.getByRole("button", { name: "指定模型", exact: true }).first().click();
-    await chineseDialog.getByRole("button", { name: "指定模型", exact: true }).nth(1).click();
+    await expect(chineseDialog.getByRole("button", { name: "指定模型", exact: true }).nth(1)).toBeDisabled();
     await expect(chineseDialog).toHaveCSS("opacity", "1");
     await page.screenshot({ path: info.outputPath("cognee-model-layout-zh.png"), animations: "disabled" });
   }

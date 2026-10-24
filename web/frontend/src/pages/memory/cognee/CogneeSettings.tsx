@@ -31,7 +31,7 @@ export function CogneeSettings({ status }: { status?: CogneeStatus }) {
             <ModelConfigCard kind="chat" resolved={status?.resolved.chat} />
             <ModelConfigCard kind="embedding" resolved={status?.resolved.embedding} />
           </div>
-          <Link to="/models" className="inline-block text-sm text-accent hover:underline">{t("cognee.configureModels")}</Link>
+          <Link to="/models" className="inline-block text-xs text-muted hover:text-accent hover:underline">{t("cognee.configureModels")}</Link>
         </>}
         {key === "recall" && <Link to="/config?key=memory_probe_timeout_seconds" className="inline-block text-sm text-accent hover:underline">
           {t("cognee.settings.recallBudgetLink")}
@@ -39,7 +39,7 @@ export function CogneeSettings({ status }: { status?: CogneeStatus }) {
         {key === "storage" && <Link to="/data" className="inline-block text-sm text-accent hover:underline">
           {t("cognee.settings.storageLink")}
         </Link>}
-        <ConfigFormPanel title={t(`cognee.settings.${key}`)}
+        {key !== "models" && <ConfigFormPanel title={t(`cognee.settings.${key}`)}
           fields={config.options.settings_fields.filter((field) => field.section === key).map((field) => ({
             ...field, label: t(`cogneeFields.${field.key}`), desc: t(`cogneeDescs.${field.key}`),
           }))}
@@ -48,7 +48,7 @@ export function CogneeSettings({ status }: { status?: CogneeStatus }) {
           saveFn={(patch: ConfigValues) => memoryApi.cognee.saveConfig(patch as Partial<CogneeConfig>)}
           extraInvalidateKeys={["cogneeStatus", "memoryHealth"]}
           confirmBooleanChanges
-          note={t("cognee.hotApplyNote")} advancedLabel={t("cognee.settings.advanced")} />
+          note={t("cognee.hotApplyNote")} advancedLabel={t("cognee.settings.advanced")} />}
       </div>)}
     </AsyncState>
   </div>;
