@@ -158,6 +158,7 @@ async def test_postprocessing_shares_deadline_and_preserves_retrieved_facts(stor
     from unittest.mock import AsyncMock
 
     from agent.memory.cognee.config import CogneeConfig
+    from core import config
 
     result = MemorySearchResult(id="mem:1", snippet="小李的最新地址在南京，旧地址已失效", score=.9)
     retriever = _retriever(store)
@@ -168,8 +169,25 @@ async def test_postprocessing_shares_deadline_and_preserves_retrieved_facts(stor
     monkeypatch.setattr(retriever, "_expand_associations", AsyncMock(return_value=[result, result]))
     monkeypatch.setattr(retriever, "_apply_rerank", AsyncMock(return_value=[result, result]))
     cancelled = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 60
+    get_config_float = config.get_config_float
+    monkeypatch.setattr(config, "get_config_float", lambda key, default=0.0:
+                        120.0 if key == "memory_recall_timeout_seconds" else get_config_float(key, default))
+    timeouts: list[asyncio.Timeout] = []
+    timeout_at = asyncio.timeout_at
+
+    def track_timeout(when: float | None) -> asyncio.Timeout:
+        guard = timeout_at(when)
+        timeouts.append(guard)
+        return guard
+
+    monkeypatch.setattr(asyncio, "timeout_at", track_timeout)
 
     async def slow(*args, **kwargs):
+        # 到达待验证阶段后再触发期限，避免将 CI 调度开销当成被测耗时。
+        assert timeouts[-1].when() == deadline
+        timeouts[-1].reschedule(loop.time())
         try:
             await asyncio.Event().wait()
         finally:
@@ -177,7 +195,7 @@ async def test_postprocessing_shares_deadline_and_preserves_retrieved_facts(stor
 
     monkeypatch.setattr(retriever, "_expand_associations" if stage == "associations" else "_apply_rerank", slow)
     _, messages = await asyncio.wait_for(retriever.recall_split(
-        [{"role": "user", "content": "最新地址"}], deadline=asyncio.get_running_loop().time() + .1), timeout=1)
+        [{"role": "user", "content": "最新地址"}], deadline=deadline), timeout=5)
     assert "小李的最新地址在南京" in str(messages) and cancelled.is_set()
 
 
