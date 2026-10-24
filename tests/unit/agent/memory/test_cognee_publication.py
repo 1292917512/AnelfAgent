@@ -11,6 +11,7 @@ import os
 import subprocess
 import sys
 import time
+import weakref
 from contextlib import asynccontextmanager, nullcontext
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock
@@ -1014,6 +1015,9 @@ async def test_deletion_reads_reduce_real_graph_scans_without_changing_shared_ow
                 raise RuntimeError("injected vector failure")
             self.deleted.update(map(str, ids))
 
+    class ScanRows(dict):
+        __slots__ = ("__weakref__",)
+
     @asynccontextmanager
     async def database_context(*args, **kwargs):
         yield
@@ -1048,8 +1052,21 @@ async def test_deletion_reads_reduce_real_graph_scans_without_changing_shared_ow
         edge = EdgeIdentity(str(shared.id), str(cross.id), "linked")
         await graph.add_edges([(edge.source_id, edge.target_id, edge.relationship_name, {"edge_text": "linked"})])
         await graph.attach_edge_source_refs([edge], [keys[0], keys[1], keep_key], str(uuid4()))
-        node_scan = AsyncMock(wraps=graph.find_node_source_refs_by_dataset)
-        edge_scan = AsyncMock(wraps=graph.find_edge_source_refs_by_dataset)
+        read_nodes, read_edges = graph.find_node_source_refs_by_dataset, graph.find_edge_source_refs_by_dataset
+        snapshot = None
+
+        async def node_rows(dataset_id):
+            nonlocal snapshot
+            rows = ScanRows(await read_nodes(dataset_id))
+            snapshot = weakref.ref(rows)
+            return rows
+
+        async def edge_rows(dataset_id):
+            assert snapshot is None or snapshot() is None, "Full node scan must be released before the edge scan"
+            return await read_edges(dataset_id)
+
+        node_scan = AsyncMock(wraps=node_rows)
+        edge_scan = AsyncMock(wraps=edge_rows)
         monkeypatch.setattr(graph, "find_node_source_refs_by_dataset", node_scan)
         monkeypatch.setattr(graph, "find_edge_source_refs_by_dataset", edge_scan)
         reads = DeletionReads()

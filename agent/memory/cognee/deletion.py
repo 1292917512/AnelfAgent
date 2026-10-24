@@ -47,8 +47,7 @@ class DeletionReads:
                 # 同一 Ladybug 执行器仍按其锁读取；不创建无界并发任务。
                 readers = (graph.find_node_source_refs_by_dataset, graph.find_edge_source_refs_by_dataset)
                 for index, read in enumerate(readers):
-                    refs = await read(dataset)
-                    for identity, keys in refs.items():
+                    for identity, keys in (await read(dataset)).items():
                         for key in keys:
                             try:
                                 parsed = parse_source_ref_key(key)
