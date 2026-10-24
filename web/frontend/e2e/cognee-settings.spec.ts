@@ -160,7 +160,7 @@ test("Cognee settings separate deadlines and preserve overrides across edits and
     expect(Math.abs(picker!.y - reasoning!.y)).toBeLessThan(2);
   }
   expect(await dialog.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
-  await models.getByRole("button", { name: "Model request timeout (seconds)", exact: true }).click();
+  await models.getByRole("button", { name: "Help: Model request timeout (seconds)", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "Model request timeout (seconds)", exact: true })).toContainText("Leave blank to inherit");
   await page.keyboard.press("Escape");
   await expect(dialog).toBeVisible();

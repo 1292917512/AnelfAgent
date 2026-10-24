@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { useTranslation } from "react-i18next";
 import * as Popover from "@radix-ui/react-popover";
 import { Info } from "lucide-react";
 import { PopoverContent } from "@/components/ui/PopoverContent";
@@ -7,6 +8,7 @@ import { PopoverContent } from "@/components/ui/PopoverContent";
 export function ModelConfigField({ label, desc, children }: {
   label: string; desc?: string; children: ReactNode;
 }) {
+  const { t } = useTranslation("memory");
   return <div className="relative min-w-0">
     <label className="block space-y-1">
       <span className="block min-h-8 pr-6 text-xs font-medium text-muted">{label}</span>
@@ -14,7 +16,7 @@ export function ModelConfigField({ label, desc, children }: {
     </label>
     {desc && <Popover.Root>
       <Popover.Trigger asChild>
-        <button type="button" title={desc} aria-label={label} className="absolute -right-1 -top-1 rounded p-1 text-muted hover:text-accent focus-visible:outline-accent">
+        <button type="button" title={desc} aria-label={t("cognee.fieldHelp", { label })} className="absolute -right-1 -top-1 rounded p-1 text-muted hover:text-accent focus-visible:outline-accent">
           <Info size={14} aria-hidden />
         </button>
       </Popover.Trigger>

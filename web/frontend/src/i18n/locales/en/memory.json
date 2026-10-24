@@ -258,6 +258,7 @@
     "apiVersion": "API version",
     "dimensions": "Dimensions (0 = auto)",
     "instructorModeLabel": "Structured output mode",
+    "fieldHelp": "Help: {{label}}",
     "instructorModeAutoShort": "Auto (native)",
     "instructorModeAuto": "Auto (native structured output)",
     "instructorModeHint": "Uses native structured output by default. Selecting a mode enables Instructor; override only for endpoint compatibility.",

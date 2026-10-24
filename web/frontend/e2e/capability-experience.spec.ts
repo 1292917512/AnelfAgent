@@ -474,10 +474,10 @@ test("Cognee reasoning edits survive failures and independent saves", async ({ p
   await expect(effort).toHaveValue("off");
   rejectSave = false;
   await embedding.getByRole("button", { name: "Custom", exact: true }).click();
-  await embedding.getByLabel("Model identifier").fill("openai/embedding-test");
+  await embedding.getByRole("textbox", { name: "Model identifier", exact: true }).fill("openai/embedding-test");
   await chat.getByRole("button", { name: "Save", exact: true }).click();
   await expect(chat.getByRole("button", { name: "Saved", exact: true })).toBeVisible();
-  await expect(embedding.getByLabel("Model identifier")).toHaveValue("openai/embedding-test");
+  await expect(embedding.getByRole("textbox", { name: "Model identifier", exact: true })).toHaveValue("openai/embedding-test");
   await expect(page.getByText(/Configuration saved.*/).first()).toBeVisible();
   await effort.selectOption("high");
   await embedding.getByRole("button", { name: "Save", exact: true }).click();

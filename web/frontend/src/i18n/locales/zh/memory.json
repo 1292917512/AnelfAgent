@@ -258,6 +258,7 @@
     "apiVersion": "API 版本",
     "dimensions": "向量维度（0=自动）",
     "instructorModeLabel": "结构化输出模式",
+    "fieldHelp": "{{label}}说明",
     "instructorModeAutoShort": "自动（原生）",
     "instructorModeAuto": "自动（原生结构化输出）",
     "instructorModeHint": "默认使用原生结构化输出；显式选择模式时启用 Instructor。仅在端点兼容性需要时覆盖。",
