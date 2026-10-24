@@ -1624,16 +1624,20 @@ class _CompactFakeClient(FakeIndexTransactions):
         }
 
 
-async def test_cleanup_has_its_own_interval_and_does_not_rewrite_fragments(store, tmp_path):
+@pytest.mark.parametrize("clock_ns", [1_000_000_000, 172_800_000_000_000])
+async def test_cleanup_has_its_own_interval_and_does_not_rewrite_fragments(store, tmp_path, monkeypatch, clock_ns):
+    monkeypatch.setattr("agent.memory.cognee.coordinator.time.monotonic_ns", lambda: clock_ns)
     client = _CompactFakeClient()
     coordinator = CogneeCoordinator(store, client, CogneeConfig(data_root=str(tmp_path), write_breaker_enabled=False))
-    coordinator._last_compact_ns = time.monotonic_ns()
     await coordinator._maybe_compact()
-    assert client.cleanup_modes == [True]
+    assert client.cleanup_modes == [False]
+    clock_ns += int(coordinator.config.compact_cleanup_interval_seconds * 1e9)
     await coordinator._maybe_compact()
-    assert client.cleanup_modes == [True]
+    assert client.cleanup_modes == [False, True]
+    await coordinator._maybe_compact()
+    assert client.cleanup_modes == [False, True]
     await coordinator.request_compact()
-    assert client.cleanup_modes == [True, False]
+    assert client.cleanup_modes == [False, True, False]
 
 
 async def test_nonempty_queue_still_yields_to_maintenance_between_batches(store, tmp_path, monkeypatch):

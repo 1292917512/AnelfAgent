@@ -48,8 +48,8 @@ class CogneeCoordinator:
         self._last_error = ""
         self._last_improve_ns: dict[str, int] = {}
         self._compact_requested = False
-        self._last_compact_ns = 0
-        self._last_cleanup_ns = 0
+        self._last_compact_ns: int | None = None
+        self._last_cleanup_ns: int | None = None
         # 空闲窗口作业（run_in_idle_window 提交，worker 在队列排空后执行）
         self._idle_job: Optional[Any] = None
         self._idle_done = asyncio.Event()
@@ -499,9 +499,10 @@ class CogneeCoordinator:
             return
         if not self.config.compact_enabled and not self._compact_requested:
             return
+        now_ns = time.monotonic_ns()
         interval_ns = int(self.config.compact_interval_seconds * 1e9)
-        due = time.monotonic_ns() - self._last_compact_ns >= interval_ns
-        cleanup_due = time.monotonic_ns() - self._last_cleanup_ns >= int(
+        due = self._last_compact_ns is None or now_ns - self._last_compact_ns >= interval_ns
+        cleanup_due = self._last_cleanup_ns is None or now_ns - self._last_cleanup_ns >= int(
             self.config.compact_cleanup_interval_seconds * 1e9)
         full = self._compact_requested or due
         if not (full or cleanup_due):
