@@ -137,7 +137,7 @@ class TestLastGoodRuns:
         _record("b", 200.0, status="error")
         _record("c", 300.0, status="no_output")
 
-        runs = task_history.get_last_good_runs()
+        runs = task_history.get_last_settled_runs()
         assert runs["a"] == 100.0
         assert "b" not in runs  # 只有失败记录 = 未成功跑过（保留重试语义）
         assert runs["c"] == 300.0
@@ -147,10 +147,10 @@ class TestLastGoodRuns:
         _record("a", 100.0, status="success")
         _record("a", 200.0, status="error")
 
-        assert task_history.get_last_good_runs()["a"] == 100.0
+        assert task_history.get_last_settled_runs()["a"] == 100.0
 
     def test_empty_history(self) -> None:
-        assert task_history.get_last_good_runs() == {}
+        assert task_history.get_last_settled_runs() == {}
 
 
 def _fake_mind(reflect_return: str = "", reflect_exc: Exception | None = None) -> SimpleNamespace:
@@ -158,7 +158,11 @@ def _fake_mind(reflect_return: str = "", reflect_exc: Exception | None = None) -
     if reflect_exc is not None:
         reflect.side_effect = reflect_exc
     else:
-        reflect.return_value = reflect_return
+        async def complete(*args, **kwargs):
+            if kwargs.get("completion") is not None:
+                kwargs["completion"].update(reason="completed", messages=[])
+            return reflect_return
+        reflect.side_effect = complete
     return SimpleNamespace(
         reflect=reflect,
         memory_store=None,
@@ -229,3 +233,71 @@ class TestExecutorRecordsHistory:
         ) is None
         assert task_history.get_history("no_prompt") == []
         assert task_history.get_history("scope_mismatch") == []
+
+
+@pytest.mark.parametrize("reason", ["budget_exhausted", "interrupted", "failed", "unknown"])
+@pytest.mark.parametrize("text", ["", "已写文件，待验收"])
+async def test_incomplete_execution_preserves_progress_without_certifying_or_memorizing(reason, text):
+    mind = _fake_mind()
+    async def run(*args, **kwargs):
+        kwargs["completion"].update(reason=reason, messages=[{"role": "tool", "content": '{"ok":true}'}])
+        return text
+    mind.reflect.side_effect = run
+    executor = TaskExecutor(mind, mind)
+    executor._store_result = AsyncMock()
+    result = await executor.run(TaskDefinition(name="partial", prompt="p"), trigger="scheduled")
+    assert result is not None and not result.completion_ready
+    assert "未确认完成" in result.content and "不要从头重试" in result.content
+    assert text in result.content
+    executor._store_result.assert_not_awaited()
+    record = task_history.get_history("partial")[0]
+    assert record["status"] == "incomplete"
+    assert "partial" in task_history.get_last_settled_runs()
+
+
+@pytest.mark.parametrize("receipt, expected", [('{"error":"failed"}', "incomplete"), ('{"outcome":"unknown","success":false}', "incomplete"), ('{"ok":true}', "no_output")])
+async def test_no_summary_does_not_turn_tool_invocation_count_into_success(receipt, expected):
+    mind = _fake_mind()
+    async def run(*args, **kwargs):
+        kwargs["completion"].update(reason="completed", messages=[{"role": "tool", "content": receipt}])
+        return ""
+    mind.reflect.side_effect = run
+    result = await TaskExecutor(mind, mind).run(TaskDefinition(name="receipts", prompt="p", save_result_to_memory=False))
+    assert result is not None
+    assert "副作用已完成" not in result.content
+    assert task_history.get_history("receipts")[0]["status"] == expected
+
+
+async def test_cancellation_records_uncertainty_without_success_or_retry():
+    import asyncio
+    entered = asyncio.Event()
+    mind = _fake_mind()
+    async def run(*args, **kwargs):
+        entered.set()
+        await asyncio.Event().wait()
+    mind.reflect.side_effect = run
+    execution = asyncio.create_task(TaskExecutor(mind, mind).run(TaskDefinition(name="cancelled", prompt="p")))
+    await entered.wait()
+    execution.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await execution
+    assert task_history.get_history("cancelled")[0]["status"] == "incomplete"
+
+
+async def test_exception_after_tool_attempt_is_not_automatically_replayed_or_memorized():
+    mind = _fake_mind()
+
+    async def run(*args, **kwargs):
+        kwargs["completion"].update(reason="failed", messages=[
+            {"role": "assistant", "tool_calls": [{"id": "write", "function": {"name": "write_file"}}]},
+        ])
+        raise ConnectionError("model disconnected after write")
+
+    mind.reflect.side_effect = run
+    executor = TaskExecutor(mind, mind)
+    executor._store_result = AsyncMock()
+    result = await executor.run(TaskDefinition(name="uncertain", prompt="p"))
+    assert not result.completion_ready and "先核验" in result.content
+    assert task_history.get_history("uncertain")[0]["status"] == "incomplete"
+    assert "uncertain" in task_history.get_last_settled_runs()
+    executor._store_result.assert_not_awaited()

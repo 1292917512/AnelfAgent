@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import tempfile
 import threading
 import time
 from typing import Any, Dict, Optional
@@ -55,7 +56,8 @@ def launch_background(command: str, cwd: str, workspace: str,
 
     out_dir = os.path.join(os.path.abspath(workspace), ".tool-results")
     os.makedirs(out_dir, exist_ok=True)
-    output_file = os.path.join(out_dir, f"shell-bg-{int(time.time())}-{os.getpid()}.log")
+    fd, output_file = tempfile.mkstemp(prefix="shell-bg-", suffix=".log", dir=out_dir)
+    out_fp = os.fdopen(fd, "w", encoding="utf-8", errors="replace")
 
     popen_kwargs: Dict[str, Any] = {}
     if os.name != "nt":
@@ -65,7 +67,6 @@ def launch_background(command: str, cwd: str, workspace: str,
     from core.shell_env import shell_env_defaults
     env = {**shell_env_defaults(), **os.environ}
     try:
-        out_fp = open(output_file, "w", encoding="utf-8", errors="replace")
         proc = subprocess.Popen(
             command,
             shell=True,

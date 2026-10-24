@@ -139,6 +139,7 @@ class BackgroundTaskRegistry:
 
     def __init__(self, *, loop: asyncio.AbstractEventLoop | None = None) -> None:
         self._records: Dict[str, _TaskRecord] = {}
+        self._admission_lock = threading.RLock()
         self._events: Dict[str, asyncio.Event] = {}
         self._wait_targets: dict[str, list[str]] = {}
         self._tasks: set[asyncio.Task[Any]] = set()
@@ -182,24 +183,27 @@ class BackgroundTaskRegistry:
                  notification: CompletionNotification = CompletionNotification.ALWAYS,
                  joinable: bool = True) -> str:
         """登记一个后台任务，返回任务 ID。"""
-        task_id = uuid.uuid4().hex[:8]
-        self._records[task_id] = _TaskRecord(
-            info=BackgroundTaskInfo(
-                task_id=task_id,
-                scope=scope or "_global",
-                kind=kind,
-                description=description,
-                started_at=time.time(),
-                expected_seconds=expected_seconds,
-                notification=notification,
-                joinable=joinable,
-                turn_id=current_activity_id.get(),
-            ),
-        )
-        self._purge_completed(scope or "_global")
-        log(f"后台任务已登记: {task_id} [{kind}] {description[:60]}", tag="后台")
-        self._publish(task_id)
-        return task_id
+        with self._admission_lock:
+            if self._closing:
+                raise RuntimeError("后台任务服务正在关闭")
+            task_id = uuid.uuid4().hex[:8]
+            self._records[task_id] = _TaskRecord(
+                info=BackgroundTaskInfo(
+                    task_id=task_id,
+                    scope=scope or "_global",
+                    kind=kind,
+                    description=description,
+                    started_at=time.time(),
+                    expected_seconds=expected_seconds,
+                    notification=notification,
+                    joinable=joinable,
+                    turn_id=current_activity_id.get(),
+                ),
+            )
+            self._purge_completed(scope or "_global")
+            log(f"后台任务已登记: {task_id} [{kind}] {description[:60]}", tag="后台")
+            self._publish(task_id)
+            return task_id
 
     def _track(self, operation: Coroutine[Any, Any, Any], *, name: str) -> asyncio.Task[Any]:
         """持有后台协程，关停时统一等待或取消。"""
@@ -263,10 +267,11 @@ class BackgroundTaskRegistry:
 
     async def close(self) -> None:
         """停止接收任务并回收本注册表托管的协程和提醒计时器。"""
-        self._closing = True
+        with self._admission_lock:
+            self._closing = True
         self._on_unclaimed = None
         self._on_alert = None
-        for rec in self._records.values():
+        for rec in self._snapshot_records():
             if rec.stall_timer is not None:
                 rec.stall_timer.cancel()
         for task in list(self._tasks):
@@ -577,7 +582,7 @@ class BackgroundTaskRegistry:
     def running(self, scope: str, *, joinable_only: bool = False) -> List[BackgroundTaskInfo]:
         """当前会话运行中的任务；会合查询排除不应阻塞主回复的内部维护。"""
         return [
-            rec.info for rec in self._records.values()
+            rec.info for rec in self._snapshot_records()
             if rec.info.scope == scope and not rec.done
             and (not joinable_only or rec.info.joinable)
         ]
@@ -597,7 +602,7 @@ class BackgroundTaskRegistry:
     def completed(self, scope: str) -> List[TaskCompletion]:
         """该 scope 下已完成的任务结果（含已送达，供主动查询回看）。"""
         return [
-            rec.to_completion() for rec in self._records.values()
+            rec.to_completion() for rec in self._snapshot_records()
             if rec.info.scope == scope and rec.done
         ]
 
@@ -704,16 +709,21 @@ class BackgroundTaskRegistry:
     # 内部
     # ------------------------------------------------------------------
 
+    def _snapshot_records(self) -> tuple[_TaskRecord, ...]:
+        """读取结构快照，避免工作线程登记与状态遍历互相踩踏。"""
+        with self._admission_lock:
+            return tuple(self._records.values())
+
     def _collect_undelivered(self, scope: str) -> List[_TaskRecord]:
         return [
-            rec for rec in self._records.values()
+            rec for rec in self._snapshot_records()
             if rec.info.scope == scope and rec.done and not rec.delivered
         ]
 
     def _purge_completed(self, scope: str) -> None:
         """已完成记录超出上限时丢弃最旧的（只影响历史回看，不影响运行态）。"""
         done = [
-            rec for rec in self._records.values()
+            rec for rec in self._snapshot_records()
             if rec.info.scope == scope and rec.done
         ]
         if len(done) <= _MAX_COMPLETED_PER_SCOPE:

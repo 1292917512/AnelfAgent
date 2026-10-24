@@ -166,3 +166,19 @@ class TestToolIntegration:
     def test_string_bool_tolerated(self, workspace, registry):
         out = json.loads(tools.run_shell_command("echo x", run_in_background="true"))
         assert out.get("background") is True
+
+
+async def test_simultaneous_shells_keep_independent_output_files(workspace, registry):
+    import asyncio
+    first = shell_background.launch_background(python_command("print('FIRST_UNIQUE_OUTPUT')"), str(workspace), str(workspace))
+    second = shell_background.launch_background(python_command("print('SECOND_UNIQUE_OUTPUT')"), str(workspace), str(workspace))
+    assert first["output_file"] != second["output_file"]
+    deadline = asyncio.get_running_loop().time() + 5
+    while registry.running("_global") and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(.02)
+    assert not registry.running("_global")
+    with open(first["output_file"], encoding="utf-8") as stream:
+        assert stream.read().strip() == "FIRST_UNIQUE_OUTPUT"
+    with open(second["output_file"], encoding="utf-8") as stream:
+        assert stream.read().strip() == "SECOND_UNIQUE_OUTPUT"
+    await registry.close()

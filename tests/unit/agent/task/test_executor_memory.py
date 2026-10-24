@@ -59,8 +59,12 @@ async def test_task_output_permission_reaches_reflect_without_auto_routing(permi
 
 
 def _mind_with_store(store: SimpleNamespace, reflect_return: str = "产出") -> SimpleNamespace:
+    async def complete(*args, **kwargs):
+        if kwargs.get("completion") is not None:
+            kwargs["completion"].update(reason="completed", messages=[])
+        return reflect_return
     return SimpleNamespace(
-        reflect=AsyncMock(return_value=reflect_return),
+        reflect=AsyncMock(side_effect=complete),
         memory_store=store,
         embedder=None,
     )

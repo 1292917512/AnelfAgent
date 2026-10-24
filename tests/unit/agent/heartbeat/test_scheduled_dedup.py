@@ -105,6 +105,33 @@ def _record_now(name: str, *, status: str = "success") -> None:
     _record(name, time.time(), status=status)
 
 
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_counter_attempt_settles_on_current_config_without_immediate_replay(monkeypatch, cancel):
+    import asyncio
+
+    schedule = TaskSchedule(task_name="a", mode=ScheduleMode.HEARTBEAT, every_n_beats=3, beat_count=2)
+    engine = _make_engine([schedule], {"a": _task("a")}, monkeypatch)
+    replacement = TaskSchedule.from_dict(schedule.to_dict())
+
+    async def partial(task, entity, **kwargs):
+        engine.config = HeartbeatConfig(task_schedules=[replacement])
+        if cancel:
+            raise asyncio.CancelledError
+        return _result(task.name).model_copy(update={"completed_reason": "budget_exhausted"})
+
+    engine.executor.run = partial
+    if cancel:
+        with pytest.raises(asyncio.CancelledError):
+            await engine.tick()
+    else:
+        assert await engine.tick() == []
+    assert replacement.beat_count == 0
+    assert not engine._task_inflight
+    engine.executor.run = AsyncMock()
+    assert await engine.tick() == []
+    engine.executor.run.assert_not_awaited()
+
+
 class _FrozenDateTime(datetime):
     """冻结 engine 模块的墙钟（occurrence 锚点判定的多时刻/跨午夜场景）。"""
 
@@ -122,6 +149,21 @@ def frozen_now(monkeypatch: pytest.MonkeyPatch):
 
 
 class TestScheduledDedupByHistory:
+    async def test_incomplete_attempt_suppresses_same_slot_after_engine_restart(self, monkeypatch):
+        schedules = [TaskSchedule(task_name="a", mode=ScheduleMode.SCHEDULED, schedule_times=_DUE_TIMES)]
+        tasks = {"a": _task("a")}
+        engine = _make_engine(schedules, tasks, monkeypatch)
+
+        async def partial(task, entity, **kwargs):
+            _record_now(task.name, status="incomplete")
+            return _result(task.name).model_copy(update={"completed_reason": "budget_exhausted"})
+
+        engine.executor.run = partial
+        assert await engine.tick() == []
+        restarted = _make_engine(schedules, tasks, monkeypatch)
+        assert await restarted.tick() == []
+        restarted.executor.run.assert_not_awaited()
+
     async def test_ran_today_not_triggered(self, monkeypatch) -> None:
         """执行历史已覆盖该 occurrence → 调度不重复触发（重启/丢态后也不追跑）。"""
         schedules = [TaskSchedule(task_name="a", mode=ScheduleMode.SCHEDULED, schedule_times=_DUE_TIMES)]

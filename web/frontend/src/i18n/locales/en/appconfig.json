@@ -181,6 +181,7 @@
     "lastRunAgoSuffix": " ago",
     "lastRunDuration": "took {{duration}}",
     "runStatusSuccess": "Success",
+    "runStatusIncomplete": "Incomplete, verify before continuing",
     "runStatusNoOutput": "No output",
     "runStatusError": "Failed",
     "trigger_heartbeat": "Heartbeat",

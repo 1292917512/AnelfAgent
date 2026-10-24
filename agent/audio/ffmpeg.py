@@ -18,6 +18,7 @@ from typing import Any, Dict, Optional
 
 from core.config import get_config
 from core.log import log
+from core.process import managed_process
 
 
 class PreprocessError(RuntimeError):
@@ -43,23 +44,16 @@ def _ffprobe_bin() -> str:
     return "ffprobe"
 
 
-async def _run(cmd: list[str]) -> tuple[int, bytes]:
-    """执行子进程，返回 (returncode, stdout)；ENOENT 转 PreprocessError。"""
+async def _run(cmd: list[str], *, allow_failure: bool = False) -> tuple[int, bytes]:
+    """运行媒体工具，取消时先回收进程树；诊断输出独立于业务成功判定。"""
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        async with managed_process(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE) as proc:
+            stdout, stderr = await proc.communicate()
     except FileNotFoundError as exc:
-        raise PreprocessError(
-            f"找不到可执行文件: {cmd[0]}（请安装 ffmpeg 或配置 audio_ffmpeg_bin）"
-        ) from exc
-    stdout, stderr = await proc.communicate()
-    if proc.returncode != 0:
-        raise PreprocessError(
-            f"{cmd[0]} 执行失败(rc={proc.returncode}): {stderr.decode(errors='replace')[:200]}")
-    return proc.returncode or 0, stdout
+        raise PreprocessError(f"找不到可执行文件: {cmd[0]}（请安装 ffmpeg 或配置 audio_ffmpeg_bin）") from exc
+    if proc.returncode != 0 and not allow_failure:
+        raise PreprocessError(f"{cmd[0]} 执行失败(rc={proc.returncode}): {stderr.decode(errors='replace')[:200]}")
+    return proc.returncode or 0, stderr if allow_failure else stdout
 
 
 async def probe(src_path: str) -> dict:
@@ -89,18 +83,10 @@ async def probe(src_path: str) -> dict:
 
 async def mean_volume_db(src_path: str) -> Optional[float]:
     """ffmpeg volumedetect 检测平均音量（dB）；检测失败返回 None（不阻断流程）。"""
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            _ffmpeg_bin(), "-v", "info", "-i", src_path,
-            "-af", "volumedetect", "-f", "null", "-",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await proc.communicate()
-    except FileNotFoundError as exc:
-        raise PreprocessError(
-            f"找不到可执行文件: {_ffmpeg_bin()}（请安装 ffmpeg 或配置 audio_ffmpeg_bin）"
-        ) from exc
+    _, stderr = await _run([
+        _ffmpeg_bin(), "-v", "info", "-i", src_path,
+        "-af", "volumedetect", "-f", "null", "-",
+    ], allow_failure=True)
     match = re.search(rb"mean_volume:\s*(-?\d+(?:\.\d+)?)\s*dB", stderr)
     return float(match.group(1)) if match else None
 
@@ -115,19 +101,10 @@ async def detect_silences(
 
     用于长音频按静音点智能截断（VAD 式切分），保证每段语义完整。
     """
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            _ffmpeg_bin(), "-v", "info", "-i", src_path,
-            "-af", f"silencedetect=noise={noise_db}dB:d={min_silence_s}",
-            "-f", "null", "-",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await proc.communicate()
-    except FileNotFoundError as exc:
-        raise PreprocessError(
-            f"找不到可执行文件: {_ffmpeg_bin()}（请安装 ffmpeg 或配置 audio_ffmpeg_bin）"
-        ) from exc
+    _, stderr = await _run([
+        _ffmpeg_bin(), "-v", "info", "-i", src_path,
+        "-af", f"silencedetect=noise={noise_db}dB:d={min_silence_s}", "-f", "null", "-",
+    ], allow_failure=True)
     silences: list[tuple[float, float]] = []
     start: Optional[float] = None
     for line in stderr.splitlines():
@@ -183,7 +160,7 @@ async def ensure_16k_mono_wav(src_path: str) -> tuple[str, bool]:
             "-i", src_path, "-vn",
             "-ar", "16000", "-ac", "1", "-f", "wav", tmp_path,
         ])
-    except Exception:
+    except BaseException:
         try:
             os.unlink(tmp_path)
         except OSError:
@@ -238,7 +215,7 @@ async def merge_to_wav(file_paths: list[str]) -> str:
             "-f", "concat", "-safe", "0", "-i", list_path,
             "-vn", "-ar", "16000", "-ac", "1", "-f", "wav", out_path,
         ])
-    except Exception:
+    except BaseException:
         try:
             os.unlink(out_path)
         except OSError:

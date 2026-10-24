@@ -389,3 +389,74 @@ class TestForkContext:
         assert await mgr._load_parent_history("reflect:abc") == ""
         # 会话 scope 但存储未就绪 → 容错空串
         assert await mgr._load_parent_history("user_webui:u1") == ""
+
+
+@pytest.mark.parametrize("scope,kind,key", [
+    ("user_webui:shared#window", "user", "webui:shared#window"),
+    ("user_telegram:shared", "user", "telegram:shared"),
+    ("group_feishu:shared#thread", "group", "feishu:shared#thread"),
+])
+async def test_parent_history_preserves_channel_and_subsession(manager, scope, kind, key):
+    fetch = AsyncMock(return_value=[{"role": "user", "content": "scoped evidence"}])
+    manager._mind.conversation_data = SimpleNamespace(router=SimpleNamespace(fetch=fetch))
+    assert "scoped evidence" in await manager._load_parent_history(scope)
+    assert fetch.await_args.kwargs == {"scope_type": kind, "scope_id": key, "limit": 20}
+    await manager.close()
+
+
+@pytest.mark.parametrize("background", [False, True])
+async def test_close_reaps_running_and_waiting_calls_and_rejects_late_admission(manager, background):
+    from agent.mind.background.tasks import BackgroundTaskRegistry
+    registry = BackgroundTaskRegistry()
+    manager._mind.background_tasks = registry
+    entered, cleanup = asyncio.Event(), asyncio.Event()
+    async def reflect(*args, **kwargs):
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleanup.set()
+    manager._mind.reflect.side_effect = reflect
+    manager._semaphore = asyncio.Semaphore(1)
+    if background:
+        manager.delegate_background("running", scope="user_test:shared#one")
+        first = None
+    else:
+        first = asyncio.create_task(manager.delegate("running", scope_hint="user_test:shared#one"))
+    await asyncio.wait_for(entered.wait(), 2)
+    queued = asyncio.create_task(manager.delegate("waiting", scope_hint="user_other:shared#two"))
+    await asyncio.sleep(0)
+    manager.quiesce()
+    with pytest.raises(RuntimeError, match="关闭"):
+        manager.delegate_background("late")
+    with pytest.raises(RuntimeError, match="关闭"):
+        await manager.delegate("late")
+    await asyncio.wait_for(manager.close(), 3)
+    await asyncio.gather(*(t for t in (first, queued) if t is not None), return_exceptions=True)
+    assert cleanup.is_set()
+    assert not manager._calls and not manager._running and not manager._pending and not manager._background_tasks
+    assert not registry.running("user_test:shared#one") and not registry.running("user_other:shared#two")
+    await registry.close()
+    with pytest.raises(RuntimeError, match="关闭"):
+        registry.register("user_test:shared", "delegation", "late")
+
+
+async def test_cancel_at_slot_handoff_restores_capacity(manager, monkeypatch):
+    owner = None
+    semaphore = asyncio.Semaphore(1)
+    original = semaphore.acquire
+
+    async def acquire_and_cancel():
+        acquired = await original()
+        asyncio.get_running_loop().call_soon(owner.cancel)
+        return acquired
+
+    monkeypatch.setattr(semaphore, "acquire", acquire_and_cancel)
+    manager._semaphore = semaphore
+    owner = asyncio.create_task(manager.delegate("cancel before execution", emit_events=False))
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(owner, 2)
+    assert not semaphore.locked()
+    assert not manager._owners and not manager._pending and not manager._queued
+    manager._mind.reflect.assert_not_awaited()
+    await manager.close()

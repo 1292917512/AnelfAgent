@@ -425,11 +425,18 @@ def create_bootstrap() -> FlowMachine:
         from agent.mind.diagnostics import execution_diagnostics
         from core.hooks import hook_journal
         from core.lifecycle import Lifecycle
+        from core.tool_gate import tool_gate
+        tool_gate.start()
+        Lifecycle.register("tool_gate", tool_gate, cleanup=tool_gate.close, on_quiesce=tool_gate.quiesce)
         Lifecycle.register("execution_diagnostics", execution_diagnostics,
                            on_start=execution_diagnostics.start, cleanup=execution_diagnostics.stop)
         await Lifecycle.start_one("execution_diagnostics")
         Lifecycle.register("push_hub", mind.push_hub, cleanup=mind.push_hub.close)
-        Lifecycle.register("background_tasks", mind.background_tasks, cleanup=mind.background_tasks.close)
+        Lifecycle.register("background_tasks", mind.background_tasks, cleanup=mind.background_tasks.close,
+                           critical_cleanup=True)
+        Lifecycle.register("delegation", runtime.delegation_manager,
+                           cleanup=runtime.delegation_manager.close, on_quiesce=runtime.delegation_manager.quiesce,
+                           critical_cleanup=True)
         Lifecycle.register("hook_journal", hook_journal, cleanup=hook_journal.clear)
         from agent.judgment.health import judgment_health
         Lifecycle.register("judgment_health", judgment_health, on_start=judgment_health.start, cleanup=judgment_health.close)
@@ -449,7 +456,7 @@ def create_bootstrap() -> FlowMachine:
         # 先等待工作流任务终止，再关闭 journal 连接。
         Lifecycle.register(
             "workflow_engine", workflow_engine,
-            cleanup=workflow_engine.aclose,
+            cleanup=workflow_engine.aclose, critical_cleanup=True,
         )
 
         log(

@@ -142,3 +142,73 @@ class TestRegistryGating:
         assert callable(e.check_fn)
         assert e.allow_sleep is True
         assert e.sleep_brief == "b"
+
+
+async def test_probe_waiter_cancellation_does_not_cancel_shared_probe(gate):
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    entered, release = asyncio.Event(), asyncio.Event()
+    async def probe():
+        entered.set()
+        await release.wait()
+        return True
+    fn = AsyncMock(side_effect=probe)
+    first = asyncio.create_task(gate.check(fn))
+    await entered.wait()
+    second = asyncio.create_task(gate.check(fn))
+    await asyncio.sleep(0)
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    release.set()
+    assert await second is True
+    assert await gate.check(fn) is True
+    assert fn.await_count == 1
+    await gate.close()
+
+
+async def test_invalidate_prevents_inflight_result_and_grace_from_reentering_cache(gate):
+    import asyncio
+    entered, release = asyncio.Event(), asyncio.Event()
+    state = True
+    calls = 0
+    async def probe():
+        nonlocal calls
+        calls += 1
+        snapshot = state
+        if calls == 1:
+            entered.set()
+            await release.wait()
+        return snapshot
+    first = asyncio.create_task(gate.check(probe))
+    await entered.wait()
+    gate.invalidate()
+    state = False
+    assert await gate.check(probe) is False
+    release.set()
+    assert await first is False
+    assert await gate.check(probe) is False
+    assert calls == 2
+    await gate.close()
+
+
+async def test_shutdown_reaps_probe_after_all_waiters_cancel(gate):
+    import asyncio
+    entered, closed = asyncio.Event(), asyncio.Event()
+    async def probe():
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            closed.set()
+    task = asyncio.create_task(gate.check(probe))
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.wait_for(gate.close(), 2)
+    assert closed.is_set() and not gate._inflight
+    assert await gate.check(None) is False
+    gate.start()
+    assert await gate.check(None) is True

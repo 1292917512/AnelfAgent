@@ -135,6 +135,8 @@ class DelegationManager:
 
     def __init__(self, mind: "Mind") -> None:
         self._mind = mind
+        self._closing = False
+        self._calls: set[asyncio.Task[Any]] = set()
         self._semaphore = asyncio.Semaphore(_max_concurrent())
         # 嵌套委托（orchestrator 子代理内再委托）使用独立信号量，
         # 避免 orchestrator 持有顶层槽位等待同一把信号量造成死锁
@@ -534,6 +536,57 @@ class DelegationManager:
             base_messages: Optional[List[Dict]] = None,
             parent_delegation_id: str = "",
     ) -> SubAgentResult:
+        """在宿主生命周期内受理委托，并持有调用方直到资源收束。"""
+        if self._closing:
+            raise RuntimeError("委托管理器正在关闭")
+        caller = asyncio.current_task()
+        if caller is None:
+            raise RuntimeError("委托需要异步任务宿主")
+        self._calls.add(caller)
+        try:
+            return await self._execute_delegate(
+                goal, context, role=role, max_iterations=max_iterations, task_index=task_index,
+                scope_hint=scope_hint, difficulty=difficulty, delegation_id=delegation_id,
+                agent_name=agent_name, emit_events=emit_events, fork_context=fork_context,
+                facets=facets, base_messages=base_messages, parent_delegation_id=parent_delegation_id,
+            )
+        finally:
+            self._calls.discard(caller)
+
+    def quiesce(self) -> None:
+        """封闭前台、嵌套和后台委托的受理入口。"""
+        self._closing = True
+
+    async def close(self) -> None:
+        """取消并等待本宿主的调用和后台执行，先于底层存储释放。"""
+        self.quiesce()
+        current = asyncio.current_task()
+        tasks = {task for task in (*self._calls, *self._background_tasks.values())
+                 if task is not current and not task.done()}
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        event_bus.off_by_owner("delegation")
+
+    async def _execute_delegate(
+            self,
+            goal: str,
+            context: str = "",
+            *,
+            role: str = "leaf",
+            max_iterations: int = 0,
+            task_index: int = 0,
+            scope_hint: str = "",
+            difficulty: int = 0,
+            delegation_id: str = "",
+            agent_name: str = "",
+            emit_events: bool = True,
+            fork_context: bool = False,
+            facets: Optional[AgentFacets] = None,
+            base_messages: Optional[List[Dict]] = None,
+            parent_delegation_id: str = "",
+    ) -> SubAgentResult:
         """委托单个子任务（阻塞至完成）。
 
         子代理在独立 asyncio.Task 中执行并登记到 _running：
@@ -633,15 +686,17 @@ class DelegationManager:
         try:
             try:
                 await asyncio.wait_for(acquire_task, timeout)
-            except asyncio.TimeoutError:
-                log(f"委托并发槽获取超时（>{timeout:.0f}s）: {goal[:60]}", "WARNING", tag="委托")
-                fail_result = SubAgentResult(
-                    goal=goal, success=False,
-                    error=f"获取委托并发槽超时（>{timeout:.0f}s），子代理并发已满",
-                    role=normalize_role(role), task_index=task_index,
-                )
-                return await finish_unstarted(fail_result)
-            except asyncio.CancelledError:
+            except (TimeoutError, asyncio.CancelledError) as exc:
+                # acquire 已完成而 wait_for 尚未交接所有权时也可能收到取消。
+                if acquire_task.done() and not acquire_task.cancelled() and acquire_task.exception() is None:
+                    semaphore.release()
+                if isinstance(exc, TimeoutError):
+                    log(f"委托并发槽获取超时（>{timeout:.0f}s）: {goal[:60]}", "WARNING", tag="委托")
+                    return await finish_unstarted(SubAgentResult(
+                        goal=goal, success=False,
+                        error=f"获取委托并发槽超时（>{timeout:.0f}s），子代理并发已满",
+                        role=normalize_role(role), task_index=task_index,
+                    ))
                 # 并发槽等待期间被取消（cancel 先于执行登记到达）
                 user_cancel = delegation_id in self._cancel_marks
                 cancelled_result = await finish_unstarted(_cancelled_result(goal, role=role, task_index=task_index))
@@ -855,10 +910,11 @@ class DelegationManager:
         上限 20 条 / 4000 字符 / 单条 300 字符；scope 非会话域或读取
         失败返回空串（不阻断委托）。媒体块等非文本内容跳过。
         """
-        base, _chat_id = _parse_scope_chat_id(scope)
-        if not base.startswith(("user_", "group_")) or "_" not in base:
+        from agent.messages import build_scope_id, parse_entity_scope
+        scope_type, adapter, base_id, session_id = parse_entity_scope(scope)
+        if not scope_type or not adapter:
             return ""
-        scope_type, scope_id = base.split("_", 1)
+        scope_id = build_scope_id(adapter, base_id, f"#{session_id}" if session_id else "")
         try:
             from agent.storage.storage_router import StorageDomain
             rows = await self._mind.conversation_data.router.fetch(
@@ -952,6 +1008,8 @@ class DelegationManager:
         facets/base_messages/parent_delegation_id 为续跑三元组（follow_up
         的后台分支透传）。
         """
+        if self._closing:
+            raise RuntimeError("委托管理器正在关闭")
         registry = getattr(self._mind, "background_tasks", None)
         display_goal = f"[续跑] {goal[:72]}" if parent_delegation_id else goal[:80]
         if registry is not None:

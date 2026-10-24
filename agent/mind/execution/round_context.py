@@ -1,7 +1,7 @@
 """执行轮次的上下文准备与发送快照组装。
 
-模型可见：耗时准备后刷新当前对话、推送和跨会话通知，再构建本轮状态。
-Token：新增消息不按轮次分批，沿用压缩与动态提供者预算。
+模型可见：主回复刷新当前对话、推送和跨会话通知；内部执行只接收自己的任务与显式转向。
+Token：内部执行省去无关会话通知；主回复沿用压缩与动态提供者预算。
 缓存：对话只追加执行链；通知与实时状态仍在动态尾部，不改稳定前缀。
 """
 
@@ -74,14 +74,15 @@ async def prepare_round_context(
     # 并入转向指令（子代理步骤边界；主会话未绑定 drain 时零开销）
     _merge_steered_messages(ctx, state)
 
-    from agent.mind.cross_channel import build_cross_channel_narrative
-    try:
-        cross_messages = await build_cross_channel_narrative(mind, ctx.current_scope)
-        provider_msgs = cross_messages + provider_msgs
-        from agent.context.observation import emit_cross_channel_updates
-        await emit_cross_channel_updates(cross_messages, state.observed_cross_messages, state.iteration + 1)
-    except Exception as exc:
-        log(f"跨会话上下文读取失败: {exc}", "WARNING", tag="思维")
+    if mode == ThinkMode.REPLY:
+        from agent.mind.cross_channel import build_cross_channel_narrative
+        try:
+            cross_messages = await build_cross_channel_narrative(mind, ctx.current_scope)
+            provider_msgs = cross_messages + provider_msgs
+            from agent.context.observation import emit_cross_channel_updates
+            await emit_cross_channel_updates(cross_messages, state.observed_cross_messages, state.iteration + 1)
+        except Exception as exc:
+            log(f"跨会话上下文读取失败: {exc}", "WARNING", tag="思维")
 
     exec_context = mind.context.build_execution_context(
         execution_steps, start_time, state.iteration,

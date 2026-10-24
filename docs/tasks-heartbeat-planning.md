@@ -32,8 +32,8 @@ tick() 单次心跳：
   `task_expired_delete_grace_seconds`（默认 3 天、0=过期即删）、主开关 `task_expired_delete_enabled`，
   均在 heartbeat/maintenance 组
 - **scheduled 槽位去重以执行历史为唯一事实源**：调度配置只存定义与节拍计数，不记 last_run 标记——
-  `task_history.get_last_good_runs()`（终态即原子落盘，success/no_output 计入、error 保留重试）给出
-  各任务最近一次非失败执行时间戳，调度重绑、执行期 reload 换配置对象、进程重启/取消都不再导致
+  `task_history.get_last_settled_runs()`（终态即原子落盘，success/no_output/incomplete 计入、error 保留重试）给出
+  各任务最近一次已结算尝试的时间戳，调度重绑、执行期 reload 换配置对象、进程重启/取消都不再导致
   重复追跑。判定采用 occurrence 锚点语义：每个调度时刻取最近一个已到期 occurrence 与上次执行
   时间戳比较——多时刻槽位逐点独立（09:00 跑过不抑制 21:30）、停机只补最近一次不枚举积压、
   跨午夜补跑不吞今日正当槽位。连续失败达上限的定时任务经 `_task_giveup_dates` 台账当日放弃、
@@ -41,6 +41,10 @@ tick() 单次心跳：
   tick 收尾按任务名现取条目复位计数；无调度任务的失败/放弃台账随 `_prune_stale_runtime_state`
   对账清理。任务文件消失的孤儿调度、执行历史与交接文件随引擎构造与 reload 对账清理
   （`_prune_orphan_schedules` / `_prune_orphan_task_artifacts`；目录不可枚举的异常态跳过对账防误清）
+- **完成事实与重试**：`TaskResult.completion_ready` 只接受明确完成。轮次耗尽、取消、未知终态及
+  工具调用后的异常记为 `incomplete`，保留进展并提示核验，不当作完成记忆写入，也不自动重放同一
+  调度槽位。计数型任务取消后复位当前配置中的节拍，等待下一周期；执行前失败保留原有重试。
+  只有工具回执而无总结时中性报告回执，不能从调用次数推断操作已完成。
 - **主 Driver 单航班执行**：tick 维护、到期任务、元决策周期与用户回复全部经
   `mind.driver`（`agent/mind/driver.py`）的常驻 worker 串行执行——同一时刻至多一个
   顶层思维工作；调用方（定时器/Web 手动/事件钩子/AI 工具）只做受理登记并立即返回，

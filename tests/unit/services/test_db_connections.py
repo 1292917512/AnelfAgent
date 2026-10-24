@@ -105,7 +105,7 @@ class TestValidation:
 
 class TestReadonlySql:
     def test_auto_limit(self):
-        assert "LIMIT 500" in _validate_readonly_sql("SELECT * FROM t")
+        assert "LIMIT 501" in _validate_readonly_sql("SELECT * FROM t")
 
     def test_pragma_rejected(self):
         with pytest.raises(DatabaseError) as e:
@@ -151,3 +151,80 @@ class TestPasswordUpdate:
         conn = store.add(pg_payload)
         updated = store.update(conn.id, {**pg_payload, "password": ""})
         assert updated.password == "plain-secret"
+
+
+@pytest.mark.parametrize("sql", ["SELECT 'limit' AS label, id FROM t", "SELECT * FROM t LIMIT 10000000", "WITH x AS (SELECT 1 LIMIT 1) SELECT * FROM t"])
+async def test_query_row_limit_is_enforced_at_fetch_boundary(sql):
+    from services.db_connections import ExternalAdapter
+    class Bounded(ExternalAdapter):
+        async def _fetch(self, query, params=(), *, max_rows=None):
+            assert max_rows == 501
+            self.requested = max_rows
+            return ["id"], [(i,) for i in range(max_rows)]
+    adapter = Bounded(DbConnection(name="test", engine="postgresql", database="test"))
+    result = await adapter.run_query(sql)
+    assert result["row_count"] == 500 and result["truncated"] is True
+
+
+async def test_postgres_bounded_query_uses_server_cursor_and_releases_readonly_transaction(monkeypatch):
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from services.db_connections import PostgresAdapter
+    cursor = SimpleNamespace(fetch=AsyncMock(return_value=[{"id": 1}, {"id": 2}]))
+    stmt = SimpleNamespace(cursor=AsyncMock(return_value=cursor), fetch=AsyncMock(),
+                           get_attributes=lambda: [SimpleNamespace(name="id")])
+    released = []
+    @asynccontextmanager
+    async def transaction(*, readonly):
+        assert readonly
+        try:
+            yield
+        finally:
+            released.append(True)
+    conn = SimpleNamespace(prepare=AsyncMock(return_value=stmt), transaction=transaction)
+    @asynccontextmanager
+    async def acquire():
+        yield conn
+    adapter = PostgresAdapter(DbConnection(name="test", engine="postgresql", database="test"))
+    monkeypatch.setattr(adapter, "_get_pool", AsyncMock(return_value=SimpleNamespace(acquire=acquire)))
+    columns, rows = await adapter._fetch("SELECT 'limit'", max_rows=501)
+    assert columns == ["id"] and rows == [(1,), (2,)] and released
+    cursor.fetch.assert_awaited_once_with(501)
+    stmt.fetch.assert_not_awaited()
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_mysql_streaming_query_owns_and_closes_connection_without_draining(cancel, monkeypatch):
+    import asyncio
+    import sys
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+
+    from services.db_connections import MysqlAdapter
+    entered = asyncio.Event()
+    async def fetchmany(limit):
+        assert limit == 501
+        entered.set()
+        if cancel:
+            await asyncio.Event().wait()
+        return [(1,)]
+    cursor = SimpleNamespace(execute=AsyncMock(), fetchmany=AsyncMock(side_effect=fetchmany),
+                             fetchall=AsyncMock(), description=[("id",)])
+    conn = SimpleNamespace(cursor=AsyncMock(return_value=cursor), close=Mock())
+    sentinel = object()
+    monkeypatch.setitem(sys.modules, "aiomysql", SimpleNamespace(SSCursor=sentinel))
+    adapter = MysqlAdapter(DbConnection(name="test", engine="mysql", database="test"))
+    monkeypatch.setattr(adapter, "_connect", AsyncMock(return_value=conn))
+    task = asyncio.create_task(adapter._fetch("SELECT 'limit'", max_rows=501))
+    await entered.wait()
+    if cancel:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    else:
+        assert await task == (["id"], [(1,)])
+    conn.cursor.assert_awaited_once_with(sentinel)
+    conn.close.assert_called_once()
+    cursor.fetchall.assert_not_awaited()

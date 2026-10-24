@@ -7,6 +7,7 @@ Model Experience:
   [生效截止]，运行开始时生成一次，全程冻结）；extra_note（idle 反思触发原因等）
   追加在任务指令（最后一条消息）尾部；历次执行的时长/状态/产出摘要经
   执行历史落盘，由 list_tasks（概况）与 task_history（明细）只读查询
+- 模型看到的终态区分完成、未完成和未知；未确认的工具效果只报告回执，不推断完成。
 - token 影响：极小（数十 token）
 - KV Cache 影响：均位于最后一条消息内——执行时间一次运行内字节冻结、
   extra_note 纯尾部追加，任务稳定前缀（人设+工具+永久记忆）不受影响
@@ -14,6 +15,7 @@ Model Experience:
 
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
@@ -22,6 +24,7 @@ from agent.memory.memory_types import MemoryEntry, MemoryType
 from agent.mind.recall import coordinator
 from core.event_bus import EVENT_THINKING_INTROSPECTION, event_bus
 from core.log import log
+from core.tool_results import extract_error_text
 
 from .model import TaskDefinition, TaskResult, format_task_time
 
@@ -55,10 +58,10 @@ class TaskExecutor:
         extra_note: str = "",
         trigger: str = "manual",
     ) -> Optional[TaskResult]:
-        """执行一个任务，返回结果；正常无产出返回 None，执行异常则抛出。
+        """执行一个任务；完成与未完成由结果区分，正常无产出返回 None。
 
-        调用方据此区分「执行成功但无产出」（可推进调度标记）与「执行失败」
-        （应保留标记以便重试，实现 at-least-once）。
+        工具已尝试但效果未确认时保留未完成事实，避免自动重放副作用；
+        未尝试工具的执行异常原样抛出，交由调度重试。
 
         model_id 优先级：参数传入 > task.model_id > 默认模型。
         reasoning_effort 优先级：参数传入 > task.reasoning_effort > 全局设置。
@@ -97,27 +100,39 @@ class TaskExecutor:
                 preview=preview, error=error,
             )
 
+        completion: Dict[str, Any] = {}
+
+        async def incomplete(detail: str, reason: str, progress: str = "") -> TaskResult:
+            content = (f"任务 [{task.name}] 未确认完成：{detail}。已有操作可能生效，"
+                       "请先核验实际结果，再基于已有进展续做，不要从头重试。"
+                       + (f"\n[本轮进展，未验收]\n{progress}" if progress else ""))
+            _record("incomplete", preview=content, error=detail)
+            await self._emit("unit_end", task, entity, has_output=True, completed=False,
+                             completion_reason=reason, content_preview=content[:300])
+            return TaskResult(task_name=task.name, content=content, memory_type=task.memory_type,
+                              source=task.source or task.name, tags=list(task.tags), importance=task.importance,
+                              completed_reason=reason)
+
         try:
             # 本任务的工具调用计数经 completion 消息链归因——全局计数器会被
             # 并发的在途回复/钩子/其他后台任务污染，误判无产出任务为成功
-            completion: Dict[str, Any] = {}
             content = await self._execute_llm(
                 task, entity, temperature, effective_model, effective_effort,
                 extra_note=extra_note, completion=completion, trigger=trigger,
             )
-            tool_calls_made = sum(
-                1 for m in completion.get("messages", [])
-                if isinstance(m, dict) and m.get("role") == "tool"
-            )
-            synthesized_tool_result = False
+            reason = str(completion.get("reason") or "unknown")
+            tool_results = [m for m in completion.get("messages", [])
+                            if isinstance(m, dict) and m.get("role") == "tool"]
+            failures = [extract_error_text(m.get("content", "")) for m in tool_results]
+            unconfirmed = reason != "completed" or (not content and any(failures))
+            synthesized_tool_result = not bool(content) and bool(tool_results)
+            if unconfirmed:
+                detail = f"执行终态为 {reason}" if reason != "completed" else "缺少总结且存在失败或未知的工具回执"
+                return await incomplete(detail, reason if reason != "completed" else "failed", content)
             if not content:
-                if tool_calls_made > 0:
-                    synthesized_tool_result = True
-                    content = (
-                        f"任务 [{task.name}] 已执行 {tool_calls_made} 次工具调用，"
-                        "无文本产出（工具副作用已完成）"
-                    )
-                    log(f"任务 [{task.name}] 工具执行完成（无文本产出）", tag="任务")
+                if tool_results:
+                    content = (f"任务 [{task.name}] 本轮有 {len(tool_results)} 条工具回执，无文本总结；"
+                               "具体操作效果需结合回执核验。")
                 else:
                     log(f"任务 [{task.name}] 无产出", tag="任务")
                     _record("no_output")
@@ -143,15 +158,21 @@ class TaskExecutor:
             if task.save_result_to_memory and not synthesized_tool_result:
                 await self._store_result(result)
             elif synthesized_tool_result:
-                log(f"任务 [{task.name}] 为工具副作用完成态，跳过写入记忆", tag="任务")
+                log(f"任务 [{task.name}] 仅有工具回执，跳过写入记忆", tag="任务")
             else:
                 log(f"任务 [{task.name}] 配置为不写入记忆，跳过存储", tag="任务")
             log(f"任务 [{task.name}] 完成: {content[:80]}", tag="任务")
-            _record("success", preview=content)
+            _record("no_output" if synthesized_tool_result else "success", preview=content)
             await self._emit("unit_end", task, entity, has_output=True, content_preview=content[:300])
             return result
 
+        except asyncio.CancelledError:
+            _record("incomplete", error="任务已取消，执行结果未确认，继续前需核验")
+            raise
         except Exception as exc:
+            if any(m.get("role") == "tool" or m.get("tool_calls") for m in completion.get("messages", [])
+                   if isinstance(m, dict)):
+                return await incomplete(f"工具调用后执行异常：{type(exc).__name__}", "failed")
             log(f"任务 [{task.name}] 异常: {exc}", "WARNING", tag="任务")
             _record("error", error=str(exc))
             await self._emit("unit_error", task, entity, error=str(exc))

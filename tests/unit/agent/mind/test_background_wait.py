@@ -57,6 +57,39 @@ async def test_cancel_scope_keeps_results_without_waking_cancelled_conversation(
         await registry.close()
 
 
+async def test_threaded_registration_and_shutdown_keep_channel_records_consistent():
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    registry = BackgroundTaskRegistry(loop=asyncio.get_running_loop())
+    begin = threading.Event()
+    scopes = ["user_qq:same", "user_telegram:same", "group_feishu:same#thread", "user_webui:same#window"]
+
+    def register(scope):
+        begin.wait(2)
+        accepted = []
+        for _ in range(20):
+            try:
+                accepted.append(registry.register(scope, "shell", "isolated work"))
+            except RuntimeError:
+                break
+        return scope, accepted
+
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        work = [pool.submit(register, scope) for scope in scopes]
+        begin.set()
+        for _ in range(4):
+            for scope in scopes:
+                registry.snapshot(scope)
+            await asyncio.sleep(0)
+        await registry.close()
+        for future in work:
+            scope, accepted = future.result(timeout=3)
+            assert {task.task_id for task in registry.running(scope)} == set(accepted)
+            with pytest.raises(RuntimeError, match="关闭"):
+                registry.register(scope, "shell", "late work")
+
+
 @pytest.fixture(autouse=True)
 def deliver_mock(monkeypatch):
     """监测发送管道，验证执行过程不会自行对外投递。"""

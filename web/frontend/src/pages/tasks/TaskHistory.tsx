@@ -5,13 +5,15 @@ import { cn, formatAge, formatDurationMs } from "@/lib/utils";
 /** 本文件辅助组件共用的 i18n t 签名（支持插值参数） */
 type Tf = (key: string, options?: Record<string, unknown>) => string;
 
-/** 执行状态 → 展示文案与配色（success/no_output/error 三态） */
+/** 执行状态 → 展示文案与配色（执行事实的稳定状态） */
 function runStatusMeta(status: string, t: Tf) {
   switch (status) {
     case "success":
       return { text: t("tasks.runStatusSuccess"), cls: "text-ok" };
     case "no_output":
       return { text: t("tasks.runStatusNoOutput"), cls: "text-muted" };
+    case "incomplete":
+      return { text: t("tasks.runStatusIncomplete"), cls: "text-warning" };
     case "error":
       return { text: t("tasks.runStatusError"), cls: "text-danger" };
     default:

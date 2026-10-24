@@ -47,6 +47,27 @@ async def test_tool_progress_refreshes_providers_without_automatic_recall(monkey
     judge.assert_not_awaited()
 
 
+@pytest.mark.parametrize("mode", [ThinkMode.REPLY, ThinkMode.REFLECT])
+async def test_only_main_reply_observes_new_cross_channel_messages(monkeypatch, mode):
+    from unittest.mock import AsyncMock
+
+    notice = {"role": "system", "content": "FOREIGN_USER_REQUEST",
+              "_source": {"origin": "cross_channel_narrative"}}
+    narrative = AsyncMock(return_value=[notice])
+    monkeypatch.setattr("agent.mind.cross_channel.build_cross_channel_narrative", narrative)
+    base = [{"role": "user", "content": "OWN_EXPLICIT_TASK_CONTEXT"}]
+    mind = FakeMind(rounds=[tool_result("", ["inspect"]), end_reply_result()], default_text=None)
+    await run_think_loop(mind, mode=mode, base_messages=base)
+    assert len(mind.sent_messages) == 2
+    assert all("OWN_EXPLICIT_TASK_CONTEXT" in str(sent) for sent in mind.sent_messages)
+    if mode == ThinkMode.REPLY:
+        assert narrative.await_count == 2
+        assert all("FOREIGN_USER_REQUEST" in str(sent) for sent in mind.sent_messages)
+    else:
+        narrative.assert_not_awaited()
+        assert all("FOREIGN_USER_REQUEST" not in str(sent) for sent in mind.sent_messages)
+
+
 def _register_counter_provider(counter: list) -> None:
     async def _provide(scope: str) -> ProviderSnapshot:
         counter[0] += 1

@@ -27,10 +27,11 @@ from core.path import ConfigPaths
 STATUS_SUCCESS = "success"
 STATUS_NO_OUTPUT = "no_output"
 STATUS_ERROR = "error"
-_VALID_STATUSES = frozenset({STATUS_SUCCESS, STATUS_NO_OUTPUT, STATUS_ERROR})
+STATUS_INCOMPLETE = "incomplete"
+_VALID_STATUSES = frozenset({STATUS_SUCCESS, STATUS_NO_OUTPUT, STATUS_ERROR, STATUS_INCOMPLETE})
 
-# 非失败状态集合：调度的"今日已跑"判据只认这些（error 保留重试语义，at-least-once）
-_GOOD_STATUSES = frozenset({STATUS_SUCCESS, STATUS_NO_OUTPUT})
+# 调度槽位已尝试的事实；未完成不自动重放副作用，error 保留重试语义。
+_SETTLED_STATUSES = frozenset({STATUS_SUCCESS, STATUS_NO_OUTPUT, STATUS_INCOMPLETE})
 
 # 执行历史保留调度、手动与事件触发来源。
 VALID_TRIGGERS = frozenset({"heartbeat", "scheduled", "idle", "manual", "event"})
@@ -135,20 +136,17 @@ def get_history(task_name: str) -> List[Dict[str, Any]]:
     return records
 
 
-def get_last_good_runs() -> Dict[str, float]:
-    """各任务最近一次非失败执行（success/no_output）的开始时间戳（秒）。
+def get_last_settled_runs() -> Dict[str, float]:
+    """最近已结算的尝试时间；未完成也抑制同一时段自动重放，错误保留重试。
 
-    心跳调度判定"槽位是否已跑"的唯一事实源：执行历史在任务终态即原子
-    落盘，重启/崩溃/取消不丢"已完成"事实；error 记录不计（失败保留重试
-    语义）。记录数受上限裁剪，取的是"最近一次非失败"，与其后是否有失败
-    重试无关。无记录的任务不在返回中（调用方按 0 处理）。
+    incomplete 只说明本次尝试的结果未确认，不表示成功；完整进展和原因在执行记录中。
     """
     with _LOCK:
         data = _load_all()
     runs: Dict[str, float] = {}
     for name, records in data.items():
         for record in reversed(records):
-            if record.get("status") in _GOOD_STATUSES:
+            if record.get("status") in _SETTLED_STATUSES:
                 started_at = float(record.get("started_at") or 0.0)
                 if started_at > 0:
                     runs[name] = started_at

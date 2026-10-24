@@ -1,4 +1,18 @@
-import { test, expect } from "./fixtures";
+import { test, expect, task } from "./fixtures";
+
+test("task history keeps uncertain progress distinct from successful work", async ({ page }) => {
+  const record = { started_at: 1720000000, duration_ms: 4200, status: "incomplete", trigger: "scheduled",
+    preview: "File written, verification still pending", error: "Execution budget exhausted" };
+  await page.route("**/api/config/tasks", route => route.fulfill({ json: [{ ...task, last_run: record }] }));
+  await page.route("**/api/config/tasks/daily-review/history", route => route.fulfill({ json: [record] }));
+  await page.goto("/webui/tasks");
+  await expect(page.getByText("Incomplete, verify before continuing", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: /Daily review/ }).click();
+  await expect(page.getByText("Execution History", { exact: true })).toBeVisible();
+  await expect(page.getByText(record.preview, { exact: true })).toBeVisible();
+  await expect(page.getByText(record.error, { exact: true })).toBeVisible();
+  await expect(page.getByText("Incomplete, verify before continuing", { exact: true })).toHaveCount(2);
+});
 
 test("heartbeat reads the canonical memory path and recovers a local log error", async ({ page }) => {
   await page.route("**/api/status/", (route) => route.fulfill({ json: {

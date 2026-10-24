@@ -490,3 +490,158 @@ class TestRecovery:
         )
         errors = [r for r in results if isinstance(r, ValueError)]
         assert len(errors) == 1 and "已在运行中" in str(errors[0])
+
+
+async def test_explicit_context_changes_revision_input_and_reaches_continuation(engine, fake_manager):
+    from agent.delegation import journal
+    spec = {"name": "context", "steps": [{"key": "a", "goal": "compare", "context": "first evidence"}]}
+    parent = await engine.start(spec)
+    await wait_until(lambda: not engine.is_running(parent["run_id"]))
+    assert fake_manager.calls[-1]["context"] == "first evidence"
+    spec["steps"][0]["context"] = "revised evidence"
+    child = await engine.start(spec, resume_of=parent["run_id"])
+    await wait_until(lambda: not engine.is_running(child["run_id"]))
+    assert len(fake_manager.calls) == 2
+    assert fake_manager.calls[-1]["context"] == "revised evidence"
+    source = "context-transcript"
+    journal.save_transcript({"delegation_id": source, "messages": [{"role": "user", "content": "old evidence"}]})
+    from agent.workflow.engine import _RunState
+    messages = engine._continuation_messages(_RunState("id", "user_test:scope#one", "test"),
+        {"a": {"delegation_id": source}}, "a", "continue", "current evidence")
+    assert "current evidence" in messages[-1]["content"]
+
+
+async def test_framework_failure_reaps_parallel_siblings_before_publishing_terminal(engine, fake_manager, monkeypatch):
+    entered, cleanup = asyncio.Event(), asyncio.Event()
+    original = engine._run_step
+    async def fail(run_id, run, step, *args):
+        if step.key == "broken":
+            await entered.wait()
+            raise OSError("journal write unavailable")
+        return await original(run_id, run, step, *args)
+    async def block(*args, **kwargs):
+        entered.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cleanup.set()
+    monkeypatch.setattr(engine, "_run_step", fail)
+    monkeypatch.setattr(fake_manager, "delegate", block)
+    run = await engine.start({"name": "failure", "steps": [
+        {"key": "broken", "goal": "fail"}, {"key": "sibling", "goal": "write"}]})
+    await wait_until(lambda: not engine.is_running(run["run_id"]))
+    assert cleanup.is_set()
+    assert (await engine.journal.get_run(run["run_id"]))["status"] == wf_journal.FAILED
+    assert not [task for task in asyncio.all_tasks() if task.get_name().startswith("workflow."+run["run_id"])]
+
+
+@pytest.mark.parametrize("safe", [False, True])
+async def test_tool_layer_respects_safety_and_engine_capacity(engine, monkeypatch, approve_all, safe):
+    from core.config import ConfigManager
+    from core.entity import EntityRegistry
+    ConfigManager.set("workflow_max_parallel_steps", 2)
+    active = peak = 0
+    release = asyncio.Event()
+    entered = asyncio.Event()
+    async def work():
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        entered.set()
+        try:
+            await release.wait()
+            return '{"ok":true}'
+        finally:
+            active -= 1
+    name = "workflow_capacity_probe"
+    EntityRegistry.register_tool(name=name, func=work, group="test", meta={"concurrency_safe": safe})
+    try:
+        run = await engine.start({"name": "capacity", "steps": [
+            {"key": f"a{i}", "kind": "tool", "tool": name} for i in range(6)]})
+        await asyncio.wait_for(entered.wait(), 2)
+        # Read the owned tasks after every admitted dispatch has had a scheduling opportunity.
+        for _ in range(6):
+            await asyncio.sleep(0)
+        assert peak <= (2 if safe else 1)
+        release.set()
+        await wait_until(lambda: not engine.is_running(run["run_id"]))
+        assert (await engine.journal.get_run(run["run_id"]))["status"] == wf_journal.COMPLETED
+    finally:
+        release.set()
+        EntityRegistry.unregister(name)
+
+
+async def test_queued_step_timeout_never_enters_tool_body(engine, monkeypatch, approve_all):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    invoke = AsyncMock(return_value='{"ok":true}')
+    monkeypatch.setattr("core.entity.EntityRegistry.execute_tool", invoke)
+    engine._dispatch_sem = asyncio.Semaphore(0)
+    result = await asyncio.wait_for(engine._dispatch_tool({"name": "queued"},
+        SimpleNamespace(tool="no_side_effect", args={}), timeout=.02), 2)
+    assert result.status == "failed" and "尚未执行" in result.error
+    invoke.assert_not_awaited()
+
+
+async def test_failed_parallel_group_does_not_start_later_unsafe_tool(engine, fake_manager, monkeypatch, approve_all):
+    from unittest.mock import AsyncMock
+
+    fake_manager.failures["fail"] = 1
+    invoke = AsyncMock(return_value='{"ok":true}')
+    monkeypatch.setattr("core.entity.EntityRegistry.execute_tool", invoke)
+    run = await engine.start({"name": "barrier", "steps": [
+        {"key": "first", "goal": "fail"}, {"key": "write", "kind": "tool", "tool": "write_file"},
+    ]})
+    await wait_until(lambda: not engine.is_running(run["run_id"]))
+    assert (await engine.journal.get_run(run["run_id"]))["status"] == wf_journal.FAILED
+    invoke.assert_not_awaited()
+    assert [node["step_key"] for node in await engine.journal.nodes_of_run(run["run_id"])] == ["first"]
+
+
+async def test_cancel_queued_ask_and_approval_timeout_do_not_admit_business_work(engine, fake_manager, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from agent.workflow.engine import _RunState
+
+    engine._dispatch_sem = asyncio.Semaphore(0)
+    state = _RunState("queue", "user_webui:same#window", "queued")
+    queued = asyncio.create_task(engine._dispatch_ask("wait", "", "", state, "a"))
+    await asyncio.sleep(0)
+    queued.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await queued
+    assert fake_manager.calls == []
+    assert not engine._background_tasks.running(state.scope)
+    engine._dispatch_sem = asyncio.Semaphore(1)
+
+    async def approve(*args):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(engine, "_request_approval", approve)
+    invoke = AsyncMock()
+    monkeypatch.setattr("core.entity.EntityRegistry.execute_tool", invoke)
+    result = await engine._dispatch_tool({"name": "approval"}, SimpleNamespace(tool="write", args={}), timeout=.02)
+    assert result.retryable and "尚未执行" in result.error
+    invoke.assert_not_awaited()
+    assert not engine._dispatch_sem.locked()
+
+
+async def test_stop_one_channel_while_other_channel_runs_and_resume_keeps_completed_results(engine, fake_manager):
+    fake_manager.gates["blocked"] = asyncio.Event()
+    first = await engine.start({"name": "stop", "steps": [
+        {"key": "a", "goal": "paid work"},
+        {"key": "b", "goal": "blocked", "depends_on": ["a"]},
+    ]}, scope="user_webui:same#one")
+    await wait_until(lambda: any(call["goal"] == "blocked" for call in fake_manager.calls))
+    second = await engine.start({"name": "independent", "steps": [{"key": "a", "goal": "other work"}]},
+                                scope="user_telegram:same")
+    assert (await asyncio.to_thread(engine.stop, first["run_id"]))["ok"]
+    await wait_until(lambda: not engine.is_running(first["run_id"]) and not engine.is_running(second["run_id"]))
+    assert (await engine.journal.get_run(first["run_id"]))["status"] == wf_journal.STOPPED
+    assert (await engine.journal.get_run(second["run_id"]))["status"] == wf_journal.COMPLETED
+    fake_manager.gates["blocked"].set()
+    await engine.resume(first["run_id"])
+    await wait_until(lambda: not engine.is_running(first["run_id"]))
+    assert (await engine.journal.get_run(first["run_id"]))["status"] == wf_journal.COMPLETED
+    assert sum(call["goal"] == "paid work" for call in fake_manager.calls) == 1

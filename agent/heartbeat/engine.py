@@ -469,7 +469,7 @@ class HeartbeatEngine:
                 if self._task_giveup_dates.get(schedule.task_name) == today_str:
                     continue
                 if good_runs is None:
-                    good_runs = task_history.get_last_good_runs()
+                    good_runs = task_history.get_last_settled_runs()
                 last_good_ts = good_runs.get(schedule.task_name, 0.0)
                 if self._is_scheduled_now(schedule.schedule_times, last_good_ts) and pending_task is None:
                     pending_task = task
@@ -491,7 +491,7 @@ class HeartbeatEngine:
             entity = await self._pop_analysis_entity() if pending_task.scope.value == "entity" else None
             self._task_inflight.add(pending_task.name)
             try:
-                await self.executor.run(
+                result = await self.executor.run(
                     pending_task,
                     entity,
                     temperature=self.config.analysis_temperature,
@@ -500,6 +500,12 @@ class HeartbeatEngine:
                     extra_note=pending_extra_note,
                     trigger=schedule.mode.value,
                 )
+            except asyncio.CancelledError:
+                current = self.config.get_schedule(pending_task.name)
+                if current is not None and current.mode in (ScheduleMode.HEARTBEAT, ScheduleMode.IDLE):
+                    current.beat_count = 0
+                    self.config.save()
+                raise
             except Exception as exc:
                 # at-least-once：执行失败不会产生非失败历史记录，下个 tick 自然
                 # 重试；连续失败达上限则放弃本轮（定时任务今日不再重试，计数类
@@ -537,7 +543,10 @@ class HeartbeatEngine:
             else:
                 self._task_failures.pop(pending_task.name, None)
                 self._task_giveup_dates.pop(pending_task.name, None)
-                executed.append(pending_task.name)
+                if result is None or result.completion_ready:
+                    executed.append(pending_task.name)
+                else:
+                    log(f"任务 [{pending_task.name}] 本轮未完成，保留进展，等待核验后续做", "WARNING", tag="心跳")
             finally:
                 self._task_inflight.discard(pending_task.name)
 
@@ -650,7 +659,7 @@ class HeartbeatEngine:
                     "entity": "任务执行",
                 }
             ) as session:
-                session.end["reason"] = "task_completed"
+                session.end["reason"] = "task_incomplete"
                 entity = await self._pop_analysis_entity() if task.scope.value == "entity" else None
                 try:
                     result = await self.executor.run(
@@ -660,8 +669,11 @@ class HeartbeatEngine:
                         trigger=trigger,
                     )
                 except Exception as exc:
+                    session.end["reason"] = "task_failed"
                     log(f"任务 [{task_name}] 执行失败: {exc}", "WARNING", tag="心跳")
                     return None
+                if result is None or result.completion_ready:
+                    session.end["reason"] = "task_completed"
                 return result.content if result else None
         finally:
             self.release_task_claim(task_name)
@@ -980,6 +992,7 @@ class HeartbeatEngine:
             "success": "成功",
             "no_output": "无产出",
             "error": "失败",
+            "incomplete": "未完成，需核验后续做",
         }.get(status, status or "未知")
         when = time.strftime("%m-%d %H:%M", time.localtime(started)) if started > 0 else "未知时间"
         return f"，上次 {when} {status_text}（{task_history.format_duration_ms(int(last.get('duration_ms') or 0))}）"

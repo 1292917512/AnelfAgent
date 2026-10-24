@@ -17,6 +17,38 @@ from agent.audio import (
 from agent.audio.store import AudioStore
 
 
+@pytest.mark.parametrize("merge", [False, True])
+async def test_cancelled_conversion_removes_only_owned_artifacts(tmp_path, monkeypatch, merge):
+    import asyncio
+    import tempfile
+    from pathlib import Path
+    from unittest.mock import AsyncMock
+
+    from agent.audio import ffmpeg
+
+    source = tmp_path / "source.wav"
+    source.write_bytes(b"original audio")
+    monkeypatch.setattr(ffmpeg, "probe", AsyncMock(return_value={}))
+    mkstemp = tempfile.mkstemp
+    monkeypatch.setattr(ffmpeg.tempfile, "mkstemp", lambda **kwargs: mkstemp(dir=tmp_path, **kwargs))
+    entered = asyncio.Event()
+
+    async def convert(command):
+        Path(command[-1]).write_bytes(b"partial output")
+        entered.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(ffmpeg, "_run", convert)
+    task = asyncio.create_task(ffmpeg.merge_to_wav([str(source), str(source)]) if merge
+                               else ffmpeg.ensure_16k_mono_wav(str(source)))
+    await asyncio.wait_for(entered.wait(), 2)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert list(tmp_path.iterdir()) == [source]
+    assert source.read_bytes() == b"original audio"
+
+
 def vec(dim: int) -> list[float]:
     """192 维单位向量基（dim 位为 1），向量间两两正交。"""
     v = [0.0] * 192

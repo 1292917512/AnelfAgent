@@ -7,6 +7,10 @@
 - 检查结果缓存 ``ttl_seconds``（默认 30s），避免每次请求都探测外部状态
 - 瞬态故障宽限：最近 ``failure_grace_seconds``（默认 60s）内成功过的检查，
   偶发失败视为抖动，返回 last-good True 且【不缓存失败】，下次调用重新探测
+
+模型可见：工具可用性来自当前配置代次，单个等待者取消不改变其他请求的目录。
+Token：同一探测共享执行，不增加模型调用。
+缓存：仅工具可用性缓存；失效前的探测不能回填新代次。
 """
 from __future__ import annotations
 
@@ -40,8 +44,10 @@ class ToolGate:
         self._cache: Dict[CheckFn, Tuple[float, bool]] = {}
         # check_fn -> 最近一次返回 True 的单调时钟时间戳
         self._last_good: Dict[CheckFn, float] = {}
-        # id(check_fn) -> 进行中的探测任务（单飞去重：同 key 并发探测共享同一个 Task）
-        self._inflight: Dict[int, asyncio.Task] = {}
+        # (代次, id(check_fn)) -> 进行中的探测任务，同代次等待者共享执行。
+        self._inflight: Dict[tuple[int, int], asyncio.Task[bool]] = {}
+        self._generation = 0
+        self._closed = False
 
     # 缓存容量上限：MCP 热同步/插件 reload 会重建实体产生新 check_fn，
     # 旧 callable 键无淘汰会永久驻留（且强引用阻止 GC）
@@ -81,51 +87,54 @@ class ToolGate:
             log(f"工具门控 check_fn 异常: {type(exc).__name__}: {exc}", "DEBUG", tag="门控")
             return False
 
-    async def _probe(self, fn: CheckFn) -> bool:
+    async def _probe(self, fn: CheckFn, generation: int) -> bool:
         """探测 check_fn（单飞：同一 fn 的并发探测共享同一个任务）。"""
-        key = id(fn)
+        key = (generation, id(fn))
         task = self._inflight.get(key)
-        if task is not None and not task.done():
-            return await task
-        task = asyncio.ensure_future(self._run_check(fn))
-        self._inflight[key] = task
-        try:
-            return await task
-        finally:
-            if self._inflight.get(key) is task:
-                del self._inflight[key]
+        if task is None:
+            task = asyncio.create_task(self._run_check(fn), name="tool_gate.probe")
+            self._inflight[key] = task
+
+            def finished(done: asyncio.Task[bool]) -> None:
+                if self._inflight.get(key) is done:
+                    self._inflight.pop(key)
+                if not done.cancelled():
+                    done.exception()
+
+            task.add_done_callback(finished)
+        return await asyncio.shield(task)
+
+    def _accepting(self) -> bool:
+        return not self._closed
 
     async def check(self, fn: Optional[CheckFn]) -> bool:
-        """评估 check_fn（带 TTL 缓存与瞬态故障宽限）。fn 为 None 时视为通过。"""
-        if fn is None:
-            return True
-
-        now = time.monotonic()
-        ttl = self._effective_ttl()
-        grace = self._effective_grace()
-
-        cached = self._cache.get(fn)
-        if cached is not None:
-            ts, value = cached
-            if now - ts < ttl:
-                return value
-
-        value = await self._probe(fn)
-
-        self._evict_cache_if_full()
-        if value:
-            self._last_good[fn] = now
-            self._cache[fn] = (now, True)
-            return True
-
-        last_good = self._last_good.get(fn)
-        if last_good is not None and now - last_good < grace:
-            # 最近成功过 → 视为抖动，返回 last-good True，
-            # 且不把失败写入缓存，下次调用重新探测
-            log("工具门控检查瞬态失败，宽限期内视为可用", "DEBUG", tag="门控")
-            return True
-
-        self._cache[fn] = (now, False)
+        """共享当前代次探测；失效时重读，调用方取消不传给共享探测。"""
+        while self._accepting():
+            if fn is None:
+                return True
+            now = time.monotonic()
+            ttl, grace = self._effective_ttl(), self._effective_grace()
+            cached = self._cache.get(fn)
+            if cached is not None and now - cached[0] < ttl:
+                return cached[1]
+            generation = self._generation
+            value = await self._probe(fn, generation)
+            if not self._accepting():
+                return False
+            if generation != self._generation:
+                continue
+            now = time.monotonic()
+            self._evict_cache_if_full()
+            if value:
+                self._last_good[fn] = now
+                self._cache[fn] = (now, True)
+                return True
+            last_good = self._last_good.get(fn)
+            if last_good is not None and now - last_good < grace:
+                log("工具门控检查瞬态失败，宽限期内视为可用", "DEBUG", tag="门控")
+                return True
+            self._cache[fn] = (now, False)
+            return False
         return False
 
     async def filter_names(self, items: Dict[str, Optional[CheckFn]]) -> Dict[str, bool]:
@@ -140,7 +149,7 @@ class ToolGate:
         name_to_key: Dict[str, int] = {}
         for name, fn in items.items():
             if fn is None:
-                results[name] = True
+                results[name] = self._accepting()
                 continue
             fn_key = id(fn)
             name_to_key[name] = fn_key
@@ -157,9 +166,28 @@ class ToolGate:
 
     def invalidate(self) -> None:
         """清空全部缓存（含 last-good 记录，下一次评估强制重新探测）。"""
+        self._generation += 1
         self._cache.clear()
         self._last_good.clear()
         log("工具门控缓存已失效", "DEBUG", tag="门控")
+
+    def start(self) -> None:
+        """开启宿主受理；缓存代次与上一生命周期隔离。"""
+        self._closed = False
+        self.invalidate()
+
+    def quiesce(self) -> None:
+        """停止新探测并取消本宿主持有的只读探测。"""
+        self._closed = True
+        self.invalidate()
+        for task in self._inflight.values():
+            task.cancel()
+
+    async def close(self) -> None:
+        """等待共享探测退出；调用方取消由 shield 隔离。"""
+        self.quiesce()
+        if self._inflight:
+            await asyncio.gather(*tuple(self._inflight.values()), return_exceptions=True)
 
 
 # 全局单例：所有工具门控检查共享同一份缓存

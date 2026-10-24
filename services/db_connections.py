@@ -93,7 +93,7 @@ def _validate_readonly_sql(sql: str) -> str:
             status_code=403,
         )
     if keyword in ("select", "with") and not re.search(r"\blimit\b", text, re.IGNORECASE):
-        text = f"{text} LIMIT {_QUERY_MAX_ROWS}"
+        text = f"{text} LIMIT {_QUERY_MAX_ROWS + 1}"
     return text
 
 
@@ -112,7 +112,8 @@ class ExternalAdapter:
 
     # ---------------- 引擎实现 ----------------
 
-    async def _fetch(self, sql: str, params: Tuple[Any, ...] = ()) -> Tuple[List[str], List[Tuple[Any, ...]]]:
+    async def _fetch(self, sql: str, params: Tuple[Any, ...] = (), *,
+                     max_rows: int | None = None) -> Tuple[List[str], List[Tuple[Any, ...]]]:
         """执行只读查询，返回 (列名, 行元组列表)。由子类实现。"""
         raise NotImplementedError
 
@@ -245,7 +246,8 @@ class ExternalAdapter:
         safe_sql = _validate_readonly_sql(sql)
         started = time.time()
         try:
-            columns, rows = await asyncio.wait_for(self._fetch(safe_sql), timeout=_CONNECT_TIMEOUT)
+            columns, rows = await asyncio.wait_for(
+                self._fetch(safe_sql, max_rows=_QUERY_MAX_ROWS + 1), timeout=_CONNECT_TIMEOUT)
         except asyncio.TimeoutError:
             raise DatabaseError(f"查询超时（{_CONNECT_TIMEOUT:.0f}s）", status_code=400) from None
         except DatabaseError:
@@ -261,7 +263,7 @@ class ExternalAdapter:
             "rows": result_rows,
             "row_count": len(result_rows),
             "elapsed_ms": round((time.time() - started) * 1000, 1),
-            "truncated": len(rows) >= _QUERY_MAX_ROWS,
+            "truncated": len(rows) > _QUERY_MAX_ROWS,
         }
 
     # 子类覆盖：文本 CAST 目标类型与占位符风格
@@ -311,12 +313,17 @@ class PostgresAdapter(ExternalAdapter):
                     log("close 异常已忽略", "DEBUG")
                 self._pool = None
 
-    async def _fetch(self, sql: str, params: Tuple[Any, ...] = ()) -> Tuple[List[str], List[Tuple[Any, ...]]]:
+    async def _fetch(self, sql: str, params: Tuple[Any, ...] = (), *,
+                     max_rows: int | None = None) -> Tuple[List[str], List[Tuple[Any, ...]]]:
         pool = await self._get_pool()
         async with pool.acquire() as conn:
             async with conn.transaction(readonly=True):
                 stmt = await conn.prepare(sql)
-                records = await stmt.fetch(*params)
+                if max_rows is None:
+                    records = await stmt.fetch(*params)
+                else:
+                    cursor = await stmt.cursor(*params)
+                    records = await cursor.fetch(max_rows)
                 columns = [a.name for a in stmt.get_attributes()]
                 return columns, [tuple(r.values()) for r in records]
 
@@ -394,24 +401,27 @@ class MysqlAdapter(ExternalAdapter):
         self._conn_obj: Any = None
         self._lock = asyncio.Lock()
 
-    async def _get_conn(self) -> Any:
-        async with self._lock:
-            if self._conn_obj is None:
-                import aiomysql
+    async def _connect(self) -> Any:
+        import aiomysql
 
-                c = self._conn
-                self._conn_obj = await aiomysql.connect(
-                    host=c.host,
-                    port=c.effective_port(),
-                    db=c.database,
-                    user=c.username or None,
-                    password=c.resolved_password() or None,
-                    connect_timeout=int(_CONNECT_TIMEOUT),
-                    autocommit=True,
-                )
-                async with self._conn_obj.cursor() as cur:
-                    await cur.execute("SET SESSION TRANSACTION READ ONLY")
-            return self._conn_obj
+        c = self._conn
+        conn = await aiomysql.connect(
+            host=c.host, port=c.effective_port(), db=c.database, user=c.username or None,
+            password=c.resolved_password() or None, connect_timeout=int(_CONNECT_TIMEOUT), autocommit=True,
+        )
+        try:
+            async with conn.cursor() as cur:
+                await cur.execute("SET SESSION TRANSACTION READ ONLY")
+        except BaseException:
+            conn.close()
+            raise
+        return conn
+
+    async def _get_conn(self) -> Any:
+        """在调用方持有连接锁时取得元数据连接。"""
+        if self._conn_obj is None:
+            self._conn_obj = await self._connect()
+        return self._conn_obj
 
     async def close(self) -> None:
         async with self._lock:
@@ -422,13 +432,28 @@ class MysqlAdapter(ExternalAdapter):
                     log("close 异常已忽略", "DEBUG")
                 self._conn_obj = None
 
-    async def _fetch(self, sql: str, params: Tuple[Any, ...] = ()) -> Tuple[List[str], List[Tuple[Any, ...]]]:
-        conn = await self._get_conn()
-        async with conn.cursor() as cur:
-            await cur.execute(sql, params or None)
-            rows = await cur.fetchall()
-            columns = [d[0] for d in cur.description] if cur.description else []
-            return columns, list(rows)
+    async def _fetch(self, sql: str, params: Tuple[Any, ...] = (), *,
+                     max_rows: int | None = None) -> Tuple[List[str], List[Tuple[Any, ...]]]:
+        import aiomysql
+
+        if max_rows is not None:
+            # 流式结果使用独立只读连接；到达上限即关连接，不为复用连接而排空大结果。
+            conn = await self._connect()
+            try:
+                cur = await conn.cursor(aiomysql.SSCursor)
+                await cur.execute(sql, params or None)
+                rows = await cur.fetchmany(max_rows)
+                columns = [d[0] for d in cur.description] if cur.description else []
+                return columns, list(rows)
+            finally:
+                conn.close()
+        async with self._lock:
+            conn = await self._get_conn()
+            async with conn.cursor() as cur:
+                await cur.execute(sql, params or None)
+                rows = await cur.fetchall()
+                columns = [d[0] for d in cur.description] if cur.description else []
+                return columns, list(rows)
 
     async def _server_version(self) -> str:
         _, rows = await self._fetch("SELECT VERSION()")

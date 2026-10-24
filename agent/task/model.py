@@ -292,7 +292,14 @@ class TaskResult(BaseModel):
 
     task_name: str
     content: str
+    completed_reason: str = "completed"
+
     memory_type: MemoryType
     source: str
     tags: List[str] = Field(default_factory=list)
     importance: float = 0.7
+
+    @property
+    def completion_ready(self) -> bool:
+        """仅明确完成的执行可作为验收完成事实。"""
+        return self.completed_reason == "completed"

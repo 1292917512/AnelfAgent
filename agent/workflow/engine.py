@@ -21,6 +21,10 @@ terminate 可停、完成通知自动路由）；步骤/事件落 journal 供 We
 取消语义二分：用户停止（stop_requested 标记）转化为步骤 cancelled
 结局、run 结算 stopped(user) 可续跑；进程关停的 CancelledError 原样
 上抛，run 留待启动收敛标 interrupted。
+
+Model Experience：模型收到显式步骤背景与依赖证据；未知执行效果保留进展并要求核验。
+Token：步骤背景按需进入本次委托；没有背景时不增加内容。
+缓存：背景属于步骤输入指纹与动态指令，不改变全局稳定前缀。
 """
 
 from __future__ import annotations
@@ -120,6 +124,10 @@ class _RunState:
     delegation_ids: Dict[str, str] = field(default_factory=dict)
     stop_requested: bool = False
 
+    def stopping(self) -> bool:
+        """读取可被取消入口更新的停止信号。"""
+        return self.stop_requested
+
 
 class WorkflowEngine:
     """工作流编排引擎，工具与服务层经端口消费。"""
@@ -150,8 +158,7 @@ class WorkflowEngine:
         """停止接收运行，等待在途步骤取消收敛后关闭 journal。"""
         async with self._lifecycle_lock:
             self._closing = True
-            tasks = {task for state in self._runs.values()
-                     for task in [state.task, *state.step_tasks] if task is not None}
+            tasks = {state.task for state in self._runs.values() if state.task is not None}
             for task in tasks:
                 task.cancel()
             if tasks:
@@ -295,23 +302,50 @@ class WorkflowEngine:
             failure: Optional[Dict[str, Any]] = None
             stopped = False
             for layer in topo_layers(spec):
-                if state.stop_requested:
+                if state.stopping():
                     stopped = True
                     break
-                step_tasks = [
-                    asyncio.create_task(
-                        self._run_step(run_id, run, by_key[key], state, existing,
-                                       imports, results),
-                        name=f"workflow.{run_id}.{key}",
-                    )
-                    for key in layer
-                ]
-                state.step_tasks.update(step_tasks)
-                try:
-                    outcomes = await asyncio.gather(*step_tasks)
-                finally:
-                    state.step_tasks.difference_update(step_tasks)
-                if state.stop_requested or any(oc.status == "cancelled" for oc in outcomes):
+                outcomes: list[_StepOutcome] = []
+                # 明确声明安全的工具与独立 ask 可并行，其余工具在层内形成顺序边界。
+                groups: list[list[str]] = []
+                parallel = False
+                from core.entity import EntityRegistry
+                for key in layer:
+                    node = by_key[key]
+                    entity = EntityRegistry.get(node.tool) if node.kind == "tool" else None
+                    safe = node.kind == "ask" or bool(entity and entity.meta.get("concurrency_safe"))
+                    if safe and parallel:
+                        groups[-1].append(key)
+                    else:
+                        groups.append([key])
+                    parallel = safe
+                for group in groups:
+                    step_tasks = []
+                    try:
+                        try:
+                            async with asyncio.TaskGroup() as nursery:
+                                for key in group:
+                                    task = nursery.create_task(
+                                        self._run_step(run_id, run, by_key[key], state, existing, imports, results),
+                                        name=f"workflow.{run_id}.{key}",
+                                    )
+                                    step_tasks.append(task)
+                                    state.step_tasks.add(task)
+                        except ExceptionGroup as exc:
+                            raise exc.exceptions[0] from exc
+                        outcomes.extend(task.result() for task in step_tasks)
+                    finally:
+                        state.step_tasks.difference_update(step_tasks)
+                    if state.stopping():
+                        break
+                    if any(outcome.status == NODE_FAILED for outcome in outcomes):
+                        outcomes.extend(_StepOutcome(status="skipped", error="同层前序步骤失败，本步骤未执行")
+                                        for _ in layer[len(outcomes):])
+                        break
+                if len(outcomes) != len(layer):
+                    stopped = True
+                    break
+                if state.stopping() or any(oc.status == "cancelled" for oc in outcomes):
                     stopped = True
                     break
                 failed_keys = [key for key, oc in zip(layer, outcomes, strict=True) if oc.status == NODE_FAILED]
@@ -387,7 +421,7 @@ class WorkflowEngine:
         try:
             return await self._run_step_inner(run_id, run, step, state, existing, imports, results)
         except asyncio.CancelledError:
-            if state.stop_requested:
+            if state.stopping():
                 return _StepOutcome(status="cancelled", error="停止请求")
             raise  # 进程关停：上抛由执行循环留待启动收敛
 
@@ -398,7 +432,8 @@ class WorkflowEngine:
     ) -> _StepOutcome:
         context = ""
         if step.kind == "ask":
-            context = self._upstream_context(step, results)
+            upstream = self._upstream_context(step, results)
+            context = "\n\n".join(part for part in (step.context, upstream) if part)
             input_desc: Dict[str, Any] = {
                 "goal": step.goal, "context": context,
                 "agent": step.agent_name, "continue_from": step.continue_from,
@@ -469,7 +504,7 @@ class WorkflowEngine:
         attempt = 0
         while attempt < max_attempts:
             attempt += 1
-            if state.stop_requested:
+            if state.stopping():
                 return _StepOutcome(status="cancelled", error="停止请求")
             await self._journal.admit_node(run_id, step.key, ordinal, step.kind,
                                            input_hash, input_json)
@@ -580,6 +615,12 @@ class WorkflowEngine:
     # 派发（ask → DelegationManager；tool → 审批 + EntityRegistry）
     # ------------------------------------------------------------------
 
+    def _slot(self) -> asyncio.Semaphore:
+        """所有步骤共享的受理容量；业务执行只在拿到槽位后创建。"""
+        if self._dispatch_sem is None:
+            self._dispatch_sem = asyncio.Semaphore(max(1, get_config_int("workflow_max_parallel_steps", 3)))
+        return self._dispatch_sem
+
     async def _dispatch(
             self, run: Dict[str, Any], step: Any, state: _RunState,
             existing: Dict[str, Dict[str, Any]], context: str,
@@ -605,21 +646,20 @@ class WorkflowEngine:
             delegation_id = registry.register(
                 state.scope, "delegation", f"[{state.name}] {goal}"[:80])
 
-        base_messages = self._continuation_messages(state, existing or {}, continue_from, goal)
+        base_messages = self._continuation_messages(state, existing or {}, continue_from, goal, context)
         result: Optional[Any] = None
         try:
-            coro = manager.delegate(
-                goal, context, agent_name=agent_name, scope_hint=state.scope,
-                delegation_id=delegation_id, base_messages=base_messages,
-            )
-            if self._dispatch_sem is None:
-                self._dispatch_sem = asyncio.Semaphore(
-                    max(1, get_config_int("workflow_max_parallel_steps", 3)))
-            async with self._dispatch_sem:
-                result = await (asyncio.wait_for(coro, timeout) if timeout > 0 else coro)
-        except asyncio.TimeoutError:
+            async with asyncio.timeout(timeout if timeout > 0 else None):
+                async with self._slot():
+                    if delegation_id:
+                        state.delegation_ids[node_key] = delegation_id
+                    result = await manager.delegate(
+                        goal, context, agent_name=agent_name, scope_hint=state.scope,
+                        delegation_id=delegation_id, base_messages=base_messages,
+                    )
+        except TimeoutError:
             return _StepOutcome(status=NODE_FAILED,
-                                error=f"步骤超时（{timeout:.0f}s），操作结果未确认，请先核验: {goal[:120]}",
+                                error=f"步骤超时（{timeout:g}s），操作结果未确认，请先核验: {goal[:120]}",
                                 delegation_id=delegation_id, retryable=False)
         finally:
             if delegation_id and registry is not None:
@@ -654,7 +694,7 @@ class WorkflowEngine:
 
     def _continuation_messages(
             self, state: _RunState, existing: Dict[str, Dict[str, Any]],
-            continue_from: str, goal: str,
+            continue_from: str, goal: str, context: str,
     ) -> Optional[List[Dict[str, Any]]]:
         """continue_from 的续聊消息链：以源步骤 transcript 为 base_messages。"""
         if not continue_from:
@@ -674,7 +714,8 @@ class WorkflowEngine:
         messages.append({
             "role": "user",
             "content": f"[工作流续聊] 以上是步骤 {continue_from} 的完整执行上下文，"
-                       f"请在既有进展基础上继续完成：\n{goal}",
+                       f"请在既有进展基础上继续完成：\n{goal}"
+                       + (f"\n[当前步骤上下文]\n{context}" if context else ""),
             "_source": {"origin": "steer"},
         })
         return messages
@@ -682,26 +723,27 @@ class WorkflowEngine:
     async def _dispatch_tool(
             self, run: Dict[str, Any], step: Any, timeout: float = 0.0,
     ) -> _StepOutcome:
-        decision = await self._request_approval(step, run)
-        if not decision.allowed:
-            return _StepOutcome(status=NODE_FAILED,
-                                error=f"权限检查拒绝: {decision.reason}")
-        from core.entity import EntityRegistry
-        arguments = json.dumps(step.args, ensure_ascii=False)
-        coro = EntityRegistry.execute_tool(step.tool, arguments)
+        started = False
         try:
-            result_str = await (asyncio.wait_for(coro, timeout) if timeout > 0 else coro)
-        except asyncio.TimeoutError:
-            return _StepOutcome(status=NODE_FAILED,
-                                error=f"步骤超时（{timeout:.0f}s），操作结果未确认，请先核验: {step.tool}",
-                                retryable=False)
+            async with asyncio.timeout(timeout if timeout > 0 else None):
+                async with self._slot():
+                    decision = await self._request_approval(step, run)
+                    if not decision.allowed:
+                        return _StepOutcome(status=NODE_FAILED, error=f"权限检查拒绝: {decision.reason}", retryable=False)
+                    from core.entity import EntityRegistry
+                    arguments = json.dumps(step.args, ensure_ascii=False)
+                    started = True
+                    result_str = await EntityRegistry.execute_tool(step.tool, arguments)
+        except TimeoutError:
+            detail = "操作结果未确认，请先核验" if started else "排队或权限检查未完成，工具尚未执行"
+            return _StepOutcome(status=NODE_FAILED, error=f"步骤超时（{timeout:g}s），{detail}: {step.tool}",
+                                retryable=not started)
         parsed = parse_tool_result_json(result_str)
         error = extract_error_text(parsed)
         if error:
             retryable = isinstance(parsed, dict) and parsed.get("retryable") is not False \
                 and parsed.get("outcome") != "unknown"
-            return _StepOutcome(status=NODE_FAILED,
-                                error=error[:4000], result=result_str, retryable=retryable)
+            return _StepOutcome(status=NODE_FAILED, error=error[:4000], result=result_str, retryable=retryable)
         if decision.notice:
             payload = parsed if isinstance(parsed, dict) else {"result": result_str}
             payload["permission_notice"] = decision.notice
@@ -844,7 +886,7 @@ _WORKFLOW_CONFIGS = {
             "default": True,
         },
         "workflow_max_parallel_steps": {
-            "description": "工作流步骤并发上限（ask 委托的引擎侧闸门）",
+            "description": "工作流步骤并发上限（工具、ask 委托与修复共用；非并发安全工具在同层串行）",
             "default": 3,
             "advanced": True,
             "unit": "个",
