@@ -72,7 +72,7 @@ async def judge_via_llm(
     deadline = time.monotonic() + timeout
     usage = JudgmentUsage()
     for attempt in range(2):
-        remaining = deadline - time.monotonic()
+        remaining = min(timeout, deadline - time.monotonic())
         if remaining <= 0:
             raise JudgmentError("回退判断等待预算已用尽", cause=ErrorCause.TIMEOUT, retryable=True)
         try:

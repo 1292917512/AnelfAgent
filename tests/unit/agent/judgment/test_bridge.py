@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 
 import pytest
@@ -141,7 +142,11 @@ async def test_bridge_garbage_raises(monkeypatch: pytest.MonkeyPatch) -> None:
         )
 
 
-async def test_bridge_retries_incomplete_json_once_with_shared_budget(monkeypatch):
+@pytest.mark.parametrize("clock_start", [None, 255.99999999999997])
+async def test_bridge_retries_incomplete_json_once_with_shared_budget(monkeypatch, clock_start):
+    if clock_start is not None:
+        ticks = iter([clock_start, clock_start, clock_start + 1])
+        monkeypatch.setattr(bridge, "time", SimpleNamespace(monotonic=lambda: next(ticks)))
     manager = _FakeManager(_llm_payload()[:-1])
     original = manager.chat_with_fallback
     budgets = []
@@ -159,6 +164,8 @@ async def test_bridge_retries_incomplete_json_once_with_shared_budget(monkeypatc
     )
     assert set(answers) == set(_questions()) and not missing
     assert len(budgets) == 2 and 0 < budgets[1] <= budgets[0] <= 30
+    if clock_start is not None:
+        assert budgets[1] < budgets[0]
     assert "括号闭合" in manager.calls[-1]["messages"][-1]["content"]
 
 
