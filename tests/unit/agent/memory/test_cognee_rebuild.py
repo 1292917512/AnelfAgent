@@ -103,7 +103,7 @@ async def test_relation_rename_requeues_existing_neighbors_even_with_inflight_pr
     await coordinator._process_batch(await store.claim_cognee_sync_batch(20))
     old = await store.graph.get_node("topic:old")
     # 在途邻居仍持有旧名称快照；改名必须另外保留一条 pending，不能被旧批次 ACK 吃掉。
-    await store.graph.add_relation("topic:hub", "连接", "topic:old")
+    await store.graph.add_relation("topic:hub", "连接", "topic:old", evidence="新增的在途证据")
     inflight = await store.claim_cognee_sync_batch(20)
     args = ("topic:hub", "连接", "topic:new") if side == "subject" else ("topic:new", "连接", "topic:hub")
     await store.graph.add_relation(*args, **{f"{side}_label": "新名称"})

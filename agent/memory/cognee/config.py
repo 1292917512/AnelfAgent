@@ -125,6 +125,7 @@ class CogneeConfig:
     # 上千个版本清单（单表 7 天可累积 ~7G manifests），窗口宁短勿长
     compact_enabled: bool = field(default=True, metadata={"section": "storage"})
     compact_interval_seconds: float = field(default=86400.0, metadata={"section": "storage", "advanced": True, "min": 600})
+    compact_cleanup_interval_seconds: float = field(default=600.0, metadata={"section": "storage", "advanced": True, "min": 60})
     compact_retention_days: float = field(default=1.0, metadata={"section": "storage", "min": 0})
     # 写盘熔断：滑动窗口内进程自身写入速率超阈值时暂停投影认领与
     # 自动压缩（冷却期后重评），防止 Kùzu checkpoint 风暴撞爆磁盘配额
@@ -179,6 +180,7 @@ class CogneeConfig:
         self.sync_batch_size = max(1, int(self.sync_batch_size))
         self.max_retries = max(1, int(self.max_retries))
         self.compact_interval_seconds = max(600.0, float(self.compact_interval_seconds))
+        self.compact_cleanup_interval_seconds = max(60.0, float(self.compact_cleanup_interval_seconds))
         self.compact_retention_days = max(0.0, float(self.compact_retention_days))
         self.write_breaker_threshold_mb = max(1.0, float(self.write_breaker_threshold_mb))
         self.write_breaker_window_seconds = max(10.0, float(self.write_breaker_window_seconds))

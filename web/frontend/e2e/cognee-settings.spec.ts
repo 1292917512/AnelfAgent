@@ -10,11 +10,13 @@ test("Cognee settings separate deadlines and preserve overrides across edits and
     { key: "pipeline_timeout_seconds", type: "float", section: "sync", min: 1 },
     { key: "sync_batch_size", type: "int", section: "sync", min: 1 },
     { key: "native_watchdog_enabled", type: "bool", section: "storage", advanced: true },
+    { key: "compact_cleanup_interval_seconds", type: "float", section: "storage", advanced: true, min: 60 },
     { key: "data_root", type: "string", section: "storage", read_only: true, advanced: true },
   ];
   let config = {
     enabled: true, timeout_seconds: 300, pipeline_timeout_seconds: 3600, sync_batch_size: 2,
     native_watchdog_enabled: true, data_root: "/data/memory/cognee", search_types: ["CHUNKS"],
+    compact_cleanup_interval_seconds: 600,
     chat: { source: "auto", model_id: "", provider: "openai", model: "", api_key: "", endpoint: "",
       api_version: "", instructor_mode: "", max_completion_tokens: 0, reasoning_effort: "",
       extra_args: { top_p: 0.9 } as Record<string, unknown> },
@@ -76,6 +78,11 @@ test("Cognee settings separate deadlines and preserve overrides across edits and
   await dialog.getByRole("tab", { name: "Storage protection" }).click();
   const storage = dialog.getByRole("tabpanel", { name: "Storage protection" });
   await storage.locator("summary").filter({ hasText: "Advanced settings" }).click();
+  await expect(storage.getByRole("spinbutton", { name: "Version Cleanup Interval (s)" })).toHaveValue("600");
+  await storage.getByRole("spinbutton", { name: "Version Cleanup Interval (s)" }).fill("120");
+  await storage.getByRole("button", { name: "Save", exact: true }).click();
+  await expect.poll(() => patches.length).toBe(4);
+  expect(patches[3]).toEqual({ compact_cleanup_interval_seconds: 120 });
   await expect(storage.getByText("/data/memory/cognee", { exact: true })).toBeVisible();
   await expect(storage.getByRole("textbox")).toHaveCount(0);
   await expect(dialog.getByRole("link", { name: "View storage location in unified data management" })).toHaveAttribute("href", "/webui/data");

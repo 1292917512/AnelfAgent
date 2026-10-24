@@ -68,25 +68,26 @@ class ProjectionWriter:
                 if latest is None:
                     await self._process_delete(item)
                     continue
-                item = {**item, "payload": entry_projection_payload(latest, item["entry_id"])}
+                item = {**item, "payload": {**entry_projection_payload(latest, item["entry_id"]),
+                                           "force": bool(item["payload"].get("force"))}}
             if item["entry_kind"] == ENTRY_KIND_GRAPH_NODE:
                 if self.config.project_graph_enabled:
                     graph_upserts.append(item)
                 else:
-                    await self._skip_disabled(item)
+                    await self._complete_without_projection(item)
             elif not memory_is_projectable(item["payload"]):
                 await self._process_delete({**item, "operation": "delete"})
             elif self.config.project_memories_enabled:
                 memory_upserts[self.memory_dataset].append(item)
             else:
-                await self._skip_disabled(item)
+                await self._complete_without_projection(item)
         for dataset_name, items in memory_upserts.items():
             await self._process_upsert_group(dataset_name, items)
         if graph_upserts:
             await self._process_graph_upserts(graph_upserts)
 
-    async def _skip_disabled(self, item: dict[str, Any]) -> None:
-        """投影开关关闭的条目直接完成出队（不入 cognee，也不算失败）。"""
+    async def _complete_without_projection(self, item: dict[str, Any]) -> None:
+        """无需投影的条目完成出队，保留已发布映射。"""
         await self.store.complete_cognee_sync(
             item["queue_id"], item["entry_id"], entry_kind=item["entry_kind"],
         )
@@ -94,8 +95,11 @@ class ProjectionWriter:
     async def _process_delete(self, item: dict[str, Any]) -> None:
         self.progress.stage("delete")
         try:
-            async with self.client.write_transaction():
-                await self._delete_superseded(item)
+            targets = await self._superseded_targets(item)
+            if targets:
+                async with self.client.write_transaction():
+                    for dataset_id, data_id in sorted(targets):
+                        await self.client.delete_data(dataset_id, data_id, delete_dataset_if_empty=False)
             await self.store.complete_cognee_sync(
                 item["queue_id"], item["entry_id"],
                 entry_kind=item["entry_kind"], delete_mapping=True,
@@ -105,6 +109,13 @@ class ProjectionWriter:
 
     async def _delete_superseded(self, item: dict[str, Any], *, keep: set[tuple[str, str]] | None = None) -> None:
         """清理旧映射和失败写入副本；成功提交前保留日志，重复删除幂等。"""
+        for dataset_id, data_id in sorted(await self._superseded_targets(item, keep=keep)):
+            await self.client.delete_data(dataset_id, data_id, delete_dataset_if_empty=False)
+
+    async def _superseded_targets(
+        self, item: dict[str, Any], *, keep: set[tuple[str, str]] | None = None,
+    ) -> set[tuple[str, str]]:
+        """在协调器互斥窗口内解析实际删除目标；空集合不启动索引写事务。"""
         previous = await self.store.get_cognee_mapping(item["entry_id"], entry_kind=item["entry_kind"])
         keep = keep or set()
         targets: set[tuple[str, str]] = set()
@@ -121,16 +132,25 @@ class ProjectionWriter:
             for row in attempts:
                 if dataset_id := datasets.get(row["dataset_name"]):
                     targets.add((dataset_id, row["data_id"]))
-        for dataset_id, data_id in sorted(targets):
-            await self.client.delete_data(dataset_id, data_id, delete_dataset_if_empty=False)
+        return targets
 
     async def _process_upsert_group(
         self,
         dataset_name: str,
         items: list[dict[str, Any]],
     ) -> None:
-        entries = [(item, memory_document(item["payload"])) for item in items]
-        await self._push_projection_group(dataset_name, entries, graph=False)
+        entries: list[tuple[dict[str, Any], ProjectionDocument]] = []
+        for item in items:
+            document = memory_document(item["payload"])
+            mapping = await self.store.get_cognee_mapping(item["entry_id"], entry_kind=item["entry_kind"])
+            if (not item["payload"].get("force") and mapping
+                    and mapping.get("content_hash") == document.fingerprint
+                    and not await self.store.projection_state.staged(item["entry_kind"], item["entry_id"])):
+                await self._complete_without_projection(item)
+            else:
+                entries.append((item, document))
+        if entries:
+            await self._push_projection_group(dataset_name, entries, graph=False)
 
     @property
     def relations_dataset(self) -> str:

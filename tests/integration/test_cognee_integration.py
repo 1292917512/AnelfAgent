@@ -232,6 +232,14 @@ async def test_real_relation_fragments_incremental_update_preserves_committed_do
         assert retained and not retained.intersection(identity for batch in writes for identity in batch)
         documents = await client.list_data(mapping["dataset_id"])
         assert retained <= {row["id"] for row in documents}
+        # 有真实图/向量数据的版本清理也经过发布门；原生映射和所有当前分片不变。
+        before_cleanup = await store.projection_state.mappings()
+        maintenance = await client.compact_vector_storage(0, prune_only=True)
+        assert not maintenance["errors"]
+        assert maintenance["executed_tasks"] == 0
+        assert await store.projection_state.mappings() == before_cleanup
+        await coordinator.rebuild.verify_backend(coordinator.rebuild.state, before_cleanup)
+        assert {row["id"] for row in documents} == {row["id"] for row in await client.list_data(mapping["dataset_id"])}
         # 断开重开仍可依据同一清单验证所有分片，不产生新代际。
         await client.close()
         client = CogneeClient(config, source_mappings=store.projection_state.publication_sources)

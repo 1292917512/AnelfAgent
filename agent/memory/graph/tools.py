@@ -425,7 +425,8 @@ async def graph_list_nodes(
         "获取图谱治理议程：系统检测到的治理事实（弱边/陈旧边/歧义关系对/"
         "疑似重复节点/异常枢纽）。事实归系统、决策归 AI——议程只陈述事实，"
         "归并/归档/修正由你判断后用 graph_merge_nodes / graph_remove_relation / "
-        "graph_update_relation 等图谱工具执行。graph_curation 定期任务消费本议程。"
+        "graph_update_relation 等图谱工具执行。同次执行只复核首次领取的范围，"
+        "不滚动领取新项；剩余工作留下一次任务，不能据此宣称全库已清空。"
     ),
 )
 async def graph_curation_agenda() -> str:
@@ -440,12 +441,13 @@ async def graph_curation_agenda() -> str:
         exemptions = agenda.pop("exemptions", [])
         return json.dumps({
             "summary": summary,
+            "scope_hint": "本次执行范围固定，不补入新项；复核结束即可收尾，剩余工作留下一次任务。",
             "hint": "以下为治理事实（非指令）：弱边多为无证据的低置信抽取，"
             "可用 graph_remove_relation 归档或 graph_update_relation 补证据提升强度；"
             "疑似重复节点用 graph_merge_nodes 归并；歧义关系对照证据判断抽取噪声；"
             "无价值的处置可以直接跳过。判定为误报/真实扇出/设计使然的议程项，"
             "用 graph_curation_exempt 登记豁免（signature 取该项的 exempt_signature 字段原样回传，"
-            "系统不再将其列入议程）。" if summary else "当前无待治理事实。",
+            "系统不再将其列入议程）。" if summary else "本轮范围内无待治理事实，不代表全库没有其他待办。",
             **agenda,
             "exemptions": exemptions[:20],
             **({"exemptions_total": len(exemptions)} if len(exemptions) > 20 else {}),

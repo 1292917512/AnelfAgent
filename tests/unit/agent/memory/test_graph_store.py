@@ -58,6 +58,44 @@ async def test_add_relation_upserts_on_same_triple(store) -> None:
     assert stats["edges"] == 1
 
 
+async def test_extraction_preserves_names_and_only_real_changes_enqueue(store) -> None:
+    store.set_cognee_projection_enabled(True)
+    graph = store.graph
+    edge = await graph.add_relation("user:qq:1", "喜欢", "topic:茶", subject_label="阿辰",
+                                    evidence="每天喝茶", origin="heartbeat_extract")
+    await graph.add_relation("user:qq:1", "喜欢", "topic:咖啡", origin="heartbeat_extract")
+    db = await store._conn.get_db()
+    await db.execute("DELETE FROM cognee_sync_queue")
+    await db.commit()
+    repeated = await graph.add_relation("user:qq:1", "喜欢", "topic:茶", subject_label="用户",
+                                        evidence="每天喝茶", origin="heartbeat_extract")
+    await graph.upsert_node("user:qq:1", label="阿辰")
+    await graph.update_relation(edge["id"], strength=edge["strength"], evidence="每天喝茶")
+    assert repeated["updated"] == edge["updated"]
+    assert (await graph.get_node("user:qq:1"))["label"] == "阿辰"
+    assert not await store.claim_cognee_sync_batch(20)
+    # 强度是原生召回信号，不属于投影正文；真实变化仍写权威库。
+    await graph.update_relation(edge["id"], strength=0.9)
+    assert (await graph.get_relation(edge["id"]))["strength"] == 0.9
+    assert not await store.claim_cognee_sync_batch(20)
+    await graph.update_relation(edge["id"], evidence="改喝红茶")
+    assert len(await store.claim_cognee_sync_batch(20)) == 2
+    await db.execute("DELETE FROM cognee_sync_queue")
+    await db.commit()
+    # 显式改名继续传播到全部邻居，不能以降低队列为代价保留过期名称。
+    await graph.upsert_node("user:qq:1", label="新的正式名称")
+    assert len(await store.claim_cognee_sync_batch(20)) == 3
+
+
+async def test_extraction_can_fill_placeholder_name_and_restore_archived_node(store) -> None:
+    await store.graph.upsert_node("user:qq:1")
+    await store.graph.set_node_archived("user:qq:1", True)
+    edge = await store.graph.add_relation("user:qq:1", "喜欢", "topic:茶", subject_label="阿辰",
+                                          origin="heartbeat_extract")
+    assert edge["subject"]["label"] == "阿辰"
+    assert not (await store.graph.get_node("user:qq:1"))["archived"]
+
+
 @pytest.mark.asyncio
 async def test_add_relation_rejects_self_loop_and_empty_predicate(store) -> None:
     with pytest.raises(ValueError):

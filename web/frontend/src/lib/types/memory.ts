@@ -63,6 +63,7 @@ export interface CogneeConfig {
   max_retries: number;
   compact_enabled: boolean;
   compact_interval_seconds: number;
+  compact_cleanup_interval_seconds: number;
   compact_retention_days: number;
   write_breaker_enabled: boolean;
   write_breaker_threshold_mb: number;

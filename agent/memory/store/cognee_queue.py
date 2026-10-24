@@ -65,6 +65,21 @@ class CogneeSyncQueue:
         """
         if not self._projection_enabled or entry_id <= 0:
             return
+        if (
+            operation == "upsert"
+            and not force
+            and entry_kind == ENTRY_KIND_MEMORY
+            and payload
+            and memory_is_projectable(payload)
+            and await self._already_projected(db, entry_id, payload)
+        ):
+            # 状态已同步：作废残留的待执行条目后不再入队
+            await db.execute(
+                "DELETE FROM cognee_sync_queue "
+                "WHERE entry_kind=? AND entry_id=? AND status IN ('pending', 'failed')",
+                (entry_kind, entry_id),
+            )
+            return
         if entry_kind == ENTRY_KIND_MEMORY:
             # 来源标签/私密度属于关系文档的一部分，与原始变更同事务入队。
             rows = await (await db.execute(
@@ -103,22 +118,8 @@ class CogneeSyncQueue:
                 )
                 return
             operation, payload = "delete", None
-        if (
-            operation == "upsert"
-            and not force
-            and entry_kind == ENTRY_KIND_MEMORY
-            and payload
-            and await self._already_projected(db, entry_id, payload)
-        ):
-            # 状态已同步：作废残留的待执行条目后不再入队
-            await db.execute(
-                "DELETE FROM cognee_sync_queue "
-                "WHERE entry_kind=? AND entry_id=? AND status IN ('pending', 'failed')",
-                (entry_kind, entry_id),
-            )
-            return
         now_ns = time.time_ns()
-        if force and entry_kind == ENTRY_KIND_GRAPH_NODE:
+        if force:
             payload = {**(payload or {}), "force": True}
         await db.execute(
             "DELETE FROM cognee_sync_queue "

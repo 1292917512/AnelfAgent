@@ -47,6 +47,7 @@ class CogneeConfigUpdate(BaseModel):
     max_retries: Optional[int] = None
     compact_enabled: Optional[bool] = None
     compact_interval_seconds: Optional[float] = None
+    compact_cleanup_interval_seconds: Optional[float] = None
     compact_retention_days: Optional[float] = None
     write_breaker_enabled: Optional[bool] = None
     write_breaker_threshold_mb: Optional[float] = None

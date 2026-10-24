@@ -8,6 +8,7 @@ from contextlib import nullcontext
 from typing import TYPE_CHECKING, Dict, List, Optional, Set
 
 from agent.channel.delivery import capture_deliveries
+from agent.memory.graph.curation import curation_window
 from agent.mind.execution.completion import _handle_interrupt, _handle_security_leak, _handle_summary_round
 from agent.mind.execution.model import _invoke_llm_round
 from agent.mind.execution.reply_finalize import finish_think
@@ -89,7 +90,9 @@ async def think_loop(
     async with manager as activity:
         recollection = DialogueRecollection(mind.recollection, ctx.current_scope, ctx.base_messages)
         try:
-            with capture_deliveries(ctx.current_scope, acknowledge=lambda scope, ts: mind.pfc.consume_scope_task(scope, through_ts=ts)):
+            with curation_window(), capture_deliveries(
+                ctx.current_scope, acknowledge=lambda scope, ts: mind.pfc.consume_scope_task(scope, through_ts=ts),
+            ):
                 await _run_think_rounds(ctx, state, safety_limit, start_time, recollection)
         except Exception:
             state.completion_reason = "failed"

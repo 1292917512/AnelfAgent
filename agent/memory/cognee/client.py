@@ -89,6 +89,7 @@ class CogneeClient:
         self._revision = 0
         self._worker_revision = -1
         self._plan: MutationPlan | None = None
+        self._transaction_writes = False
         self._finished_writes = 0
         self._needs_recovery = False
 
@@ -315,8 +316,11 @@ class CogneeClient:
                 if self._source_mappings is not None:
                     baseline.check_sources(await self._source_mappings())
                 self._plan = MutationPlan(baseline)
+                self._transaction_writes = False
                 self._phase = "writing"
                 yield
+                if not self._transaction_writes:
+                    return
                 self._phase = "committing"
                 candidate = await self._inspect(await self._worker())
                 self._plan.validate(candidate)
@@ -334,6 +338,7 @@ class CogneeClient:
             finally:
                 self._transaction.reset(token)
                 self._plan = None
+                self._transaction_writes = False
                 self._phase = "failed" if self._fault else "idle"
 
     async def _inspect(self, process: CogneeProcess) -> IndexManifest:
@@ -350,7 +355,14 @@ class CogneeClient:
                 return await self._invoke(method, *args, write=True, **kwargs)
         limit = self.config.pipeline_timeout_seconds if write else self.config.timeout_seconds
         if self._inside_transaction():
-            return await (await self._worker()).call(method, *args, timeout=limit, **kwargs)
+            # 图谱增强与版本维护不改变文档清单，也必须按实际写调用发布。
+            previous_writes = self._transaction_writes
+            self._transaction_writes |= write
+            result = await (await self._worker()).call(method, *args, timeout=limit, **kwargs)
+            if (method == "compact_vector_storage" and not result["errors"]
+                    and result["executed_tasks"] == 0 and result["old_versions_removed"] == 0):
+                self._transaction_writes = previous_writes
+            return result
         availability = await self.initialize()
         if not availability.ready:
             raise RuntimeError(availability.reason or "Cognee 未就绪")
@@ -439,14 +451,19 @@ class CogneeClient:
             assert self._plan is not None
             self._plan.require_processed(dataset_id, data_ids)
 
-    async def compact_vector_storage(self, retention_days: float, *, rotation: int | None = None) -> dict[str, Any]:
+    async def compact_vector_storage(
+        self, retention_days: float, *, rotation: int | None = None, prune_only: bool = False,
+    ) -> dict[str, Any]:
         if rotation is not None:
             self._compact_rotation = rotation
         try:
-            return await self._invoke("compact_vector_storage", retention_days,
-                                      rotation=self._compact_rotation, write=True)
-        finally:
+            result = await self._invoke("compact_vector_storage", retention_days,
+                                        rotation=self._compact_rotation, prune_only=prune_only, write=True)
+        except BaseException:
             self._compact_rotation += 1
+            raise
+        self._compact_rotation = int(result["next_rotation"])
+        return result
 
     async def pipeline_progress(self, dataset_id: str, documents: dict[str, bool] | None = None) -> CogneePipelineProgress:
         # 元数据观测允许与同一工作进程的长抽取并行，不另开图库连接。

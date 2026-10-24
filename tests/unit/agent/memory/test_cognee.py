@@ -811,6 +811,47 @@ async def test_coordinator_projects_and_deletes_memory(tmp_path) -> None:
         await store.close()
 
 
+async def test_unmapped_delete_completes_without_index_transaction(store, tmp_path, monkeypatch):
+    store.set_cognee_projection_enabled(True)
+    node = await store.graph.upsert_node("topic:未同步即删除")
+    await store.graph.set_node_archived(node["node_key"], True)
+    client = _FakeCogneeClient()
+    transaction = Mock(side_effect=AssertionError("empty delete must not start a publication"))
+    monkeypatch.setattr(client, "write_transaction", transaction)
+    coordinator = CogneeCoordinator(store, client, CogneeConfig(data_root=str(tmp_path)))
+    await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
+    assert not coordinator.writer.last_error
+    assert (await store.get_cognee_sync_status())["pending"] == 0
+    assert not client.deleted
+    transaction.assert_not_called()
+
+
+async def test_unchanged_source_does_not_enqueue_neighbors_and_forced_repair_still_runs(store, tmp_path):
+    store.set_cognee_projection_enabled(True)
+    mid = await store.add(MemoryEntry(content="阿辰喜欢茶", memory_type=MemoryType.SEMANTIC))
+    client = _FakeCogneeClient()
+    coordinator = CogneeCoordinator(store, client, CogneeConfig(data_root=str(tmp_path)))
+    await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
+    await store.graph.add_relation("person:阿辰", "喜欢", "topic:茶", source_memory_id=mid)
+    db = await store._conn.get_db()
+    await db.execute("DELETE FROM cognee_sync_queue")
+    await db.commit()
+    from agent.memory.store._shared import entry_projection_payload
+
+    payload = entry_projection_payload(await store.get(mid), mid)
+    async with store._conn.tx(db):
+        await store._cognee.enqueue_sync(db, mid, "upsert", payload)
+    assert not await store.claim_cognee_sync_batch(10)
+    async with store._conn.tx(db):
+        await store._cognee.enqueue_sync(db, mid, "upsert", payload, force=True)
+    batch = await store.claim_cognee_sync_batch(10)
+    memory_batch = [item for item in batch if item["entry_kind"] == "memory"]
+    assert memory_batch[0]["payload"]["force"] is True
+    assert len(batch) == 3
+    await coordinator._process_batch(memory_batch)
+    assert len(client.items) == 2
+
+
 class _GraphFakeClient(_FakeCogneeClient):
     """图谱投影假客户端（按 anelf_graph_node_id 反解数据 ID；含 per-scope 关系数据集）。"""
 
@@ -1564,9 +1605,11 @@ async def test_storage_stats_adopt_wins_over_inflight_refresh(
 class _CompactFakeClient(FakeIndexTransactions):
     def __init__(self) -> None:
         self.compact_calls: list[float] = []
+        self.cleanup_modes: list[bool] = []
 
-    async def compact_vector_storage(self, retention_days: float) -> dict:
+    async def compact_vector_storage(self, retention_days: float, *, prune_only: bool = False) -> dict:
         self.compact_calls.append(retention_days)
+        self.cleanup_modes.append(prune_only)
         return {
             "databases": 1,
             "tables": 2,
@@ -1579,6 +1622,68 @@ class _CompactFakeClient(FakeIndexTransactions):
                 "graph_bytes": 0, "metadata_bytes": 0, "other_bytes": 0,
             },
         }
+
+
+async def test_cleanup_has_its_own_interval_and_does_not_rewrite_fragments(store, tmp_path):
+    client = _CompactFakeClient()
+    coordinator = CogneeCoordinator(store, client, CogneeConfig(data_root=str(tmp_path), write_breaker_enabled=False))
+    coordinator._last_compact_ns = time.monotonic_ns()
+    await coordinator._maybe_compact()
+    assert client.cleanup_modes == [True]
+    await coordinator._maybe_compact()
+    assert client.cleanup_modes == [True]
+    await coordinator.request_compact()
+    assert client.cleanup_modes == [True, False]
+
+
+async def test_nonempty_queue_still_yields_to_maintenance_between_batches(store, tmp_path, monkeypatch):
+    client = _FakeCogneeClient()
+    coordinator = CogneeCoordinator(store, client, CogneeConfig(data_root=str(tmp_path), write_breaker_enabled=False))
+    events = []
+    monkeypatch.setattr(coordinator.rebuild, "advance", AsyncMock())
+    monkeypatch.setattr(store, "claim_cognee_sync_batch", AsyncMock(return_value=[{"queue_id": 1}]))
+
+    async def process(batch):
+        assert coordinator._projection_lock.locked()
+        events.append("batch")
+
+    async def maintain():
+        assert not coordinator._projection_lock.locked()
+        events.append("maintenance")
+        coordinator._closing = True
+
+    monkeypatch.setattr(coordinator, "_process_entries", process)
+    monkeypatch.setattr(coordinator, "_maybe_compact", maintain)
+    await asyncio.wait_for(coordinator._worker(), 2)
+    assert events == ["batch", "maintenance"]
+
+
+def test_version_only_maintenance_rotates_budget_and_preserves_latest_rows(tmp_path, monkeypatch):
+    lancedb = pytest.importorskip("lancedb")
+    import cognee_db_workers.lancedb_compaction as compaction
+
+    import agent.memory.cognee.storage as storage
+
+    monkeypatch.setattr(storage, "_MAINTENANCE_TABLE_BUDGET", 1)
+    monkeypatch.setattr(compaction, "DEFAULT_MAX_VERSIONS_PER_RUN", 2)
+    db_dir = tmp_path / "system/databases/test.lance.db"
+    conn = lancedb.connect(str(db_dir))
+    for name in ("a", "b"):
+        table = conn.create_table(name, [{"id": 0, "vector": [0.0, 1.0]}])
+        for i in range(1, 5):
+            table.add([{"id": i, "vector": [float(i), 1.0]}])
+    rotation = 0
+    for _ in range(4):
+        result = storage.compact_lance_tree(db_dir.parent, 0, rotation=rotation, prune_only=True)
+        rotation = result["next_rotation"]
+        assert result["old_versions_removed"] == 2
+        assert result["executed_tasks"] == 0
+        assert not result["errors"]
+    for name in ("a", "b"):
+        table = conn.open_table(name)
+        assert table.count_rows() == 5
+        assert len(table.list_versions()) == 1
+        assert len(table.to_lance().get_fragments()) == 5
 
 
 @pytest.mark.asyncio
@@ -1600,7 +1705,7 @@ async def test_coordinator_compact_idle_scheduling(tmp_path) -> None:
         ),
     )
     try:
-        coordinator._last_compact_ns = time.monotonic_ns()  # 间隔未到期
+        coordinator._last_cleanup_ns = coordinator._last_compact_ns = time.monotonic_ns()  # 间隔未到期
         await coordinator._maybe_compact()
         assert client.compact_calls == []
 

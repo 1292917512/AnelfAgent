@@ -10,13 +10,17 @@
 Model Experience:
 - 模型看到什么：仅经 graph_curation_agenda 工具按需取议程（心跳任务
   graph_curation 定期消费）；无议程零注入
-- token 影响：工具返回有各类上限（弱边/陈旧/歧义/重复各 10 条、枢纽 5 个）
+- token 影响：同次执行固定首次议程范围；各类最多 10 条、枢纽 5 个，豁免展示最多 200 条
 - 缓存影响：纯工具通道 + 心跳日志摘要，不触碰任何 prompt 前缀层
 """
 
 from __future__ import annotations
 
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
+from contextvars import ContextVar
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Dict, List
 
 from core.config import get_config_float, get_config_int, register_configs_safe
@@ -28,49 +32,59 @@ if TYPE_CHECKING:
     from .store import GraphStore
 
 
+@dataclass
+class _AgendaWindow:
+    selection: dict[str, set[str]] | None = None
+
+
+_window: ContextVar[_AgendaWindow | None] = ContextVar("graph_curation_window", default=None)
+
+
+@contextmanager
+def curation_window() -> Iterator[None]:
+    """一次模型执行的议程边界；子执行独立领取，退出即释放，不跨会话共享。"""
+    token = _window.set(_AgendaWindow())
+    try:
+        yield
+    finally:
+        _window.reset(token)
+
+
 async def build_agenda(graph: "GraphStore") -> Dict[str, Any]:
     """产出图谱治理议程（纯事实，无策略）；构建失败返回空议程。
 
     AI 裁决「误报/真实扇出/设计使然」并登记豁免（graph_curation_exempt）
-    的议程项在此塑形时剔除——裁决结论落库，常驻误报不再逐拍重现，
-    心跳摘要横幅与每日复核轮随之收敛。生效豁免清单随议程返回供复核。
+    的议程项在查询时剔除——裁决结论落库，常驻误报不再逐拍重现，
+    心跳摘要横幅与每日复核轮随之收敛。最近 200 条生效豁免随议程返回供复核。
     """
     stale_days = get_config_int("graph_curation_stale_days", 60)
+    window = _window.get()
     try:
         facts = await graph.curation_facts(
             weak_strength=get_config_float("graph_curation_weak_strength", 0.4),
             stale_cutoff_ns=time.time_ns() - int(stale_days * 86_400 * 1e9),
             ambiguity_min_strength=get_config_float("graph_curation_ambiguity_min_strength", 0.5),
             hub_degree=get_config_int("graph_curation_hub_degree", 30),
+            selection=window.selection if window else None,
         )
         exemptions = await graph.list_exemptions()
     except Exception as exc:
         log(f"图谱治理议程构建失败: {exc}", "DEBUG", tag="记忆")
         return {}
 
-    exempted = {
-        (str(e["kind"]), str(e["signature"])) for e in exemptions
-    }
-
-    def _filtered(kind: str, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        return [
-            item for item in items
-            if (kind, graph.exemption_signature(kind, item)) not in exempted
-        ]
-
     def _with_signature(kind: str, item: Dict[str, Any]) -> Dict[str, Any]:
         """议程项附带系统计算的豁免签名——AI 处置时原样回传
         graph_curation_exempt 的 signature 参数，签名构造零歧义。"""
         return {**item, "exempt_signature": graph.exemption_signature(kind, item)}
 
-    return {
+    agenda = {
         "weak_edges": [
             _with_signature("weak_edge", _edge_item(edge))
-            for edge in _filtered("weak_edge", facts["weak_edges"])
+            for edge in facts["weak_edges"]
         ],
         "stale_edges": [
             _with_signature("stale_edge", _edge_item(edge))
-            for edge in _filtered("stale_edge", facts["stale_edges"])
+            for edge in facts["stale_edges"]
         ],
         "ambiguous_groups": [
             _with_signature("ambiguous_group", {
@@ -79,18 +93,27 @@ async def build_agenda(graph: "GraphStore") -> Dict[str, Any]:
                 "edges": [_edge_item(edge) for edge in group["edges"]],
                 "subject_key": group["subject_key"],
             })
-            for group in _filtered("ambiguous_group", facts["ambiguous_groups"])
+            for group in facts["ambiguous_groups"]
         ],
         "duplicate_nodes": [
             _with_signature("duplicate_node", item)
-            for item in _filtered("duplicate_node", facts["duplicate_nodes"])
+            for item in facts["duplicate_nodes"]
         ],
         "hub_nodes": [
             _with_signature("hub_node", item)
-            for item in _filtered("hub_node", facts["hub_nodes"])
+            for item in facts["hub_nodes"]
         ],
         "exemptions": exemptions,
     }
+    if window is not None:
+        if window.selection is None:
+            window.selection = {
+                key: {str(item["exempt_signature"]) for item in items}
+                for key, items in agenda.items() if key != "exemptions"
+            }
+        for key, signatures in window.selection.items():
+            agenda[key] = [item for item in agenda[key] if str(item["exempt_signature"]) in signatures]
+    return agenda
 
 
 def agenda_summary(agenda: Dict[str, Any]) -> str:

@@ -172,12 +172,14 @@ async def test_http_save_during_projection_returns_and_preserves_latest_config(
             response = await http.put("/memory/cognee/config", json={
                 "chat": {"extra_args": {"timeout": 300, "top_p": 0.9}},
                 "native_watchdog_restart_seconds": 900,
+                "compact_cleanup_interval_seconds": 120,
                 "project_graph_enabled": False,
             })
             assert response.status_code == 200, response.text
             persisted = load_cognee_config()
             assert persisted.chat.extra_args == {"timeout": 300, "top_p": 0.9}
             assert persisted.native_watchdog_restart_seconds == 900
+            assert persisted.compact_cleanup_interval_seconds == 120
             assert not persisted.project_graph_enabled
             schema = {field["key"]: field for field in response.json()["options"]["settings_fields"]}
             assert set(schema) == set(persisted.to_dict()) - {"chat", "embedding"}

@@ -491,7 +491,9 @@ class SDKClient:
     # Maintenance / diagnostics / visualization
 
 
-    async def compact_vector_storage(self, retention_days: float, *, rotation: int | None = None) -> dict[str, Any]:
+    async def compact_vector_storage(
+        self, retention_days: float, *, rotation: int | None = None, prune_only: bool = False,
+    ) -> dict[str, Any]:
         """按单轮预算压缩 LanceDB 向量表并清理过期版本，回收磁盘空间。
 
         实现见 `storage.compact_lance_tree`；最新版本永远保留，逻辑数据不受影响。
@@ -510,6 +512,7 @@ class SDKClient:
             Path(self.config.absolute_data_root) / "system" / "databases",
             retention_days,
             rotation=self._compact_rotation,
+            prune_only=prune_only,
         ), name="memory.cognee.compact")
         try:
             return await asyncio.shield(task)

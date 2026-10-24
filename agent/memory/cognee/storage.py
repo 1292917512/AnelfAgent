@@ -27,6 +27,8 @@ from core.log import log
 
 STORAGE_STATS_SNAPSHOT_NAME = "storage_stats.json"
 STORAGE_STATS_TTL_SECONDS = 600.0
+_MAINTENANCE_TABLE_BUDGET = 8
+_MAINTENANCE_SECONDS = 30.0
 
 
 class DatasetStorageBytes(TypedDict):
@@ -104,10 +106,13 @@ def compute_storage_stats(root: Path) -> StorageStatsDict:
     return stats
 
 
-def compact_lance_tree(databases_root: Path, retention_days: float, *, rotation: int = 0) -> dict[str, Any]:
+def compact_lance_tree(
+    databases_root: Path, retention_days: float, *, rotation: int = 0, prune_only: bool = False,
+) -> dict[str, Any]:
     """按共享预算压缩数据树，保留期内的版本与最新数据保持可读。
 
-    单表失败仅记录不中断其余表；须在无并发写入时调用（协调器空闲窗口）。
+    单表失败仅记录不中断其余表；须在无并发写入时调用（协调器批次间窗口）。
+    时间预算只阻止启动下一张表，不中断原生清理；保留最新版本、用户标签及未验证文件。
     返回的 after_stats 是压缩后的实测占用，调用方应直接收录进统计缓存
     （``StorageStatsTracker.adopt``），避免紧接一次重复遍历。
     """
@@ -131,6 +136,7 @@ def compact_lance_tree(databases_root: Path, retention_days: float, *, rotation:
         "executed_tasks": 0,
         "old_versions_removed": 0,
         "budget_exhausted": False,
+        "next_rotation": rotation,
     }
     if not databases_root.is_dir():
         return result
@@ -159,11 +165,16 @@ def compact_lance_tree(databases_root: Path, retention_days: float, *, rotation:
             continue
         tables.extend((connection, db_dir.name, name) for name in sorted(table_names))
     offset = rotation % len(tables) if tables else 0
-    tasks_left = DEFAULT_MAX_TASKS_PER_RUN
+    tasks_left = 0 if prune_only else DEFAULT_MAX_TASKS_PER_RUN
     versions_left = DEFAULT_MAX_VERSIONS_PER_RUN
+    started = time.monotonic()
+    visited = 0
     for connection, db_name, table_name in tables[offset:] + tables[:offset]:
-        if tasks_left <= 0 and versions_left <= 0:
+        if (tasks_left <= 0 and versions_left <= 0 or visited >= _MAINTENANCE_TABLE_BUDGET
+                or visited > 0 and time.monotonic() - started >= _MAINTENANCE_SECONDS):
+            result["budget_exhausted"] = True
             break
+        visited += 1
         try:
             dataset = connection.open_table(table_name).to_lance()
             if tasks_left > 0:
@@ -171,6 +182,7 @@ def compact_lance_tree(databases_root: Path, retention_days: float, *, rotation:
                 executed = int(compacted["executed_tasks"])
                 tasks_left -= executed
                 result["executed_tasks"] += executed
+                result["budget_exhausted"] |= int(compacted["planned_tasks"]) > executed
             if versions_left > 0:
                 pruned = prune_superseded_versions(
                     dataset, retention_seconds=retention_seconds, max_versions=versions_left,
@@ -178,10 +190,11 @@ def compact_lance_tree(databases_root: Path, retention_days: float, *, rotation:
                 removed = int(pruned["old_versions_removed"])
                 versions_left -= removed
                 result["old_versions_removed"] += removed
+                result["budget_exhausted"] |= int(pruned["versions_pending"]) > 0
             result["tables"] += 1
         except Exception as exc:
             result["errors"].append(f"{db_name}/{table_name}: {exc}")
-    result["budget_exhausted"] = tasks_left <= 0 or versions_left <= 0
+    result["next_rotation"] = (offset + visited) % len(tables) if tables else 0
     after_stats = compute_storage_stats(stats_root)
     result["after_stats"] = after_stats
     result["bytes_after"] = after_stats["total_bytes"]

@@ -184,6 +184,8 @@ SDK 可导入 `RecallPolicy`、`recall_options`、`set_turn_recall_policy`。
 
 ## 关系图谱（agent/memory/graph/）
 
+- **更新约束**：自动关系抽取只为新节点或占位名称补名，不覆盖已有名称；显式改名仍传播到全部邻居。重复关系及相同字段不刷新时间、不入投影队列；强度变化只更新原生召回信号，证据、归属、来源和名称变化仍触发投影。
+- **治理范围**：一次模型执行固定首次领取的议程范围，后续只复核这些项目；剩余事实留下一次任务，不以本轮为空宣称全库清空。豁免和本轮范围在查询上限前过滤，旧豁免不因展示数量限制失效。不同会话及子执行独立领取。
 - **权威存储** `graph/store.py`：graph_nodes/graph_edges，(s,p,o) 唯一 upsert + 别名归一 + 软删 +
   cognee 投影入队；检索命中即计数（access_count/last_accessed_ns）
 - **关系投影与标签**：每个构建代际只有记忆、关系两个内容分区。实体节点使用完整 node_key，
@@ -546,13 +548,13 @@ LiteLLM 升级另须运行[缓存健康门](context-cache.md#用量与版本变�
 | 投影内容指纹跳过 | `store/_shared.py::projection_content_hash` + `cognee_queue.enqueue_sync` | 完整 SHA256 包含投影版本、type/content/source/metadata/tags/timestamp，不含 importance；一致且无在途任务/未提交写入日志才跳过。显式回填 force=True。关系指纹包含节点、边、证据、来源记忆与归属，不含强度；强度变化不重建，证据或标签变化须重新投影 |
 | cognee 写盘熔断 | `cognee/write_breaker.py` + coordinator `_projection_allowed` | 进程自身磁盘写入速率超阈值（默认 500MB/5min）时暂停投影认领与自动压缩，冷却到期重评、自调节；平台不支持时 fail-open。状态经 CogneeSyncStatus.paused 暴露；`run_in_idle_window` 用户显式作业不受熔断阻断 |
 | ladybug native 监督 | `agent/memory/cognee/ladybug_guard.py`，`install()` 幂等 | 在独立 SDK 进程中串行 native 执行；成功发布前正常排空并关闭，关闭失败不能提交。纯线程看门狗在 SDK 组合根绑定为退出候选进程，宿主用封存快照恢复；不调用不可靠的 native interrupt。WAL 容错不能防原生段错误，也不能修复接入保护前已经损坏的图库 |
-| LanceDB 物理压缩 | `cognee/storage.py` + coordinator 空闲窗口调度 | 宿主是唯一维护调度者，适配器边界关闭 Cognee 自带的构图收尾压缩，库内无后台清理任务。`compact_lance_tree` 复用上游有界算法，全数据树每轮最多 4 个碎片合并任务和 1000 个历史版本，轮换起点避免表长期得不到维护；仅清理后继版本已超过 `compact_retention_days` 的旧版本，保留最新数据与保留期内快照。worker 排空后按 `compact_interval_seconds`（默认 86400s）自动执行。AI 工具 `compact_cognee_storage` / `POST /memory/cognee/compact` / Web 按钮统一进入 `request_compact()`，关闭自动维护仍可手动请求；两者均服从写盘熔断与投影锁，成功发布前正常关闭，取消时回收独立工作进程并恢复候选区。`StorageStatsTracker` 以内存 TTL → 磁盘快照 → 空统计返回，请求路径不遍历大库，代际号防旧遍历回写 |
+| LanceDB 物理压缩 | `cognee/storage.py` + coordinator 批次间调度 | 宿主统一调度，关闭 Cognee 自带收尾维护。历史版本按 `compact_cleanup_interval_seconds`（默认 600s）清理，碎片合并按 `compact_interval_seconds`（默认 86400s）执行；不必等待队列排空。共享预算每轮最多 8 张表、4 个碎片任务、1000 个旧版本；30s 后不再启动下一张表，不强行中断原生操作，发布验收与快照耗时另计。起点按实际访问表数轮换，避免后面的表饿死。保留最新数据、用户标记版本及未验证文件，仅清理后继已超过 `compact_retention_days` 的版本；保留期配置不变。维护与写入互斥，仍经关闭重开验收及原子发布；中断恢复候选区。手动入口统一经 `request_compact()` 在批次间执行，自动维护关闭仍可手动请求，均服从写盘熔断。统计沿用后台缓存，不在请求路径遍历大库 |
 | improve 默认禁用 | `cognee/config.py` `improve_interval_seconds`（默认 0） | 全局摘要有额外模型成本，CHUNKS 不依赖它；显式增强调用 improve 的 global_context_index 阶段，不默认执行 memify 全图重嵌入 |
 | goal 不投影 cognee | `store/cognee_queue.enqueue_sync`（source=='goal' 拦截）+ `planning/tracker._persist` | 计划状态 JSON 不是知识：updated_at 高频漂移使投影永不稳定；goal upsert 不入队，原生 FTS/向量检索已覆盖召回；`_persist` 比较 updated_at 之外的语义内容，未变不落库 |
 | 投影开关 | cognee.json `project_memories_enabled` / `project_graph_enabled`（默认均 true） | memory 投影与主向量库同源（重复嵌入），graph 投影是原生检索没有的增量，可按需关停 |
 | embedding 用量账本 | `agent/memory/embedding/usage.py` + `GET /status/usage` 的 embedding 段 | 引擎级埋点（查询/批量/多模态）：日级 calls/texts/chars，内存累加 + 防抖落盘。cognee 自带引擎不在此口径 |
 | 批量对齐与缓存 | `embedding/worker._batch_size` + `engine.max_batch_size` + `embed_query_cache_size` | worker 批次取 min(配置, 客户端 embedding_max_batch)，避免 llm_client 内部拆批；查询向量缓存容量/TTL 可配 |
-| 派生索引维护边界 | `cognee/client.py` | 删除、压缩和增强统一进入发布事务；禁止维护脚本直接打开 Lance/Ladybug 写入，绕过工作进程锁和恢复点 |
+| 派生索引维护边界 | `cognee/client.py` | 删除、压缩和增强统一进入发布事务；没有实际写调用的事务、未清理或合并任何版本且无错误的维护不生成新快照。无映射且无残留写入目标的删除直接确认出队；显式强制修复仍重新执行。禁止维护脚本直接打开 Lance/Ladybug 写入，绕过工作进程锁和恢复点 |
 | 依赖约束 | `pyproject.toml` + `uv.lock` | Cognee、LiteLLM 精确锁定，不覆盖 Cognee 的 LiteLLM 约束；onnxruntime override 为宿主音频栈保留，Cognee 不走 fastembed。Lance/PyLance 压缩前检查内核匹配；Ladybug 沿用 native 监督边界；投影显式 `literal_text`，避免正文被当成 URL 或路径 |
 
 ## 遗忘治理

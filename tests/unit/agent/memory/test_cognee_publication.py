@@ -11,7 +11,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
@@ -318,10 +318,11 @@ async def test_catalog_excludes_uncommitted_changes_and_tracks_successful_public
     async def invoke(method, *_args, **_kwargs):
         return {"dataset_id": "new"} if method == "add" else rows
 
-    monkeypatch.setattr(client, "_invoke", invoke)
+    process = AsyncMock()
+    process.call.side_effect = invoke
     monkeypatch.setattr(client, "initialize", AsyncMock(return_value=CogneeAvailability(
         installed=True, enabled=True, ready=True)))
-    monkeypatch.setattr(client, "_worker", AsyncMock())
+    monkeypatch.setattr(client, "_worker", AsyncMock(return_value=process))
     monkeypatch.setattr(client, "_inspect", AsyncMock(side_effect=[baseline, candidate, candidate]))
     monkeypatch.setattr(client, "_stop", AsyncMock())
     assert not client.dataset_catalog()["ready"]
@@ -415,6 +416,32 @@ async def test_cancelled_transaction_does_not_publish(tmp_path, monkeypatch):
     assert not (tmp_path / "data").exists()
 
 
+@pytest.mark.parametrize("maintenance", [False, True])
+async def test_read_only_transaction_does_not_clone_or_reopen(tmp_path, monkeypatch, maintenance):
+    client = CogneeClient(CogneeConfig(data_root=str(tmp_path)))
+    checkpoints = IndexCheckpoints(tmp_path)
+    checkpoints.load()
+    client._checkpoints = checkpoints
+    monkeypatch.setattr(client, "initialize", AsyncMock(return_value=CogneeAvailability(
+        installed=True, enabled=True, ready=True)))
+    process = AsyncMock()
+    process.call.return_value = {"errors": [], "executed_tasks": 0, "old_versions_removed": 0,
+                                 "next_rotation": 1}
+    monkeypatch.setattr(client, "_worker", AsyncMock(return_value=process))
+    inspect = AsyncMock(return_value=IndexManifest())
+    stop = AsyncMock()
+    commit = Mock(wraps=checkpoints.commit)
+    monkeypatch.setattr(client, "_inspect", inspect)
+    monkeypatch.setattr(client, "_stop", stop)
+    monkeypatch.setattr(checkpoints, "commit", commit)
+    async with client.write_transaction():
+        if maintenance:
+            await client.compact_vector_storage(1, prune_only=True)
+    inspect.assert_awaited_once()
+    stop.assert_not_awaited()
+    commit.assert_not_called()
+
+
 async def test_reopen_failure_prevents_publication_and_latches_fault(tmp_path, monkeypatch):
     client = CogneeClient(CogneeConfig(data_root=str(tmp_path)))
     checkpoints = IndexCheckpoints(tmp_path)
@@ -424,12 +451,13 @@ async def test_reopen_failure_prevents_publication_and_latches_fault(tmp_path, m
     monkeypatch.setattr(client, "initialize", AsyncMock(return_value=CogneeAvailability(
         installed=True, enabled=True, ready=True)))
     worker = AsyncMock()
-    monkeypatch.setattr(client, "_worker", AsyncMock(side_effect=[worker, worker, WorkerCrashed("native crash")]))
+    monkeypatch.setattr(client, "_worker", AsyncMock(side_effect=[worker, worker, worker, WorkerCrashed("native crash")]))
     monkeypatch.setattr(client, "_inspect", AsyncMock(return_value=IndexManifest()))
     monkeypatch.setattr(client, "_stop", AsyncMock())
     with pytest.raises(WorkerCrashed):
         async with client.write_transaction():
             checkpoints.mark_open()
+            await client.cognify()
     assert checkpoints.state["committed"] == before
     assert client.publication_status["error"]
     client.reset_fault()
@@ -455,7 +483,7 @@ async def test_missing_previously_synced_document_rejects_new_batch(tmp_path, mo
     monkeypatch.setattr(client, "_inspect", AsyncMock(side_effect=[before, after]))
     with pytest.raises(RuntimeError, match="未声明变化"):
         async with client.write_transaction():
-            pass
+            await client.cognify()
     assert checkpoints.state["committed"] == previous
 
 

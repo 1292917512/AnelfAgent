@@ -7,6 +7,34 @@ import pytest
 from agent.memory.graph.curation import agenda_summary, build_agenda
 
 
+async def test_curation_run_does_not_refill_completed_window(store) -> None:
+    from agent.memory.graph.curation import curation_window
+
+    for i in range(12):
+        await store.graph.add_relation("user:qq:1", "认识", f"user:qq:{i + 2}", strength=0.2)
+    with curation_window():
+        first = await build_agenda(store.graph)
+        assert len(first["weak_edges"]) == 10
+        for item in first["weak_edges"]:
+            await store.graph.set_relation_archived(item["id"], True)
+        assert not (await build_agenda(store.graph))["weak_edges"]
+        # 独立执行有独立范围，结束后不污染外层；真实未处理事实仍保存。
+        with curation_window():
+            assert len((await build_agenda(store.graph))["weak_edges"]) == 2
+        assert not (await build_agenda(store.graph))["weak_edges"]
+    assert len((await build_agenda(store.graph))["weak_edges"]) == 2
+
+
+async def test_old_exemption_does_not_expire_at_display_limit(store) -> None:
+    edge = await store.graph.add_relation("user:qq:1", "认识", "user:qq:2", strength=0.2)
+    await store.graph.set_exemption("weak_edge", str(edge["id"]), reason="已核验真实关系")
+    for i in range(201):
+        await store.graph.set_exemption("hub_node", f"topic:{i}")
+    agenda = await build_agenda(store.graph)
+    assert not agenda["weak_edges"]
+    assert len(agenda["exemptions"]) == 200
+
+
 @pytest.mark.asyncio
 async def test_agenda_detects_weak_and_ambiguous(store) -> None:
     await store.graph.add_relation(

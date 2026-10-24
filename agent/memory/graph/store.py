@@ -217,26 +217,32 @@ class GraphStore:
         return self._row_to_node(row) if row else None
 
     async def _ensure_node(
-        self, db: aiosqlite.Connection, node_key: str, label: str = ""
+        self, db: aiosqlite.Connection, node_key: str, label: str = "", *, rename: bool = True,
     ) -> Dict[str, Any]:
         """按 key 取节点，不存在则建档（类型从 key 前缀推断）。"""
         key = await self._normalize_entity_key(node_key)
+        label = label.strip()
         node = await self._get_node_row(db, key)
         if node:
-            if label and label != node["label"]:
+            unnamed = not node["label"] or node["label"] in {key, parse_node_key(key)[1]}
+            changed = False
+            if label and label != node["label"] and (rename or unnamed):
                 await db.execute(
                     "UPDATE graph_nodes SET label=?, updated_ns=? WHERE id=?",
                     (label, time.time_ns(), node["id"]),
                 )
                 node["label"] = label
-                # 名称嵌入所有邻居的投影文本，随关系写入改名也必须传播。
-                await self._enqueue_projection(db, await self._neighbor_node_ids(db, node["id"]))
+                changed = True
             if node["archived"]:
                 await db.execute(
                     "UPDATE graph_nodes SET archived=0, updated_ns=? WHERE id=?",
                     (time.time_ns(), node["id"]),
                 )
                 node["archived"] = False
+                changed = True
+            if changed:
+                # 名称嵌入邻居文档；只有实际改名或恢复才传播。
+                await self._enqueue_projection(db, [node["id"], *await self._neighbor_node_ids(db, node["id"])])
             return node
         ntype, name = parse_node_key(key)
         now_ns = time.time_ns()
@@ -248,6 +254,7 @@ class GraphStore:
             (key, ntype, (label or name).strip(), now_ns, now_ns),
         )
         if (cursor.rowcount or 0) > 0:
+            await self._enqueue_projection(db, [int(cursor.lastrowid or 0)])
             return {
                 "id": int(cursor.lastrowid or 0),
                 "node_key": key,
@@ -334,15 +341,12 @@ class GraphStore:
         db = await self._conn.get_db()
         async with self._conn.tx(db):
             node = await self._ensure_node(db, node_key, label)
-            if metadata:
-                merged = {**node["metadata"], **metadata}
+            if metadata and (merged := {**node["metadata"], **metadata}) != node["metadata"]:
                 await db.execute(
                     "UPDATE graph_nodes SET metadata_json=?, updated_ns=? WHERE id=?",
                     (json.dumps(merged, ensure_ascii=False), time.time_ns(), node["id"]),
                 )
                 node["metadata"] = merged
-            neighbors = await self._neighbor_node_ids(db, node["id"])
-            await self._enqueue_projection(db, [node["id"], *neighbors])
         return node
 
     async def get_node(self, node_key: str) -> Optional[Dict[str, Any]]:
@@ -472,10 +476,21 @@ class GraphStore:
             origin = "manual_tool"
         db = await self._conn.get_db()
         async with self._conn.tx(db):
-            subject = await self._ensure_node(db, subject_key, subject_label)
-            obj = await self._ensure_node(db, object_key, object_label)
+            # 抽取名称只用于建档或补全占位名；已有名称由显式编辑维护。
+            rename = origin != "heartbeat_extract"
+            subject = await self._ensure_node(db, subject_key, subject_label, rename=rename)
+            obj = await self._ensure_node(db, object_key, object_label, rename=rename)
             if subject["id"] == obj["id"]:
                 raise ValueError("不允许建立自指向关系（subject 与 object 相同）")
+            previous_row = await (await db.execute(
+                f"{self._EDGE_SELECT} WHERE e.subject_id=? AND e.predicate=? AND e.object_id=?",
+                (subject["id"], pred, obj["id"]),
+            )).fetchone()
+            previous = self._row_to_edge(previous_row) if previous_row else None
+            values = {"symmetric": symmetric, "strength": strength, "evidence": evidence,
+                      "source_memory_id": source_memory_id, "origin": origin, "archived": False}
+            if previous and all(previous[key] == value for key, value in values.items()):
+                return previous
             now_ns = time.time_ns()
             await db.execute(
                 "INSERT INTO graph_edges(subject_id, predicate, object_id, symmetric, "
@@ -488,7 +503,8 @@ class GraphStore:
                 (subject["id"], pred, obj["id"], 1 if symmetric else 0, strength,
                  evidence, source_memory_id, origin, now_ns, now_ns),
             )
-            await self._enqueue_projection(db, [subject["id"], obj["id"]])
+            if not previous or any(previous[key] != value for key, value in values.items() if key != "strength"):
+                await self._enqueue_projection(db, [subject["id"], obj["id"]])
             cursor = await db.execute(
                 f"{self._EDGE_SELECT} WHERE e.subject_id=? AND e.predicate=? AND e.object_id=?",
                 (subject["id"], pred, obj["id"]),
@@ -520,28 +536,28 @@ class GraphStore:
         symmetric: Optional[bool] = None,
     ) -> Optional[Dict[str, Any]]:
         """原地更新边（None 表示不变）。目标三元组冲突时抛 ValueError。"""
-        sets: list[str] = []
-        params: list[Any] = []
+        changes: dict[str, Any] = {}
         if predicate is not None:
             pred, _, _ = self._validate_relation(predicate, 0.0, "")
-            sets.append("predicate=?")
-            params.append(pred)
+            changes["predicate"] = pred
         if strength is not None:
-            sets.append("strength=?")
-            params.append(max(0.0, min(1.0, float(strength))))
+            changes["strength"] = max(0.0, min(1.0, float(strength)))
         if evidence is not None:
-            sets.append("evidence=?")
-            params.append(evidence.strip()[:_MAX_EVIDENCE_LEN])
+            changes["evidence"] = evidence.strip()[:_MAX_EVIDENCE_LEN]
         if symmetric is not None:
-            sets.append("symmetric=?")
-            params.append(1 if symmetric else 0)
-        if not sets:
+            changes["symmetric"] = bool(symmetric)
+        if not changes:
             return await self.get_relation(edge_id)
         db = await self._conn.get_db()
         async with self._conn.tx(db):
             existing = await self._fetch_relation(db, edge_id)
             if not existing:
                 return None
+            changes = {key: value for key, value in changes.items() if value != existing[key]}
+            if not changes:
+                return existing
+            sets = [f"{key}=?" for key in changes]
+            params = list(changes.values())
             sets.append("updated_ns=?")
             params.append(time.time_ns())
             params.append(edge_id)
@@ -552,9 +568,10 @@ class GraphStore:
                 )
             except sqlite3.IntegrityError as exc:
                 raise ValueError("更新后的关系与既有关系重复（同主语+谓词+宾语）") from exc
-            await self._enqueue_projection(
-                db, [existing["subject"]["id"], existing["object"]["id"]],
-            )
+            if changes.keys() - {"strength"}:
+                await self._enqueue_projection(
+                    db, [existing["subject"]["id"], existing["object"]["id"]],
+                )
         return await self.get_relation(edge_id)
 
     async def set_relation_archived(self, edge_id: int, archived: bool) -> bool:
@@ -956,6 +973,7 @@ class GraphStore:
         stale_cutoff_ns: int,
         ambiguity_min_strength: float,
         hub_degree: int,
+        selection: dict[str, set[str]] | None = None,
     ) -> Dict[str, list]:
         """图谱治理事实的确定性查询（治理议程的数据底座）。
 
@@ -963,6 +981,23 @@ class GraphStore:
         数据访问；各项上限固定（弱边/陈旧/歧义/重复 10、枢纽 5）。
         """
         db = await self._conn.get_db()
+
+        def scope_filter(kind: str, signature: str, key: str) -> tuple[str, list[Any]]:
+            clause = (
+                "NOT EXISTS (SELECT 1 FROM graph_curation_exemptions x "
+                f"WHERE x.active=1 AND x.kind=? AND x.signature={signature})"
+            )
+            args: list[Any] = [kind]
+            if selection is not None:
+                identities = sorted(selection.get(key, set()))
+                if not identities:
+                    return "0", []
+                clause += f" AND {signature} IN ({','.join('?' for _ in identities)})"
+                args.extend(identities)
+            return clause, args
+
+        weak_filter, weak_args = scope_filter("weak_edge", "CAST(e.id AS TEXT)", "weak_edges")
+        stale_filter, stale_args = scope_filter("stale_edge", "CAST(e.id AS TEXT)", "stale_edges")
 
         async def _edges(where: str, params: list[Any], order: str, limit: int) -> list[Dict[str, Any]]:
             cursor = await db.execute(
@@ -973,25 +1008,27 @@ class GraphStore:
 
         facts: Dict[str, list] = {
             "weak_edges": await _edges(
-                "e.archived=0 AND e.strength < ?", [weak_strength],
+                f"e.archived=0 AND e.strength < ? AND {weak_filter}", [weak_strength, *weak_args],
                 "e.strength ASC", 10,
             ),
             "stale_edges": await _edges(
                 "e.archived=0 AND (CASE WHEN e.last_accessed_ns > 0 "
-                "THEN e.last_accessed_ns ELSE e.updated_ns END) < ?",
-                [stale_cutoff_ns], "e.updated_ns ASC", 10,
+                f"THEN e.last_accessed_ns ELSE e.updated_ns END) < ? AND {stale_filter}",
+                [stale_cutoff_ns, *stale_args], "e.updated_ns ASC", 10,
             ),
         }
 
         # 歧义组：同主语同谓词指向多个强对象（抽取噪声或真实多值）
+        ambiguous_filter, ambiguous_args = scope_filter(
+            "ambiguous_group", "(s.node_key || '|' || e.predicate)", "ambiguous_groups")
         cursor = await db.execute(
             "SELECT e.subject_id AS sid, s.node_key AS s_key, s.label AS s_label, "
             "e.predicate, COUNT(DISTINCT e.object_id) AS c "
             "FROM graph_edges e JOIN graph_nodes s ON e.subject_id = s.id "
-            "WHERE e.archived=0 AND e.strength >= ? "
+            f"WHERE e.archived=0 AND e.strength >= ? AND {ambiguous_filter} "
             "GROUP BY e.subject_id, e.predicate "
             "HAVING c >= 2 ORDER BY c DESC LIMIT 10",
-            (ambiguity_min_strength,),
+            (ambiguity_min_strength, *ambiguous_args),
         )
         ambiguous: list[Dict[str, Any]] = []
         for row in await cursor.fetchall():
@@ -1010,11 +1047,15 @@ class GraphStore:
         facts["ambiguous_groups"] = ambiguous
 
         # 疑似重复节点：同类型且称呼归一（去空白/小写）后相同
+        duplicate_filter, duplicate_args = scope_filter("duplicate_node", "g.signature", "duplicate_nodes")
         cursor = await db.execute(
+            "WITH g AS ("
             "SELECT node_type, LOWER(TRIM(label)) AS norm, "
-            "COUNT(*) AS c, GROUP_CONCAT(node_key) AS keys, GROUP_CONCAT(label) AS labels "
-            "FROM graph_nodes WHERE archived=0 AND TRIM(label) != '' "
-            "GROUP BY node_type, norm HAVING c > 1 LIMIT 10"
+            "COUNT(*) AS c, GROUP_CONCAT(node_key) AS keys, GROUP_CONCAT(label) AS labels, "
+            "GROUP_CONCAT(node_key, '|') AS signature "
+            "FROM (SELECT * FROM graph_nodes WHERE archived=0 AND TRIM(label) != '' ORDER BY node_key) "
+            "GROUP BY node_type, norm HAVING c > 1) "
+            f"SELECT * FROM g WHERE {duplicate_filter} LIMIT 10", duplicate_args,
         )
         facts["duplicate_nodes"] = [
             {
@@ -1026,13 +1067,14 @@ class GraphStore:
         ]
 
         # 枢纽异常：度数超阈的自由型节点（万物连接点多 为抽取错误）
+        hub_filter, hub_args = scope_filter("hub_node", "n.node_key", "hub_nodes")
         cursor = await db.execute(
             "SELECT n.node_key, n.label, n.node_type, COUNT(e.id) AS deg "
             "FROM graph_nodes n JOIN graph_edges e "
             "ON ((e.subject_id = n.id OR e.object_id = n.id) AND e.archived = 0) "
-            "WHERE n.archived = 0 AND n.node_type NOT IN ('user', 'group') "
+            f"WHERE n.archived = 0 AND n.node_type NOT IN ('user', 'group') AND {hub_filter} "
             "GROUP BY n.id HAVING deg > ? ORDER BY deg DESC LIMIT 5",
-            (hub_degree,),
+            (*hub_args, hub_degree),
         )
         facts["hub_nodes"] = [
             {"node": str(r["node_key"]), "label": str(r["label"]), "degree": int(r["deg"])}
