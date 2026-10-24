@@ -26,6 +26,7 @@ import threading
 import time
 from typing import Any, Dict, Optional, TextIO
 
+from core.command import terminate_process_group
 from core.config import get_config_int
 from core.log import log
 from core.tool_errors import error_from_exception
@@ -68,9 +69,23 @@ def launch_background(command: str, cwd: str, workspace: str,
     desc = description or command[:60]
     task_id = ""
     out_fp: Optional[TextIO] = None
+    killed = threading.Event()
+    proc_holder: Dict[str, subprocess.Popen] = {}
+    proc_lock = threading.Lock()
+
+    def _kill() -> bool:
+        with proc_lock:
+            killed.set()
+            proc = proc_holder.get("proc")
+            if proc is not None:
+                terminate_process_group(proc)
+        return True
+
     try:
         if registry is not None:
             task_id = registry.register(scope, "shell", desc, expected_seconds=timeout_sec)
+            # Popen 可能阻塞；取消句柄必须先就位，进程交接与取消共用一把锁。
+            registry.attach_killer(task_id, _kill)
         out_dir = os.path.join(os.path.abspath(workspace), ".tool-results")
         os.makedirs(out_dir, exist_ok=True)
         fd, output_file = tempfile.mkstemp(prefix="shell-bg-", suffix=".log", dir=out_dir)
@@ -89,6 +104,10 @@ def launch_background(command: str, cwd: str, workspace: str,
             text=True,
             **popen_kwargs,
         )
+        with proc_lock:
+            proc_holder["proc"] = proc
+            if killed.is_set():
+                terminate_process_group(proc)
     except Exception as exc:
         if out_fp is not None:
             out_fp.close()
@@ -101,20 +120,9 @@ def launch_background(command: str, cwd: str, workspace: str,
         # 关联输出文件：check_background_tasks(task_id=...) 即可增量消费输出，
         # 轮询长任务不再全量重读日志文件（单游标增量语义）
         registry.attach_output_file(task_id, output_file)
-        # 终止句柄：AI 决策终止时整组击杀，终态由等待线程照常登记
-        killed = threading.Event()
-
-        def _kill() -> bool:
-            from core.command import terminate_process_group
-            killed.set()
-            terminate_process_group(proc)
-            return True
-
-        registry.attach_killer(task_id, _kill)
     else:
         # 注册表不可用（如独立测试）：退化为仅输出文件跟踪
         task_id = f"local-{proc.pid}"
-        killed = threading.Event()
 
     thread = threading.Thread(
         target=_wait_and_complete,

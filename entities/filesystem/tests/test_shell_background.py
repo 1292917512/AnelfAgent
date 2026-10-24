@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import time
 
 import pytest
@@ -122,6 +123,40 @@ class TestLaunchBackground:
         completed = registry.completed("_global")
         assert completed and completed[0].success
         assert "退出码 0" in completed[0].summary
+
+    def test_terminate_while_process_is_starting(self, workspace, registry, monkeypatch):
+        """进程创建期间也可取消：启动完成后立即击杀，并按终止态结算。"""
+        real_popen = shell_background.subprocess.Popen
+        popen_entered = threading.Event()
+        allow_popen = threading.Event()
+        launch_result = {}
+
+        def gated_popen(*args, **kwargs):
+            popen_entered.set()
+            assert allow_popen.wait(5), "测试门控未及时放行"
+            return real_popen(*args, **kwargs)
+
+        monkeypatch.setattr(shell_background.subprocess, "Popen", gated_popen)
+        launcher = threading.Thread(target=lambda: launch_result.update(shell_background.launch_background(
+            python_command("import time; time.sleep(0.2)"), str(workspace), str(workspace))))
+        launcher.start()
+        try:
+            assert popen_entered.wait(5)
+            task_id = registry.running("_global")[0].task_id
+            termination = registry.terminate("_global", task_id)
+        finally:
+            allow_popen.set()
+            launcher.join(5)
+
+        assert not launcher.is_alive()
+        deadline = time.time() + 5
+        while registry.running("_global") and time.time() < deadline:
+            time.sleep(0.02)
+        completed = registry.completed("_global")
+        assert termination["ok"] and termination["terminated"]
+        assert launch_result["ok"]
+        assert completed and not completed[0].success
+        assert "已被 AI 终止" in completed[0].summary
 
     def test_terminate_kills_process(self, workspace, registry):
         """AI 决策终止：terminate 发整组击杀信号，任务以终止态完成并通知。"""
