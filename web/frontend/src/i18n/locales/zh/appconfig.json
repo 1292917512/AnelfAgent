@@ -1,4 +1,9 @@
 {
+  "toggleConfirm": {
+    "enable": "启用「{{name}}」？",
+    "disable": "停用「{{name}}」？",
+    "draftNote": "确认后仅修改当前表单，点击“保存”才会应用；取消不会更改配置。"
+  },
   "sections": {
     "thinkingParams": "思考参数",
     "thinkingParamsSubtitle": "控制心跳、决策温度、工具调用、LLM 调用等核心参数",

@@ -143,4 +143,63 @@ test("Cognee settings separate deadlines and preserve overrides across edits and
   await expect(dialog.getByRole("link", { name: "View storage location in unified data management" })).toHaveAttribute("href", "/webui/data");
   expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
   await page.screenshot({ path: info.outputPath("cognee-storage-settings.png") });
+
+  await dialog.getByRole("tab", { name: "Extraction models", exact: true }).click();
+  await models.getByRole("button", { name: "Pinned model", exact: true }).first().click();
+  await models.getByRole("button", { name: "Pinned model", exact: true }).nth(1).click();
+  const cards = models.locator("section").filter({ has: page.getByRole("button", { name: "Auto", exact: true }) });
+  await expect(cards).toHaveCount(2);
+  if (info.project.name === "desktop") {
+    const boxes = await cards.evaluateAll(elements => elements.map(element => element.getBoundingClientRect().toJSON()));
+    expect(Math.abs(boxes[0].height - boxes[1].height)).toBeLessThan(2);
+    expect(boxes[0].y).toBe(boxes[1].y);
+    const picker = await cards.first().getByRole("button", { name: "Select model", exact: true }).last().boundingBox();
+    const reasoning = await models.getByRole("combobox", { name: "Reasoning effort", exact: true }).boundingBox();
+    expect(picker).not.toBeNull();
+    expect(reasoning).not.toBeNull();
+    expect(Math.abs(picker!.y - reasoning!.y)).toBeLessThan(2);
+  }
+  expect(await dialog.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await models.getByRole("button", { name: "Model request timeout (seconds)", exact: true }).click();
+  await expect(page.getByRole("dialog", { name: "Model request timeout (seconds)", exact: true })).toContainText("Leave blank to inherit");
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeVisible();
+  await page.screenshot({ path: info.outputPath("cognee-model-layout.png"), animations: "disabled" });
+
+  const toggle = models.getByRole("switch", { name: "Enable Cognee", exact: true });
+  await expect(toggle).toBeChecked();
+  await toggle.click();
+  const disable = page.getByRole("dialog", { name: "Disable “Enable Cognee”?", exact: true });
+  await expect(disable).toContainText("Click Save to apply");
+  await disable.getByRole("button", { name: "Cancel", exact: true }).click();
+  await expect(toggle).toBeChecked();
+  expect(patches).toHaveLength(4);
+  await toggle.click();
+  await disable.getByRole("button", { name: "Confirm", exact: true }).click();
+  await expect(toggle).not.toBeChecked();
+  expect(patches).toHaveLength(4);
+  await models.locator("section").filter({ has: page.getByRole("switch", { name: "Enable Cognee", exact: true }) }).getByRole("button", { name: "Save", exact: true }).click();
+  await expect.poll(() => patches.length).toBe(5);
+  expect(patches[4]).toEqual({ enabled: false });
+  await toggle.click();
+  const enable = page.getByRole("dialog", { name: "Enable “Enable Cognee”?", exact: true });
+  await enable.getByRole("button", { name: "Confirm", exact: true }).click();
+  await expect(toggle).toBeChecked();
+  expect(patches).toHaveLength(5);
+  await models.locator("section").filter({ has: page.getByRole("switch", { name: "Enable Cognee", exact: true }) }).getByRole("button", { name: "Save", exact: true }).click();
+  await expect.poll(() => patches.length).toBe(6);
+  expect(patches[5]).toEqual({ enabled: true });
+  if (info.project.name === "desktop") {
+    await dialog.getByRole("button", { name: "Close", exact: true }).click();
+    await page.getByRole("button", { name: "Appearance & language", exact: true }).click();
+    await page.getByRole("button", { name: "Switch to dark theme", exact: true }).click();
+    await page.getByRole("button", { name: "简体中文", exact: true }).click();
+    await page.keyboard.press("Escape");
+    await page.getByRole("button", { name: "模型与配置", exact: true }).click();
+    const chineseDialog = page.getByRole("dialog", { name: "模型与配置", exact: true });
+    await chineseDialog.getByRole("button", { name: "指定模型", exact: true }).first().click();
+    await chineseDialog.getByRole("button", { name: "指定模型", exact: true }).nth(1).click();
+    await expect(chineseDialog).toHaveCSS("opacity", "1");
+    await page.screenshot({ path: info.outputPath("cognee-model-layout-zh.png"), animations: "disabled" });
+  }
 });

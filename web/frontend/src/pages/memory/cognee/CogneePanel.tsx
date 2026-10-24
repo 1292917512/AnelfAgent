@@ -88,7 +88,7 @@ export function CogneePanel() {
       <StorageDetailsCard status={status} />
       <DatasetMaintenanceCard ready={!!availability?.ready && !statusError} status={status} />
 
-      <Modal open={detail === "models"} onClose={() => setDetail(null)} title={t("cognee.configDialog")} width="max-w-4xl">
+      <Modal open={detail === "models"} onClose={() => setDetail(null)} title={t("cognee.configDialog")} width="max-w-6xl">
         <CogneeSettings status={status} />
       </Modal>
       <Modal open={detail === "recall"} onClose={() => setDetail(null)} title={t("cognee.recallDialog")} width="max-w-4xl">

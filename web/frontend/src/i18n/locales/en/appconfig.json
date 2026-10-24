@@ -1,4 +1,9 @@
 {
+  "toggleConfirm": {
+    "enable": "Enable “{{name}}”?",
+    "disable": "Disable “{{name}}”?",
+    "draftNote": "Confirmation only changes this form. Click Save to apply; cancelling leaves the configuration unchanged."
+  },
   "sections": {
     "thinkingParams": "Thinking Parameters",
     "thinkingParamsSubtitle": "Control heartbeat, decision temperature, tool calls, LLM invocation and other core parameters",

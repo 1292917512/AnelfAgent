@@ -17,19 +17,10 @@ import type {
 import { Button, Input, Select } from "@/components/ui";
 import { ModelSelect, usePriorities } from "@/components/models/ModelSelect";
 import { useCopyFeedback } from "@/hooks/useCopyFeedback";
+import { ModelConfigField as Field } from "./ModelConfigField";
 
 type ModelKind = "chat" | "embedding";
 type KindConfig = CogneeChatModelConfig | CogneeEmbeddingModelConfig;
-
-function Field({ label, desc, children }: { label: string; desc?: string; children: React.ReactNode }) {
-  return (
-    <label className="block space-y-1">
-      <span className="text-xs font-medium text-muted">{label}</span>
-      {children}
-      {desc && <span className="block text-xs text-muted opacity-70">{desc}</span>}
-    </label>
-  );
-}
 
 export function ModelConfigCard({ kind, resolved }: { kind: ModelKind; resolved?: CogneeResolvedInfo }) {
   const { t } = useTranslation("memory");
@@ -89,10 +80,11 @@ export function ModelConfigCard({ kind, resolved }: { kind: ModelKind; resolved?
 
   return (
     <Card
+      className="flex h-full min-w-0 flex-col"
       title={t(`cognee.${kind}ConfigTitle`)}
       subtitle={t(`cognee.${kind}ConfigSubtitle`)}
     >
-      <form className="space-y-3" onSubmit={(event) => {
+      <form className="flex flex-1 flex-col gap-4" onSubmit={(event) => {
         event.preventDefault();
         if (hasChanges && validTimeout && !saveMutation.isPending) saveMutation.mutate(form);
       }}>
@@ -118,22 +110,41 @@ export function ModelConfigCard({ kind, resolved }: { kind: ModelKind; resolved?
           <span className="block text-xs text-muted opacity-70 pt-1">{sourceDesc[form.source]}</span>
         </fieldset>
 
-        {form.source === "model" && (
-          <Field label={t("cognee.selectModel")}>
-            <ModelSelect
-              modelType={kind}
-              value={form.model_id}
-              showDefaultWhenEmpty={false}
-              placeholder={t("cognee.selectModelPlaceholder")}
-              onChange={(id) => update({ model_id: id })}
-            />
-            {kind === "chat" && selectedModel?.supports_reasoning && (
-              <span className="block text-xs text-warn pt-1">
-                {t("cognee.reasoningModelHint")}
-              </span>
-            )}
-          </Field>
-        )}
+        {(form.source === "model" || kind === "chat") && <div className={cn("grid grid-cols-1 gap-3", kind === "chat" && form.source === "model" && "sm:grid-cols-2")}>
+          {form.source === "model" && (
+            <Field label={t("cognee.selectModel")}>
+              <ModelSelect
+                modelType={kind}
+                label={t("cognee.selectModel")}
+                value={form.model_id}
+                showDefaultWhenEmpty={false}
+                placeholder={t("cognee.selectModelPlaceholder")}
+                onChange={(id) => update({ model_id: id })}
+              />
+              {kind === "chat" && selectedModel?.supports_reasoning && (
+                <span className="block text-xs text-warn pt-1">
+                  {t("cognee.reasoningModelHint")}
+                </span>
+              )}
+            </Field>
+          )}
+          {kind === "chat" && "reasoning_effort" in form && (
+            <Field label={t("cognee.reasoningEffort")} desc={t("cognee.reasoningEffortHint")}>
+              <Select
+                className="w-full"
+                aria-label={t("cognee.reasoningEffort")}
+                value={form.reasoning_effort ?? ""}
+                onChange={(e) => update({ reasoning_effort: e.target.value as CogneeReasoningEffort })}
+              >
+                {(config?.options?.reasoning_efforts ?? []).map((effort) => (
+                  <option key={effort || "auto"} value={effort}>
+                    {t(`cognee.reasoning_${effort || "auto"}`)}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          )}
+        </div>}
 
         {form.source === "custom" && (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -189,65 +200,53 @@ export function ModelConfigCard({ kind, resolved }: { kind: ModelKind; resolved?
           </div>
         )}
 
-        {kind === "chat" && "extra_args" in form && <Field label={t("cognee.requestTimeout")} desc={t("cognee.requestTimeoutHint")}>
-          <Input type="number" min={0} step="any" aria-label={t("cognee.requestTimeout")}
-            aria-invalid={!validTimeout}
-            placeholder={t("cognee.requestTimeoutInherited")}
-            value={typeof requestTimeout === "number" ? requestTimeout : ""}
-            onChange={(event) => {
-              const extra_args = { ...form.extra_args };
-              if (event.target.value === "") delete extra_args.timeout;
-              else extra_args.timeout = event.target.valueAsNumber;
-              update({ extra_args });
-            }} />
-          {!validTimeout && <span role="alert" className="text-xs text-danger">{t("cognee.requestTimeoutInvalid")}</span>}
-          {resolved?.request_timeout_seconds !== undefined && <span className="block text-xs text-accent">
+        {kind === "chat" && <div className="grid grid-cols-1 items-start gap-3 sm:grid-cols-3">
+          {"extra_args" in form && <Field label={t("cognee.requestTimeout")} desc={t("cognee.requestTimeoutHint")}>
+            <Input type="number" min={0} step="any" aria-label={t("cognee.requestTimeout")}
+              aria-invalid={!validTimeout}
+              placeholder={t("cognee.requestTimeoutInherited")}
+              value={typeof requestTimeout === "number" ? requestTimeout : ""}
+              onChange={(event) => {
+                const extra_args = { ...form.extra_args };
+                if (event.target.value === "") delete extra_args.timeout;
+                else extra_args.timeout = event.target.valueAsNumber;
+                update({ extra_args });
+              }} />
+            {!validTimeout && <span role="alert" className="text-xs text-danger">{t("cognee.requestTimeoutInvalid")}</span>}
+          </Field>}
+
+          {"instructor_mode" in form && (
+            <>
+              <Field label={t("cognee.instructorModeLabel")} desc={t("cognee.instructorModeHint")}>
+                <Select
+                  className="w-full"
+                  value={form.instructor_mode}
+                  onChange={(e) => update({ instructor_mode: e.target.value })}
+                >
+                  <option value="" title={t("cognee.instructorModeAuto")}>{t("cognee.instructorModeAutoShort")}</option>
+                  {(config?.options?.instructor_modes ?? []).filter(Boolean).map((m) => (
+                    <option key={m} value={m}>{m}</option>
+                  ))}
+                </Select>
+              </Field>
+              <Field label={t("cognee.maxCompletionTokens")} desc={t("cognee.maxCompletionTokensHint")}>
+                <Input
+                  type="number"
+                  min={0}
+                  step={1}
+                  placeholder={t("cognee.maxCompletionTokensPlaceholder")}
+                  value={form.max_completion_tokens || ""}
+                  onChange={(e) => update({ max_completion_tokens: parseInt(e.target.value, 10) || 0 })}
+                />
+              </Field>
+            </>
+          )}
+          {resolved?.request_timeout_seconds !== undefined && <span className="text-xs text-accent sm:col-span-3">
             {t("cognee.requestTimeoutActive", { seconds: resolved.request_timeout_seconds })}
           </span>}
-        </Field>}
+        </div>}
 
-        {kind === "chat" && "instructor_mode" in form && (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-            <Field label={t("cognee.instructorModeLabel")} desc={t("cognee.instructorModeHint")}>
-              <Select
-                className="w-full"
-                value={(form as CogneeChatModelConfig).instructor_mode}
-                onChange={(e) => update({ instructor_mode: e.target.value })}
-              >
-                <option value="">{t("cognee.instructorModeAuto")}</option>
-                {(config?.options?.instructor_modes ?? []).filter(Boolean).map((m) => (
-                  <option key={m} value={m}>{m}</option>
-                ))}
-              </Select>
-            </Field>
-            <Field label={t("cognee.maxCompletionTokens")} desc={t("cognee.maxCompletionTokensHint")}>
-              <Input
-                type="number"
-                min={0}
-                step={1}
-                placeholder={t("cognee.maxCompletionTokensPlaceholder")}
-                value={(form as CogneeChatModelConfig).max_completion_tokens || ""}
-                onChange={(e) => update({ max_completion_tokens: parseInt(e.target.value, 10) || 0 })}
-              />
-            </Field>
-            <Field label={t("cognee.reasoningEffort")} desc={t("cognee.reasoningEffortHint")}>
-              <Select
-                className="w-full"
-                aria-label={t("cognee.reasoningEffort")}
-                value={(form as CogneeChatModelConfig).reasoning_effort ?? ""}
-                onChange={(e) => update({ reasoning_effort: e.target.value as CogneeReasoningEffort })}
-              >
-                {(config?.options?.reasoning_efforts ?? []).map((effort) => (
-                  <option key={effort || "auto"} value={effort}>
-                    {t(`cognee.reasoning_${effort || "auto"}`)}
-                  </option>
-                ))}
-              </Select>
-            </Field>
-          </div>
-        )}
-
-        <div className="flex items-center gap-3 pt-1 flex-wrap">
+        <div className="mt-auto flex flex-wrap items-center gap-3 border-t border-border pt-4">
           <Button
             variant="primary"
             type="submit"
@@ -268,7 +267,7 @@ export function ModelConfigCard({ kind, resolved }: { kind: ModelKind; resolved?
           {saveMutation.isError && (
             <p role="alert" className="w-full break-words text-sm text-danger">{apiErrorMessage(saveMutation.error, t("cognee.saveFailed"))}</p>
           )}
-          <p className="text-xs text-muted">{t("cognee.hotApplyNote")}</p>
+          <p className="w-full text-xs leading-relaxed text-muted">{t("cognee.hotApplyNote")}</p>
         </div>
       </form>
     </Card>

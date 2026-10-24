@@ -27,7 +27,7 @@ export function CogneeSettings({ status }: { status?: CogneeStatus }) {
       {config && sections.map((key) => <div key={key} hidden={section !== key} className="space-y-4"
         role="tabpanel" aria-label={t(`cognee.settings.${key}`)}>
         {key === "models" && <>
-          <div className="grid items-start gap-4 lg:grid-cols-2">
+          <div className="grid items-stretch gap-4 lg:grid-cols-2">
             <ModelConfigCard kind="chat" resolved={status?.resolved.chat} />
             <ModelConfigCard kind="embedding" resolved={status?.resolved.embedding} />
           </div>
@@ -47,6 +47,7 @@ export function CogneeSettings({ status }: { status?: CogneeStatus }) {
           fetchFn={() => memoryApi.cognee.getConfig().then((response) => ({ ...response.data }))}
           saveFn={(patch: ConfigValues) => memoryApi.cognee.saveConfig(patch as Partial<CogneeConfig>)}
           extraInvalidateKeys={["cogneeStatus", "memoryHealth"]}
+          confirmBooleanChanges
           note={t("cognee.hotApplyNote")} advancedLabel={t("cognee.settings.advanced")} />
       </div>)}
     </AsyncState>
