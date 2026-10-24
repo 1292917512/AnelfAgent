@@ -470,6 +470,12 @@ class CogneeClient:
             self._plan.deleted.setdefault(dataset_id, set()).add(data_id)
             return result
 
+    async def prepare_deletions(self, targets: list[tuple[str, str]]) -> None:
+        """仅在现有写事务中预取删除定位，缓存不跨候选事务。"""
+        if not self._inside_transaction():
+            raise RuntimeError("删除准备必须位于索引写事务内")
+        await self._invoke("prepare_deletions", targets)
+
     async def delete_dataset(self, dataset_id: str) -> None:
         self._datasets_until = 0
         async with self.write_transaction():

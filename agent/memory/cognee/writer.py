@@ -108,8 +108,7 @@ class ProjectionWriter:
             targets = await self._superseded_targets(item)
             if targets:
                 async with self.client.write_transaction():
-                    for dataset_id, data_id in sorted(targets):
-                        await self.client.delete_data(dataset_id, data_id, delete_dataset_if_empty=False)
+                    await self._delete_targets(targets)
             await self.store.complete_cognee_sync(
                 item["queue_id"], item["entry_id"],
                 entry_kind=item["entry_kind"], delete_mapping=True,
@@ -117,10 +116,18 @@ class ProjectionWriter:
         except Exception as exc:
             await self._fail(item, exc)
 
-    async def _delete_superseded(self, item: dict[str, Any], *, keep: set[tuple[str, str]] | None = None) -> None:
-        """清理旧映射和失败写入副本；成功提交前保留日志，重复删除幂等。"""
-        for dataset_id, data_id in sorted(await self._superseded_targets(item, keep=keep)):
+    async def _delete_targets(self, targets: set[tuple[str, str]]) -> None:
+        """去重并预取本次清理范围，SDK 串行删除及逐项进度均位于原发布事务。"""
+        ordered = sorted(targets)
+        self.progress.cleanup(len(ordered))
+        if not ordered:
+            return
+        started = time.monotonic()
+        await self.client.prepare_deletions(ordered)
+        for dataset_id, data_id in ordered:
             await self.client.delete_data(dataset_id, data_id, delete_dataset_if_empty=False)
+            self.progress.deleted()
+        log(f"Cognee 旧文档清理完成: {len(ordered)} 篇，耗时 {time.monotonic() - started:.1f}s", "DEBUG", tag="存储")
 
     async def _superseded_targets(
         self, item: dict[str, Any], *, keep: set[tuple[str, str]] | None = None,
@@ -288,10 +295,12 @@ class ProjectionWriter:
                     [str(_value(data_item, "data_id", "")) for data_item in data_items])
                 stage = "replace_projection"
                 self.progress.stage(stage, dataset_name=dataset_name)
+                targets: set[tuple[str, str]] = set()
                 for indices in sources.values():
                     item = entries[indices[0]][0]
                     keep = {(dataset_name, str(_value(data_items[index], "data_id", ""))) for index in indices}
-                    await self._delete_superseded(item, keep=keep)
+                    targets.update(await self._superseded_targets(item, keep=keep))
+                await self._delete_targets(targets)
             # 发布前绝不更新权威映射；分片清单与来源总指纹在原生事务内一起确认。
             for indices in sources.values():
                 item, document = entries[indices[0]]

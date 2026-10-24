@@ -319,7 +319,7 @@ async def test_large_node_fragments_preserve_old_index_and_update_only_changed_r
     assert (await store.projection_state.audit())["extra"] == []
 
 
-@pytest.mark.parametrize("failure", ["verify", "delete", "publish", "cancel"])
+@pytest.mark.parametrize("failure", ["prepare", "verify", "delete", "publish", "cancel"])
 async def test_fragment_replacement_failure_keeps_mapping_and_all_prior_documents(coordinator, store, monkeypatch, failure):
     from agent.memory.graph import fragments
 
@@ -341,6 +341,8 @@ async def test_fragment_replacement_failure_keeps_mapping_and_all_prior_document
             raise
 
     monkeypatch.setattr(coordinator.client, "write_transaction", transactional)
+    if failure == "prepare":
+        monkeypatch.setattr(coordinator.client, "prepare_deletions", AsyncMock(side_effect=RuntimeError("prepare failed")))
     if failure in {"verify", "cancel"}:
         async def stop(*args, **kwargs):
             if failure == "cancel":

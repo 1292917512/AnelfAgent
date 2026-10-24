@@ -50,3 +50,20 @@ it("distinguishes extracted documents from safe commit and suppresses stale inac
   expect(screen.getByRole("status").textContent).toContain("awaiting pipeline wrap-up, validation and a safe commit");
   expect(screen.queryByText(/No new batch completion marker/)).toBeNull();
 });
+
+it("shows real cleanup progress and keeps cleanup separate from publication", async () => {
+  await i18n.changeLanguage("en");
+  const cleanup = { total: 385, completed: 186, last_completed_at: 1400 };
+  const { rerender } = render(<BatchProgress active={{ ...active, stage: "replace_projection", cleanup }} stale={false} />);
+  expect(screen.getByText("186 / 385")).toBeTruthy();
+  expect(screen.getByText("199")).toBeTruthy();
+  expect(screen.getByRole("progressbar").getAttribute("value")).toBe("186");
+  expect(screen.queryByText("26 / 206")).toBeNull();
+  expect(screen.queryByRole("status")).toBeNull();
+  rerender(<BatchProgress active={{ ...active, stage: "replace_projection",
+    cleanup: { ...cleanup, completed: 385 } }} stale={false} />);
+  expect(screen.getByRole("status").textContent).toContain("awaiting index validation and a safe commit");
+  rerender(<BatchProgress active={{ ...active, stage: "delete", cleanup: { ...cleanup, completed: 0,
+    last_completed_at: null } }} stale={false} />);
+  expect(screen.getByText("Preparing cleanup")).toBeTruthy();
+});

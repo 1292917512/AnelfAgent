@@ -82,6 +82,33 @@ async def test_progress_reads_are_cached_and_do_not_fake_activity_or_control_wri
     assert await monitor.snapshot(read) is None
 
 
+async def test_cleanup_progress_advances_only_on_success_and_does_not_change_stage_timer():
+    from agent.memory.cognee.progress import ProjectionProgress
+
+    monitor = ProjectionProgress()
+    read = AsyncMock()
+    with monitor.batch([{}]):
+        monitor.stage("replace_projection")
+        monitor.cleanup(2)
+        initial = await monitor.snapshot(read)
+        assert initial.cleanup.total == 2 and initial.cleanup.completed == 0
+        monitor._stage_started -= 600
+        monitor._changed -= 600
+        monitor.deleted()
+        advanced = await monitor.snapshot(read)
+        assert advanced.cleanup.completed == 1 and advanced.cleanup.last_completed_at
+        assert advanced.quiet_seconds < 1 and advanced.stage_elapsed_seconds >= 600
+        read.assert_not_awaited()  # 管理页不为清理进度读取正在写入的原生图。
+        monitor.deleted()
+        with pytest.raises(RuntimeError, match="超出"):
+            monitor.deleted()
+        assert (await monitor.snapshot(read)).cleanup.completed == 2
+        monitor.stage("enhance")
+        assert (await monitor.snapshot(read)).cleanup is None
+    with monitor.batch([{}]):
+        assert (await monitor.snapshot(read)).cleanup is None
+
+
 async def test_late_progress_response_cannot_leak_into_next_batch():
     from agent.memory.cognee.progress import ProjectionProgress
     from agent.memory.cognee.types import CogneePipelineProgress

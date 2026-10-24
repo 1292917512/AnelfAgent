@@ -167,6 +167,11 @@ export interface CogneeBatchProgress {
     last_completed_at: number | null;
   } | null;
   documents_checked_at?: number;
+  cleanup?: {
+    total: number;
+    completed: number;
+    last_completed_at: number | null;
+  } | null;
   pipeline: {
     status: string;
     completed_items: number | null;

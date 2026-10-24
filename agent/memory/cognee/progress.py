@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from typing import Any
 
 from .errors import error_text
-from .types import CogneeBatchProgress, CogneeDocumentProgress, CogneePipelineProgress
+from .types import CogneeBatchProgress, CogneeDeletionProgress, CogneeDocumentProgress, CogneePipelineProgress
 
 
 class ProjectionProgress:
@@ -52,6 +52,7 @@ class ProjectionProgress:
             "stage": name, "dataset_name": dataset_name, "timeout_seconds": timeout,
             "last_change_at": time.time(), "pipeline": None,
             "progress_checked_at": 0, "progress_error": "",
+            "cleanup": None,
         })
         self._dataset_id = dataset_id
         if name in {"prepare", "add"}:
@@ -64,6 +65,25 @@ class ProjectionProgress:
             self._active.documents_checked_at = 0
         self._stage_started = self._changed = time.monotonic()
         self._read_after = 0
+
+    def cleanup(self, total: int) -> None:
+        """开始一个有明确目标数的清理阶段，不伪造已经删除的文档。"""
+        if self._active is not None:
+            self._active = self._active.model_copy(update={"cleanup": CogneeDeletionProgress(total=total)})
+
+    def deleted(self) -> None:
+        """仅在 SDK 删除成功返回后推进；更新时间与业务阶段计时分别维护。"""
+        if self._active is None or self._active.cleanup is None:
+            return
+        cleanup = self._active.cleanup
+        if cleanup.completed >= cleanup.total:
+            raise RuntimeError("Cognee 清理完成计数超出目标数")
+        now = time.time()
+        self._active.cleanup = cleanup.model_copy(update={
+            "completed": cleanup.completed + 1, "last_completed_at": now,
+        })
+        self._active.last_change_at = now
+        self._changed = time.monotonic()
 
     async def snapshot(
         self, read: Callable[..., Awaitable[CogneePipelineProgress]],

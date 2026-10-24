@@ -2,6 +2,31 @@ import { expect } from "@playwright/test";
 import { test } from "./fixtures";
 import type { CogneeSettingField } from "../src/lib/types";
 
+test("Cognee cleanup progress advances without claiming the index is already committed", async ({ page }, info) => {
+  let completed = 186;
+  const total = 385;
+  await page.route("**/api/memory/cognee/status", route => route.fulfill({ json: {
+    availability: { installed: true, enabled: true, ready: true, version: "1.6.5" },
+    sync: { enabled: true, running: true, pending: 25, failed: 0, synced: 4406, processing: 25,
+      active: { stage: "replace_projection", items: 25, attempt: 2, dataset_name: "relations", started_at: 1000,
+        elapsed_seconds: 1800, stage_elapsed_seconds: 600, quiet_seconds: 1, last_change_at: 1400,
+        timeout_seconds: 0, pipeline: null, progress_checked_at: 0, progress_error: "",
+        cleanup: { total, completed, last_completed_at: 1400 + completed } } },
+  } }));
+  await page.goto("/webui/memory?tab=cognee");
+  const progress = page.getByTestId("cognee-batch-progress");
+  await expect(progress).toContainText("186 / 385");
+  await expect(progress.getByRole("progressbar")).toHaveAttribute("value", "186");
+  await expect(progress.getByRole("status")).toHaveCount(0);
+  expect(await progress.evaluate(element => element.scrollWidth <= element.clientWidth)).toBe(true);
+  completed = 220;
+  await expect(progress).toContainText("220 / 385", { timeout: 10000 });
+  await progress.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: info.outputPath("cognee-cleanup-progress.png"), animations: "disabled" });
+  completed = total;
+  await expect(progress.getByRole("status")).toContainText("awaiting index validation and a safe commit", { timeout: 10000 });
+});
+
 test("Cognee maintenance is hidden, explained, confirmed and tracked without holding the page", async ({ page }, info) => {
   let maintenance: { mode: "cleanup" | "compact"; phase: "queued" | "running" } | null = null;
   let summary = "";

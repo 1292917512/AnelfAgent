@@ -27,7 +27,9 @@ def validate_sdk(module: Any) -> None:
     require_parameters(module.datasets.empty_dataset, {"dataset_id"}, "datasets.empty_dataset")
     points: dict[str, dict[str, tuple[str, ...]]] = {
         "cognee.infrastructure.databases.graph.ladybug.adapter": {
-            "LadybugAdapter": ("_submit_to_executor_locked", "_drop_native_resources", "close", "delete_graph"),
+            "LadybugAdapter": ("_submit_to_executor_locked", "_drop_native_resources", "close", "delete_graph",
+                               "find_node_source_refs_by_dataset", "find_edge_source_refs_by_dataset",
+                               "get_node_delete_data", "get_edge_delete_data"),
         },
         "cognee.infrastructure.databases.graph.get_graph_engine": {
             "_create_graph_engine": ("cache_clear", "cache_await_closed"),
@@ -50,6 +52,9 @@ def validate_sdk(module: Any) -> None:
         "cognee.infrastructure.llm.LLMGateway": {
             "LLMGateway": ("acreate_structured_output",),
         },
+        "cognee.infrastructure.databases.unified.unified_store_engine": {
+            "UnifiedStoreEngine": ("delete_by_document", "supports_graph_provenance_delete"),
+        },
         "litellm.completion_extras.litellm_responses_transformation.handler": {
             "ResponsesToCompletionBridgeHandler": ("acompletion",),
         },
@@ -64,6 +69,12 @@ def validate_sdk(module: Any) -> None:
             if any(not callable(getattr(target, method, None)) for method in methods):
                 raise RuntimeError(f"Cognee 资源或并发契约变化: {path}.{name}")
     data_item = importlib.import_module("cognee.tasks.ingestion.data_item").DataItem
+    unified = importlib.import_module("cognee.infrastructure.databases.unified.unified_store_engine")
+    require_parameters(unified.UnifiedStoreEngine.delete_by_document, {"dataset_id", "data_id"}, "delete_by_document")
+    planner = importlib.import_module("cognee.infrastructure.databases.unified.provenance_delete_planner")
+    require_parameters(planner.execute_source_ref_removal,
+                       {"graph_engine", "vector_engine", "node_data", "edge_data", "refs_by_node", "refs_by_edge"},
+                       "execute_source_ref_removal")
     require_parameters(data_item, {"data", "label", "external_metadata", "data_id", "node_set", "literal_text"}, "DataItem")
     chunks = importlib.import_module("cognee.modules.retrieval.chunks_retriever").ChunksRetriever
     require_parameters(chunks, {"top_k", "node_name", "node_name_filter_operator"}, "ChunksRetriever")

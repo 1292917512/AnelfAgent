@@ -10,8 +10,11 @@ import json
 import os
 import subprocess
 import sys
+import time
+from contextlib import asynccontextmanager, nullcontext
 from pathlib import Path
 from unittest.mock import AsyncMock, Mock
+from uuid import uuid4
 
 import pytest
 
@@ -980,9 +983,111 @@ def test_host_does_not_inherit_or_import_native_sdk():
     assert b"isolated" in result.stdout
 
 
+@pytest.mark.parametrize("optimized", [False, True])
+async def test_deletion_reads_reduce_real_graph_scans_without_changing_shared_ownership(tmp_path, monkeypatch, optimized):
+    import cognee.context_global_variables as context
+    import cognee.infrastructure.databases.unified as unified_module
+    from cognee.infrastructure.databases.graph.ladybug.adapter import LadybugAdapter
+    from cognee.infrastructure.databases.provenance import EdgeIdentity, make_chunk_source_ref_key, make_source_ref_key
+    from cognee.infrastructure.databases.provenance.markers import mark_graph_provenance_if_empty
+    from cognee.infrastructure.databases.unified.capabilities import EngineCapability
+    from cognee.infrastructure.databases.unified.unified_store_engine import UnifiedStoreEngine
+    from cognee.infrastructure.engine import DataPoint
+
+    from agent.memory.cognee.deletion import DeletionReads, install
+
+    class Entity(DataPoint):
+        name: str
+        metadata: dict = {"index_fields": ["name"]}
+
+    class Vectors:
+        def __init__(self):
+            self.deleted: set[str] = set()
+            self.fail_once = True
+
+        async def has_collection(self, name):
+            return True
+
+        async def delete_data_points(self, name, ids):
+            if self.fail_once:
+                self.fail_once = False
+                raise RuntimeError("injected vector failure")
+            self.deleted.update(map(str, ids))
+
+    @asynccontextmanager
+    async def database_context(*args, **kwargs):
+        yield
+
+    graph = LadybugAdapter(str(tmp_path / "graph"), kuzu_buffer_pool_size=64 * 1024 * 1024, kuzu_num_threads=2)
+    vector = Vectors()
+    engine = UnifiedStoreEngine(graph_engine=graph, vector_engine=vector,
+        capabilities=EngineCapability.GRAPH | EngineCapability.VECTOR)
+    dataset, other_dataset = uuid4(), uuid4()
+    count = 32 if os.getenv("COGNEE_DELETION_BENCH") == "1" else 8
+    background = 5000 if os.getenv("COGNEE_DELETION_BENCH") == "1" else 400
+    documents = [uuid4() for _ in range(count)]
+    keep_key = make_source_ref_key(dataset, uuid4())
+    cross_key = make_source_ref_key(other_dataset, uuid4())
+    keys = [make_source_ref_key(dataset, doc) if i % 2 == 0
+            else make_chunk_source_ref_key(dataset, doc, uuid4()) for i, doc in enumerate(documents)]
+    nodes = [Entity(name=f"retired-{i}") for i in range(count)]
+    shared, cross, late = Entity(name="shared"), Entity(name="cross-dataset"), Entity(name="live-owner")
+    unrelated = [Entity(name=f"unrelated-{i}") for i in range(background)]
+    install()
+    monkeypatch.setattr(context, "set_database_global_context_variables", database_context)
+    monkeypatch.setattr(unified_module, "get_unified_engine", AsyncMock(return_value=engine))
+    try:
+        assert await mark_graph_provenance_if_empty(graph)
+        await graph.add_nodes([*nodes, shared, cross, late, *unrelated])
+        for node, key in zip(nodes, keys, strict=True):
+            await graph.attach_node_source_refs([str(node.id)], [key], str(uuid4()))
+        await graph.attach_node_source_refs([str(shared.id)], [keys[0], keep_key], str(uuid4()))
+        await graph.attach_node_source_refs([str(cross.id)], [keys[0], cross_key], str(uuid4()))
+        await graph.attach_node_source_refs([str(late.id)], keys[:2], str(uuid4()))
+        await graph.attach_node_source_refs([str(node.id) for node in unrelated], [keep_key], str(uuid4()))
+        edge = EdgeIdentity(str(shared.id), str(cross.id), "linked")
+        await graph.add_edges([(edge.source_id, edge.target_id, edge.relationship_name, {"edge_text": "linked"})])
+        await graph.attach_edge_source_refs([edge], [keys[0], keys[1], keep_key], str(uuid4()))
+        node_scan = AsyncMock(wraps=graph.find_node_source_refs_by_dataset)
+        edge_scan = AsyncMock(wraps=graph.find_edge_source_refs_by_dataset)
+        monkeypatch.setattr(graph, "find_node_source_refs_by_dataset", node_scan)
+        monkeypatch.setattr(graph, "find_edge_source_refs_by_dataset", edge_scan)
+        reads = DeletionReads()
+        started = time.monotonic()
+        if optimized:
+            await reads.prepare([(str(dataset), str(documents[0]))])
+            assert not reads._documents and node_scan.await_count == edge_scan.await_count == 0
+            await reads.prepare([(str(dataset), str(doc)) for doc in documents])
+            assert len(reads._documents) == count  # 不保存无关文档的完整来源图。
+        # 定位完成后增加保留者，证明删除决策重读实时归属，而非使用定位快照。
+        await graph.attach_node_source_refs([str(late.id)], [keep_key], str(uuid4()))
+        with reads.scope() if optimized else nullcontext():
+            with pytest.raises(RuntimeError, match="vector failure"):
+                await engine.delete_by_document(str(dataset), str(documents[0]))
+            before_retry = await graph.get_node_delete_data([str(nodes[0].id)])
+            assert before_retry[str(nodes[0].id)].source_ref_keys == [keys[0]]
+            for doc in documents:
+                await engine.delete_by_document(str(dataset), str(doc))
+        elapsed = time.monotonic() - started
+        assert node_scan.await_count == edge_scan.await_count == (1 if optimized else count + 1)
+        remaining = await graph.get_node_delete_data([str(node.id) for node in [*nodes, shared, cross, late]])
+        assert set(remaining) == {str(shared.id), str(cross.id), str(late.id)}
+        assert remaining[str(shared.id)].source_ref_keys == remaining[str(late.id)].source_ref_keys == [keep_key]
+        assert remaining[str(cross.id)].source_ref_keys == [cross_key]
+        assert (await graph.get_edge_delete_data([edge]))[edge].source_ref_keys == [keep_key]
+        assert {str(node.id) for node in nodes} <= vector.deleted
+        assert not {str(shared.id), str(cross.id), str(late.id)} & vector.deleted
+        assert not reads._documents
+        print(json.dumps({"optimized": optimized, "documents": count, "full_scans": node_scan.await_count + edge_scan.await_count,
+                          "seconds": round(elapsed, 4)}))
+    finally:
+        await graph.close()
+
+
 def test_native_imports_stay_inside_worker_adapters():
     root = Path(__file__).resolve().parents[4]
-    allowed = {"adapters.py", "sdk_client.py", "sdk_progress.py", "ladybug_guard.py", "storage.py", "graph_validation.py"}
+    allowed = {"adapters.py", "sdk_client.py", "sdk_progress.py", "ladybug_guard.py", "storage.py", "graph_validation.py",
+               "deletion.py"}
     violations = []
     for directory in ("agent", "services", "scripts"):
         for path in (root / directory).rglob("*.py"):

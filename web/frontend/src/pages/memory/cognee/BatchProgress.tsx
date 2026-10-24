@@ -15,12 +15,29 @@ export function BatchProgress({ active, stale }: { active: CogneeBatchProgress; 
   const documents = active.documents;
   const hasFragments = !!documents && documents.fragments > 0;
   const observed = documents && typeof documents.completed === "number";
+  const cleanup = active.cleanup;
   const unknown = t("cognee.progress.notObserved");
   return <div className="rounded-lg border border-accent/30 bg-accent/5 p-3 space-y-2" data-testid="cognee-batch-progress">
     <div className="flex flex-wrap justify-between gap-2 text-heading">
       <span>{t("cognee.progress.batch", { count: active.items, attempt: active.attempt })}</span>
       <span>{t(`cognee.progress.stages.${active.stage}`, { defaultValue: active.stage })}</span>
     </div>
+    {cleanup ? <div className="space-y-3 rounded-lg bg-surface/60 p-3">
+      <dl className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div><dt className="text-xs text-muted">{t("cognee.progress.cleanupDocuments")}</dt>
+          <dd className="mt-1 text-xl font-semibold text-heading tabular-nums">{cleanup.completed} / {cleanup.total}</dd></div>
+        <div><dt className="text-xs text-muted">{t("cognee.progress.cleanupRemaining")}</dt>
+          <dd className="mt-1 text-xl font-semibold text-heading tabular-nums">{Math.max(0, cleanup.total - cleanup.completed)}</dd></div>
+        <div><dt className="text-xs text-muted">{t("cognee.progress.lastCompleted")}</dt>
+          <dd className="mt-1 font-medium text-heading">{cleanup.last_completed_at
+            ? new Date(cleanup.last_completed_at * 1000).toLocaleTimeString() : t("cognee.progress.cleanupPreparing")}</dd>
+          <dd className="mt-1 text-xs">{t("cognee.progress.elapsed", { time: duration(active.elapsed_seconds) })}</dd></div>
+      </dl>
+      {cleanup.total > 0 && <progress className="w-full h-2 accent-accent" aria-label={t("cognee.progress.cleanupDocuments")}
+        value={cleanup.completed} max={cleanup.total} />}
+      <p className="text-xs text-muted">{t("cognee.progress.cleanupHint")}</p>
+      {cleanup.completed === cleanup.total && <p role="status" className="text-sm text-accent">{t("cognee.progress.cleanupAwaitingCommit")}</p>}
+    </div> : <>
     <dl className={`grid grid-cols-1 ${hasFragments ? "sm:grid-cols-3" : "sm:grid-cols-2"} gap-3 rounded-lg bg-surface/60 p-3`}>
       <div><dt className="text-xs text-muted">{t("cognee.progress.actualDocuments")}</dt>
         <dd className="mt-1 text-xl font-semibold text-heading tabular-nums">{documents ? `${documents.completed ?? "—"} / ${documents.total}` : unknown}</dd></div>
@@ -40,6 +57,7 @@ export function BatchProgress({ active, stale }: { active: CogneeBatchProgress; 
     {!!active.documents_checked_at && <p className="text-xs">{t("cognee.progress.actualChecked", {
       time: new Date(active.documents_checked_at * 1000).toLocaleTimeString(),
     })}</p>}
+    </>}
     <details className="border-t border-border pt-2">
       <summary className="cursor-pointer text-xs text-muted">{t("cognee.progress.diagnostics")}</summary>
       <div className="mt-3 space-y-2 text-xs">

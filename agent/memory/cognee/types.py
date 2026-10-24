@@ -60,6 +60,14 @@ class CogneePipelineProgress(BaseModel):
     observation_error: str = ""
 
 
+class CogneeDeletionProgress(BaseModel):
+    """当前候选事务中的旧文档清理计数；完成仍须等待索引验收发布。"""
+
+    total: int = Field(ge=0)
+    completed: int = Field(default=0, ge=0)
+    last_completed_at: float | None = None
+
+
 class CogneeBatchProgress(BaseModel):
     """当前宿主批次观测，不参与提交、重试或恢复判断。"""
 
@@ -78,6 +86,7 @@ class CogneeBatchProgress(BaseModel):
     progress_error: str = ""
     documents: CogneeDocumentProgress | None = None
     documents_checked_at: float = 0
+    cleanup: CogneeDeletionProgress | None = None
 
 
 class CogneeMaintenanceStatus(BaseModel):

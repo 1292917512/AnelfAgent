@@ -24,3 +24,6 @@ class FakeIndexTransactions:
 
     async def verify_graph_documents(self, dataset_id: str, data_ids: list[str]) -> None:
         pass
+
+    async def prepare_deletions(self, targets: list[tuple[str, str]]) -> None:
+        pass

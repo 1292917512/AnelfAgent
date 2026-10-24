@@ -21,7 +21,7 @@ from .wire import decode, encode
 
 METHODS = frozenset({"recall", "add", "cognify", "improve", "list_datasets", "list_data", "delete_data",
                      "delete_dataset", "verify_graph_documents", "pipeline_progress", "compact_vector_storage",
-                     "inspect_index"})
+                     "inspect_index", "prepare_deletions"})
 
 
 async def serve(output: TextIO) -> None:

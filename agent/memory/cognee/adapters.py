@@ -107,6 +107,9 @@ def install() -> None:
     from cognee.infrastructure.llm.LLMGateway import LLMGateway
     from cognee.infrastructure.llm.structured_output_framework.litellm_native.native_adapter import NativeLiteLLMAdapter
 
+    from .deletion import install as install_deletion_reads
+
+    install_deletion_reads()
     _forward_responses_transport()
 
     def limit_retries(method: Any) -> None:
