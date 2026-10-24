@@ -60,8 +60,12 @@ it("preserves explicit reasoning expansion when the model completes", async () =
   await user.click(screen.getByRole("button", { expanded: false }));
   rerender(view({ ...entry, status: "done", duration_ms: 1200 }));
   expect(screen.getByText(thoughts[0]!.content)).toBeTruthy();
+  expect(screen.getByText("Thought complete")).toBeTruthy();
   rerender(view({ ...entry, status: "done", duration_ms: 1200 }));
   expect(screen.getByRole("button", { expanded: true })).toBeTruthy();
+  rerender(view({ ...entry, status: "interrupted", duration_ms: 1200 }));
+  expect(screen.queryByText("Thought complete")).toBeNull();
+  expect(screen.getByText("Interrupted")).toBeTruthy();
 });
 
 it("keeps measured timing in details and does not infer missing timing or cache usage", async () => {

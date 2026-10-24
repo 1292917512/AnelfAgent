@@ -241,7 +241,8 @@ test("live process follows streamed content and concurrent tools until explicitl
   await expect(feed).toHaveAttribute("data-following", "true");
   const child = run("child", start + 3, { parent_id: current.id, kind: "delegation", actor: "Reviewer", updated_at: start + 3 });
   await publish(child);
-  await expect(page.locator('[data-activity-run="child"] .activity-thought-content')).toBeInViewport();
+  await expect(page.locator('[data-activity-run="child"] .activity-run-heading')).toBeInViewport();
+  await expect(page.locator('[data-activity-run="child"] .activity-thought-content')).toHaveCount(0);
   current = { ...current, updated_at: start + 4, entries: [...current.entries, { id: "final", kind: "text", ts: start + 4, content: "PARENT-FINISHED-STEP" }] };
   await publish(current);
   await expect(card.getByText("PARENT-FINISHED-STEP")).toBeInViewport();
@@ -282,8 +283,8 @@ test("terminal progress stops live indicators after a long stream and keeps tool
     usage: { total_input_tokens: 1000, completion_tokens: 250, cache_read_input_tokens: 950, cache_observable: true } } : entry) });
   await expect(page.locator(".activity-connection")).not.toContainText("Working");
   await expect(card.locator(".activity-live-dot, .animate-spin, .activity-thought.is-live")).toHaveCount(0);
-  await expect(card.locator(".activity-run-footer")).toContainText("Completed");
-  await expect(card.locator(".activity-run-footer")).toBeInViewport();
+  await expect(card.locator(".activity-run-outcome")).toContainText("Completed");
+  await expect(card.locator(".activity-run-outcome")).toBeInViewport();
   await expect(card.locator(".activity-duration")).toHaveText("25s");
   await expect(page.locator(".activity-feed")).toHaveAttribute("data-following", "true");
   await expect(card.locator(".activity-model-toggle")).toHaveAttribute("aria-expanded", "false");
@@ -351,9 +352,15 @@ test("concurrent channels keep tool ownership, terminal receipts and subagent an
   await expect(shellDialog.locator(".tool-terminal code").last()).toContainText("# literal <b>output</b>");
   await expect(shellDialog.locator(".tool-terminal b")).toHaveCount(0);
   await shellDialog.getByRole("button", { name: "Close", exact: true }).click();
-  await expect(page.locator('[data-activity-run="review"]')).toContainText("SSH · production");
+  const childCard = page.locator('[data-activity-run="review"]');
+  await expect(childCard.locator(".activity-run-heading")).toHaveAttribute("aria-expanded", "false");
+  await expect(childCard.locator(".activity-tool")).toHaveCount(0);
+  await childCard.locator(".activity-run-heading").click();
+  await expect(childCard).toContainText("SSH · production");
   await expect(page.locator('[data-activity-run="review"]')).toContainText("Exit 2");
   await expect(page.locator('.activity-segment-parent')).toContainText("Inspect qq");
+  await childCard.locator(".tool-command-summary").scrollIntoViewIfNeeded();
+  await expect(childCard.locator(".tool-command-summary")).toBeInViewport();
   const initialOrder = await page.locator("[data-activity-entry]").evaluateAll((nodes) => nodes.map((node) => node.getAttribute("data-activity-entry")));
   await publish({ ...qq, updated_at: start + 9, entries: qq.entries.map((entry) => entry.kind === "tool" ? { ...entry, result: '{"ok":true,"returncode":0,"stdout":"LATE RESULT"}' } : entry) });
   await expect(page.locator('[data-activity-run="review"] .tool-command-summary')).toBeInViewport();
@@ -374,6 +381,53 @@ test("concurrent channels keep tool ownership, terminal receipts and subagent an
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: info.outputPath("concurrent-tools.png"), animations: "disabled" });
   expect(errors).toEqual([]);
+});
+
+test("subagent summaries keep large live processes unmounted until explicitly expanded", async ({ page }, info) => {
+  const start = Date.now() / 1000 - 10;
+  const parent = run("parent", start, { label: "Review the deployment", entries: [] });
+  const children = Array.from({ length: 3 }, (_, index) => run(`worker-${index}`, start + index + 1, {
+    kind: "delegation", parent_id: parent.id, actor: `Reviewer ${index + 1}`, label: `Review area ${index + 1}`, input: "",
+    entries: [{ id: `model-${index}`, kind: "model", ts: start + 4, name: `Worker model ${index}`, status: "running", generation: 1 },
+      { id: `thought-${index}`, kind: "thinking", ts: start + 5, content: `Private worker reasoning ${index}`, generation: 1 },
+      ...Array.from({ length: 40 }, (_, step) => ({ id: `tool-${index}-${step}`, kind: "tool" as const, ts: start + 6 + step / 100,
+        name: `worker_tool_${index}_${step}`, status: "done" as const, arguments: "{}", targets: [], request_id: `request-${index}-${step}`, result: "Verified ".repeat(200) })),
+    ],
+  }));
+  const publish = await liveFixture(page, [parent, ...children]);
+  await page.goto("/webui/");
+  const feed = page.locator(".activity-feed");
+  await expect(feed.locator(".is-delegation")).toHaveCount(3);
+  await expect(feed.locator(".activity-model-call, .activity-tool, .activity-thought-content")).toHaveCount(0);
+  await expect(page.getByRole("navigation", { name: "Execution stages" })).toHaveCount(0);
+  await page.screenshot({ path: info.outputPath("subagents-collapsed.png"), animations: "disabled" });
+  const child = children[1]!;
+  await publish({ ...child, entries: [...child.entries, { id: "late-text", kind: "text", ts: start + 9, content: "Late worker output" }] });
+  await expect(feed.getByText("Late worker output", { exact: true })).toHaveCount(0);
+  const card = feed.locator('[data-activity-run="worker-1"]');
+  await card.locator(".activity-run-heading").click();
+  await expect(card.locator(".activity-tool")).toHaveCount(40);
+  await expect(card.getByText("Private worker reasoning 1", { exact: true })).toBeVisible();
+  const stage = page.getByRole("navigation", { name: "Execution stages" }).getByRole("button", { name: /Tool execution · worker_tool_1_0/ });
+  await stage.click();
+  await expect(card.locator('[data-activity-entry="tool-1-0"]')).toBeInViewport();
+  await publish({ ...child, entries: child.entries.map((entry) => entry.kind === "thinking" ? { ...entry, content: "Updated worker reasoning" } : entry) });
+  await expect(card.locator(".activity-run-heading")).toHaveAttribute("aria-expanded", "true");
+  await expect(card.getByText("Updated worker reasoning", { exact: true })).toBeVisible();
+  await card.locator(".activity-run-heading").click();
+  await expect(feed.locator(".activity-model-call, .activity-tool, .activity-thought-content")).toHaveCount(0);
+  await expect(page.getByRole("navigation", { name: "Execution stages" })).toHaveCount(0);
+  await page.getByRole("button", { name: "Running subagents", exact: true }).click();
+  const agents = page.getByRole("dialog", { name: "Running subagents", exact: true });
+  await agents.getByRole("button", { name: /Reviewer 2.*Worker model 1/ }).click();
+  const details = page.getByRole("dialog", { name: "View execution details", exact: true });
+  await expect(details.getByText("Updated worker reasoning", { exact: true })).toBeVisible();
+  await expect(feed.locator(".activity-model-call")).toHaveCount(0);
+  await details.getByRole("button", { name: "Close", exact: true }).click();
+  await expect(agents).toHaveCount(0);
+  await page.evaluate(() => { document.documentElement.dataset.theme = "dark"; document.documentElement.classList.add("dark"); });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: info.outputPath("subagents-collapsed-dark.png"), animations: "disabled" });
 });
 
 

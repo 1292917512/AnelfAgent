@@ -125,7 +125,7 @@ async def test_http_snapshots_only_copy_changed_runs_and_include_retained_ids(ac
     assert service.snapshot()["runs"][-1]["label"] != "Mutated client copy"
     assert "retained_ids" not in service.snapshot(epoch="old-process", since_revision=baseline["revision"])
     service.clear_history()
-    assert service.snapshot(epoch=baseline["epoch"], since_revision=changed["revision"])["retained_ids"] == ["second"]
+    assert service.snapshot(epoch=baseline["epoch"], since_revision=changed["revision"])["retained_ids"] == []
 
 
 async def test_threaded_background_registration_and_completion_publish_on_bound_loop(activity):
@@ -340,7 +340,7 @@ async def test_background_hook_keeps_parent_until_finished(activity):
     async with activity_scope("next-turn", "user_webui:1", kind="conversation"):
         pass
     snapshot = service.clear_history()
-    assert {run["id"] for run in snapshot["runs"]} == {"hook-parent", "next-turn"}
+    assert {run["id"] for run in snapshot["runs"]} == {"hook-parent"}
     release.set()
     await task
     parent = next(run for run in service.snapshot()["runs"] if run["id"] == "hook-parent")
@@ -583,7 +583,7 @@ async def test_clear_history_keeps_current_family_and_concurrent_work(activity, 
     clock = 16.0
     await service._start({"turn_id": "child", "parent_id": "parent", "scope": "reflect:child"})
     snapshot = service.clear_history()
-    assert [run["id"] for run in snapshot["runs"]] == ["parent", "parallel", "child"]
+    assert [run["id"] for run in snapshot["runs"]] == ["parent", "child"]
     assert snapshot["runs"][0]["entries"][0]["result"] == "Keep this result"
     assert snapshot["runs"][-1]["status"] == "running"
     assert frames[-1]["event"] == "activity_snapshot"
@@ -592,15 +592,19 @@ async def test_clear_history_keeps_current_family_and_concurrent_work(activity, 
     assert service.snapshot()["runs"][-1]["entries"][-1]["result"] == "Still running"
 
 
-async def test_clear_history_keeps_last_completed_round(activity, monkeypatch):
-    service, _ = activity
+async def test_clear_history_removes_all_completed_rounds_and_is_idempotent(activity, monkeypatch):
+    service, frames = activity
     for clock in (1.0, 2.0, 3.0):
         monkeypatch.setattr("services.workspace_activity.time.time", lambda: clock)
         async with activity_scope(str(clock), "group_qq:1"):
             pass
     snapshot = service.clear_history()
-    assert [run["id"] for run in snapshot["runs"]] == ["3.0"]
+    assert snapshot["runs"] == []
+    assert frames[-1] == {"event": "activity_snapshot", **snapshot}
+    frame_count = len(frames)
     assert service.clear_history() == snapshot
+    assert len(frames) == frame_count
+    assert not service._pending
 
 
 async def test_long_background_run_does_not_keep_unrelated_finished_history(activity, monkeypatch):
@@ -611,7 +615,21 @@ async def test_long_background_run_does_not_keep_unrelated_finished_history(acti
         monkeypatch.setattr("services.workspace_activity.time.time", lambda: clock)
         async with activity_scope(str(clock), "user_webui:1"):
             pass
-    assert [run["id"] for run in service.clear_history()["runs"]] == ["background", "4.0"]
+    assert [run["id"] for run in service.clear_history()["runs"]] == ["background"]
+
+
+@pytest.mark.parametrize("status", ["queued", "running"])
+async def test_clear_history_keeps_unsettled_family_until_background_work_finishes(activity, status):
+    service, _ = activity
+    async with activity_scope("parent", "user_webui:1"):
+        service._append(service._runs["parent"], {"kind": "delegation", "status": status})
+        async with activity_scope("finished-child", "reflect:child"):
+            pass
+    async with activity_scope("latest", "user_webui:1"):
+        pass
+    assert {run["id"] for run in service.clear_history()["runs"]} == {"parent", "finished-child"}
+    service._runs["parent"]["entries"][0]["status"] = "done"
+    assert service.clear_history()["runs"] == []
 
 
 @pytest.mark.parametrize(("module", "expected"), [

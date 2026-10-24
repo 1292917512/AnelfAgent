@@ -33,7 +33,7 @@ async def activity_snapshot(
 
 @router.delete("/activity/history")
 async def clear_activity_history() -> Dict[str, Any]:
-    """清除之前的临时过程记录，保留当前轮次，不中断执行。"""
+    """清除已结束的临时过程记录，保留执行或排队中的调用树。"""
     from services.workspace_activity import workspace_activity
 
     return workspace_activity.clear_history()

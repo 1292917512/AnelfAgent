@@ -145,29 +145,92 @@ test("memory tool references open the resolved project file instead of a workspa
   expect(new URL(read).searchParams.get("path")).toBe("config/memory/note.md");
 });
 
-test("clearing earlier process keeps the current round and Web conversation", async ({ page }) => {
+test("clearing finished process protects active work then clears the last round without changing Web history", async ({ page }, info) => {
+  await installEventStream(page);
   const previous = activity("previous", { status: "completed", started_at: 1, ended_at: 2, updated_at: 2, entries: [] });
   const current = activity("current");
   let snapshot = { epoch: "test", revision: 2, runs: [previous, current] };
   await page.route(/\/api\/workspace\/activity(?:\?.*)?$/, (route) => route.fulfill({ json: snapshot }));
   await page.route("**/api/workspace/activity/history", (route) => {
     expect(route.request().method()).toBe("DELETE");
-    snapshot = { ...snapshot, revision: 3, runs: [current] };
+    snapshot = { ...snapshot, revision: snapshot.revision + 1, runs: snapshot.runs.filter((run) => run.status === "running") };
     return route.fulfill({ json: snapshot });
   });
   await page.route("**/api/chat/history*", (route) => route.fulfill({ json: [{ id: 1, role: "assistant", content: "Web conversation stays here", ts: 1 }] }));
   await page.goto("/webui/");
   const execution = page.getByRole("region", { name: "Global execution", exact: true });
-  const clear = execution.getByRole("button", { name: "Clear previous", exact: true });
+  const clear = execution.getByRole("button", { name: "Clear finished", exact: true });
   await expect(clear).toBeEnabled();
   await clear.click();
   await expect(clear).toBeDisabled();
   await expect(execution.locator(".activity-history-link")).toHaveCount(0);
   await expect(execution.getByText("inspect_service", { exact: true })).toBeVisible();
+  const finished = { ...current, revision: 4, status: "completed", ended_at: Date.now() / 1000,
+    entries: current.entries.map((entry) => "status" in entry ? { ...entry, status: "done" as const } : entry) };
+  snapshot = { ...snapshot, revision: 4, runs: [finished] };
+  await page.evaluate((data) => window.dispatchEvent(new CustomEvent("test-activity", { detail: { event: "activity_end", data } })), { epoch: "test", run: finished });
+  await expect(clear).toBeEnabled();
+  await expect(execution.locator(".activity-run-outcome")).toContainText("This execution is complete");
+  await page.screenshot({ path: info.outputPath("finished-execution.png"), animations: "disabled" });
+  await clear.click();
+  await expect(execution.getByText("No execution records yet", { exact: true })).toBeVisible();
+  await expect(clear).toBeDisabled();
+  await page.evaluate((data) => window.dispatchEvent(new CustomEvent("test-activity", { detail: { event: "activity", data } })), { epoch: "test", run: finished });
+  await expect(execution.locator("[data-activity-run]")).toHaveCount(0);
   await openWebChat(page);
   await expect(page.getByText("Web conversation stays here", { exact: true })).toBeVisible();
   await page.reload();
-  await expect(execution.getByRole("button", { name: "Clear previous", exact: true })).toBeDisabled();
+  await expect(execution.getByRole("button", { name: "Clear finished", exact: true })).toBeDisabled();
+  await expect(execution.getByText("No execution records yet", { exact: true })).toBeVisible();
+});
+
+test("reasoning completion and execution outcome remain distinct across live updates", async ({ page }, info) => {
+  await installEventStream(page);
+  const started = Date.now() / 1000 - 5;
+  const model = { id: "model", kind: "model" as const, generation: 1, name: "Reasoning model", status: "running", ts: started };
+  let run = activity("outcome", { started_at: started, entries: [model,
+    { id: "thought", kind: "thinking", generation: 1, ts: started + 1, content: "Check the execution evidence before reporting the result." },
+  ] });
+  await page.route(/\/api\/workspace\/activity(?:\?.*)?$/, (route) => route.fulfill({ json: { epoch: "outcome", revision: run.revision, runs: [run] } }));
+  const publish = async (patch: Partial<ActivityRun>) => {
+    run = { ...run, ...patch, revision: run.revision + 1 };
+    await page.evaluate((data) => window.dispatchEvent(new CustomEvent("test-activity", { detail: { event: "activity", data } })), { epoch: "outcome", run });
+  };
+  await page.goto("/webui/");
+  const execution = page.getByRole("region", { name: "Global execution", exact: true });
+  const clear = execution.getByRole("button", { name: "Clear finished", exact: true });
+  await expect(clear).toBeDisabled();
+  await expect(execution.locator(".activity-model-state")).toHaveText("Thinking");
+  await page.screenshot({ path: info.outputPath("reasoning-active.png"), animations: "disabled" });
+  await publish({ entries: [{ ...model, status: "done", duration_ms: 2300 }, run.entries[1]!] });
+  await expect(execution.locator(".activity-model-state")).toHaveText("Thought complete");
+  await expect(execution.locator(".activity-round-summary .activity-run-status")).toHaveText("Running");
+  await expect(execution.locator(".activity-run-outcome")).toHaveCount(0);
+  await expect(execution.getByText("Check the execution evidence before reporting the result.", { exact: true })).toHaveCount(0);
+  await execution.getByRole("button", { name: /^Reasoning model/ }).click();
+  await expect(execution.getByText("Check the execution evidence before reporting the result.", { exact: true })).toBeVisible();
+  await publish({ status: "completed", ended_at: started + 4, entries: [...run.entries,
+    { id: "background", kind: "delegation", ts: started + 2, agent: "Reviewer", goal: "Review the result", status: "queued", background: true },
+  ] });
+  await expect(execution.locator(".activity-round-summary .activity-run-status")).toHaveText("Background work pending");
+  await expect(execution.locator(".activity-run-outcome")).toContainText("background work is running or queued");
+  await expect(clear).toBeDisabled();
+  await publish({ entries: run.entries.map((entry) => entry.kind === "delegation" ? { ...entry, status: "done" } : entry) });
+  await expect(clear).toBeEnabled();
+  await expect(execution.locator(".activity-round-summary .activity-run-status")).toHaveText("Completed");
+  await expect(execution.locator(".activity-run-outcome")).toContainText("This execution is complete");
+  expect(await execution.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  await page.screenshot({ path: info.outputPath("reasoning-finished-light.png"), animations: "disabled" });
+  await page.evaluate(() => { document.documentElement.dataset.theme = "dark"; document.documentElement.classList.add("dark"); });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await expect(execution.locator(".activity-run-outcome")).toHaveCSS("animation-name", "none");
+  await page.screenshot({ path: info.outputPath("reasoning-finished-dark.png"), animations: "disabled" });
+  await publish({ status: "interrupted" });
+  await expect(execution.locator(".activity-round-summary .activity-run-status")).toHaveText("Interrupted");
+  await expect(execution.locator(".activity-run-outcome")).not.toContainText("This execution is complete");
+  await publish({ status: "failed", error: "Execution did not complete" });
+  await expect(execution.locator(".activity-run-outcome")).toContainText("Execution did not complete");
+  await expect(execution.locator(".activity-run-outcome .activity-run-status")).toHaveAttribute("data-tone", "error");
 });
 
 test("context evidence, tagged results and cache facts remain readable on narrow screens", async ({ page }) => {
@@ -214,7 +277,13 @@ test("workspace shows the global live process beside actual Web messages", async
   await expect(execution).toBeVisible();
   await expect(execution.getByRole("tab")).toHaveCount(0);
   await expect(execution.getByRole("button", { name: "Start Tracking", exact: true })).toHaveCount(0);
+  const childCard = execution.locator('[data-activity-run="child"]');
+  await expect(childCard.locator(".activity-run-heading")).toHaveAttribute("aria-expanded", "false");
+  await expect(execution.getByText("read_deployment_settings", { exact: true })).toHaveCount(0);
+  await childCard.locator(".activity-run-heading").click();
   await expect(execution.getByText("read_deployment_settings", { exact: true })).toBeVisible();
+  await childCard.locator(".activity-run-heading").click();
+  await expect(childCard.locator(".activity-thought-content")).toHaveCount(0);
   await expect(execution.getByText("Group 42", { exact: true }).first()).toBeVisible();
   await execution.locator(".activity-round-focus").click();
   const inspector = page.getByRole("dialog", { name: "View execution details", exact: true });

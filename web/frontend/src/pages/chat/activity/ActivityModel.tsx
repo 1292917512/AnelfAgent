@@ -1,4 +1,4 @@
-import { AlertCircle, Brain, ChevronDown, Loader2 } from "lucide-react";
+import { AlertCircle, Brain, CheckCircle2, ChevronDown, Loader2 } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { ActivityEntry } from "@/lib/types/activity";
@@ -33,11 +33,15 @@ export function ActivityModel({ entry, thoughts = [] }: { entry: Extract<Activit
   </div>;
   const summary = <>
     <span>{running ? <Loader2 size={12} className="animate-spin" /> : entry.status === "error" ? <AlertCircle size={12} className="text-warn" /> : <Brain size={12} />}<span className="activity-model-name" title={entry.name}>{entry.name}</span></span>
-    <span>{formatElapsedCompact(Math.max(0, running ? now - entry.ts * 1000 : entry.duration_ms ?? 0))}</span>
+    <span className="activity-model-state" data-status={entry.status}>
+      {entry.status === "done" && <CheckCircle2 size={12} aria-hidden="true" />}
+      {t(running ? "activity.thinking" : entry.status === "done" ? thoughts.length ? "activity.thoughtComplete" : "activity.modelComplete" : `activity.status.${entry.status}`, { defaultValue: entry.status })}
+    </span>
+    <span className="activity-model-duration">{formatElapsedCompact(Math.max(0, running ? now - entry.ts * 1000 : entry.duration_ms ?? 0))}</span>
     {input != null && <span>{t("activity.modelUsage", { input: input.toLocaleString(), output: (usage?.completion_tokens ?? 0).toLocaleString() })}</span>}
     {!running && <span title={t("activity.cacheHint")}>{rate != null ? t("activity.modelCache", { percent: rate }) : t("activity.cacheUnknown")}</span>}
   </>;
-  return <div className={cn("activity-model-call", running && "is-live")}>
+  return <div className={cn("activity-model-call", running && "is-live")} data-status={entry.status}>
     {entry.purpose === "compress" && <p className="activity-note">{t("activity.phases.context_summary")}</p>}
     <div className="activity-entry-heading">
       {thoughts.length ? <button className="activity-model activity-model-toggle" aria-expanded={open}

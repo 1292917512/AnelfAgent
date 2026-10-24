@@ -46,6 +46,20 @@ it("shows preparation and final state even for runs with no tool or text output"
   expect(activitySegments([a])).toMatchObject([{ first: true, finished: true, entries: [], run: { error: "Cancelled preparation" } }]);
 });
 
+it("projects each subagent once and only exposes its steps to navigation after expansion", () => {
+  const parent = run("parent", 1, [2, 8]);
+  const child = { ...run("child", 3, [4, 6, 9]), kind: "delegation", parent_id: parent.id };
+  const collapsed = activitySegments([parent, child]);
+  expect(collapsed.filter((segment) => segment.run.id === child.id)).toMatchObject([{ first: true, expanded: false, entries: [] }]);
+  expect(activityStages(collapsed).every((stage) => stage.runId !== child.id)).toBe(true);
+  const expanded = activitySegments([parent, child], [child.id]);
+  expect(expanded.filter((segment) => segment.run.id === child.id)).toHaveLength(1);
+  expect(activityStages(expanded).filter((stage) => stage.runId === child.id)).toHaveLength(3);
+  expect(activitySegments([parent, { ...child, status: "completed", ended_at: 10 }]).map((segment) => segment.key))
+    .toEqual(collapsed.map((segment) => segment.key));
+  expect(child.entries).toHaveLength(3);
+});
+
 it("groups consecutive tools but keeps separate owners and excludes background hooks from stage navigation", () => {
   const a = run("A", 1, []);
   a.entries = [

@@ -9,6 +9,7 @@ import { ActivityPlanDetails } from "./ActivityPlan";
 import { ActivityInspector } from "./ActivityInspector";
 import { ActivitySourceLabel } from "./ActivityReferences";
 import { activitySummary, type ActivityDelegate } from "./activity-summary";
+import { ActivityRunStatus } from "./ActivityRunStatus";
 
 function DelegateItem({ item, onReveal }: { item: ActivityDelegate; onReveal: (id: string) => void }) {
   const { t } = useTranslation("workbench");
@@ -47,6 +48,7 @@ export function ActivityRoundSummary({ run, runs, onReveal }: ActivitySummaryPro
       <span className="min-w-0"><span className="activity-round-origin">{trigger}{run.source.channel && ` · ${run.source.channel}`}{sender && <span title={run.initiator?.id}>{` · ${sender}`}</span>}</span>
         <strong>{title}</strong></span>
     </button>
+    <ActivityRunStatus run={run} runs={runs} />
     <div className="activity-summary-actions">
       {summary.delegates.length > 0 && <ActivityInspector title={t("activity.summary.delegates")} preview={t("activity.summary.delegateCount", { count: summary.delegates.length })}
         className="activity-summary-action" trigger={<><Bot size={15} /><span>{summary.delegates.length}</span></>}>

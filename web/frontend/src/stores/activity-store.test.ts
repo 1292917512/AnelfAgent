@@ -88,6 +88,13 @@ it("clears earlier records without stale snapshots or queued frames bringing the
   expect(useActivityStore.getState().runs).toEqual([current]);
   store.receive("p", { ...current, revision: 4, status: "completed" });
   expect(useActivityStore.getState().runs[0]?.status).toBe("completed");
+  vi.mocked(api.delete).mockResolvedValueOnce({ data: { epoch: "p", revision: 5, runs: [] } });
+  await store.clearHistory();
+  store.receive("p", { ...current, revision: 4, status: "completed" });
+  store.restore({ epoch: "p", revision: 3, runs: [current] });
+  expect(useActivityStore.getState().runs).toEqual([]);
+  store.receive("p", run("new-round", 6));
+  expect(useActivityStore.getState().runs.map((item) => item.id)).toEqual(["new-round"]);
   expect(useActivityStore.getState().clearing).toBe(false);
 });
 

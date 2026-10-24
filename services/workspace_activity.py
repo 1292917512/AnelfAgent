@@ -146,14 +146,12 @@ class WorkspaceActivityService:
             self._changed(run, immediate=True)
 
     def clear_history(self) -> dict[str, Any]:
-        """清除当前执行轮次之前的内存记录，保留并发执行及完整父子调用树。"""
+        """清除已结束的执行树，仅保留仍有执行或排队工作的完整父子调用树。"""
         if not self._runs:
             return self.snapshot()
         runs = list(self._runs.values())
-        roots = [run for run in runs if run["parent_id"] not in self._runs]
-        latest = max(roots or runs, key=lambda run: (run["started_at"], run["id"]))
-        kept = {latest["id"]} | {run["id"] for run in runs if run["status"] == "running"
-                or any(e.get("status") == "running" for e in run["entries"])}
+        kept = {run["id"] for run in runs if run["status"] == "running"
+                or any(e.get("status") in {"running", "queued"} for e in run["entries"])}
 
         while True:
             current = [run for run in runs if run["id"] in kept]

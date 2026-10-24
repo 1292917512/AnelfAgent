@@ -43,7 +43,8 @@ test("busy cross-channel streaming cannot mask a lost child terminal and snapsho
   const snapshot: ActivitySnapshot = { epoch: "active", revision: 1, runs: [parent, child, channel] };
   await page.route(/\/api\/workspace\/activity(?:\?.*)?$/, (route) => { snapshots++; return route.fulfill({ json: snapshot }); });
   await page.goto("/webui/");
-  await expect(page.getByText("Child investigation", { exact: true })).toBeVisible();
+  await expect(page.locator('[data-activity-run="Worker"] .activity-run-heading')).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByText("Child investigation", { exact: true })).toHaveCount(0);
   const baseline = snapshots;
   const connections = await page.evaluate(() => Number(Reflect.get(window, "testStreamConnections")));
   Object.assign(child, { revision: 2, status: "completed", ended_at: 4 });
