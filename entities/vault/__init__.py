@@ -18,9 +18,9 @@ Model Experience：
 ② token 影响——沉睡态零 schema 成本，激活后 11 个工具；检索/详情返回紧凑 JSON
 ③ 缓存影响——仅 volatile 尾部动态区，不触碰任何前缀层
 
-审批建议（risk meta 仅声明，实际拦截走权限规则引擎）：
-在审批规则页为 vault_reveal / vault_totp / vault_delete 配置 ask 规则
-（risk_level=critical），敏感明文凭据经人工确认后放行。
+审批与明文：vault_reveal / vault_totp / vault_delete 声明 CRITICAL，
+无显式规则覆盖时由 Guardian 评审。敏感结果仅在当前任务工具链保留明文，
+附禁止无关外发和持久化的提醒；日志、恢复账本和续跑记录隐藏原文。
 """
 
 from core.config import register_configs_safe

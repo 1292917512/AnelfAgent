@@ -7,6 +7,10 @@
 4. 整轮预算：本轮结果总量超限后进一步收紧
 5. 失败回执与指引：保留关键错误并追加安全/守卫提示
 
+模型可见：权限放行后的 sensitive_result 成功结果保留明文，仅供当前任务使用。
+Token 影响：敏感工具结果保留原文，仍受结果与整轮预算限制。
+缓存影响：只作用于工具链尾部，不触碰稳定前缀；敏感结果不自动落盘。
+
 预算裁剪保留失败原因、操作指引与调用标识，守卫提醒在裁剪后追加。
 失败摘要独立限长，仅影响工具链尾部，不改变稳定前缀。
 """
@@ -45,12 +49,12 @@ _PERSIST_THRESHOLD_CHARS = 50_000
 _PERSIST_PREVIEW_CHARS = 2048
 
 
-def _persist_oversized_result(tool_name: str, output: str) -> Optional[str]:
+def _persist_oversized_result(tool_name: str, output: str, *, sensitive_result: bool = False) -> Optional[str]:
     """超持久化阈值的结果完整落盘，返回 预览+路径 的替代文本；未超返回 None。
 
     信息不丢失，模型按需分段读取。
     """
-    if len(output) <= _PERSIST_THRESHOLD_CHARS:
+    if len(output) <= _PERSIST_THRESHOLD_CHARS or sensitive_result:
         return None
     if not shell_persist_port.bound:
         return None
@@ -97,12 +101,15 @@ class ToolResultPipeline:
             output: str,
             *,
             skip_guardrail: bool = False,
+            sensitive_result: bool = False,
     ) -> str:
         """按管线加工单个工具结果，返回可注入上下文的最终文本。"""
         # 0. 空结果占位（防止模型在空工具结果后复读 stop 序列）
         if not output or not output.strip():
             return f"({tool_name} 执行完成，无输出)"
-        output = self._sanitize(output)
+        output = self._sanitize(
+            output, preserve_sensitive=sensitive_result and not extract_error_text(output),
+        )
         warning = self._threat_warning(tool_name, output)
         error_summary = _error_summary(output)
         guidance = ""
@@ -113,8 +120,8 @@ class ToolResultPipeline:
             if decision.should_warn:
                 guidance = append_guardrail_guidance("", decision)
 
-        final = self._truncate(tool_name, output)
-        final = self._enforce_turn_budget(tool_name, final, len(output))
+        final = self._truncate(tool_name, output, sensitive_result=sensitive_result)
+        final = self._enforce_turn_budget(tool_name, final, len(output), sensitive_result=sensitive_result)
         if error_summary is not None and final != output:
             final = error_summary
         final = warning + final + guidance
@@ -132,7 +139,7 @@ class ToolResultPipeline:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _sanitize(output: str) -> str:
+    def _sanitize(output: str, *, preserve_sensitive: bool = False) -> str:
         if not output:
             return output
         try:
@@ -145,7 +152,7 @@ class ToolResultPipeline:
             # 孤代理清洗在结果入库入口执行（发送边界的全量扫描是兜底）
             if has_surrogates(output):
                 output = clean_surrogates(output)
-            if is_sanitize_enabled():
+            if is_sanitize_enabled() and not preserve_sensitive:
                 sanitized = sanitize_text(output)
                 if sanitized != output:
                     log("工具结果已脱敏", "DEBUG", tag="安全")
@@ -185,7 +192,7 @@ class ToolResultPipeline:
     # 4. 预算截断
     # ------------------------------------------------------------------
 
-    def _truncate(self, tool_name: str, output: str) -> str:
+    def _truncate(self, tool_name: str, output: str, *, sensitive_result: bool = False) -> str:
         """裁剪超长工具结果（超限落盘优先，动态预算其次，静态阈值兜底）。
 
         超过持久化阈值的结果完整写盘，
@@ -195,7 +202,7 @@ class ToolResultPipeline:
         if not output:
             return output
 
-        persisted = _persist_oversized_result(tool_name, output)
+        persisted = _persist_oversized_result(tool_name, output, sensitive_result=sensitive_result)
         if persisted is not None:
             output = persisted
 
@@ -236,7 +243,9 @@ class ToolResultPipeline:
     # 5. 整轮预算
     # ------------------------------------------------------------------
 
-    def _enforce_turn_budget(self, tool_name: str, output: str, original_len: int) -> str:
+    def _enforce_turn_budget(
+        self, tool_name: str, output: str, original_len: int, *, sensitive_result: bool = False,
+    ) -> str:
         """本轮工具结果总量超预算时，对后续结果进一步收紧。"""
         if self._budget is None or tool_name in PINNED_TOOLS:
             return output
@@ -253,7 +262,7 @@ class ToolResultPipeline:
                 per_turn_chars=saved_budget.per_turn_chars,
             )
             try:
-                return self._truncate(tool_name, output)
+                return self._truncate(tool_name, output, sensitive_result=sensitive_result)
             finally:
                 self._budget = saved_budget
         return output

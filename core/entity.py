@@ -34,7 +34,7 @@ from core.registration import caller_module, record_mapping, record_undo
 from core.sanitizer import sanitize_text
 from core.tags import tag_label
 from core.tool_errors import ErrorCause, error_from_exception, tool_error
-from core.tool_results import extract_error_text, parse_tool_result_json
+from core.tool_results import extract_error_text, parse_tool_result_json, redact_tool_result
 
 # ======================================================================
 # JSON 容错修复
@@ -1125,6 +1125,7 @@ class EntityRegistry:
         call_id = uuid.uuid4().hex
         trace = request_trace()
         entity = cls.get(name)
+        sensitive_result = entity is not None and entity.meta.get("sensitive_result") is True
         identity = {"request": trace, "call_id": call_id, "name": name}
         labels = tag_label("call_id", call_id) + tag_label("tool", name)
         if trace.get("request_id"):
@@ -1155,11 +1156,12 @@ class EntityRegistry:
                 result = sanitize_text(json.dumps(payload, ensure_ascii=False))
                 error = extract_error_text(result)
         duration = round(observation.elapsed_ms)
+        observed_result = redact_tool_result(result, sensitive_result=sensitive_result)
         await event_bus.emit(EVENT_TRACE_CALL_END, {
             **identity, "duration_ms": duration, "success": not bool(error),
-            "error": error, "result_preview": sanitize_text(result)[:_EVENT_PREVIEW_LEN],
+            "error": error, "result_preview": observed_result[:_EVENT_PREVIEW_LEN],
         })
-        log(f"◀ 工具{'失败' if error else '完成'} {labels}: {sanitize_text(result)[:_LOG_RESULT_PREVIEW_LEN]}",
+        log(f"◀ 工具{'失败' if error else '完成'} {labels}: {observed_result[:_LOG_RESULT_PREVIEW_LEN]}",
             "WARNING" if error else "DEBUG", tag="实体")
         return result
 

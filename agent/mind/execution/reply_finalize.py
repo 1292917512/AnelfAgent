@@ -16,7 +16,7 @@ from agent.mind.tools import execution_log
 from core.event_bus import EVENT_AFTER_REPLY, event_bus
 from core.log import log
 from core.tags import etag_all
-from core.tool_results import extract_error_text, parse_tool_result_json
+from core.tool_results import extract_error_text, parse_tool_result_json, redact_tool_messages
 
 # 入库简版保留的尾部条数（历史每次窗口加载都计费，只留近期操作）
 _HISTORY_TAIL_LINES = 5
@@ -149,7 +149,8 @@ def _build_execution_summary(
     """
     if tool_chain:
         call_map: Dict[str, str] = {}  # tool_call_id → "name(args_preview)"
-        for msg in tool_chain:
+        safe_chain = redact_tool_messages(tool_chain)
+        for msg in safe_chain:
             if msg.get("role") == "assistant":
                 for tc in msg.get("tool_calls") or []:
                     tc_id = tc.get("id", "")
@@ -175,7 +176,7 @@ def _build_execution_summary(
 
         result_lines: List[str] = []
         tool_idx = 0
-        for msg in tool_chain:
+        for msg in safe_chain:
             if msg.get("role") == "tool":
                 tool_idx += 1
                 tc_id = msg.get("tool_call_id", "")
@@ -333,7 +334,7 @@ async def complete_reply(
     if not error and completion:
         raw_messages = completion.get("messages")
         if isinstance(raw_messages, list):
-            reply_messages = [dict(m) for m in raw_messages if isinstance(m, dict)]
+            reply_messages = redact_tool_messages([m for m in raw_messages if isinstance(m, dict)])
 
     await event_bus.emit(EVENT_AFTER_REPLY, {
         "scope": _scope,

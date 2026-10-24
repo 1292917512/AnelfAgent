@@ -6,12 +6,13 @@ AI 全程零摩擦；主密码模式为可选加固（Web 面板启用），此�
 
 安全纪律：
 - ``vault_ai_enabled`` 总开关（实体配置）；锁定/未初始化返回 STATE 错误并引导
-- vault_reveal / vault_totp / vault_delete 标记 risk=CRITICAL，
-  建议主人在审批规则页配置 ask 规则（pattern 直接用工具名）：
-  - vault_reveal → ask / critical（读取明文密码）
-  - vault_totp → ask / critical（读取动态验证码）
-  - vault_delete → ask / critical（删除条目）
-- 全局 sanitizer 会兜底遮盖工具结果中的密码赋值模式（纵深防御，有意设计）
+- vault_reveal / vault_totp / vault_delete 标记 risk=CRITICAL，经统一权限规则与 Guardian 评审
+- 敏感结果由工具声明 sensitive_result，只在当前任务保留明文，日志与持久化副本隐藏
+
+Model Experience:
+    模型通过权限放行的工具结果临时获取明文凭据，并看到禁止无关外发与持久化的提醒。
+    每次敏感结果增加原文字数及约 60 token 的使用提醒，仍受工具结果预算限制。
+    仅进入当前任务工具链尾部，不触碰稳定前缀；日志、恢复账本与续跑记录不保留结果明文。
 """
 
 from __future__ import annotations
@@ -34,8 +35,9 @@ from .session import VaultLockedError
 _SLEEP_BRIEF = "密码本（条目增删改查 / 模糊检索 / TOTP 验证码 / 强密码生成）"
 
 _SENSITIVE_HINT = (
-    "建议主人在审批规则页为此工具配置 ask 规则（critical），"
-    "防止明文凭据在无人确认时流出"
+    "明文凭据仅供当前任务临时使用，可用于任务授权的登录或认证；"
+    "不要在回复中复述，不要向无关站点、第三方或聊天频道外发，"
+    "禁止写入记忆、便签或普通文件。"
 )
 
 
@@ -144,9 +146,9 @@ async def vault_get(entry_id: str) -> str:
 
 
 @tool(name="vault_reveal", group="vault", risk="CRITICAL",
-      allow_sleep=True, sleep_brief=_SLEEP_BRIEF)
+      allow_sleep=True, sleep_brief=_SLEEP_BRIEF, sensitive_result=True)
 async def vault_reveal(entry_id: str, field: str = "password") -> str:
-    """读取条目的明文密码/备注（敏感操作，建议主人配置审批规则）。
+    """经权限检查临时读取条目的明文密码/备注，仅用于当前任务，禁止无关外发或持久化。
 
     Args:
         entry_id: 条目 id
@@ -158,14 +160,14 @@ async def vault_reveal(entry_id: str, field: str = "password") -> str:
         plaintext = await get_vault_service().reveal(entry_id, field)
         return json.dumps({
             "entry_id": entry_id, "field": field, field: plaintext,
-            "notice": f"明文凭据仅用于当前任务，禁止写入记忆/便签/文件。{_SENSITIVE_HINT}",
+            "notice": _SENSITIVE_HINT,
         }, ensure_ascii=False)
     except Exception as exc:
         return _map_error(exc, "读取明文凭据")
 
 
 @tool(name="vault_totp", group="vault", risk="CRITICAL",
-      allow_sleep=True, sleep_brief=_SLEEP_BRIEF)
+      allow_sleep=True, sleep_brief=_SLEEP_BRIEF, sensitive_result=True)
 async def vault_totp(entry_id: str) -> str:
     """获取条目当前的 TOTP 动态验证码（6 位，30 秒有效期，敏感操作）。
 
@@ -175,13 +177,14 @@ async def vault_totp(entry_id: str) -> str:
     if error := _gate():
         return error
     try:
-        return json.dumps(await get_vault_service().totp_code(entry_id),
-                          ensure_ascii=False)
+        result = await get_vault_service().totp_code(entry_id)
+        return json.dumps({**result, "notice": _SENSITIVE_HINT}, ensure_ascii=False)
     except Exception as exc:
         return _map_error(exc, "获取 TOTP 验证码")
 
 
-@tool(name="vault_add", group="vault", allow_sleep=True, sleep_brief=_SLEEP_BRIEF)
+@tool(name="vault_add", group="vault", allow_sleep=True, sleep_brief=_SLEEP_BRIEF,
+      sensitive_result=True)
 async def vault_add(title: str, username: str = "", url: str = "",
                     password: str = "", totp_secret: str = "", notes: str = "",
                     tags: str = "", favorite: bool = False,
@@ -212,6 +215,7 @@ async def vault_add(title: str, username: str = "", url: str = "",
         out: Dict[str, Any] = {"added": entry}
         if generate and password:
             out["generated_password"] = password
+            out["notice"] = _SENSITIVE_HINT
         return json.dumps(out, ensure_ascii=False)
     except Exception as exc:
         return _map_error(exc, "新增密码本条目")
@@ -293,7 +297,7 @@ async def vault_delete(entry_id: str) -> str:
 
 
 @tool(name="vault_generate", group="vault", concurrency_safe=True,
-      allow_sleep=True, sleep_brief=_SLEEP_BRIEF)
+      allow_sleep=True, sleep_brief=_SLEEP_BRIEF, sensitive_result=True)
 async def vault_generate(length: int = 20, symbols: bool = True,
                          exclude_ambiguous: bool = False,
                          memorable: bool = False) -> str:
@@ -316,6 +320,7 @@ async def vault_generate(length: int = 20, symbols: bool = True,
         return json.dumps({
             "password": password,
             "strength": generator.assess_strength(password),
+            "notice": _SENSITIVE_HINT,
         }, ensure_ascii=False)
     except Exception as exc:
         return _map_error(exc, "生成密码")

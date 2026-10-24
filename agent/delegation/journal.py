@@ -30,6 +30,7 @@ from core.file_utils import atomic_write_text
 from core.log import log
 from core.path import ConfigPaths
 from core.sanitizer import sanitize_text
+from core.tool_results import redact_tool_messages
 
 # transcript 消息链的序列化上限（超出则不落 messages，标记不可续跑）
 TRANSCRIPT_MAX_BYTES = 262_144
@@ -146,6 +147,8 @@ def save_transcript(data: Dict[str, Any]) -> bool:
         return False
     try:
         payload = dict(data)
+        if isinstance(messages := payload.get("messages"), list):
+            payload["messages"] = redact_tool_messages(messages)
         encoded = json.dumps(payload, ensure_ascii=False)
         if len(encoded.encode("utf-8")) > TRANSCRIPT_MAX_BYTES:
             payload["messages"] = None

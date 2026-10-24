@@ -8,6 +8,35 @@ import pytest
 from agent.approval import ApprovalGate, PermissionEffect, PermissionRule, PermissionRuleSet
 from agent.approval.guardian import GuardianVerdict
 from agent.approval.redaction import redact_arguments
+from core.config import ConfigManager
+
+
+@pytest.fixture(autouse=True)
+def enable_optional_review():
+    ConfigManager.set("approval_guardian_enabled", True)
+
+
+async def test_disabled_review_skips_model_redaction_audit_and_notices(monkeypatch, fake_audit_sink):
+    ConfigManager.set("approval_guardian_enabled", False)
+    guardian = AsyncMock()
+    monkeypatch.setattr("agent.approval.gate.get_approval_guardian", lambda: guardian)
+    redact = AsyncMock()
+    monkeypatch.setattr("agent.approval.gate.redact_arguments", redact)
+    gate = ApprovalGate(PermissionRuleSet(rules=[PermissionRule(pattern="inspect", effect="ask")]))
+    for _ in range(3):
+        result = await gate.check(tool_name="inspect", tool_args={}, reason="")
+        assert result.allowed and result.outcome == "rule_allow" and not result.notice
+    guardian.review.assert_not_awaited()
+    redact.assert_not_called()
+    assert fake_audit_sink.rows == []
+
+
+async def test_disabled_review_preserves_explicit_deny(fake_audit_sink):
+    ConfigManager.set("approval_guardian_enabled", False)
+    gate = ApprovalGate(PermissionRuleSet(rules=[PermissionRule(pattern="inspect", effect="deny")]))
+    result = await gate.check(tool_name="inspect", tool_args={}, reason="")
+    assert not result.allowed and result.outcome == "denied"
+    assert fake_audit_sink.rows[-1]["outcome"] == "denied"
 
 
 @pytest.mark.parametrize("scope", ["user_qq:123", "user_telegram:123", "user_webui:u#chat", "reflect"])

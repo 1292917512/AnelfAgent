@@ -28,6 +28,34 @@ def _messages(recall_content: str = "召回A") -> list[dict]:
 
 
 class TestSectionDiff:
+    async def test_sensitive_results_are_hidden_without_changing_cache_measurements(
+        self, snapshot: ContextSnapshot, tmp_path,
+    ) -> None:
+        messages = [
+            {"role": "assistant", "tool_calls": [{"id": "temporary", "function": {
+                "name": "absent_tool", "arguments": "{}",
+            }}]},
+            {"role": "tool", "tool_call_id": "temporary", "content": '{"notes":"temporary-secret-a"}',
+             "_sensitive_result": True},
+        ]
+        await snapshot.arm()
+        assert await snapshot.try_capture(messages, [], "fake")
+        data = snapshot.get()
+        assert data is not None
+        section = next(item for item in data["sections"] if item["layer"] == "tool_chain")
+        assert section["messages"][-1]["chars"] == len(messages[-1]["content"])
+        assert "temporary-secret-a" not in json.dumps(data)
+        assert "_sensitive_result" not in json.dumps(data)
+        assert "temporary-secret-a" in messages[-1]["content"]
+        for path in tmp_path.glob("snapshot_*.json"):
+            assert "temporary-secret-a" not in path.read_text(encoding="utf-8")
+        messages[-1]["content"] = '{"notes":"temporary-secret-b"}'
+        await snapshot.arm()
+        await snapshot.try_capture(messages, [], "fake")
+        updated = snapshot.get()
+        assert updated is not None
+        assert next(item for item in updated["sections"] if item["layer"] == "tool_chain")["changed"] is True
+
     async def test_first_capture_no_baseline(self, snapshot: ContextSnapshot) -> None:
         """首次快照无基线：changed 为 None。"""
         await snapshot.arm()

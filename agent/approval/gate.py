@@ -6,6 +6,7 @@ import threading
 from typing import Any
 
 from agent.messages.everything import parse_entity_scope
+from core.config import get_config_bool
 from core.log import log
 from core.sanitizer import sanitize_text
 
@@ -87,6 +88,8 @@ class ApprovalGate:
             return result
         if verdict.decision == PermissionDecision.AUTO_ALLOW:
             return ApprovalResult(True, "rule_allow", verdict.reason)
+        if verdict.decision == PermissionDecision.ASK and not get_config_bool("approval_guardian_enabled", False):
+            return ApprovalResult(True, "rule_allow", "辅助安全评审已关闭，按权限策略直接执行")
 
         risk = verdict.rule.risk_level if verdict.rule else rules.default_risk
         arguments = redact_arguments(tool_args)

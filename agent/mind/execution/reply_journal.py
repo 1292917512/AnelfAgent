@@ -5,7 +5,7 @@ REPLY 模式每个执行过的工具调用追加一行（名称/参数摘要/结
 把"上次执行到哪"渲染进中断元消息——执行摘要只在收尾落库，崩溃即丢失，
 没有这份账本，重启后模型会对已发生的操作盲试（重复执行写操作是真实风险）。
 
-记录的是管线加工后的结果（已脱敏/截断），恢复注入时不再二次加工。
+记录的是管线加工后的结果；临时敏感结果另行隐藏，恢复注入时不再二次加工。
 生命周期与 reply_checkpoints 同构：登记于回复进入、清除于回复收束、
 崩溃残留由启动恢复消费——journal 行只在"存在残留检查点"时才被读取。
 """
@@ -14,6 +14,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Optional
 
 from core.log import log
+from core.sanitizer import sanitize_text
+from core.tool_results import redact_tool_result
 
 if TYPE_CHECKING:
     from agent.mind.mind import Mind
@@ -34,6 +36,7 @@ class ReplyToolJournal:
 
     async def record(
             self, tool: str, arguments: str, result: str, *, status: str = "ok",
+            sensitive_result: bool = False,
     ) -> None:
         """追加一行（fail-open：落账失败只记日志，绝不影响工具轮）。"""
         if not self._scope_key:
@@ -41,7 +44,8 @@ class ReplyToolJournal:
         try:
             await self._sqlite.append_reply_tool_row(
                 self._scope_key, tool,
-                arguments[:_ARG_HEAD_CHARS], result[:_RESULT_HEAD_CHARS], status,
+                sanitize_text(arguments)[:_ARG_HEAD_CHARS],
+                redact_tool_result(result, sensitive_result=sensitive_result)[:_RESULT_HEAD_CHARS], status,
             )
         except Exception as exc:
             log(f"工具日志落账失败（已忽略）: {exc}", "DEBUG", tag="思维")

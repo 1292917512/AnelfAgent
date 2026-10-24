@@ -224,7 +224,8 @@ def ensure_tool_result_pairing(messages: List[Dict]) -> List[Dict]:
 # 发送前剥离的内部元数据键（LLM 不可见）：
 # - _layer：上下文分层标签（快照分类 / 缓存断点锚点用）
 # - _source：系统注入消息的结构化来源标记（归因 / 审计用）
-_STRIP_KEYS = ("_layer", "_source")
+# - _sensitive_result：执行宿主标记的临时敏感结果（观测与持久化时隐藏原文）
+_STRIP_KEYS = ("_layer", "_source", "_sensitive_result")
 
 
 def normalize_for_send(messages: List[Dict]) -> List[Dict]:

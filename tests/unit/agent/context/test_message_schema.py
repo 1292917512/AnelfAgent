@@ -439,3 +439,17 @@ class TestIsGenuineUserMessage:
             assert is_genuine_user_message({"role": "user", "content": "[uid:123]" + body})
         assert not is_genuine_user_message({"role": "user", "content": "[说明] 正文里的 [uid:123]"})
         assert not is_genuine_user_message({"role": "user", "content": "[push:worker][time:now] 后台任务完成"})
+
+
+def test_sensitive_result_marker_is_internal_and_does_not_change_model_content() -> None:
+    messages = [
+        {"role": "assistant", "content": "", "tool_calls": [{
+            "id": "temporary", "function": {"name": "absent_tool", "arguments": "{}"},
+        }]},
+        {"role": "tool", "tool_call_id": "temporary", "content": '{"password":"temporary-secret"}',
+         "_sensitive_result": True},
+    ]
+    sent = normalize_for_send(messages)
+    assert sent[1]["content"] == messages[1]["content"]
+    assert "_sensitive_result" not in sent[1]
+    assert messages[1]["_sensitive_result"] is True

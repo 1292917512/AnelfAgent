@@ -2,6 +2,7 @@
 
 布防后在下一次 LLM 调用前捕获完整 messages + tools（含 _layer 分类标签），
 捕获后自动解除布防并保存到 logs/context_snapshots/ 目录。
+敏感结果在观测副本中隐藏原文，字符数与变更哈希仍按真实输入计算。
 
 未布防时 try_capture 仅做一次 bool 检查，零开销。
 """
@@ -16,6 +17,7 @@ from typing import Any, Dict, List, Optional, Tuple, TypeVar
 
 from agent.context.pipeline import get_layer_meta, list_layer_metas
 from core.log import log
+from core.tool_results import redact_tool_messages
 
 _SNAPSHOT_DIR = os.path.join("logs", "context_snapshots")
 
@@ -453,6 +455,7 @@ class ContextSnapshot:
                 "chars": len(str(content)),
                 "tool_calls": msg.get("tool_calls"),
                 "tool_call_id": msg.get("tool_call_id"),
+                "_sensitive_result": msg.get("_sensitive_result") is True,
             })
 
         new_hashes: Dict[Tuple[str, str, str], str] = {}
@@ -503,7 +506,7 @@ class ContextSnapshot:
                 # 变动率元数据（注册中心；Web 展示缓存稳定性依据）
                 "volatility": meta.volatility if meta else None,
                 "volatility_label": meta.volatility_label if meta else None,
-                "messages": msgs,
+                "messages": redact_tool_messages(msgs),
             }
 
         order = _layer_order()

@@ -36,6 +36,21 @@ class TestProgress:
 
 
 class TestTranscript:
+    def test_sensitive_tool_results_do_not_survive_persistence(self) -> None:
+        messages = [
+            {"role": "assistant", "tool_calls": [{"id": "secret-call", "function": {
+                "name": "absent_tool", "arguments": '{"password":"input-secret"}',
+            }}]},
+            {"role": "tool", "tool_call_id": "secret-call", "content": '{"notes":"raw-secret"}',
+             "_sensitive_result": True},
+        ]
+        assert journal.save_transcript({"delegation_id": "sensitive", "messages": messages})
+        saved = journal.transcript_path("sensitive").read_text(encoding="utf-8")
+        assert "raw-secret" not in saved and "input-secret" not in saved
+        assert "_sensitive_result" not in saved
+        assert messages[1]["content"] == '{"notes":"raw-secret"}'
+        assert journal.load_transcript("sensitive") is not None
+
     def test_save_and_load(self) -> None:
         data = {
             "delegation_id": "d2",

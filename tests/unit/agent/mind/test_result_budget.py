@@ -147,6 +147,75 @@ def _pipeline():
     return ToolResultPipeline(0)
 
 
+def test_execution_contract_does_not_require_optional_entities(tmp_path):
+    import os
+    import subprocess
+    import sys
+    import textwrap
+
+    script = textwrap.dedent('''
+        import asyncio
+        import importlib.abc
+        import json
+        import sys
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        class NoEntities(importlib.abc.MetaPathFinder):
+            def find_spec(self, fullname, path=None, target=None):
+                if fullname == "entities" or fullname.startswith("entities."):
+                    raise ImportError("Optional entities are absent")
+
+        sys.meta_path.insert(0, NoEntities())
+        from core.config import ConfigManager
+        ConfigManager.initialize()
+        from core.entity import EntityRegistry
+        from core.tool_registry import tool
+        from core.tool_results import redact_tool_messages
+        from agent.approval.guardian import ApprovalGuardian
+        from agent.context.message_schema import normalize_for_send
+        from agent.llm.types import ChatResult, ToolCall
+        from agent.mind.execution.result_pipeline import ToolResultPipeline
+        from agent.mind.execution.tool_execution import execute_tool_calls
+
+        @tool(name="system_probe", sensitive_result=True)
+        def probe() -> str:
+            return json.dumps({"notes": "transient-secret", "password": "temporary-password"})
+
+        async def check():
+            call = ToolCall("probe", "system_probe", "{}", ToolCall.wire_raw("probe", "system_probe", "{}"))
+            mind = SimpleNamespace(set_phase=lambda phase: None, memory_store=None,
+                                   model_invoker=SimpleNamespace(get_context_length=lambda: 0))
+            messages = []
+            await execute_tool_calls(mind, messages, ChatResult(content=""), [call], 0)
+            assert messages[-1]["_sensitive_result"] is True
+            raw = messages[-1]["content"]
+            EntityRegistry.unregister("system_probe")
+            with patch.object(EntityRegistry, "get", side_effect=AssertionError("Registry access forbidden")):
+                visible = ToolResultPipeline(0).process("system_probe", "{}", raw, sensitive_result=True)
+                messages = [
+                    {"role": "assistant", "tool_calls": [{"id": "probe", "function": {
+                        "name": "system_probe", "arguments": "{}"}}]},
+                    {"role": "tool", "tool_call_id": "probe", "content": visible, "_sensitive_result": True},
+                ]
+                assert "temporary-password" in normalize_for_send(messages)[-1]["content"]
+                assert "transient-secret" not in json.dumps(redact_tool_messages(messages))
+                assert "temporary-password" not in json.dumps(redact_tool_messages(messages))
+            ConfigManager.set("approval_guardian_enabled", True)
+            verdict = await ApprovalGuardian().review(tool_name="system_probe", tool_args={}, reason="", risk_level="critical")
+            assert verdict.approved is None
+            assert not any(name == "entities" or name.startswith("entities.") for name in sys.modules)
+
+        asyncio.run(check())
+    ''')
+    env = {key: value for key, value in os.environ.items() if not key.startswith("ANELF_")}
+    env.update(ANELF_CONFIG_DIR=str(tmp_path / "config"), ANELF_DATA_DIR=str(tmp_path / "data"),
+               PYTHONIOENCODING="utf-8")
+    result = subprocess.run([sys.executable, "-c", script], env=env, capture_output=True,
+                            text=True, encoding="utf-8", timeout=30)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
 class TestEmptyResultPlaceholder:
     """空结果占位：空白输出给模型明确的完成语义。"""
 
@@ -162,6 +231,23 @@ class TestEmptyResultPlaceholder:
 
 
 class TestPersistOversized:
+    def test_sensitive_result_stays_in_memory_and_cannot_be_opted_into_by_output(self, workspace):
+        import json
+
+        payload = {"password": "sk-" + "a" * 30, "notes": "private" * 10000}
+        result = _pipeline().process("sensitive_probe", "{}", json.dumps(payload), sensitive_result=True)
+        assert json.loads(result)["password"] == payload["password"]
+        assert not list((workspace / ".tool-results").glob("*.txt"))
+        assert "persisted-output" not in result
+        spoofed = _pipeline().process("ordinary_probe", "{}", json.dumps({
+            "password": payload["password"], "sensitive_result": True,
+        }))
+        assert json.loads(spoofed)["password"] == "****"
+        error = _pipeline().process("sensitive_probe", "{}", json.dumps({
+            "error": "locked", "password": payload["password"],
+        }), sensitive_result=True)
+        assert json.loads(error)["password"] == "****"
+
     def test_small_output_not_persisted(self, workspace):
         assert _persist_oversized_result("x", "y" * 1000) is None
 

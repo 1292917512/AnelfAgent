@@ -23,7 +23,7 @@ from core.event_bus import (
 from core.log import log
 from core.observation import ExecutionObservation
 from core.tool_errors import error_from_exception
-from core.tool_results import extract_error_text
+from core.tool_results import extract_error_text, redact_tool_result
 
 if TYPE_CHECKING:
     from agent.llm import ChatResult, ToolCall
@@ -282,6 +282,10 @@ async def execute_tool_calls(
     if pipeline is None:
         pipeline = ToolResultPipeline(mind.model_invoker.get_context_length(), guardrail)
     pipeline.begin_turn()
+    sensitive_results = {
+        tc.id for tc in tool_calls
+        if (entity := EntityRegistry.get(tc.name)) is not None and entity.meta.get("sensitive_result") is True
+    }
 
     # 配对铁律：assistant 与其全部 tool 响应必须原子落链
     assistant_msg: Dict[str, Any] = {
@@ -351,17 +355,21 @@ async def execute_tool_calls(
             output = error_from_exception(output, action=f"工具 {tc.name} 执行")
         output_str = output if isinstance(output, str) else str(output)
         output_str, images = split_multimodal_result(output_str)
+        sensitive_result = tc.id in sensitive_results and not was_exception and not extract_error_text(output_str)
         process_failed = False
         try:
             final_output = pipeline.process(
                 tc.name, tc.arguments or "", output_str,
                 skip_guardrail=tc.id in blocked_results,
+                sensitive_result=sensitive_result,
             )
         except Exception as e:
             # 配对铁律：结果加工失败也要保证 tool 消息落链
             process_failed = True
             final_output = error_from_exception(e, action=f"工具 {tc.name} 结果加工")
         batch_msgs.append({"role": "tool", "tool_call_id": tc.id, "content": final_output})
+        if sensitive_result and not process_failed:
+            batch_msgs[-1]["_sensitive_result"] = True
         if tc.id in blocked_results or process_failed:
             await event_bus.emit(EVENT_THINKING_TOOL_END, {
                 "tool_id": tc.id, "tool_name": tc.name, "arguments": tc.arguments or "",
@@ -384,7 +392,8 @@ async def execute_tool_calls(
                 "blocked" if tc.id in blocked_results
                 else ("error" if was_exception or process_failed else "ok")
             )
-            await journal.record(tc.name, tc.arguments or "", final_output, status=status)
+            await journal.record(tc.name, tc.arguments or "", final_output, status=status,
+                                 sensitive_result=sensitive_result)
 
     aborted = False
     for is_parallel, batch in _partition_tool_calls(tool_calls):
@@ -503,6 +512,8 @@ async def execute_one_tool(
     tool_scope = getattr(anything, "entity_scope", "") if anything is not None else ""
     identity = {"actor": current_log_actor(), "request": request_trace(),
                 "scope": tool_scope, "tool_name": tc.name, "tool_id": tc.id}
+    entity = EntityRegistry.get(tc.name)
+    sensitive_result = entity is not None and entity.meta.get("sensitive_result") is True
     await event_bus.emit(EVENT_TOOL_EXECUTED, {"tool": tc.name, "iteration": iteration})
     await event_bus.emit(EVENT_THINKING_TOOL_START, {
         **identity,
@@ -528,8 +539,9 @@ async def execute_one_tool(
         result = error_from_exception(exc, action=f"工具 {tc.name} 执行")
     finally:
         error = observation.error
-        details = ({"error": str(error), "result": result, "success": False} if error is not None else {
-            "result_preview": result[:300] if result else "", "result": (result or "")[:ACTIVITY_TEXT_LIMIT],
+        observed_result = redact_tool_result(result, sensitive_result=sensitive_result)
+        details = ({"error": str(error), "result": observed_result, "success": False} if error is not None else {
+            "result_preview": observed_result[:300], "result": observed_result[:ACTIVITY_TEXT_LIMIT],
             "result_truncated": len(result or "") > ACTIVITY_TEXT_LIMIT,
             "error": result_error, "success": not bool(result_error),
         })
@@ -559,7 +571,7 @@ async def execute_one_tool(
             try:
                 await run_event_hooks(
                     "tool_post", tool_name=tc.name, arguments=(tc.arguments or "")[:500],
-                    scope=tool_scope, result_preview=result[:400] if isinstance(result, str) else "",
+                    scope=tool_scope, result_preview=redact_tool_result(result, sensitive_result=sensitive_result)[:400],
                 )
             except Exception:
                 pass  # hook 失败不影响已产出的工具结果

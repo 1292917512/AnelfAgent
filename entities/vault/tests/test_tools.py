@@ -1,6 +1,8 @@
 """tools 层测试：AI 总开关门控 / 解锁态门控 / 风险标记 / 错误归因。"""
 
 import json
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -79,6 +81,54 @@ class TestLockedGate:
 
 
 class TestToolFlow:
+    @pytest.mark.parametrize("approved", [True, False])
+    async def test_reveal_permission_to_model_and_redacted_records(self, service, monkeypatch, approved):
+        from agent.approval.types import ApprovalResult
+        from agent.llm.types import ChatResult, ToolCall
+        from agent.mind.execution.reply_finalize import _build_execution_summary, complete_reply
+        from agent.mind.execution.reply_journal import ReplyToolJournal
+        from agent.mind.execution.tool_execution import execute_tool_calls
+        from core.config import ConfigManager
+        from core.event_bus import EVENT_AFTER_REPLY, EVENT_THINKING_TOOL_END, EVENT_TRACE_CALL_END, event_bus
+        from core.tool_results import redact_tool_messages
+
+        ConfigManager.set("security_sanitize_enabled", True)
+        password = "sk-abcdefghijklmnop123456789012"
+        entry = await service.add_entry(title="Audit", password=password)
+        arguments = json.dumps({"entry_id": entry["id"]})
+        call = ToolCall("reveal-call", "vault_reveal", arguments,
+                        ToolCall.wire_raw("reveal-call", "vault_reveal", arguments))
+        gate = SimpleNamespace(check=AsyncMock(return_value=ApprovalResult(
+            approved, "guardian_approved" if approved else "guardian_denied", "decision")))
+        monkeypatch.setattr("agent.approval.get_approval_gate", lambda: gate)
+        events = AsyncMock()
+        monkeypatch.setattr(event_bus, "emit", events)
+        sink = SimpleNamespace(append_reply_tool_row=AsyncMock())
+        mind = SimpleNamespace(set_phase=lambda phase: None, memory_store=None,
+                               model_invoker=SimpleNamespace(get_context_length=lambda: 0))
+        chain = []
+        await execute_tool_calls(mind, chain, ChatResult(content=""), [call], 0,
+                                 journal=ReplyToolJournal(sink, "audit-scope"))
+        gate.check.assert_awaited_once()
+        result = json.loads(chain[-1]["content"])
+        if approved:
+            assert result["password"] == password
+            assert "临时使用" in result["notice"] and "外发" in result["notice"]
+            assert "禁止写入记忆" in result["notice"]
+        else:
+            assert result["permission_outcome"] == "guardian_denied"
+            assert "password" not in result
+        observed = [event.args[1] for event in events.await_args_list
+                    if event.args[0] in {EVENT_THINKING_TOOL_END, EVENT_TRACE_CALL_END}]
+        assert password not in json.dumps(observed, ensure_ascii=False)
+        assert password not in str(sink.append_reply_tool_row.call_args)
+        assert password not in _build_execution_summary(chain, [])
+        assert password not in json.dumps(redact_tool_messages(chain), ensure_ascii=False)
+        await complete_reply(mind, None, "", 1, tool_chain=chain, completion={"messages": chain})
+        after_reply = next(event.args[1] for event in events.await_args_list if event.args[0] == EVENT_AFTER_REPLY)
+        assert password not in json.dumps(after_reply["messages"], ensure_ascii=False)
+        assert (password in chain[-1]["content"]) is approved
+
     async def test_add_search_get_update_delete(self, service):
         await service.setup("master-pw-123")
         added = json.loads(await vault_tools.vault_add(
