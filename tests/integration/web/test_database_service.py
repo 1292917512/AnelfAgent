@@ -90,7 +90,7 @@ async def svc():
 
 @pytest.fixture()
 async def managed_files(isolated_catalog):
-    from agent.memory.cognee.storage import compute_storage_stats
+    import asyncio
 
     registry, tracker = isolated_catalog
     root = Path(registry.resolve_path("cognee"))
@@ -103,7 +103,8 @@ async def managed_files(isolated_catalog):
     vectors = db.parent / "test.lance.db"
     vectors.mkdir()
     (vectors / "vectors").write_bytes(b"vector-data")
-    tracker.adopt(str(root), compute_storage_stats(root))
+    tracker.schedule_refresh(str(root))
+    await asyncio.gather(*tracker._tasks)
     return root, db
 
 

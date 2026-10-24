@@ -14,7 +14,9 @@ import os
 import shutil
 import stat
 import sys
+import time
 import uuid
+from functools import cache
 from pathlib import Path
 from typing import Any
 
@@ -47,14 +49,18 @@ def _sync_directory(path: Path) -> None:
             os.close(descriptor)
 
 
+@cache
+def _darwin_library() -> ctypes.CDLL:
+    library = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
+    library.clonefile.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int]
+    library.clonefile.restype = ctypes.c_int
+    return library
+
+
 def _clone(source: Path, target: Path) -> bool:
     """优先文件系统块共享；硬链接会让写入污染恢复点，禁止作为替代。"""
     if sys.platform == "darwin":
-        library = ctypes.CDLL("/usr/lib/libSystem.B.dylib", use_errno=True)
-        clonefile = library.clonefile
-        clonefile.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_int]
-        clonefile.restype = ctypes.c_int
-        return clonefile(os.fsencode(source), os.fsencode(target), 0) == 0
+        return _darwin_library().clonefile(os.fsencode(source), os.fsencode(target), 0) == 0
     if sys.platform.startswith("linux"):
         import fcntl
 
@@ -95,14 +101,31 @@ class IndexCheckpoints:
         else:
             path.unlink(missing_ok=True)
 
-    def _copy(self, source: Path, destination: Path) -> dict[str, int]:
+    def _copy(self, source: Path, destination: Path) -> tuple[dict[str, int], dict[str, int]]:
+        """关闭引擎后单次遍历复制；逐项拒绝链接，落盘时同时建立文件清单。"""
+        self._safe(source)
+        self._safe(destination)
         stats = {"cloned_bytes": 0, "copied_bytes": 0}
+        files: dict[str, int] = {}
 
-        def copy_file(src: str, dst: str) -> str:
-            original, target = Path(src), Path(dst)
-            self._safe(original)
-            self._safe(target)
-            size = original.stat().st_size
+        def copy_entry(original: Path, target: Path, relative: str, info: os.stat_result) -> None:
+            # 根路径已核验，后续路径仅由 scandir 返回的直接子项构成。
+            if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & getattr(
+                stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400,
+            ):
+                raise RuntimeError(f"索引树含符号链接或重解析点，不能建立隔离快照: {relative}")
+            if stat.S_ISDIR(info.st_mode):
+                target.mkdir()
+                with os.scandir(original) as entries:
+                    for entry in entries:
+                        copy_entry(Path(entry.path), target / entry.name, f"{relative}/{entry.name}",
+                                   entry.stat(follow_symlinks=False))
+                shutil.copystat(original, target, follow_symlinks=False)
+                _sync_directory(target)
+                return
+            if not stat.S_ISREG(info.st_mode):
+                raise RuntimeError(f"索引树含非普通文件，不能建立隔离快照: {relative}")
+            size = info.st_size
             if _clone(original, target):
                 stats["cloned_bytes"] += size
             else:
@@ -114,24 +137,21 @@ class IndexCheckpoints:
                 stats["copied_bytes"] += size
             with target.open("r+b") as stream:
                 os.fsync(stream.fileno())
-            return dst
+                copied_size = os.fstat(stream.fileno()).st_size
+            if copied_size != size:
+                raise RuntimeError(f"索引文件复制大小不一致: {relative}")
+            files[relative] = copied_size
 
-        destination.mkdir(parents=True, exist_ok=True)
+        destination.mkdir(parents=True)
         for name in PARTS:
-            item = self._safe(source / name)
-            if item.is_dir():
-                for directory, directories, files in os.walk(item):
-                    for child in (*directories, *files):
-                        path = Path(directory) / child
-                        if path.is_symlink():
-                            raise RuntimeError("索引树含符号链接，不能建立隔离快照")
-                shutil.copytree(item, destination / name, copy_function=copy_file)
-            elif item.exists():
-                copy_file(str(item), str(destination / name))
-        # 目录项先持久化，再发布引用它们的提交记录。
-        for directory, _, _ in os.walk(destination, topdown=False):
-            _sync_directory(Path(directory))
-        return stats
+            item = source / name
+            try:
+                info = item.lstat()
+            except FileNotFoundError:
+                continue
+            copy_entry(item, destination / name, name, info)
+        _sync_directory(destination)
+        return stats, files
 
     def load(self) -> None:
         self.control.mkdir(parents=True, exist_ok=True)
@@ -190,12 +210,11 @@ class IndexCheckpoints:
     def commit(self, manifest: dict[str, Any] | None = None) -> None:
         """调用者必须已关闭 SDK 并等待子进程退出；先完整快照，再原子发布。"""
         with FileLock(str(self.control / "worker.lock"), timeout=0):
+            started = time.monotonic()
             name = uuid.uuid4().hex
             target = self.control / name
             try:
-                stats = self._copy(self.root, target)
-                files = {path.relative_to(target).as_posix(): path.stat().st_size
-                         for path in target.rglob("*") if path.is_file()}
+                stats, files = self._copy(self.root, target)
                 proof = json.dumps({"version": 1, "files": files, "index": manifest,
                                     "runtime": runtime_versions()}, ensure_ascii=False, sort_keys=True)
                 atomic_write_text(target / "proof.json", proof)
@@ -209,12 +228,15 @@ class IndexCheckpoints:
                           "proof_sha256": hashlib.sha256(proof.encode("utf-8")).hexdigest(), **stats}
             self._save(next_state)
             self.state = next_state
+            published = time.monotonic()
             # 仅删除自身产生的过期快照；用户备份和旧数据集不在这个目录。
             if previous:
                 try:
                     self._remove(self.control / previous)
                 except OSError as exc:
                     log(f"Cognee 旧保护快照清理延后: {type(exc).__name__}", "WARNING")
+            log(f"Cognee 索引快照提交: {len(files)} 文件，建立并发布 {published - started:.2f}s，"
+                f"回收旧快照 {time.monotonic() - published:.2f}s", "DEBUG", tag="记忆")
 
     def restore(self) -> None:
         """恢复可重入；dirty 只在全部组件完成替换后清除。"""

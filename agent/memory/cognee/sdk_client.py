@@ -497,7 +497,7 @@ class SDKClient:
         """按单轮预算压缩 LanceDB 向量表并清理过期版本，回收磁盘空间。
 
         实现见 `storage.compact_lance_tree`；最新版本永远保留，逻辑数据不受影响。
-        须在无并发写入时调用（协调器空闲窗口）。
+        须在无并发写入时调用（协调器批次间窗口）。
         """
         if not self._configured:
             availability = await self.initialize()

@@ -67,6 +67,53 @@ def test_failed_snapshot_keeps_previous_commit_and_copy_budget(tmp_path, monkeyp
     assert (root / "data/raw").read_bytes() == b"old"
 
 
+@pytest.mark.parametrize("directory", [False, True])
+def test_snapshot_rejects_nested_links_and_preserves_recovery_point(tmp_path, directory):
+    root = tmp_path / "index"
+    (root / "data/nested").mkdir(parents=True)
+    (root / "data/nested/raw").write_bytes(b"safe")
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "secret").write_bytes(b"do not copy or remove")
+    checkpoints = IndexCheckpoints(root)
+    checkpoints.load()
+    committed = checkpoints.state["committed"]
+    link = root / "data/nested/link"
+    try:
+        link.symlink_to(outside if directory else outside / "secret", target_is_directory=directory)
+    except OSError as exc:
+        if sys.platform == "win32" and exc.winerror == 1314:
+            pytest.skip("Windows symlink privilege unavailable")
+        raise
+    checkpoints.mark_open()
+    with pytest.raises(RuntimeError, match="符号链接"):
+        checkpoints.commit()
+    assert checkpoints.state["committed"] == committed
+    checkpoints.restore()
+    assert not link.exists()
+    assert (root / "data/nested/raw").read_bytes() == b"safe"
+    assert (outside / "secret").read_bytes() == b"do not copy or remove"
+
+
+def test_snapshot_proof_covers_nested_files_and_remains_isolated(tmp_path):
+    for name, content in {"system/db/表.lance/_versions/1.manifest": b"version",
+                          "system/db/表.lance/data/1.lance": b"rows", "data/empty": b""}.items():
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    checkpoints = IndexCheckpoints(tmp_path)
+    checkpoints.load()
+    snapshot = checkpoints.control / checkpoints.state["committed"]
+    proof = json.loads((snapshot / "proof.json").read_text(encoding="utf-8"))
+    assert proof["files"] == {"system/db/表.lance/_versions/1.manifest": 7,
+                              "system/db/表.lance/data/1.lance": 4, "data/empty": 0}
+    checkpoints.mark_open()
+    (tmp_path / "system/db/表.lance/data/1.lance").write_bytes(b"new rows")
+    assert (snapshot / "system/db/表.lance/data/1.lance").read_bytes() == b"rows"
+    checkpoints.restore()
+    assert (tmp_path / "system/db/表.lance/data/1.lance").read_bytes() == b"rows"
+
+
 def test_interrupted_restore_is_repeatable(tmp_path, monkeypatch):
     root = tmp_path / "index"
     (root / "data").mkdir(parents=True)

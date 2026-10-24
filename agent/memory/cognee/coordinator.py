@@ -50,6 +50,7 @@ class CogneeCoordinator:
         self._compact_requested = False
         self._last_compact_ns: int | None = None
         self._last_cleanup_ns: int | None = None
+        self._maintenance_cost_ns = 0
         # 空闲窗口作业（run_in_idle_window 提交，worker 在队列排空后执行）
         self._idle_job: Optional[Any] = None
         self._idle_done = asyncio.Event()
@@ -472,7 +473,7 @@ class CogneeCoordinator:
                                 await self._process_entries(batch)
                                 consumed = True
                     if self.rebuild.can_consume and not self._stopping:
-                        await self._maybe_compact()
+                        await self._maybe_compact(busy=consumed)
                     if consumed:
                         continue
                 # 空闲作业是用户显式请求（备份/迁移），不受熔断阻断
@@ -492,8 +493,8 @@ class CogneeCoordinator:
             except asyncio.TimeoutError:
                 pass  # 超时属正常等待结束（正常控制流，非异常）
 
-    async def _maybe_compact(self) -> None:
-        """批次之间按周期清理版本；碎片重写按独立的低频周期执行。"""
+    async def _maybe_compact(self, *, busy: bool = False) -> None:
+        """繁忙时只清理版本；自动维护冷却至少为上次总耗时的九倍，避免抢占同步。"""
         if not self.config.enabled:
             self._compact_requested = False
             return
@@ -502,9 +503,10 @@ class CogneeCoordinator:
         now_ns = time.monotonic_ns()
         interval_ns = int(self.config.compact_interval_seconds * 1e9)
         due = self._last_compact_ns is None or now_ns - self._last_compact_ns >= interval_ns
-        cleanup_due = self._last_cleanup_ns is None or now_ns - self._last_cleanup_ns >= int(
-            self.config.compact_cleanup_interval_seconds * 1e9)
-        full = self._compact_requested or due
+        cleanup_interval = max(int(self.config.compact_cleanup_interval_seconds * 1e9),
+                               self._maintenance_cost_ns * 9)
+        cleanup_due = self._last_cleanup_ns is None or now_ns - self._last_cleanup_ns >= cleanup_interval
+        full = self._compact_requested or (due and not busy)
         if not (full or cleanup_due):
             return
         self._compact_requested = False
@@ -527,7 +529,7 @@ class CogneeCoordinator:
                     return result
 
     async def _compact_storage(self, *, prune_only: bool = False) -> dict[str, Any]:
-        self._last_cleanup_ns = time.monotonic_ns()
+        started = self._last_cleanup_ns = time.monotonic_ns()
         if not prune_only:
             self._last_compact_ns = self._last_cleanup_ns
         log(
@@ -550,14 +552,10 @@ class CogneeCoordinator:
         finally:
             # 从完成时开始冷却，长维护不会结束后立即又被判定到期。
             self._last_cleanup_ns = time.monotonic_ns()
+            self._maintenance_cost_ns = self._last_cleanup_ns - started
             if not prune_only:
                 self._last_compact_ns = self._last_cleanup_ns
-        # 压缩尾声已实测最新占用：直接收录进统计缓存（代际递增使
-        # 在途的旧遍历结果被丢弃），避免紧接一次重复的数十秒遍历
-        cognee_storage_stats.adopt(
-            self.config.absolute_data_root,
-            result["after_stats"],
-        )
+        cognee_storage_stats.schedule_refresh(self.config.absolute_data_root)
         self.last_compact_at = time.time()
         self._breaker.observe()
         reclaimed_mb = result["bytes_reclaimed"] / 1024 / 1024
@@ -567,9 +565,8 @@ class CogneeCoordinator:
             + (f"，{len(result['errors'])} 个错误" if result["errors"] else "")
         )
         log(
-            f"Cognee LanceDB 压缩完成: 库 {result['databases']} 表 {result['tables']}，"
-            f"{result['bytes_before'] / 1024 / 1024:.1f}MB → "
-            f"{result['bytes_after'] / 1024 / 1024:.1f}MB"
+            f"Cognee LanceDB 维护完成: 库 {result['databases']} 表 {result['tables']}，"
+            f"清理旧文件 {reclaimed_mb:.1f}MB，总耗时 {self._maintenance_cost_ns / 1e9:.1f}s"
             + (f"，错误: {result['errors']}" if result["errors"] else ""),
             tag="思维",
         )

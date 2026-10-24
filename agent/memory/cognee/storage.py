@@ -8,7 +8,7 @@
   大库遍历可达数十秒，故请求路径永不遍历——内存 TTL 缓存 → 磁盘快照
   （重启即恢复上次真实值）→ 空统计 三级返回，过期仅调度后台单任务刷新。
 
-并发纪律：所有缓存写入携带单调代际号，``invalidate``/``adopt``/新刷新
+并发纪律：所有缓存写入携带单调代际号，``invalidate``/新刷新
 都会使在途遍历的过期结果被丢弃（防压缩后数字被旧遍历回写）。
 """
 
@@ -113,8 +113,7 @@ def compact_lance_tree(
 
     单表失败仅记录不中断其余表；须在无并发写入时调用（协调器批次间窗口）。
     时间预算只阻止启动下一张表，不中断原生清理；保留最新版本、用户标签及未验证文件。
-    返回的 after_stats 是压缩后的实测占用，调用方应直接收录进统计缓存
-    （``StorageStatsTracker.adopt``），避免紧接一次重复遍历。
+    回收字节来自 Lance 清理结果；完整目录统计由宿主在发布后异步刷新，不阻塞写入。
     """
     import lancedb
     from cognee_db_workers.lancedb_compaction import (
@@ -128,11 +127,8 @@ def compact_lance_tree(
     result: dict[str, Any] = {
         "databases": 0,
         "tables": 0,
-        "bytes_before": 0,
-        "bytes_after": 0,
         "bytes_reclaimed": 0,
         "errors": [],
-        "after_stats": _empty_stats(),
         "executed_tasks": 0,
         "old_versions_removed": 0,
         "budget_exhausted": False,
@@ -143,8 +139,6 @@ def compact_lance_tree(
     db_dirs = sorted(databases_root.glob("**/*.lance.db"))
     if not db_dirs:
         return result
-    stats_root = databases_root.parent.parent
-    result["bytes_before"] = compute_storage_stats(stats_root)["total_bytes"]
     mismatch = lance_core_mismatch()
     if mismatch:
         raise RuntimeError(f"Lance 压缩依赖不兼容: {mismatch}")
@@ -190,15 +184,12 @@ def compact_lance_tree(
                 removed = int(pruned["old_versions_removed"])
                 versions_left -= removed
                 result["old_versions_removed"] += removed
+                result["bytes_reclaimed"] += int(pruned["bytes_removed"])
                 result["budget_exhausted"] |= int(pruned["versions_pending"]) > 0
             result["tables"] += 1
         except Exception as exc:
             result["errors"].append(f"{db_name}/{table_name}: {exc}")
     result["next_rotation"] = (offset + visited) % len(tables) if tables else 0
-    after_stats = compute_storage_stats(stats_root)
-    result["after_stats"] = after_stats
-    result["bytes_after"] = after_stats["total_bytes"]
-    result["bytes_reclaimed"] = max(0, result["bytes_before"] - result["bytes_after"])
     return result
 
 
@@ -236,7 +227,7 @@ class StorageStatsTracker:
         async def refresh() -> None:
             try:
                 stats = await asyncio.to_thread(compute_storage_stats, Path(data_root))
-                # 在途期间发生 invalidate/adopt/新刷新 → 本结果已过期，丢弃
+                # 在途期间发生 invalidate/新刷新 → 本结果已过期，丢弃
                 if self._generation.get(data_root) != generation:
                     return
                 self._cache[data_root] = (time.monotonic(), stats)
@@ -251,23 +242,6 @@ class StorageStatsTracker:
         except RuntimeError as exc:
             self._refreshing.discard(data_root)
             log(f"cognee 存储统计刷新调度失败: {exc}", "DEBUG", tag="记忆")
-            return
-        self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
-
-    def adopt(self, data_root: str, stats: StorageStatsDict) -> None:
-        """收录维护动作（如压缩）实测的最新占用，免一次重复遍历。"""
-        self._bump_generation(data_root)
-        snapshot = StorageStatsDict(**stats)
-        self._cache[data_root] = (time.monotonic(), snapshot)
-
-        async def save() -> None:
-            await asyncio.to_thread(self._save_snapshot, data_root, snapshot)
-
-        try:
-            task = asyncio.create_task(save())
-        except RuntimeError as exc:
-            log(f"cognee 存储统计快照保存调度失败: {exc}", "DEBUG", tag="记忆")
             return
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)

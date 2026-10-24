@@ -976,8 +976,8 @@ async def test_backfill_bypasses_fingerprint_skip(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_processing_entry_blocks_fingerprint_skip(tmp_path) -> None:
-    """在途批次持有更新版本的负载并会覆写映射：内容回退时不得跳过入队。"""
+async def test_processing_entry_blocks_fingerprint_skip(tmp_path, monkeypatch) -> None:
+    """抽取不阻塞原生写入；在途旧内容发布后，新更新仍可消费且最终映射一致。"""
     from agent.memory.store._shared import (
         entry_projection_payload,
         projection_content_hash,
@@ -1002,15 +1002,31 @@ async def test_processing_entry_blocks_fingerprint_skip(tmp_path) -> None:
         await store.update(entry)
         inflight = await store.claim_cognee_sync_batch(1)
         assert len(inflight) == 1
+        entered, release = asyncio.Event(), asyncio.Event()
+        cognify = client.cognify
 
-        # 内容回退到 A：指纹与已同步映射一致，但在途批次未收尾 → 照常入队
-        entry.content = "version A"
-        await store.update(entry)
+        async def extract(**kwargs):
+            entered.set()
+            await release.wait()
+            return await cognify(**kwargs)
+
+        monkeypatch.setattr(client, "cognify", extract)
+        task = asyncio.create_task(coordinator._process_batch(inflight))
+        try:
+            await asyncio.wait_for(entered.wait(), 5)
+            assert coordinator._projection_lock.locked()
+            # 指纹回到 A，但在途抽取持有 B：更新须立即落库并保留后续任务。
+            entry.content = "version A"
+            await asyncio.wait_for(store.update(entry), 5)
+            assert not task.done()
+        finally:
+            release.set()
+            await asyncio.wait_for(task, 5)
+        assert (await store.get_cognee_sync_status())["pending"] == 1
         pending = await store.claim_cognee_sync_batch(10)
         assert [item["entry_id"] for item in pending] == [memory_id]
 
         # 两个批次顺序落地后，映射指纹与当前内容一致
-        await coordinator._process_batch(inflight)
         await coordinator._process_batch(pending)
         current = entry_projection_payload(await store.get(memory_id), memory_id)
         mapping = await store.get_cognee_mapping(memory_id)
@@ -1317,7 +1333,7 @@ def test_rrf_deduplicates_projected_native_memory() -> None:
 # LanceDB 物理压缩
 # ==================================================================
 
-def test_compact_lance_tree_reclaims_history_versions(tmp_path) -> None:
+def test_compact_lance_tree_reclaims_history_versions(tmp_path, monkeypatch) -> None:
     """真实 lancedb：多次写入制造历史版本，压缩后仅保留最新版本且数据完好。"""
     lancedb = pytest.importorskip("lancedb")
     from agent.memory.cognee.storage import compact_lance_tree
@@ -1336,15 +1352,17 @@ def test_compact_lance_tree_reclaims_history_versions(tmp_path) -> None:
     versions_dir = db_dir / "DocumentChunk_text.lance" / "_versions"
     assert len(list(versions_dir.iterdir())) > 2
 
+    def forbidden_scan(_root):
+        pytest.fail("维护写入窗口不得为展示统计遍历完整索引和恢复点")
+
+    monkeypatch.setattr("agent.memory.cognee.storage.compute_storage_stats", forbidden_scan)
+
     result = compact_lance_tree(tmp_path / "system" / "databases", 0.0)
 
     assert result["databases"] == 1
     assert result["tables"] == 1
     assert result["errors"] == []
     assert result["bytes_reclaimed"] > 0
-    # after_stats 为压缩后实测占用，与 bytes_after 同口径（供统计缓存直接收录）
-    assert result["after_stats"]["total_bytes"] == result["bytes_after"]
-    assert result["after_stats"]["lance_bytes"] > 0
     assert len(list(versions_dir.iterdir())) <= 2
     reopened = lancedb.connect(str(db_dir)).open_table("DocumentChunk_text")
     assert reopened.count_rows() == 10
@@ -1563,10 +1581,10 @@ async def test_storage_stats_snapshot_restores_after_restart(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_storage_stats_adopt_wins_over_inflight_refresh(
+async def test_storage_stats_invalidation_discards_inflight_refresh(
     tmp_path, monkeypatch,
 ) -> None:
-    """在途遍历期间发生 adopt（压缩实测值）：代际递增使旧遍历结果被丢弃。"""
+    """数据清理时失效统计，不能让在途旧遍历重新发布已删除的数据占用。"""
     import asyncio
     import threading
 
@@ -1590,16 +1608,12 @@ async def test_storage_stats_adopt_wins_over_inflight_refresh(
 
     tracker.schedule_refresh(root)
     await asyncio.wait_for(started.wait(), timeout=5)
-    fresh = storage.StorageStatsDict(
-        total_bytes=500, data_bytes=0, lance_bytes=500,
-        graph_bytes=0, metadata_bytes=0, other_bytes=0,
-    )
-    tracker.adopt(root, fresh)
+    tracker.invalidate(root)
     gate.set()
     await asyncio.wait_for(asyncio.gather(*tracker._tasks), timeout=5)
 
-    assert tracker._cache[root][1]["total_bytes"] == 500  # 未被在途旧遍历覆盖
-    assert json.loads((tmp_path / "storage_stats.json").read_text())["stats"]["total_bytes"] == 500
+    assert root not in tracker._cache
+    assert not (tmp_path / "storage_stats.json").exists()
 
 
 class _CompactFakeClient(FakeIndexTransactions):
@@ -1613,14 +1627,8 @@ class _CompactFakeClient(FakeIndexTransactions):
         return {
             "databases": 1,
             "tables": 2,
-            "bytes_before": 1000,
-            "bytes_after": 400,
             "bytes_reclaimed": 600,
             "errors": [],
-            "after_stats": {
-                "total_bytes": 400, "data_bytes": 0, "lance_bytes": 400,
-                "graph_bytes": 0, "metadata_bytes": 0, "other_bytes": 0,
-            },
         }
 
 
@@ -1651,7 +1659,8 @@ async def test_nonempty_queue_still_yields_to_maintenance_between_batches(store,
         assert coordinator._projection_lock.locked()
         events.append("batch")
 
-    async def maintain():
+    async def maintain(*, busy):
+        assert busy
         assert not coordinator._projection_lock.locked()
         events.append("maintenance")
         coordinator._closing = True
@@ -1660,6 +1669,33 @@ async def test_nonempty_queue_still_yields_to_maintenance_between_batches(store,
     monkeypatch.setattr(coordinator, "_maybe_compact", maintain)
     await asyncio.wait_for(coordinator._worker(), 2)
     assert events == ["batch", "maintenance"]
+
+
+async def test_slow_maintenance_yields_to_sync_and_defers_fragment_rewrites(store, tmp_path, monkeypatch):
+    clock_ns = 1_000_000_000
+    monkeypatch.setattr("agent.memory.cognee.coordinator.time.monotonic_ns", lambda: clock_ns)
+    monkeypatch.setattr("agent.memory.cognee.coordinator.cognee_storage_stats.schedule_refresh", lambda _: None)
+
+    class SlowMaintenance(_CompactFakeClient):
+        async def compact_vector_storage(self, *args, **kwargs):
+            nonlocal clock_ns
+            clock_ns += 200_000_000_000
+            return await super().compact_vector_storage(*args, **kwargs)
+
+    client = SlowMaintenance()
+    coordinator = CogneeCoordinator(store, client, CogneeConfig(data_root=str(tmp_path), write_breaker_enabled=False))
+    await coordinator._maybe_compact(busy=True)
+    assert client.cleanup_modes == [True]  # 繁忙时不自动合并碎片。
+    clock_ns += 600_000_000_000
+    await coordinator._maybe_compact(busy=True)
+    assert client.cleanup_modes == [True]  # 配置周期已到，实际维护成本要求继续让出同步。
+    clock_ns += 1_200_000_000_000
+    await coordinator._maybe_compact(busy=True)
+    assert client.cleanup_modes == [True, True]
+    await coordinator._maybe_compact()
+    assert client.cleanup_modes == [True, True, False]  # 空闲时完成到期的碎片合并。
+    await coordinator.request_compact()
+    assert client.cleanup_modes == [True, True, False, False]  # 显式请求不受自动冷却拦截。
 
 
 def test_version_only_maintenance_rotates_budget_and_preserves_latest_rows(tmp_path, monkeypatch):
@@ -1729,7 +1765,9 @@ async def test_coordinator_compact_idle_scheduling(tmp_path) -> None:
         await coordinator._maybe_compact()
         assert client.compact_calls == [3.0, 3.0, 3.0]
         assert coordinator._compact_requested is False
-        await asyncio.sleep(0.05)  # 等 adopt 的快照保存任务收尾
+        from agent.memory.cognee.storage import cognee_storage_stats
+
+        await asyncio.wait_for(asyncio.gather(*cognee_storage_stats._tasks), timeout=5)
     finally:
         await store.close()
 
