@@ -151,7 +151,7 @@ class TestCycleBodyDeciding:
         mind = _bare_mind()
         seen: List[MindPhase] = []
         situation = SituationContext(
-            pending_messages=[PendingMessage(scope="user_webui:u1", preview="hi")],
+            pending_messages=[PendingMessage(scope="group_webui:g1", preview="hi")],
             active_goals=["g1"],
         )
 
@@ -160,7 +160,7 @@ class TestCycleBodyDeciding:
             return situation
 
         mind.pfc = SimpleNamespace(
-            peek_all_tasks=lambda: [("user_webui:u1", 1, 0, "hi")],
+            peek_all_tasks=lambda: [("group_webui:g1", 1, "g1", "hi")],
             peek_general_tasks=lambda: [],
             pending_analysis=[],
             get_adapter_key=lambda scope: "webui",

@@ -9,7 +9,6 @@ from unittest.mock import AsyncMock
 import pytest
 
 from agent.context.preparation import ContextPreparation
-from agent.memory.memory_retriever import MemoryRetriever
 from agent.mind.recall import inputs as recall_inputs
 from agent.mind.recall.coordinator import prepare_recollection
 from agent.mind.recall.inputs import Recollection
@@ -92,6 +91,29 @@ class TestLeanLayeredPrompts:
 
 
 class TestLeanRecollection:
+    async def test_route_and_shared_vector_are_prepared_concurrently(self, monkeypatch):
+        from agent.memory.recall_policy import RecallPolicy
+
+        mind = _fake_mind()
+        started = asyncio.Event()
+
+        async def embed(query):
+            started.set()
+            return [1.0]
+
+        async def route(conversation, scope):
+            await asyncio.wait_for(started.wait(), timeout=1)
+            return RecallPolicy(), ""
+
+        mind.recollection.embedder = SN(embed_query=embed)
+        mind.recollection.retriever.recall_split = AsyncMock(return_value=([], []))
+        mind.recollection.retriever.load_relation_snippets = AsyncMock(return_value=[])
+        monkeypatch.setattr("agent.memory.recall_routing.route_recall", route)
+        monkeypatch.setattr(recall_inputs, "recall_cross_channel", AsyncMock(return_value=[]))
+        monkeypatch.setattr(recall_inputs, "match_skills", AsyncMock(return_value=[]))
+        await asyncio.wait_for(mind.recollection.collect(
+            [{"role": "user", "content": "请从历史中检索项目设计"}], None, scope="", adapter="", lean=False), timeout=2)
+
     @pytest.mark.parametrize("level", ["off", "tags", "fast"])
     async def test_skill_matching_is_independent_of_memory_level(self, monkeypatch, level) -> None:
         from agent.memory.recall_policy import RecallPolicy, recall_options
@@ -126,30 +148,6 @@ class TestLeanRecollection:
                 release.set()
                 result = await task
         assert result.skills == [{"content": "部署技能候选"}]
-
-    @pytest.mark.parametrize("query", ["我钥匙放哪了", "WiFi密码", "会议地址", "帮我查下", "/review", "好的？"])
-    def test_short_queries_are_not_treated_as_greetings(self, query: str) -> None:
-        assert not MemoryRetriever._is_trivial_turn([{"role": "user", "content": query}])
-
-    async def test_greeting_skips_network_query_but_keeps_profiles(self, monkeypatch) -> None:
-        mind = _fake_mind()
-        mind.recollection.embedder = SN(embed_query=AsyncMock())
-        mind.recollection.retriever.recall_split = AsyncMock(return_value=([{"content": "画像"}], []))
-        mind.recollection.retriever.load_relation_snippets = AsyncMock(return_value=[])
-        monkeypatch.setattr(recall_inputs, "extract_related_scopes", lambda *args: [])
-        monkeypatch.setattr(recall_inputs, "recall_cross_channel", AsyncMock())
-        monkeypatch.setattr(recall_inputs, "match_skills", AsyncMock(return_value=[]))
-        mind.context.preparation.build_layers = AsyncMock(return_value=("p", "t", "c", True, True, True, "", ""))
-        mind.context.build_llm_context = AsyncMock(return_value=[])
-        await prepare_recollection(mind, [
-            {"role": "user", "content": "请记住详细的项目信息"},
-            {"role": "user", "content": "[channel:qq]谢谢！"},
-        ])
-        mind.recollection.embedder.embed_query.assert_not_called()
-        recall_inputs.recall_cross_channel.assert_not_called()
-        mind.recollection.retriever.recall_split.assert_awaited_once()
-        assert recall_inputs.match_skills.call_args.args == (mind.recollection.skills, "",)
-        assert mind.context.build_llm_context.call_args.kwargs["memory_msgs"] == []
 
     async def test_lean_skips_all_recall_paths(self, monkeypatch) -> None:
         """精简上下文不 embed、不召回，环境注入位全空。"""

@@ -60,18 +60,6 @@ async def test_plan_ready_precedes_search_completion(store, monkeypatch) -> None
 
 
 @pytest.mark.asyncio
-async def test_plan_ready_empty_on_trivial_turn(store, monkeypatch) -> None:
-    """平凡轮早退仍释放计划等待者。"""
-    monkeypatch.setattr(MemoryRetriever, "_is_trivial_turn", lambda self, c: True)
-    retriever = MemoryRetriever(store, _NullEmbedder())
-    holder = asyncio.get_running_loop().create_future()
-    await retriever.recall_split(
-        [{"role": "user", "content": "好的好的，知道了"}], plan_ready=holder,
-    )
-    assert holder.result() == []
-
-
-@pytest.mark.asyncio
 async def test_plan_ready_empty_when_no_query(store) -> None:
     """无有效查询时不留未完成的计划等待。"""
     retriever = MemoryRetriever(store, _NullEmbedder())

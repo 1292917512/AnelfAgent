@@ -229,7 +229,7 @@ class CogneeCoordinator:
         if self.config.enabled:
             availability = await self.client.initialize()
             if availability.ready:
-                await self.client.available_datasets([])
+                await self.client.list_datasets()
             self._configuration_error = "" if availability.ready else availability.reason
             self._last_error = (
                 "" if availability.ready or availability.configuration_required else availability.reason

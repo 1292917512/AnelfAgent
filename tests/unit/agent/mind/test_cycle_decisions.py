@@ -36,6 +36,7 @@ def _fake_mind() -> Any:
         tool_assembly=SimpleNamespace(clear_when_idle=Mock()),
         pfc=SimpleNamespace(
             peek_general_tasks=lambda: [],
+            get_pending_signal=lambda scope: None,
             clear_general_tasks_before=Mock(),
             has_pending_tasks=lambda: False,
             pending_user=_PendingQueue(),
@@ -228,21 +229,21 @@ async def test_direct_channel_owns_request_and_preserves_background_work(monkeyp
     mind.pfc.pending_analysis = ["unrelated profile"]
     mind.pfc.clear_general_tasks_before = Mock()
     await cycle_mod.run_cycle(mind, {}, is_heartbeat=heartbeat)
-    assert cycle_mod.execute_safely.await_count == 1
-    decision = cycle_mod.execute_safely.await_args.args[1]
-    assert decision.type == DecisionType.REPLY and decision.target == "group_game:local"
+    assert [call.args[1].target for call in cycle_mod.execute_safely.await_args_list] == [
+        "group_game:local", "user_webui:other"]
+    assert all(call.args[1].type == DecisionType.REPLY for call in cycle_mod.execute_safely.await_args_list)
     mind.pfc.clear_general_tasks_before.assert_called_once_with(0)
 
 
 @pytest.mark.parametrize("targets", [["user_webui:missing"], [None], ["qq:1", "user_qq:1", "bogus"]])
 async def test_invalid_or_duplicate_meta_targets_cover_real_pending_once(monkeypatch, targets):
-    from agent.messages import MessageUser
+    from agent.messages import build_entity_scope
 
     mind = _fake_mind()
     mind.pfc = PrefrontalCortex(SimpleNamespace())
-    scopes = [MessageUser(uid="1", adapter_key=adapter).entity_scope for adapter in ("qq", "telegram")]
+    scopes = [build_entity_scope("group", adapter, "1") for adapter in ("qq", "telegram")]
     for scope in scopes:
-        mind.pfc.pending_user.append(scope)
+        mind.pfc.pending_group.append(scope)
     situation = SituationContext(pending_messages=[PendingMessage(scope=scope, preview="待处理") for scope in scopes],
                                  active_goals=["existing goal"])
     monkeypatch.setattr(cycle_mod, "active_goal_lines", AsyncMock(return_value=situation.active_goals))

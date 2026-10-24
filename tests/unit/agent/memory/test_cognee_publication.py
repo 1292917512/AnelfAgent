@@ -22,7 +22,7 @@ from agent.memory.cognee.diagnostics import WorkerDiagnostics
 from agent.memory.cognee.manifest import DatasetStamp, DocumentStamp, IndexManifest, MutationPlan
 from agent.memory.cognee.preflight import preserve_owned_document
 from agent.memory.cognee.process import CogneeProcess, WorkerCrashed
-from agent.memory.cognee.types import CogneeAvailability
+from agent.memory.cognee.types import CogneeAvailability, CogneeIndexBusy
 from agent.memory.store.projection_state import ProjectionState
 
 
@@ -439,6 +439,108 @@ async def test_dataset_tool_does_not_wait_for_active_index_write(tmp_path, monke
             result = json.loads(await list_cognee_datasets())
         assert result["catalog_ready"] and result["updating"]
         assert result["datasets"][0]["id"] == "current"
+
+
+async def test_external_reads_do_not_wait_for_or_abort_active_write(tmp_path, monkeypatch):
+    client = CogneeClient(CogneeConfig(data_root=str(tmp_path)))
+    checkpoints = IndexCheckpoints(tmp_path)
+    checkpoints.load()
+    client._checkpoints = checkpoints
+    monkeypatch.setattr(client, "initialize", AsyncMock(return_value=CogneeAvailability(
+        installed=True, enabled=True, ready=True)))
+    process = AsyncMock()
+    process.call.return_value = []
+    monkeypatch.setattr(client, "_worker", AsyncMock(return_value=process))
+    monkeypatch.setattr(client, "_inspect", AsyncMock(return_value=IndexManifest()))
+    monkeypatch.setattr(client, "_stop", AsyncMock())
+    abort = AsyncMock()
+    monkeypatch.setattr(client, "_abort", abort)
+    writing = asyncio.Event()
+
+    async def external_read():
+        await writing.wait()
+        for read in (lambda: client.available_datasets(["global"]), lambda: client.recall("最新项目地址")):
+            with pytest.raises(CogneeIndexBusy):
+                await read()
+
+    # 读取任务不能继承写事务所有者，也不能触发该事务的恢复。
+    read = asyncio.create_task(external_read())
+    try:
+        async with client.write_transaction():
+            await client.cognify()
+            writing.set()
+            await asyncio.wait_for(read, timeout=1)
+            assert client._operation_lock.locked()
+            abort.assert_not_awaited()
+    finally:
+        read.cancel()
+        await asyncio.gather(read, return_exceptions=True)
+    assert checkpoints.state["commits"] == 2
+    process.call.assert_awaited_once()
+    await client.recall("最新项目地址")
+    assert process.call.await_count == 2
+
+
+async def test_read_cancellation_returns_before_recovery_but_keeps_index_locked(tmp_path, monkeypatch):
+    client = CogneeClient(CogneeConfig(data_root=str(tmp_path)))
+    monkeypatch.setattr(client, "initialize", AsyncMock(return_value=CogneeAvailability(
+        installed=True, enabled=True, ready=True)))
+    process = AsyncMock()
+    entered, stopping, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+
+    async def blocked(*args, **kwargs):
+        entered.set()
+        await asyncio.Event().wait()
+
+    async def stop(**kwargs):
+        stopping.set()
+        await release.wait()
+
+    async def recover():
+        client._phase = "idle"
+
+    process.call.side_effect = blocked
+    monkeypatch.setattr(client, "_worker", AsyncMock(return_value=process))
+    monkeypatch.setattr(client, "_stop", stop)
+    monkeypatch.setattr(client, "_recover", recover)
+    read = asyncio.create_task(client.recall("以前的项目地址"))
+    try:
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        read.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(read, timeout=1)
+        await asyncio.wait_for(stopping.wait(), timeout=1)
+        assert client._operation_lock.locked() and client._reads
+        with pytest.raises(CogneeIndexBusy):
+            await client.recall("另一个问题")
+        assert not release.is_set()
+    finally:
+        release.set()
+        await asyncio.wait_for(asyncio.gather(*client._reads, return_exceptions=True), timeout=1)
+        await asyncio.gather(read, return_exceptions=True)
+    assert not client._operation_lock.locked() and not client._reads
+
+
+async def test_management_read_waits_for_safe_window_instead_of_reporting_configuration_failure(tmp_path, monkeypatch):
+    client = CogneeClient(CogneeConfig(data_root=str(tmp_path)))
+    monkeypatch.setattr(client, "initialize", AsyncMock(return_value=CogneeAvailability(
+        installed=True, enabled=True, ready=True)))
+    process = AsyncMock()
+    process.call.return_value = [{"id": "dataset", "name": "global"}]
+    monkeypatch.setattr(client, "_worker", AsyncMock(return_value=process))
+    await client._operation_lock.acquire()
+    client._phase = "recovering"
+    read = asyncio.create_task(client.list_datasets())
+    try:
+        await asyncio.sleep(0)
+        assert not read.done()
+        with pytest.raises(CogneeIndexBusy):
+            await client.recall("项目事实")
+        process.call.assert_not_awaited()
+    finally:
+        client._phase = "idle"
+        client._operation_lock.release()
+    assert await asyncio.wait_for(read, timeout=1) == [{"id": "dataset", "name": "global"}]
 
 
 async def test_cancelled_transaction_does_not_publish(tmp_path, monkeypatch):

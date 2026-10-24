@@ -71,12 +71,18 @@ async def run_cycle(mind: "Mind", end_payload: Dict[str, Any], *, is_heartbeat: 
 
     # 交互频道的请求由回复会话独占；无关后台目标不应再派生同一请求的工具反思。
     from agent.channel.reply_policy import get_reply_policy
+    from agent.messages import parse_entity_scope
+
+    def addressed(scope: str) -> bool:
+        signal = mind.pfc.get_pending_signal(scope)
+        return (signal is None or signal.kind in {"", "chat"}) and (
+            parse_entity_scope(scope)[0] == "user" or bool(signal and signal.to_me))
 
     direct = [
         PendingMessage(scope=scope, uid=uid, group_id=gid, preview=preview,
                        adapter_key=mind.pfc.get_adapter_key(scope), timestamp=time.time())
         for scope, uid, gid, preview in cheap_pending
-        if get_reply_policy(mind.pfc.get_adapter_key(scope)).direct_reply
+        if get_reply_policy(mind.pfc.get_adapter_key(scope)).direct_reply or addressed(scope)
     ]
     if direct:
         log(f"channel fast-path: {len(direct)} direct replies (no meta-decision)", tag="思维")

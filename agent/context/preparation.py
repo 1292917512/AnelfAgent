@@ -1,7 +1,7 @@
 """上下文材料的分层、预算与文件缓存。
 
-模型可见：沿用人设、工具目录、召回来源和状态文本。
-Token：输入内容与裁剪预算不变，不增加模型调用。
+模型可见：沿用人设、工具目录、召回来源；动态区注明本轮减少检索时的实际覆盖范围。
+Token：减少检索时增加约百字的范围说明，不另起模型调用。
 缓存：沿用各层指纹、缓存键与消息顺序，不改稳定前缀。
 """
 
@@ -154,6 +154,9 @@ class ContextPreparation:
             combined = apply_memory_budget(profile_msgs + memory_msgs)
             profile_msgs = combined[:len(profile_msgs)]
             memory_msgs = combined[len(profile_msgs):]
+            if inputs.recall_notice:
+                memory_msgs.append({"role": "system", "content": inputs.recall_notice,
+                                    "_source": {"origin": "memory_policy"}})
 
         # Prompt 分层构建：
         # stable 人设块（人设+环境+静态指南）长期冻结，stable 工具块（目录+规则）随工具集重建，

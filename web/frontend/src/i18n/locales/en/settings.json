@@ -239,6 +239,7 @@
     "names": {
       "memory": {
         "recall": "Initial recall",
+        "route": "Recall depth selection",
         "cross_channel": "Related conversations",
         "probe": "Initial deep recall",
         "dialogue": "Dialogue recollection"

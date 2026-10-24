@@ -98,6 +98,7 @@ class SkillMatcher:
             min_score: Optional[float] = None,
             query_vec: Optional[List[float]] = None,
             query_vec_task: asyncio.Future[list[float] | None] | None = None,
+            deadline: float | None = None,
     ) -> List[Tuple[Skill, float]]:
         """匹配相关技能，返回 [(技能, 得分)] 按得分降序。
 
@@ -116,15 +117,19 @@ class SkillMatcher:
             return []
         if min_score is None:
             min_score = _min_score()
+        loop = asyncio.get_running_loop()
+        vector_deadline = min(deadline, loop.time() + 2.0) if deadline is not None else loop.time() + 2.0
 
         async def lane_vector(index: int, lane: str) -> list[float] | None:
             try:
-                if index == 0:
-                    if query_vec_task is not None:
+                if index == 0 and query_vec is not None:
+                    return query_vec
+                if loop.time() >= vector_deadline:
+                    return None
+                async with asyncio.timeout_at(vector_deadline):
+                    if index == 0 and query_vec_task is not None:
                         return await asyncio.shield(query_vec_task)
-                    if query_vec is not None:
-                        return query_vec
-                return await self.index.text_vector(lane)
+                    return await self.index.text_vector(lane)
             except asyncio.CancelledError:
                 task = asyncio.current_task()
                 if task is not None and task.cancelling():

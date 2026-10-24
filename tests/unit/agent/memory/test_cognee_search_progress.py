@@ -8,7 +8,7 @@ import pytest
 
 from agent.memory.cognee.config import CogneeConfig
 from agent.memory.cognee.fusion import CogneeSearchBatch, search_cognee
-from agent.memory.cognee.types import CogneeRecallItem
+from agent.memory.cognee.types import CogneeIndexBusy, CogneeRecallItem
 from agent.memory.memory_types import RetrievalPlan
 from agent.memory.probe import DeepProbeHub
 from core.hooks import hook_journal
@@ -138,6 +138,34 @@ async def test_partial_recall_reports_timeout_without_losing_native_evidence(mon
     assert diagnostic.result()["status"] == "partial" and diagnostic.timed_out
     assert diagnostic.native == "complete" and diagnostic.completed_lanes == 2
     assert client.pending == 0
+
+
+@pytest.mark.parametrize("method", ["available_datasets", "recall"])
+async def test_busy_index_returns_native_evidence_promptly_and_can_resume(monkeypatch, method):
+    from agent.memory.cognee.fusion import RecallDiagnostics, federated_search
+    from agent.memory.memory_types import MemorySearchResult
+
+    client = SearchClient()
+    client.release.set()
+    diagnostic = RecallDiagnostics()
+
+    async def native():
+        return [MemorySearchResult(id="mem:1", snippet="小李最新地址在南京", score=1)]
+
+    with monkeypatch.context() as patch:
+        patch.setattr(client, method, AsyncMock(side_effect=CogneeIndexBusy("索引正在写入")))
+        found = await asyncio.wait_for(federated_search(
+            native(), query="小李最新地址", client=client, config=CogneeConfig(), limit=5,
+            diagnostics=diagnostic), timeout=1)
+    assert [result.id for result in found] == ["mem:1"]
+    assert diagnostic.cognee == "busy" and diagnostic.native == "complete"
+    assert diagnostic.result()["status"] == "partial" and not diagnostic.timed_out
+    assert not diagnostic.failed_lanes
+    resumed = RecallDiagnostics()
+    found = await federated_search(native(), query="小李最新地址", client=client,
+                                   config=CogneeConfig(), limit=5, diagnostics=resumed)
+    assert {result.id for result in found} == {"mem:1", "memory:fast"}
+    assert resumed.cognee == "complete"
 
 
 async def test_strict_tags_exclude_unattributed_and_graph_answers(monkeypatch):

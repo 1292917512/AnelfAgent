@@ -1,7 +1,7 @@
 """收集召回材料，按依赖并发读取，不负责最终上下文装配。
 
 模型可见：技能候选独立于记忆档位，查询取自对话正文；材料由上下文层按来源装配。
-Token 影响：技能匹配复用记忆检索计划与基础查询向量，不另起技能规划模型请求。
+Token 影响：技能复用记忆计划与查询向量；可选 Jev 分级一次批量判断，减少不需要的规划与检索。
 缓存影响：本模块只产出材料，不写入稳定前缀；分层与预算裁剪由上下文层负责。
 """
 
@@ -17,7 +17,7 @@ from agent.memory.memory_retriever import MemoryRetriever
 from agent.memory.recall_policy import current_recall_policy
 from agent.mind.cross_channel import recall_cross_channel
 from agent.mind.recall.scopes import extract_related_scopes, extract_scopes_from_anything
-from core.config import get_config_bool
+from core.config import get_config_bool, get_config_float
 from core.hooks import HookMode, hook_execution
 from core.log import log
 
@@ -57,8 +57,8 @@ class Recollection:
         conversation = dialogue_messages(conversation)
         tail = conversation[-10:]
         policy = current_recall_policy(scope)
-        trivial = MemoryRetriever._is_trivial_turn(tail)
-        query = MemoryRetriever._extract_query(tail) if not lean and not trivial else ""
+        deadline = asyncio.get_running_loop().time() + max(1.0, get_config_float("memory_recall_timeout_seconds", 5.0))
+        query = MemoryRetriever._extract_query(tail) if not lean else ""
         related = extract_related_scopes(conversation[-30:], scope)
         if anything:
             for item in extract_scopes_from_anything(anything, scope):
@@ -70,7 +70,9 @@ class Recollection:
 
         async def embed() -> list[float] | None:
             try:
-                async with asyncio.timeout(2):
+                if asyncio.get_running_loop().time() >= deadline:
+                    return None
+                async with asyncio.timeout_at(min(deadline, asyncio.get_running_loop().time() + 2)):
                     return await self.embedder.embed_query(query)
             except Exception as exc:
                 log(f"上下文向量预取失败: {type(exc).__name__}", "DEBUG", tag="记忆")
@@ -82,11 +84,13 @@ class Recollection:
                     if policy.level != "deep":
                         from agent.memory.recall_fast import recall_local
                         result.profiles, result.memories = await recall_local(
-                            self.retriever, tail, scope=scope, related_scopes=related, policy=policy)
+                            self.retriever, tail, scope=scope, related_scopes=related, policy=policy,
+                            deadline=deadline, query_vec_task=vector_task)
                     else:
                         result.profiles, result.memories = await self.retriever.recall_split(
                             tail, entity_scope=scope, related_scopes=related,
                             query_vec_task=vector_task, fire_probe=policy.background, plan_ready=plan_ready,
+                            deadline=deadline,
                         )
                     run.detail = f"{policy.level} · {len(result.profiles)} 个画像块 · {len(result.memories)} 个记忆块"
                 log(f"语义召回: {len(result.memories)} 条, 画像: {len(result.profiles)} 条", tag="思维")
@@ -96,14 +100,15 @@ class Recollection:
         async def skills() -> None:
             planned_queries = await asyncio.shield(plan_ready) if policy.level == "deep" else []
             result.skills = await match_skills(
-                self.skills, query, query_vec_task=vector_task, scope=scope, planned_queries=planned_queries)
+                self.skills, query, query_vec_task=vector_task, scope=scope, planned_queries=planned_queries,
+                deadline=deadline)
 
         async def relations() -> None:
             if self.retriever and not policy.tags and policy.level not in {"off", "tags"}:
                 result.relations = await self.retriever.load_relation_snippets(scopes)
 
         async def cross_channel() -> None:
-            if not trivial and policy.level == "deep":
+            if policy.level == "deep":
                 from agent.messages import build_entity_scope
                 user_scope = (build_entity_scope("user", adapter, str(anything.uid))
                               if anything and adapter and anything.uid not in (None, 0, "0", "") else "")
@@ -116,10 +121,14 @@ class Recollection:
                         if tags.get("channel") == adapter and tags.get("uid") not in (None, "0", ""):
                             user_scope = build_entity_scope("user", adapter, tags["uid"])
                             break
-                result.cross_channel = await recall_cross_channel(
-                    conversation, scope, config=self.config, pfc=self.pfc,
-                    conversation_data=self.conversation_data, embedder=self.embedder,
-                    user_scope=user_scope, query_vec_task=vector_task)
+                try:
+                    async with asyncio.timeout_at(deadline):
+                        result.cross_channel = await recall_cross_channel(
+                            conversation, scope, config=self.config, pfc=self.pfc,
+                            conversation_data=self.conversation_data, embedder=self.embedder,
+                            user_scope=user_scope, query_vec_task=vector_task)
+                except TimeoutError:
+                    log("跨会话召回准备预算已用尽，保留本地材料", "DEBUG", tag="记忆")
 
         async def pins() -> None:
             if self.retriever is not None:
@@ -172,9 +181,12 @@ class Recollection:
                     result.profile_blocks.append(block)
 
         async with asyncio.TaskGroup() as tasks:
+            tasks.create_task(summary())
             if query and (policy.level == "deep" or get_config_bool("skills_enabled", True)):
                 vector_task = tasks.create_task(embed())
-            tasks.create_task(summary())
+            if not lean:
+                from agent.memory.recall_routing import route_recall
+                policy, result.recall_notice = await route_recall(tail, scope)
             if lean:
                 tasks.create_task(pins())
             else:
@@ -196,6 +208,7 @@ async def match_skills(
         query_vec_task: asyncio.Future[list[float] | None] | None = None,
         scope: str = "",
         planned_queries: Optional[List[str]] = None,
+        deadline: float | None = None,
 ) -> List[Dict]:
     """按对话和可用检索计划匹配技能候选，正文由 AI 按需读取。"""
     if not get_config_bool("skills_enabled", True):
@@ -204,4 +217,5 @@ async def match_skills(
     return await match_recalled_skills(
         skills.store, skills.matcher, base_query,
         query_vec=query_vec, query_vec_task=query_vec_task, scope=scope, planned_queries=planned_queries,
+        deadline=deadline,
     )

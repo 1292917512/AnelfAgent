@@ -9,17 +9,18 @@ Model Experience（召回归属标注）:
   每条召回记忆行首的归属标注（称呼[uid:xxx] / [group_id:xxx]，
   与会话消息 [uid:] 标签同构）+ 记忆召回块头的归属确认提示（先确认记忆
   涉及谁再下定论，uid 不符不张冠李戴）
-- token 影响：每条增加简短出处与 mem ID，完整材料按需读取；不增加模型调用
+- token 影响：每条增加简短出处与 mem ID；明确确认轮省去检索与规划，查询预算优先最新需求
 - 缓存影响：召回块在尾部动态区（vol>30），不触碰前缀缓存层
 """
 
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Any, Coroutine, Dict, List, Optional, Tuple, TypeVar
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Coroutine, Dict, List, Optional, Tuple, TypeVar
 
 from agent.judgment.evidence import dialogue_messages
 from core.log import log
+from core.sanitizer import truncate_middle
 
 from .embedding import Embedder
 from .hub import HUB_TAG
@@ -47,12 +48,13 @@ _T = TypeVar("_T")
 _PLAN_PROMPT = (
     "分析以下对话上下文，为记忆检索制定计划，只输出 JSON（不要解释）：\n"
     '{"queries": ["适合记忆检索的查询1", "查询2"], "entities": ["对话中提到的实体名"], '
-    '"deep_needed": false, "rationale": "一句依据"}\n'
+    '"deep_needed": false, "time_sensitive": false, "rationale": "一句依据"}\n'
     "规则：\n"
     "- queries：1-3 条互补的关键词组合/短句（覆盖不同检索角度，不重复，首条为主查询）\n"
     "- entities：对话中明确提到的人名/称呼/项目名/话题（最多 4 个，没有就空数组）\n"
     "- deep_needed：仅当涉及\"谁和谁是什么关系/历史渊源\"、多实体交叉、或明确回忆过去事件时为 true\n"
     "- rationale：一句话说明判断依据\n\n"
+    "- time_sensitive：检索需要区分事件发生时间、近期变化或历史版本时为 true\n"
     "对话上下文：\n"
 )
 
@@ -148,6 +150,7 @@ class MemoryRetriever:
         query_vec_task: asyncio.Future[list[float] | None] | None = None,
         fire_probe: bool = False,
         plan_ready: asyncio.Future[list[str]] | None = None,
+        deadline: float | None = None,
     ) -> Tuple[List[Dict], List[Dict]]:
         """召回相关记忆，画像与检索结果分开返回 (profile_msgs, memory_msgs)。
 
@@ -195,15 +198,6 @@ class MemoryRetriever:
                 pinned_msgs = await self._format_unified_results(pinned, scope=entity_scope) if pinned else []
                 return entity_msgs, pinned_msgs + fallback
 
-            # 平凡消息节流：纯客套/短回复轮跳过检索与改写（省一次改写 LLM 调用
-            # + embedding + 多路检索），画像与永久记忆照常注入
-            if self._is_trivial_turn(conversation):
-                log("💾 被动召回: 平凡消息轮，跳过检索", "DEBUG", tag="思维")
-                pinned = await self._load_permanent_pins([])
-                entity_msgs = await profiles_task
-                pinned_msgs = await self._format_unified_results(pinned, scope=entity_scope) if pinned else []
-                return entity_msgs, pinned_msgs
-
             log(f"💾 被动召回: \"{query[:50]}\" (embedding={'是' if self._embedder.available else '否'})", tag="思维")
 
             # 规划与检索共享预算，超时保留已完成结果。
@@ -217,9 +211,21 @@ class MemoryRetriever:
             # 召回墙钟锚点：总时限从召回入口起算（规划/检索并行共享）
             loop = asyncio.get_running_loop()
             t0 = loop.time()
+            deadline = min(deadline, t0 + recall_timeout) if deadline is not None else t0 + recall_timeout
+            recall_timeout = max(0.0, deadline - t0)
+            plan_budget = min(plan_budget, recall_timeout)
 
             plan = RetrievalPlan(queries=[query] if query else [])
             mention_tags: List[str] = []
+            cognee_busy = False
+
+            def with_coverage(messages: List[Dict]) -> List[Dict]:
+                if cognee_busy:
+                    messages.append({"role": "system", "content": (
+                        "[系统注入·召回范围] Cognee 索引正在写入或恢复，本轮保留已完成的原生记忆检索，"
+                        "未等待图谱。这不表示图谱中没有相关事实；若回答仍需图谱或跨实体证据，"
+                        "请说明资料覆盖范围，并在索引空闲后主动 recall 补查。")})
+                return messages
 
             # 检索规划 + 查询提及识别 + 多路检索并行（都在检索关键路径上）
             # 规划：轻量 LLM 把对话尾部转成结构化计划（多查询/实体/是否深探，
@@ -235,6 +241,9 @@ class MemoryRetriever:
 
             async def _planned_recall() -> List[MemorySearchResult]:
                 nonlocal plan, mention_tags
+                if loop.time() >= deadline:
+                    from .recall_fast import search_local
+                    return await search_local(self, query, deadline=deadline)
                 # 规划与检索并行：原查询 lane 先行（复用预计算 query_vec，零
                 # embed 成本），规划慢/超预算只损失多查询增强，不再挤占检索
                 # 预算；计划 lanes 在规划完成后增量追加
@@ -247,6 +256,7 @@ class MemoryRetriever:
                 partial_lanes: dict[asyncio.Future, List[MemorySearchResult]] = {}
 
                 async def _query_search(q: str, *, targeted: bool = False) -> List[MemorySearchResult]:
+                    nonlocal cognee_busy
                     owner = asyncio.current_task()
 
                     def preserve(results: List[MemorySearchResult]) -> None:
@@ -257,26 +267,31 @@ class MemoryRetriever:
                         vec = await asyncio.shield(query_vec_task)
                     else:
                         vec = query_vec if (query_vec is not None and q == query) else await self._embedder.embed_query(q)
-                    from .cognee.fusion import federated_search
+                    from .cognee.fusion import RecallDiagnostics, federated_search
                     from .cognee.runtime import get_cognee_client
                     cognee_config = self._cognee_config()
-                    return await federated_search(
-                        self._store.search_unified(
+                    diagnostic = RecallDiagnostics()
+                    try:
+                        return await federated_search(
+                            self._store.search_unified(
+                                query=q,
+                                query_vec=vec,
+                                query_tags=mention_tags or None,
+                                limit=k * cognee_config.recall_pool_multiplier,
+                                min_score=min_score,
+                            ),
                             query=q,
-                            query_vec=vec,
+                            client=get_cognee_client(),
+                            config=cognee_config,
+                            limit=k,
                             query_tags=mention_tags or None,
-                            limit=k * cognee_config.recall_pool_multiplier,
-                            min_score=min_score,
-                        ),
-                        query=q,
-                        client=get_cognee_client(),
-                        config=cognee_config,
-                        limit=k,
-                        query_tags=mention_tags or None,
-                        node_names=plan.node_keys if targeted else None,
-                        on_results=preserve,
-                        resolve_sources=self._store.resolve_memory_references,
-                    )
+                            node_names=plan.node_keys if targeted else None,
+                            on_results=preserve,
+                            resolve_sources=self._store.resolve_memory_references,
+                            diagnostics=diagnostic,
+                        )
+                    finally:
+                        cognee_busy |= diagnostic.cognee == "busy"
 
                 # 多窗口补充：以最近一条用户消息为焦点查询（即时窗口，捕捉当前
                 # 话题）；焦点不参与共识计数，与计划查询重复时仅多一次 embed
@@ -300,7 +315,7 @@ class MemoryRetriever:
                 try:
                     # 外兜底比 plan_retrieval 内预算宽 1s：内部超时正常自收口，
                     # 此层仅防规划自身失控（内部机制失效/被替换）
-                    plan = await asyncio.wait_for(plan_task, timeout=plan_budget + 1.0)
+                    plan = await asyncio.wait_for(plan_task, timeout=min(plan_budget + 1.0, max(0.0, deadline - loop.time())))
                 except asyncio.TimeoutError:
                     log(f"💾 检索规划超时（{plan_budget:.1f}s），回退原查询",
                         "WARNING", tag="思维")
@@ -313,7 +328,7 @@ class MemoryRetriever:
                 targeted_used = False
                 plan_lane_tasks: List[asyncio.Future] = []
                 for q in plan.queries[:3]:
-                    if not q or len(q.strip()) < 4 or q == query:
+                    if not q or q == query:
                         continue
                     plan_lane_tasks.append(track(
                         _query_search(q, targeted=not targeted_used)))
@@ -326,7 +341,7 @@ class MemoryRetriever:
                 # 非破坏式收尾：到点只收割已落地 lane（asyncio.wait 不取消在途
                 # 任务，取消动作显式做），慢路/挂死路不再拖垮或丢弃整轮召回
                 _done, pending = await asyncio.wait(
-                    all_lanes, timeout=max(0.5, recall_timeout - (loop.time() - t0)))
+                    all_lanes, timeout=max(0.0, deadline - loop.time()))
                 lanes: List[List[MemorySearchResult]] = []
                 n_plan_landed = 0
                 for i, t in enumerate(all_lanes):
@@ -365,15 +380,26 @@ class MemoryRetriever:
 
             results = await _planned_recall()
 
-            # 时间感知：检测到时间引用词时，提升事件记忆与近期记忆权重
-            if self._detect_time_reference(query):
+            async def optional(
+                operation: Callable[[], Awaitable[List[MemorySearchResult]]], fallback: List[MemorySearchResult],
+            ) -> List[MemorySearchResult]:
+                if loop.time() >= deadline:
+                    return fallback
+                try:
+                    async with asyncio.timeout_at(deadline):
+                        return await operation()
+                except TimeoutError:
+                    return fallback
+
+            # 时间意图由检索规划判断，评分层只执行加权。
+            if plan.time_sensitive:
                 results = self._apply_temporal_boost(results)
 
             # 上下文加权：与当前对话实体（用户/群）标签匹配的记忆加权
             results = self._apply_scope_boost(results, all_scopes)
 
             # 关联扩展：沿标签网络发现一跳关联记忆（想到一件事 → 联想到相关的事）
-            results = await self._expand_associations(results, limit=k, extra_seeds=mention_tags)
+            results = await optional(lambda: self._expand_associations(results, limit=k, extra_seeds=mention_tags), results)
 
             async def _complete_probe() -> None:
                 if not fire_probe:
@@ -393,11 +419,11 @@ class MemoryRetriever:
                 pinned_msgs = await self._format_unified_results(pinned, scope=entity_scope) if pinned else []
                 entity_msgs = await profiles_task
                 await _complete_probe()
-                return entity_msgs, pinned_msgs + fallback
+                return entity_msgs, with_coverage(pinned_msgs + fallback)
 
             # Rerank if available
             if self._rerank_client and len(results) > 1:
-                results = await self._apply_rerank(query, results, k)
+                results = await optional(lambda: self._apply_rerank(query, results, k), results)
 
             # 隐式反馈：仅对 memories 表结果更新访问计数
             mem_ids = [
@@ -427,7 +453,7 @@ class MemoryRetriever:
                 path_str = f" {r.path}" if r.path else ""
                 log(f"  💡 {src_label}{tag_str}{path_str} score={r.score:.2f}: {r.snippet[:50]}", tag="思维")
 
-            return entity_msgs, memory_msgs
+            return entity_msgs, with_coverage(memory_msgs)
         finally:
             if plan_ready is not None and not plan_ready.done():
                 plan_ready.set_result([])
@@ -578,8 +604,11 @@ class MemoryRetriever:
 
     @staticmethod
     def _extract_query(conversation: List[Dict], max_chars: int = 500) -> str:
-        """从对话中提取检索查询，过滤无意义短文本，优先使用 user 消息。"""
+        """从最新正文向前分配查询预算，保留最新需求及长消息的结尾限定。"""
+        if max_chars <= 0:
+            return ""
         texts: list[str] = []
+        remaining = max_chars
         for msg in reversed(dialogue_messages(conversation)):
             role = msg.get("role", "")
             if role not in ("user", "assistant"):
@@ -588,16 +617,17 @@ class MemoryRetriever:
             if not isinstance(content, str) or not content.strip():
                 continue
             cleaned = _strip_tags(content)
-            if not cleaned or len(cleaned) < 4:
+            if not cleaned:
                 continue
             if role == "assistant":
                 cleaned = cleaned[:100]
-            texts.append(cleaned)
-            if len(texts) >= 8:
+            texts.append(truncate_middle(cleaned, remaining))
+            remaining -= len(texts[-1]) + 1
+            if len(texts) >= 8 or remaining < 4:
                 break
         if not texts:
             return ""
-        return " ".join(reversed(texts))[:max_chars]
+        return " ".join(reversed(texts))
 
     @staticmethod
     def _extract_focus_query(conversation: List[Dict], max_chars: int = 200) -> str:
@@ -609,7 +639,7 @@ class MemoryRetriever:
             if not isinstance(content, str):
                 continue
             cleaned = _strip_tags(content)
-            if len(cleaned) >= 4:
+            if cleaned:
                 return cleaned[:max_chars]
         return ""
 
@@ -634,8 +664,6 @@ class MemoryRetriever:
                 return fallback
         except Exception:
             return fallback
-        if len(query) < 20:
-            return fallback
         budget = timeout if timeout is not None else _plan_budget_seconds()
         try:
             return await asyncio.wait_for(
@@ -656,7 +684,7 @@ class MemoryRetriever:
             if parsed is not None:
                 queries = [
                     str(q).strip() for q in parsed.get("queries", [])
-                    if isinstance(q, str) and 4 <= len(q.strip()) <= 200
+                    if isinstance(q, str) and 0 < len(q.strip()) <= 200
                 ][:3]
                 entities = [
                     str(e).strip() for e in parsed.get("entities", [])
@@ -666,6 +694,7 @@ class MemoryRetriever:
                     queries=queries or ([query] if query else []),
                     entities=entities,
                     deep_needed=bool(parsed.get("deep_needed")),
+                    time_sensitive=parsed.get("time_sensitive") is True,
                     rationale=str(parsed.get("rationale", ""))[:200],
                 )
                 try:
@@ -856,12 +885,6 @@ class MemoryRetriever:
             "timings": timings,
         }
 
-    # 时间引用词：检测到这些词时提升事件记忆与近期记忆权重
-    _TIME_REFERENCE_WORDS = (
-        "昨天", "前天", "上次", "之前", "最近", "刚才", "上周", "上周",
-        "前几天", "以前", "曾经", "yesterday", "recently", "last time",
-    )
-
     @staticmethod
     def _apply_scope_boost(
             results: list[MemorySearchResult],
@@ -929,37 +952,6 @@ class MemoryRetriever:
                 entry, round(score * 0.75, 4), flags={"associated": True},
             ))
         return results
-
-    @classmethod
-    def _is_trivial_turn(cls, conversation: List[Dict]) -> bool:
-        """仅对明确的寒暄、确认词跳过自动检索，短查询仍正常召回。"""
-        try:
-            from core.config import get_config_bool
-            if not get_config_bool("memory_recall_skip_trivial", True):
-                return False
-        except Exception:
-            return False
-        for msg in reversed(dialogue_messages(conversation)):
-            if msg.get("role") != "user":
-                continue
-            content = msg.get("content", "")
-            if not isinstance(content, str):
-                return False
-            cleaned = _strip_tags(content).strip()
-            if not cleaned:
-                return False
-            return cleaned.lower().rstrip("。.!！～~ ") in {
-                "嗯", "嗯嗯", "哦", "噢", "好的", "好", "好哒", "收到", "明白了",
-                "了解", "谢谢", "多谢", "辛苦了", "你好", "您好", "早上好", "晚安",
-                "hi", "hello", "ok", "okay", "thanks", "thank you",
-            }
-        return False
-
-    @classmethod
-    def _detect_time_reference(cls, query: str) -> bool:
-        """检测查询中是否包含时间引用（用户在回忆过去的事件）。"""
-        lowered = query.lower()
-        return any(w in lowered for w in cls._TIME_REFERENCE_WORDS)
 
     @staticmethod
     def _apply_temporal_boost(

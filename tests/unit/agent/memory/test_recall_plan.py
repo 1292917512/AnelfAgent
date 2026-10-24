@@ -80,6 +80,7 @@ async def test_memory_postprocessing_does_not_wait_for_profiles(store, monkeypat
 
     await store.add(MemoryEntry(memory_type=MemoryType.SEMANTIC, content="航海项目发布地点是青岛"))
     retriever = _retriever(store)
+    _patch_light_llm(monkeypatch, "{}")
     release_profile, processed = asyncio.Event(), asyncio.Event()
     format_results = retriever._format_unified_results
 
@@ -141,13 +142,43 @@ async def test_plan_retrieval_parses_llm_output(store, monkeypatch) -> None:
     _patch_light_llm(
         monkeypatch,
         '{"queries": ["阿辰 喜欢 什么", "阿辰 口味 偏好"], '
-        '"entities": ["阿辰"], "deep_needed": true, "rationale": "人物偏好类问题"}',
+        '"entities": ["阿辰"], "deep_needed": true, "time_sensitive": true, "rationale": "人物偏好类问题"}',
     )
     retriever = _retriever(store)
     plan = await retriever.plan_retrieval("这是一段足够长的对话上下文" * 4)
     assert plan.queries == ["阿辰 喜欢 什么", "阿辰 口味 偏好"]
     assert plan.entities == ["阿辰"]
     assert plan.deep_needed is True
+    assert plan.time_sensitive is True
+
+
+@pytest.mark.parametrize("stage", ["associations", "rerank"])
+async def test_postprocessing_shares_deadline_and_preserves_retrieved_facts(store, monkeypatch, stage):
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from agent.memory.cognee.config import CogneeConfig
+
+    result = MemorySearchResult(id="mem:1", snippet="小李的最新地址在南京，旧地址已失效", score=.9)
+    retriever = _retriever(store)
+    retriever.set_rerank_client(AsyncMock())
+    monkeypatch.setattr(retriever, "plan_retrieval", AsyncMock(return_value=RetrievalPlan(queries=["最新地址"])))
+    monkeypatch.setattr(retriever, "_cognee_config", lambda: CogneeConfig(enabled=False))
+    monkeypatch.setattr(store, "search_unified", AsyncMock(return_value=[result, result]))
+    monkeypatch.setattr(retriever, "_expand_associations", AsyncMock(return_value=[result, result]))
+    monkeypatch.setattr(retriever, "_apply_rerank", AsyncMock(return_value=[result, result]))
+    cancelled = asyncio.Event()
+
+    async def slow(*args, **kwargs):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            cancelled.set()
+
+    monkeypatch.setattr(retriever, "_expand_associations" if stage == "associations" else "_apply_rerank", slow)
+    _, messages = await asyncio.wait_for(retriever.recall_split(
+        [{"role": "user", "content": "最新地址"}], deadline=asyncio.get_running_loop().time() + .1), timeout=1)
+    assert "小李的最新地址在南京" in str(messages) and cancelled.is_set()
 
 
 @pytest.mark.asyncio
@@ -168,7 +199,7 @@ async def test_plan_retrieval_falls_back_on_error(store, monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_plan_retrieval_short_query_skips_llm(store, monkeypatch) -> None:
+async def test_short_query_still_uses_semantic_planning(store, monkeypatch) -> None:
     called = {"n": 0}
 
     import agent.memory.dedup as dedup_mod
@@ -179,7 +210,7 @@ async def test_plan_retrieval_short_query_skips_llm(store, monkeypatch) -> None:
 
     monkeypatch.setattr(dedup_mod, "light_llm", _should_not_call)
     plan = await _retriever(store).plan_retrieval("短查询")
-    assert called["n"] == 0
+    assert called["n"] == 1
     assert plan.queries == ["短查询"]
 
 

@@ -191,6 +191,26 @@ async def publish_delivery(ctx: ExecutionContext, state: RoundState, result: Rep
     log(feedback, "DEBUG", tag="通道")
 
 
+def batch_deliveries_confirmed(ctx: ExecutionContext, calls: list[ToolCall]) -> bool:
+    """同批发送全部有明确送达回执才接受收束；失败、未知和缺失回执保留处理机会。"""
+    from agent.mind.tools.core import OUTPUT_TOOL_NAMES
+
+    results = {message.get("tool_call_id"): message for message in ctx.tool_chain if message.get("role") == "tool"}
+    for call in calls:
+        if call.name == "end_reply":
+            break
+        if call.name not in OUTPUT_TOOL_NAMES:
+            continue
+        message = results.get(call.id)
+        payload = parse_tool_result_json(str(message.get("content", ""))) if message else None
+        if not isinstance(payload, dict) or payload.get("success") is False:
+            return False
+        tags = dict(etag_all(str(payload.get("delivery", ""))))
+        if tags.get("delivery_status") != "sent" or not tags.get("delivery_scope"):
+            return False
+    return True
+
+
 def observe_send_results(ctx: ExecutionContext, state: RoundState, calls: list[ToolCall]) -> None:
     """当前会话的发送尝试抑制重复自动投递；其他会话的回执不改变本会话状态。"""
     from agent.mind.tools.core import OUTPUT_TOOL_NAMES

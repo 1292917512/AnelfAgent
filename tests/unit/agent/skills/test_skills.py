@@ -404,6 +404,21 @@ class TestSkillCatalog:
 
 
 class TestSkillMatcher:
+    async def test_expired_shared_deadline_keeps_keyword_matches_without_waiting(self, store, monkeypatch):
+        from unittest.mock import AsyncMock
+
+        store.create("code-review", "代码审查", "步骤", ["审查"])
+        matcher = SkillMatcher(store)
+        embed = AsyncMock(side_effect=AssertionError("预算耗尽后不发起新网络请求"))
+        monkeypatch.setattr(matcher.index, "text_vector", embed)
+        vector = asyncio.get_running_loop().create_future()
+        matched = await matcher.match(["审查", "代码检查"], query_vec_task=vector,
+                                      deadline=asyncio.get_running_loop().time())
+        assert [skill.name for skill, _ in matched] == ["code-review"]
+        assert not vector.done()
+        vector.cancel()
+        embed.assert_not_awaited()
+
     @pytest.mark.parametrize("cancelled", [False, True])
     async def test_shared_vector_failure_keeps_keywords(self, store, monkeypatch, cancelled):
         from unittest.mock import AsyncMock

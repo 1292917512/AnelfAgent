@@ -23,6 +23,7 @@ async def match_recalled_skills(
         query_vec_task: asyncio.Future[list[float] | None] | None = None,
         scope: str = "",
         planned_queries: Optional[List[str]] = None,
+        deadline: float | None = None,
 ) -> List[Dict]:
     """匹配对话与检索计划中的相关技能，记录候选事实并生成带来源的摘要。"""
     try:
@@ -40,6 +41,7 @@ async def match_recalled_skills(
         matched_skills = await matcher.match(
             lanes, top_k=top_k, query_vec=query_vec,
             query_vec_task=query_vec_task,
+            **({"deadline": deadline} if deadline is not None else {}),
         ) if lanes else []
         if not matched_skills:
             return []

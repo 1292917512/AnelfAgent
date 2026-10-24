@@ -186,6 +186,16 @@ async def _handle_tool_round(
         })
 
     if should_end_reply(tool_calls):
+        if called & OUTPUT_TOOL_NAMES:
+            from agent.mind.execution.reply_delivery import batch_deliveries_confirmed
+
+            if not batch_deliveries_confirmed(ctx, tool_calls):
+                tool_chain.append({"role": "system", "content": (
+                    "[系统] 本批发送尚未全部确认成功，未接受同批 end_reply。"
+                    "请依据每条真实回执处理失败；状态未知时先核对目标会话，避免重复发送。"
+                    "如确认无法继续，可单独 end_reply 记录原因。"), "_source": {"origin": "delivery_guard"}})
+                state.iteration += 1
+                return RoundOutcome.CONTINUE
         # 收束边界：子代理本要结束时收到的追加指示（after 档）优先于收束——
         # 注入续跑而非随收束清箱丢弃（对齐 pi followUp 档：仅在即将停止时投递）
         if merge_after_messages(ctx, state):

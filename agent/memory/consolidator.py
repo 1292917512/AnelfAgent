@@ -402,50 +402,6 @@ _CONSOLIDATOR_CONFIGS = {
             "unit": "秒",
         },
     },
-    "memory/recall": {
-        "memory_query_rewrite_enabled": {
-            "description": "召回前是否用轻量 LLM 改写检索查询（口语→检索友好形式）",
-            "default": True,
-        },
-        "memory_recall_timeout_seconds": {
-            "description": "召回检索整体超时（超时回退近期记忆，不阻塞对话）",
-            "default": 5.0,
-            "advanced": True,
-            "unit": "秒",
-        },
-        "memory_plan_budget_seconds": {
-            "description": "检索规划（轻量 LLM 产出多查询计划）的独立超时预算，超时回退原查询单发；0 = 按召回总超时的 40% 份额派生（召回路径中至多占总超时减 1 秒，保证检索段时间）",
-            "default": 0.0,
-            "advanced": True,
-            "unit": "秒",
-        },
-        "memory_recall_permanent_pin": {
-            "description": "永久记忆置顶注入条数（0 = 关闭；教导/规则类每轮固定注入）",
-            "default": 3,
-            "advanced": True,
-            "unit": "条",
-        },
-        "memory_recall_skip_trivial": {
-            "description": "平凡消息（≤6 字符客套话）跳过检索与查询改写",
-            "default": True,
-            "advanced": True,
-        },
-        "memory_forgotten_recall_limit": {
-            "description": "每次召回最多附带展示的已遗忘记忆条数（归档 + 墓碑合并）",
-            "default": 3,
-            "advanced": True,
-            "unit": "条",
-        },
-        "memory_archive_recall_min_score": {
-            "description": "归档记忆兜底召回的最低相关度（低于此分的归档与全部墓碑仅在主检索无果时出现）",
-            "default": 0.5,
-            "advanced": True,
-            "value_type": "range",
-            "min": 0,
-            "max": 1,
-            "step": 0.05,
-        },
-    },
     "memory/graph": {
         "graph_edge_relax_days": {
             "description": "图谱边强度松弛：超过 N 天无活动（未访问未更新）的边向基线 0.5 回归（访问护盾，常被检索的关系更抗遗忘）",

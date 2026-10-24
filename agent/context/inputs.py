@@ -12,4 +12,5 @@ class RecollectionInputs:
     skills: list[dict] = field(default_factory=list)
     profile_blocks: list[str] = field(default_factory=list)
     repeat_hint: str = ""
+    recall_notice: str = ""
     summary: dict | None = None

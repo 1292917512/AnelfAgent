@@ -66,7 +66,7 @@ class DialogueRecollection:
                     or (message.get("_source") or {}).get("origin") == "conversation"
                     or message.get("_layer") == "conversation"][-6:]
         key = self._key(dialogue)
-        if key in self.seen or MemoryRetriever._is_trivial_turn(dialogue):
+        if key in self.seen:
             return
         state.revision += 1
         self.pending = None

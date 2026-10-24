@@ -67,6 +67,22 @@ async def test_end_reply_text_fallback_delivers_and_corrects(anything, sender):
     assert not any("按普通会话回复投递" in m.get("content", "") for m in msgs)
 
 
+@pytest.mark.parametrize("status", ["sent", "failed", "unknown", "missing"])
+async def test_final_send_can_finish_in_one_model_call_only_after_confirmed_delivery(anything, sender, status):
+    receipt = {"success": status == "sent"}
+    if status != "missing":
+        receipt["delivery"] = delivery_tags("channel", status, _SCOPE)
+    mind, completion = await _run([
+        tool_result("", ["send_message", "end_reply"]), tool_result("", ["end_reply"]),
+    ], anything, receipt=receipt)
+    assert mind.llm_calls == (1 if status == "sent" else 2)
+    assert mind.executed_tools.count("send_message") == 1
+    if status != "sent":
+        assert any("未接受同批 end_reply" in str(message.get("content", ""))
+                   for message in completion["messages"] if message.get("role") == "system")
+    sender.assert_not_awaited()
+
+
 async def test_end_reply_text_rejected_keeps_text_intact(anything, sender, monkeypatch):
     """Jev 判定不投：不写新会话记录、不改写正文（防伪造前缀诱导幻觉）。"""
     review = AsyncMock(return_value=ReplyAssessment(False, "Jev 明确拦截：内部过程或结束备注"))
@@ -213,7 +229,9 @@ async def test_end_output_and_internal_boundaries_with_interim_enabled(anything,
     from agent.mind.execution.state import ThinkMode
 
     ConfigManager.set("send_interim_text", True)
-    mind = FakeMind(rounds=[tool_result("仅内部备注", ["send_message", "end_reply"])], default_text=None)
+    mind = FakeMind(rounds=[tool_result("仅内部备注", ["send_message", "end_reply"])], default_text=None,
+                    tool_results={"send_message": json.dumps({
+                        "success": True, "delivery": delivery_tags("channel", "sent", _SCOPE)})})
     token = bind_scope(_SCOPE)
     try:
         await run_think_loop(mind, anything=anything, mode=ThinkMode(mode))

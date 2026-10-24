@@ -7,6 +7,10 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
+class CogneeIndexBusy(RuntimeError):
+    """索引写入或恢复期间暂不接受读取；不代表索引损坏或检索无结果。"""
+
+
 class CogneePipelineError(RuntimeError):
     """把流水线失败结果转换为异常，并保留根因类型供重试分类。"""
 

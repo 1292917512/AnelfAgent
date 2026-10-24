@@ -20,6 +20,24 @@ from agent.memory.memory_types import MemorySearchResult, MemoryType
 # 多窗口召回增强（memory_retriever）
 # ==================================================================
 
+def test_query_budget_preserves_latest_request_instead_of_old_long_message() -> None:
+    latest = "现在只查小李最新的项目地址，不是小王的旧地址"
+    query = MemoryRetriever._extract_query([
+        {"role": "user", "content": "旧项目资料" * 300},
+        {"role": "assistant", "content": "下面是旧项目介绍" * 50},
+        {"role": "user", "content": latest},
+    ], max_chars=120)
+    assert len(query) <= 120 and latest in query
+
+
+def test_long_latest_query_keeps_trailing_constraint() -> None:
+    query = MemoryRetriever._extract_query([
+        {"role": "user", "content": "请找小李的项目资料：" + "中间背景" * 300 + "只看最新有效地址，排除旧地址"},
+    ], max_chars=120)
+    assert len(query) <= 120
+    assert query.startswith("请找小李的项目资料") and query.endswith("只看最新有效地址，排除旧地址")
+
+
 def _result(rid: str, score: float, mtype: str = "semantic", ts: float = 0.0) -> MemorySearchResult:
     return MemorySearchResult(
         id=rid, snippet=f"内容{rid}", score=score, memory_type=mtype,
@@ -54,9 +72,9 @@ class TestFocusQuery:
         ]
         assert MemoryRetriever._extract_focus_query(conv) == "那适合出去玩吗"
 
-    def test_skips_short_and_tags(self) -> None:
+    def test_keeps_short_dialogue_without_metadata(self) -> None:
         conv = [{"role": "user", "content": "[uid:123] 嗯"}]
-        assert MemoryRetriever._extract_focus_query(conv) == ""
+        assert MemoryRetriever._extract_focus_query(conv) == "嗯"
 
     def test_empty_conversation(self) -> None:
         assert MemoryRetriever._extract_focus_query([]) == ""
@@ -104,16 +122,6 @@ class TestMergeResults:
             [planned, focus], limit=10, consensus_lanes=1,
         )
         assert merged[0].score == 0.7  # 取最高分，单计划 lane 命中无共识加成
-
-
-class TestTimeReference:
-    def test_detects_chinese_time_words(self) -> None:
-        assert MemoryRetriever._detect_time_reference("我昨天说了什么")
-        assert MemoryRetriever._detect_time_reference("上次讨论的话题")
-        assert MemoryRetriever._detect_time_reference("最近怎么样")
-
-    def test_no_time_reference(self) -> None:
-        assert not MemoryRetriever._detect_time_reference("今天天气不错")
 
 
 class TestTemporalBoost:

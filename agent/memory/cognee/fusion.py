@@ -25,7 +25,7 @@ from ..tag_query import TagQuery
 from .config import CogneeConfig
 from .ports import RecallBackend
 from .query_scope import query_scope
-from .types import CogneeRecallItem
+from .types import CogneeIndexBusy, CogneeRecallItem
 
 
 @dataclass
@@ -215,7 +215,12 @@ async def search_cognee(
     if not availability.ready:
         diagnostics.cognee = "unavailable"
         return []
-    datasets = await client.available_datasets(datasets)
+    try:
+        datasets = await client.available_datasets(datasets)
+    except CogneeIndexBusy:
+        diagnostics.cognee = "busy"
+        log("Cognee 索引写入/恢复中，本次检索保留原生结果，不排队等待构图", "DEBUG", tag="记忆")
+        return []
     if not datasets:
         diagnostics.cognee = "no_datasets"
         return []
@@ -294,6 +299,11 @@ async def search_cognee(
                 results = await resolve_sources(results)
             if strict and tag_query is not None:
                 results = [result for result in results if tag_query.matches(result.tags)]
+        except CogneeIndexBusy as exc:
+            diagnostics.cognee = "busy"
+            if on_batch is not None:
+                await on_batch(CogneeSearchBatch(lane, "error", time.monotonic() - started, error=str(exc)))
+            return []
         except Exception as exc:
             diagnostics.failed_lanes += 1
             detail = f"{type(exc).__name__}: {str(exc) or '检索未完成'}"
@@ -314,7 +324,8 @@ async def search_cognee(
         tasks = [asyncio.create_task(consume(lane, call), name=f"cognee.search.{lane}") for lane, call in lanes]
         try:
             batches = await asyncio.gather(*tasks)
-            diagnostics.cognee = "partial" if diagnostics.failed_lanes or diagnostics.tag_filter_limited else "complete"
+            if diagnostics.cognee != "busy":
+                diagnostics.cognee = "partial" if diagnostics.failed_lanes or diagnostics.tag_filter_limited else "complete"
             return _fuse_ranked_lists(
                 [(batch, 1.0) for batch in batches], config=config,
                 limit=pool_size,

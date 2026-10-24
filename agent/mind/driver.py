@@ -235,7 +235,10 @@ class MindDriver:
                 await self._run_task(request)
             elif work == "heartbeat":
                 await self._mind.heartbeat_engine.tick()
-                await self._mind._autonomous_cycle(is_heartbeat=True)
+                if self._cycle_requested:
+                    log("心跳任务已收束，先处理新消息；自主决策留待后续周期", "DEBUG", tag="思维")
+                else:
+                    await self._mind._autonomous_cycle(is_heartbeat=True)
             else:
                 await self._run_tick()
         except asyncio.CancelledError:

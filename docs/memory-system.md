@@ -142,6 +142,13 @@ Cognee 可回链分块在融合和硬标签过滤前批量回查原生库，使�
 Web 的记忆页和钩子页共用配置入口；AI 的全局修改沿用
 `update_entity_config`，单轮修改用 `set_recall_policy`。
 
+未被消息、SDK 或频道显式覆盖的 deep 默认策略，可通过 `memory_recall_adaptive_enabled` 启用
+Jev 原生分级：高置信无需历史证据时选择 off，高置信无需历史关联时选择 fast，其余保留 deep。
+分级不按词表或字数猜测；判断缺失、不可用或超时不降低召回强度。结果在动态区明确说明检索
+范围与主动 recall 入口，不能将“未自动检索”理解为“没有记忆”。分级和可选检索共用首轮
+`memory_recall_timeout_seconds` 截止时间，独立的索引回收持锁收束，不阻塞主回复。
+详见[对话准备与召回分工](mind-architecture.md)。
+
 | 档位 | 首轮准备 | 深探补充 |
 |---|---|---|
 | off | 只保留固定纪律、主标签索引与永久记忆 | 无 |

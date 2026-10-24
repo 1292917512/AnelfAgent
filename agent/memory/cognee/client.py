@@ -29,7 +29,7 @@ from .manifest import IndexManifest, MutationPlan
 from .model_config import resolve_models, validate_models
 from .process import CogneeProcess, WorkerCrashed
 from .records import DatasetCatalog, DatasetRecord, DocumentRecord, IngestionResult, document_processed
-from .types import CogneeAvailability, CogneePipelineProgress, CogneeRecallItem
+from .types import CogneeAvailability, CogneeIndexBusy, CogneePipelineProgress, CogneeRecallItem
 from .wire import InputDocument, make_document
 
 T = TypeVar("T")
@@ -92,6 +92,7 @@ class CogneeClient:
         self._transaction_writes = False
         self._finished_writes = 0
         self._needs_recovery = False
+        self._reads: set[asyncio.Task[Any]] = set()
 
     def sample_write_bytes(self) -> int:
         import psutil
@@ -166,7 +167,7 @@ class CogneeClient:
     async def available_datasets(self, names: list[str]) -> list[str]:
         async with self._datasets_lock:
             if time.monotonic() >= self._datasets_until:
-                rows = await self.list_datasets()
+                rows = await self.list_datasets(wait_for_index=False)
                 self._dataset_names = {row["name"] for row in rows}
                 self._datasets_until = time.monotonic() + 30
         return [name for name in names if name in self._dataset_names]
@@ -288,6 +289,7 @@ class CogneeClient:
 
     async def _abort(self, error: BaseException) -> None:
         self._needs_recovery = True
+        self._phase = "recovering"
         await self._stop()
         self._summary_datasets.clear()
         self._datasets_until = 0
@@ -349,7 +351,8 @@ class CogneeClient:
         result = await process.call("inspect_index", names, timeout=self.config.pipeline_timeout_seconds)
         return IndexManifest.model_validate(result)
 
-    async def _invoke(self, method: str, *args: Any, write: bool = False, **kwargs: Any) -> Any:
+    async def _invoke(self, method: str, *args: Any, write: bool = False,
+                      wait_for_index: bool = True, **kwargs: Any) -> Any:
         if write and not self._inside_transaction():
             async with self.write_transaction():
                 return await self._invoke(method, *args, write=True, **kwargs)
@@ -366,7 +369,31 @@ class CogneeClient:
         availability = await self.initialize()
         if not availability.ready:
             raise RuntimeError(availability.reason or "Cognee 未就绪")
-        # 批次期间不读正在修改的图库；超时由既有召回层降级到原生结果。
+        # 在事务外拒绝排队读取候选区，避免模型构图耗尽整段召回预算。
+        # 拒绝发生在读取/恢复异常处理之外，不中断或回滚持锁写事务。
+        if not wait_for_index and self._phase in {"preparing", "writing", "committing", "recovering"}:
+            raise CogneeIndexBusy("Cognee 索引正在写入或恢复，本次召回使用原生记忆；稍后可重试图谱检索")
+        task = asyncio.create_task(self._read_call(method, args, kwargs, limit, wait_for_index),
+                                   name=f"memory.cognee.read.{method}")
+        self._reads.add(task)
+        task.add_done_callback(self._read_done)
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            if not task.cancelling():
+                task.cancel()
+            raise
+
+    def _read_done(self, task: asyncio.Task[Any]) -> None:
+        self._reads.discard(task)
+        if not task.cancelled() and (error := task.exception()) is not None:
+            log(f"Cognee 读取收束: {type(error).__name__}", "DEBUG", tag="记忆")
+
+    async def _read_call(self, method: str, args: tuple[Any, ...], kwargs: dict[str, Any], limit: float,
+                         wait_for_index: bool) -> Any:
+        """客户端持有读取任务；取消后的回收仍持锁，调用方无需等待进程退出。"""
+        if not wait_for_index and self._phase in {"preparing", "writing", "committing", "recovering"}:
+            raise CogneeIndexBusy("Cognee 索引正在写入或恢复，请在索引空闲后重试")
         async with asyncio.timeout(limit):
             async with self._operation_lock:
                 try:
@@ -380,8 +407,12 @@ class CogneeClient:
 
     async def close(self) -> None:
         self.quiesce()
+        for task in self._reads:
+            if not task.cancelling():
+                task.cancel()
         # 工作区可丢弃，无需等待模型或原生线程。退出后由 dirty 记录驱动恢复。
         await self._stop()
+        await asyncio.gather(*self._reads, return_exceptions=True)
         async with self._operation_lock:
             if self._owner:
                 self._owner.release()
@@ -418,10 +449,11 @@ class CogneeClient:
     async def recall(self, query_text: str, **kwargs: Any) -> list[CogneeRecallItem]:
         if not self.projection_ready:
             return []
-        return [CogneeRecallItem.model_validate(item) for item in await self._invoke("recall", query_text, **kwargs)]
+        return [CogneeRecallItem.model_validate(item) for item in
+                await self._invoke("recall", query_text, wait_for_index=False, **kwargs)]
 
-    async def list_datasets(self, **kwargs: Any) -> list[DatasetRecord]:
-        rows = _DATASETS.validate_python(await self._invoke("list_datasets", **kwargs))
+    async def list_datasets(self, *, wait_for_index: bool = True, **kwargs: Any) -> list[DatasetRecord]:
+        rows = _DATASETS.validate_python(await self._invoke("list_datasets", wait_for_index=wait_for_index, **kwargs))
         if not self._inside_transaction():
             self._remember_catalog(rows)
         return rows

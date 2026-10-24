@@ -140,6 +140,9 @@ class RetrievalPlan(BaseModel):
     queries: List[str] = Field(default_factory=list)
     """互补检索查询（1-3 条），首条为主查询。"""
 
+    time_sensitive: bool = False
+    """检索规划判断是否需要事件时间与近期变化加权。"""
+
     entities: List[str] = Field(default_factory=list)
     """对话中提及的实体名（人名/称呼/项目/话题），用于图谱解析与定向检索。"""
 

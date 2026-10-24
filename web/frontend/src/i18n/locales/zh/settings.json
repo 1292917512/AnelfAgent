@@ -239,6 +239,7 @@
     "names": {
       "memory": {
         "recall": "首轮记忆召回",
+        "route": "召回强度判断",
         "cross_channel": "跨会话相关召回",
         "probe": "首轮深度召回",
         "dialogue": "对话补充回忆"

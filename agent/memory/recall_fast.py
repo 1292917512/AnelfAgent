@@ -19,12 +19,18 @@ if TYPE_CHECKING:
 
 
 async def search_local(retriever: MemoryRetriever, query: str, *,
-                       tags: tuple[str, ...] = ()) -> list[MemorySearchResult]:
+                       tags: tuple[str, ...] = (), deadline: float | None = None,
+                       query_vec_task: asyncio.Future[list[float] | None] | None = None) -> list[MemorySearchResult]:
     """有界向量等待后执行本地混合检索，精确标签同时约束全文与向量结果。"""
     k, min_score = retriever.recall_limits()
+    loop = asyncio.get_running_loop()
+    vector_deadline = min(deadline, loop.time() + 2) if deadline is not None else loop.time() + 2
+    vector = None
     try:
-        async with asyncio.timeout(2):
-            vector = await retriever._embedder.embed_query(query)
+        if loop.time() < vector_deadline:
+            async with asyncio.timeout_at(vector_deadline):
+                vector = (await asyncio.shield(query_vec_task) if query_vec_task is not None
+                          else await retriever._embedder.embed_query(query))
     except Exception as exc:
         log(f"快速召回向量不可用，采用本地文本检索: {type(exc).__name__}", "DEBUG", tag="记忆")
         vector = None
@@ -35,7 +41,8 @@ async def search_local(retriever: MemoryRetriever, query: str, *,
 
 
 async def recall_local(retriever: MemoryRetriever, conversation: list[dict], *, scope: str,
-                       related_scopes: list[str], policy: RecallPolicy) -> tuple[list[dict], list[dict]]:
+                       related_scopes: list[str], policy: RecallPolicy, deadline: float | None = None,
+                       query_vec_task: asyncio.Future[list[float] | None] | None = None) -> tuple[list[dict], list[dict]]:
     """按强度选择本地召回路径，标签采用精确交集并保留来源。"""
     store = retriever._store
     profiles: list[dict] = []
@@ -53,8 +60,9 @@ async def recall_local(retriever: MemoryRetriever, conversation: list[dict], *, 
 
     async def search() -> None:
         query = retriever._extract_query(conversation)
-        if query and not retriever._is_trivial_turn(conversation):
-            found.extend(await search_local(retriever, query, tags=policy.tags))
+        if query:
+            found.extend(await search_local(retriever, query, tags=policy.tags, deadline=deadline,
+                                            query_vec_task=query_vec_task))
 
     async with asyncio.TaskGroup() as tasks:
         if policy.level != "off":

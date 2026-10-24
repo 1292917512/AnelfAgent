@@ -79,6 +79,29 @@ async def test_cycle_requests_are_serial_and_latched() -> None:
         await mind.driver.close()
 
 
+async def test_heartbeat_yields_at_completed_tick_before_starting_another_model_cycle() -> None:
+    mind = _fake_mind()
+    entered, release = asyncio.Event(), asyncio.Event()
+
+    async def tick():
+        entered.set()
+        await release.wait()
+        return ["completed maintenance"]
+
+    mind.heartbeat_engine.tick.side_effect = tick
+    try:
+        mind.driver.request_cycle(is_heartbeat=True)
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        mind.driver.request_cycle()
+        release.set()
+        await asyncio.wait_for(mind.driver.when_idle(), timeout=1)
+        mind._autonomous_cycle.assert_awaited_once_with(is_heartbeat=False)
+        mind.heartbeat_engine.tick.assert_awaited_once()
+    finally:
+        release.set()
+        await mind.driver.close()
+
+
 async def test_named_task_is_deduplicated_while_queued() -> None:
     mind = _fake_mind()
     entered = asyncio.Event()
