@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import time
 
 import pytest
 
@@ -246,6 +247,78 @@ async def test_real_relation_fragments_incremental_update_preserves_committed_do
         reopened = CogneeCoordinator(store, client, config)
         await reopened.rebuild.initialize(config)
         await reopened.rebuild.verify_backend(reopened.rebuild.state, await store.projection_state.mappings())
+    finally:
+        await client.close()
+        await store.close()
+
+
+@pytest.mark.timeout(900)
+async def test_real_split_retry_preserves_published_index_and_resumes_after_restart(tmp_path, monkeypatch):
+    """真实模型、图库、向量及恢复快照验证小组发布、失败回退和进程重开。"""
+    config = load_cognee_config()
+    config.enabled = config.sync_enabled = True
+    config.data_root = str(tmp_path / "cognee")
+    config.timeout_seconds = config.pipeline_timeout_seconds = 180
+    config.write_breaker_enabled = False
+    config.improve_interval_seconds = 0
+    store = MemoryStore(str(tmp_path / "memory.sqlite3"))
+    store.set_cognee_projection_enabled(True)
+    client = CogneeClient(config, source_mappings=store.projection_state.publication_sources)
+    coordinator = CogneeCoordinator(store, client, config)
+    writes: list[list[int]] = []
+    original_add, original_cognify = client.add, client.cognify
+
+    async def add(data, **kwargs):
+        writes.append([int(item.external_metadata["anelf_memory_id"]) for item in data])
+        return await original_add(data, **kwargs)
+
+    async def cognify(**kwargs):
+        if len(writes) in {1, 3}:
+            raise TimeoutError("injected embedding timeout after real ingestion")
+        return await original_cognify(**kwargs)
+
+    monkeypatch.setattr(client, "add", add)
+    monkeypatch.setattr(client, "cognify", cognify)
+    try:
+        await coordinator.rebuild.initialize(config)
+        texts = ["蓝鸢项目由林舟维护。", "白鹭项目部署在南京。", "青禾项目由许岚负责。", "松涛项目部署在杭州。"]
+        ids = [await store.add(MemoryEntry(content=text, memory_type=MemoryType.SEMANTIC)) for text in texts]
+        await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
+        assert (await store.get_cognee_sync_status())["pending"] == 4
+        assert client.publication_status["commits"] == 0
+        retry_ns = time.time_ns() + 30_000_000_000
+        monkeypatch.setattr("agent.memory.store.cognee_queue.time.time_ns", lambda: retry_ns)
+        await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
+        assert writes == [ids, ids[:2], ids[2:]]
+        assert (await store.get_cognee_sync_status())["pending"] == 2
+        assert client.publication_status["commits"] == 1
+        mappings = await store.projection_state.mappings()
+        assert {row["entry_id"] for row in mappings} == set(ids[:2])
+        await coordinator.rebuild.verify_backend(coordinator.rebuild.state, mappings)
+        mapping = mappings[0]
+        assert {row["id"] for row in await client.list_data(mapping["dataset_id"])} == {
+            row["data_id"] for row in mappings}
+        await client.close()
+        await store.close()
+
+        store = MemoryStore(str(tmp_path / "memory.sqlite3"))
+        store.set_cognee_projection_enabled(True)
+        client = CogneeClient(config, source_mappings=store.projection_state.publication_sources)
+        coordinator = CogneeCoordinator(store, client, config)
+        await coordinator.rebuild.initialize(config)
+        retry_ns += 30_000_000_000
+        batch = await store.claim_cognee_sync_batch(10)
+        assert [item["entry_id"] for item in batch] == ids[2:]
+        assert all(item["attempts"] == 2 for item in batch)
+        await coordinator._process_batch(batch)
+        assert not coordinator.writer.last_error
+        assert await store.get_cognee_sync_status() == {"pending": 0, "failed": 0, "synced": 4}
+        current = await store.projection_state.mappings()
+        assert all(row in current for row in mappings)
+        await coordinator.rebuild.verify_backend(coordinator.rebuild.state, current)
+        assert len(await client.list_data(mapping["dataset_id"])) == 4
+        assert [entry.content for mid in ids if (entry := await store.get(mid))] == texts
+        assert await store.projection_state.staged() == []
     finally:
         await client.close()
         await store.close()

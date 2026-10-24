@@ -7,6 +7,7 @@ import copy
 import hashlib
 import json
 import sqlite3
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -1118,6 +1119,227 @@ async def test_failed_ingestion_then_source_change_leaves_no_orphan(coordinator,
     assert await store.projection_state.staged() == []
     assert sum(map(len, coordinator.client.documents.values())) == 1
     assert "随后更新版本" in next(iter(coordinator.client.documents["anelf_global"].values()))["text"]
+
+
+@pytest.mark.parametrize("failure", ["cognify", "verify", "publish"])
+async def test_retry_groups_keep_healthy_commits_across_failure_and_restart(coordinator, store, monkeypatch, failure):
+    ids = [await store.add(MemoryEntry(content=f"旧事实 {i}", memory_type=MemoryType.SEMANTIC)) for i in range(8)]
+    await coordinator._process_batch(await store.claim_cognee_sync_batch(20))
+    previous = {mid: await store.get_cognee_mapping(mid) for mid in ids}
+    client = coordinator.client
+    original_add, original_verify = client.add, client.verify_graph_documents
+    groups: list[list[int]] = []
+    active: list[int] = []
+
+    async def add(data, **kwargs):
+        active[:] = [int(row["external_metadata"]["anelf_memory_id"]) for row in data]
+        groups.append(active.copy())
+        progress = await coordinator.writer.progress.snapshot(AsyncMock())
+        assert progress.items == len(active)
+        return await original_add(data, **kwargs)
+
+    async def cognify(**kwargs):
+        if failure == "cognify" and ids[0] in active:
+            raise TimeoutError("one source unavailable")
+
+    async def verify(*args, **kwargs):
+        if failure == "verify" and ids[0] in active:
+            raise RuntimeError("one source graph missing")
+        await original_verify(*args, **kwargs)
+
+    @asynccontextmanager
+    async def transactional():
+        snapshot = copy.deepcopy(client.documents)
+        try:
+            yield
+            if failure == "publish" and ids[0] in active:
+                raise OSError("one candidate snapshot failed")
+        except BaseException:
+            client.documents = snapshot
+            raise
+
+    monkeypatch.setattr(client, "add", add)
+    monkeypatch.setattr(client, "cognify", cognify)
+    monkeypatch.setattr(client, "verify_graph_documents", verify)
+    monkeypatch.setattr(client, "write_transaction", transactional)
+    coordinator.config.max_retries = 3
+    for mid in ids:
+        entry = await store.get(mid)
+        entry.content = f"新事实 {mid}"
+        await store.update(entry)
+    await coordinator._process_batch(await store.claim_cognee_sync_batch(20))
+    assert groups == [ids]
+    assert all([await store.get_cognee_mapping(mid) == previous[mid] for mid in ids])
+    retry_ns = time.time_ns() + 10_000_000_000
+    monkeypatch.setattr("agent.memory.store.cognee_queue.time.time_ns", lambda: retry_ns)
+    await coordinator._process_batch(await store.claim_cognee_sync_batch(20))
+    assert groups == [ids, ids[:4], ids[4:]]
+    assert coordinator.writer.last_error  # 后一个成功小组不能掩盖前一个小组失败。
+    for mid in ids:
+        current = await store.get_cognee_mapping(mid)
+        assert (current["data_id"] != previous[mid]["data_id"]) is (mid in ids[4:])
+    assert (await store.get_cognee_sync_status())["pending"] == 4
+    await store.close()
+    reopened = MemoryStore(store._db_path)
+    reopened.set_cognee_projection_enabled(True)
+    coordinator = CogneeCoordinator(reopened, client, coordinator.config)
+    try:
+        retry_ns += 10_000_000_000
+        batch = await reopened.claim_cognee_sync_batch(20)
+        assert [item["entry_id"] for item in batch] == ids[:4]
+        assert all(item["attempts"] == 2 for item in batch)
+        await coordinator._process_batch(batch)
+        assert groups[-4:] == [[mid] for mid in ids[:4]]
+        status = await reopened.get_cognee_sync_status()
+        assert status["pending"] == 0 and status["failed"] == 1
+        for mid in ids:
+            current = await reopened.get_cognee_mapping(mid)
+            assert (current["data_id"] != previous[mid]["data_id"]) is (mid != ids[0])
+        assert len(client.documents["anelf_global"]) == 8
+        assert "旧事实 0" in client.documents["anelf_global"][previous[ids[0]]["data_id"]]["text"]
+        assert all([await reopened.get(mid) is not None for mid in ids])
+    finally:
+        await reopened.close()
+
+
+async def test_retry_groups_keep_all_fragments_of_each_source_together(coordinator, store, monkeypatch):
+    from agent.memory.graph import fragments
+
+    monkeypatch.setattr(fragments, "MAX_DOCUMENT_CHARS", 400)
+    for i in range(3):
+        await store.graph.add_relation(f"topic:左{i}", "连接", f"topic:右{i}", evidence="完整关系证据。" * 100)
+    client = coordinator.client
+    original_add = client.add
+    groups: list[dict[int, int]] = []
+    expected: dict[int, int] = {}
+    batch = await store.claim_cognee_sync_batch(20)
+    for item in batch:
+        projection = await store.graph.projection_fragments_snapshot(item["entry_id"], fragmented=False)
+        expected[item["entry_id"]] = len(projection[1])
+    assert len(expected) == 6 and min(expected.values()) > 1
+    blocked = next(iter(expected))
+
+    async def add(data, **kwargs):
+        counts: dict[int, int] = {}
+        for row in data:
+            source = int(row["external_metadata"]["anelf_graph_node_id"])
+            counts[source] = counts.get(source, 0) + 1
+        assert all(count == expected[source] for source, count in counts.items())
+        groups.append(counts)
+        return await original_add(data, **kwargs)
+
+    async def cognify(**kwargs):
+        if blocked in groups[-1]:
+            raise TimeoutError("one relation source unavailable")
+
+    @asynccontextmanager
+    async def transactional():
+        snapshot = copy.deepcopy(client.documents)
+        try:
+            yield
+        except BaseException:
+            client.documents = snapshot
+            raise
+
+    monkeypatch.setattr(client, "add", add)
+    monkeypatch.setattr(client, "cognify", cognify)
+    monkeypatch.setattr(client, "write_transaction", transactional)
+    await coordinator._process_batch(batch)
+    retry_ns = time.time_ns() + 10_000_000_000
+    monkeypatch.setattr("agent.memory.store.cognee_queue.time.time_ns", lambda: retry_ns)
+    await coordinator._process_batch(await store.claim_cognee_sync_batch(20))
+    assert [len(group) for group in groups] == [6, 3, 3]
+    assert coordinator.writer.last_error
+    mappings = await store.projection_state.mappings()
+    assert len(mappings) == 3
+    for mapping in mappings:
+        assert len(json.loads(mapping["documents_json"])) == expected[mapping["entry_id"]]
+    assert len(client.documents[coordinator.writer.relations_dataset]) == sum(
+        expected[mapping["entry_id"]] for mapping in mappings)
+
+
+async def test_post_publish_enhancement_failure_does_not_retry_completed_sources(coordinator, store):
+    ids = [await store.add(MemoryEntry(content=f"已发布事实 {i}", memory_type=MemoryType.SEMANTIC)) for i in range(4)]
+    batch = await store.claim_cognee_sync_batch(20)
+    # 模拟重启前已经失败的队列；正常任务不为单条发布增加快照成本。
+    for item in batch:
+        item["attempts"] = 1
+    callback = AsyncMock(side_effect=RuntimeError("optional enhancement unavailable"))
+    coordinator.writer._after_write = callback
+    await coordinator._process_batch(batch)
+    callback.assert_awaited_once_with("anelf_global")
+    assert await store.get_cognee_sync_status() == {"pending": 0, "failed": 0, "synced": 4}
+    assert all([await store.get_cognee_mapping(mid) is not None for mid in ids])
+    assert not coordinator.writer.last_error
+
+
+async def test_split_retry_cancellation_keeps_commits_and_concurrent_source_update(coordinator, store, monkeypatch):
+    ids = [await store.add(MemoryEntry(content=f"断点事实 {i}", memory_type=MemoryType.SEMANTIC)) for i in range(4)]
+    client = coordinator.client
+    original_add = client.add
+    groups: list[list[int]] = []
+    entered = asyncio.Event()
+
+    async def add(data, **kwargs):
+        groups.append([int(row["external_metadata"]["anelf_memory_id"]) for row in data])
+        return await original_add(data, **kwargs)
+
+    async def cognify(**kwargs):
+        if len(groups) == 1:
+            raise TimeoutError("initial batch timeout")
+        if groups[-1] == ids[2:]:
+            entered.set()
+            await asyncio.Event().wait()
+
+    @asynccontextmanager
+    async def transactional():
+        snapshot = copy.deepcopy(client.documents)
+        try:
+            yield
+        except BaseException:
+            client.documents = snapshot
+            raise
+
+    monkeypatch.setattr(client, "add", add)
+    monkeypatch.setattr(client, "cognify", cognify)
+    monkeypatch.setattr(client, "write_transaction", transactional)
+    await coordinator._process_batch(await store.claim_cognee_sync_batch(20))
+    fresh = await store.add(MemoryEntry(content="新任务独立发布", memory_type=MemoryType.SEMANTIC))
+    retry_ns = time.time_ns() + 10_000_000_000
+    monkeypatch.setattr("agent.memory.store.cognee_queue.time.time_ns", lambda: retry_ns)
+    task = asyncio.create_task(coordinator._process_batch(await store.claim_cognee_sync_batch(20)))
+    try:
+        await asyncio.wait_for(entered.wait(), 3)
+        entry = await store.get(ids[0])
+        entry.content = "小组发布之后更新的事实"
+        await store.update(entry)
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert groups == [ids, ids[:2], ids[2:]]
+    assert (await coordinator.status()).active is None
+    assert all([await store.get_cognee_mapping(mid) is not None for mid in ids[:2]])
+    assert all([await store.get_cognee_mapping(mid) is None for mid in [*ids[2:], fresh]])
+    await store.close()
+    reopened = MemoryStore(store._db_path)
+    reopened.set_cognee_projection_enabled(True)
+    restarted = CogneeCoordinator(reopened, client, coordinator.config)
+    monkeypatch.setattr(client, "cognify", AsyncMock())
+    try:
+        batch = await reopened.claim_cognee_sync_batch(20)
+        assert {item["entry_id"] for item in batch} == {ids[0], *ids[2:], fresh}
+        assert [item["attempts"] for item in batch if item["entry_id"] in ids[2:]] == [1, 1]
+        await restarted._process_batch(batch)
+        # 已提交且未变化的来源不再处理；新任务也不与失败来源重新合成同一事务。
+        assert groups[-3:] == [[ids[2]], [ids[3]], [fresh, ids[0]]]
+        assert await reopened.get_cognee_sync_status() == {"pending": 0, "failed": 0, "synced": 5}
+        mapping = await reopened.get_cognee_mapping(ids[0])
+        assert "小组发布之后更新的事实" in client.documents["anelf_global"][mapping["data_id"]]["text"]
+        assert len(client.documents["anelf_global"]) == 5
+        assert await reopened.projection_state.staged() == []
+    finally:
+        await reopened.close()
 
 
 async def test_audit_does_not_block_writes_and_rejects_changed_revision(coordinator, store, monkeypatch):

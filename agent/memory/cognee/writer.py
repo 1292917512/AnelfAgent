@@ -1,6 +1,10 @@
 """消费已认领条目：文档投影、幂等替换、删除与失败重试。
 
 只处理一个批次，不创建任务、持有调度锁或修改重建状态。
+
+模型看到什么：沿用原有投影正文及 Cognee 提示词，仅缩小失败重试的发布范围。
+token 影响：已提交小组不再重复抽取，正常首次同步的模型调用不增加。
+缓存影响：只调整后台投影调度，不触碰对话提示词前缀。
 """
 
 from __future__ import annotations
@@ -8,7 +12,7 @@ from __future__ import annotations
 import json
 import time
 from collections import defaultdict
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from typing import Any
 
 from core.log import log
@@ -25,6 +29,8 @@ from .errors import error_text
 from .ports import ProjectionBackend
 from .progress import ProjectionProgress
 from .wire import InputDocument
+
+ProjectionEntry = tuple[dict[str, Any], ProjectionDocument]
 
 
 class ProjectionWriter:
@@ -45,8 +51,8 @@ class ProjectionWriter:
     async def process(self, batch: list[dict[str, Any]]) -> None:
         if not batch:
             return
-        with self.progress.batch(batch):
-            await self._process(batch)
+        self.last_error = ""
+        await self._process(batch)
 
     async def _process(self, batch: list[dict[str, Any]]) -> None:
         availability = await self.client.initialize()
@@ -93,6 +99,10 @@ class ProjectionWriter:
         )
 
     async def _process_delete(self, item: dict[str, Any]) -> None:
+        with self.progress.batch([item]):
+            await self._delete_projection(item)
+
+    async def _delete_projection(self, item: dict[str, Any]) -> None:
         self.progress.stage("delete")
         try:
             targets = await self._superseded_targets(item)
@@ -139,7 +149,7 @@ class ProjectionWriter:
         dataset_name: str,
         items: list[dict[str, Any]],
     ) -> None:
-        entries: list[tuple[dict[str, Any], ProjectionDocument]] = []
+        entries: list[ProjectionEntry] = []
         for item in items:
             document = memory_document(item["payload"])
             mapping = await self.store.get_cognee_mapping(item["entry_id"], entry_kind=item["entry_kind"])
@@ -150,7 +160,7 @@ class ProjectionWriter:
             else:
                 entries.append((item, document))
         if entries:
-            await self._push_projection_group(dataset_name, entries, graph=False)
+            await self._push_projection_groups(dataset_name, entries, graph=False)
 
     @property
     def relations_dataset(self) -> str:
@@ -159,7 +169,7 @@ class ProjectionWriter:
 
     async def _process_graph_upserts(self, items: list[dict[str, Any]]) -> None:
         """读取一致的邻域及出处快照；证据变化重投影，强度变化不重投影。"""
-        grouped: dict[str, list[tuple[dict[str, Any], ProjectionDocument]]] = defaultdict(list)
+        grouped: dict[str, list[ProjectionEntry]] = defaultdict(list)
         for item in items:
             mapping = await self.store.get_cognee_mapping(item["entry_id"], entry_kind=item["entry_kind"])
             projection = await self.store.graph.projection_fragments_snapshot(
@@ -184,15 +194,32 @@ class ProjectionWriter:
                 grouped[dataset].append(({**item, "projection_hash": fingerprint},
                     ProjectionDocument(text, digest, attribution, part_key=key)))
         for dataset_name, entries in grouped.items():
-            await self._push_projection_group(dataset_name, entries, graph=True)
+            await self._push_projection_groups(dataset_name, entries, graph=True)
+
+    async def _push_projection_groups(
+        self, dataset_name: str, entries: list[ProjectionEntry], *, graph: bool,
+    ) -> None:
+        """重试按来源缩小发布范围；已提交小组不受后续失败及增强回调影响。"""
+        published = False
+        for group in _retry_groups(entries):
+            sources = {int(item["queue_id"]): item for item, _document in group}
+            with self.progress.batch(list(sources.values())):
+                published |= await self._push_projection_group(dataset_name, group, graph=graph)
+        if published:
+            with self.progress.batch(list({int(item["queue_id"]): item for item, _document in entries}.values())):
+                self.progress.stage("enhance", dataset_name=dataset_name, timeout=self.config.pipeline_timeout_seconds)
+                try:
+                    await self._after_write(dataset_name)
+                except Exception as exc:
+                    log(f"Cognee 发布后增强失败（投影已提交，不重试同步）: {error_text(exc)}", "WARNING", tag="思维")
 
     async def _push_projection_group(
         self,
         dataset_name: str,
-        entries: list[tuple[dict[str, Any], ProjectionDocument]],
+        entries: list[ProjectionEntry],
         *,
         graph: bool,
-    ) -> None:
+    ) -> bool:
         """先完成新投影再替换旧映射；稳定文档 ID 使失败重试不新增副本。"""
         metadata_key = "anelf_graph_node_id" if graph else "anelf_memory_id"
         label_kind = "graph-node" if graph else "memory"
@@ -278,9 +305,7 @@ class ProjectionWriter:
                     content_hash=item.get("projection_hash", document.fingerprint),
                     documents_json=json.dumps(documents, ensure_ascii=False),
                 )
-            self.progress.stage("enhance", dataset_name=dataset_name, timeout=self.config.pipeline_timeout_seconds)
-            await self._after_write(dataset_name)
-            self.last_error = ""
+            return True
         except Exception as exc:
             self.last_error = error_text(exc)
             log(
@@ -293,17 +318,33 @@ class ProjectionWriter:
                 if item["queue_id"] not in failed:
                     await self._fail(item, exc)
                     failed.add(item["queue_id"])
+            return False
 
     async def _fail(self, item: dict[str, Any], error: str | Exception) -> None:
+        self.last_error = error_text(error) if isinstance(error, Exception) else error
         attempts = int(item.get("attempts", 0))
         delay = min(300.0, 2.0 ** min(attempts, 8))
         await self.store.fail_cognee_sync(
             item["queue_id"],
-            error_text(error) if isinstance(error, Exception) else error,
+            self.last_error,
             max_retries=self.config.max_retries if not isinstance(error, Exception) or retryable(error) else 1,
             retry_delay_seconds=delay,
         )
 
+
+def _retry_groups(entries: list[ProjectionEntry]) -> Iterator[list[ProjectionEntry]]:
+    """首次整组发布，重试按持久化次数递减组宽；同一来源的分片不可拆分。"""
+    sources: dict[int, list[ProjectionEntry]] = defaultdict(list)
+    for entry in entries:
+        sources[int(entry[0]["queue_id"])].append(entry)
+    cohorts: dict[int, list[list[ProjectionEntry]]] = defaultdict(list)
+    for source in sources.values():
+        cohorts[max(0, int(source[0][0].get("attempts", 0)))].append(source)
+    for attempts, cohort in cohorts.items():
+        divisor = 1 << min(attempts, len(cohort).bit_length())
+        width = max(1, (len(cohort) + divisor - 1) // divisor)
+        for start in range(0, len(cohort), width):
+            yield [entry for source in cohort[start:start + width] for entry in source]
 
 
 def _value(item: Any, key: str, default: Any) -> Any:
