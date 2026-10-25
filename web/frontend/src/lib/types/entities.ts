@@ -63,12 +63,3 @@ export interface EntityDetail {
   tools: EntityToolInfo[];
   providers: EntityProviderInfo[];
 }
-
-export interface EntityReloadResult {
-  added: string[];
-  removed: string[];
-  reloaded: string[];
-  failed: string[];
-  total: number;
-  skipped?: "in_progress";
-}

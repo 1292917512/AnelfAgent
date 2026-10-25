@@ -1,5 +1,14 @@
 /** 工具页类型（/tools、/tools/plugins API）。 */
 
+export interface ModuleSyncResult {
+  added: string[];
+  removed: string[];
+  reloaded: string[];
+  failed: string[];
+  total: number;
+  skipped?: "in_progress";
+}
+
 export interface ToolItem {
   name: string;
   source: string;

@@ -77,13 +77,13 @@ class AdapterService:
         return result
 
     @staticmethod
-    async def reload_channels() -> Dict[str, Any]:
+    async def reload_channels(channel_id: str | None = None) -> Dict[str, Any]:
         """热同步频道：对账 channels/ 目录（新增热插入 / 消失热拔除 / 存续热重载）。
 
         存续频道的代码热更会断开重连一次。
         """
         from agent.channel.hotplug import sync_channels
-        return await sync_channels(reload_existing=True)
+        return await sync_channels(reload_existing=True, channel_id=channel_id)
 
     async def toggle_adapter(self, key: str) -> None:
         """启动或停止指定频道（挂起直到完成或超时）。
@@ -97,7 +97,7 @@ class AdapterService:
         mgr = get_channel_manager()
         channel = mgr.get(key)
 
-        if channel and channel.status.value == "running":
+        if channel and channel.status.value in {"running", "starting", "reconnecting"}:
             await self._with_timeout(mgr.stop_channel(key), 10, f"停止频道超时: {key}")
             set_channel_enabled(key, False)
             return

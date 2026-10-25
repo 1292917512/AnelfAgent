@@ -36,6 +36,10 @@ class QrSessionStore:
     def discard(self, session_id: str) -> None:
         self._sessions.pop(session_id, None)
 
+    def items(self) -> list[tuple[str, Any]]:
+        """返回会话快照，供宿主关闭资源后逐项注销。"""
+        return list(self._sessions.items())
+
     def is_expired(self, session: Any) -> bool:
         return self._clock() - session.created_at > self._ttl
 

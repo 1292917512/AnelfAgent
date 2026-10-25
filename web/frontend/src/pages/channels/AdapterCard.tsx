@@ -1,6 +1,6 @@
 import { Suspense } from "react";
 import { useTranslation } from "react-i18next";
-import { ChevronDown, Power, RotateCcw, Settings2, Blocks, Wifi, WifiOff } from "lucide-react";
+import { ChevronDown, Power, RefreshCw, RotateCcw, Settings2, Blocks, Wifi, WifiOff } from "lucide-react";
 import type { AdapterInfo, ConfigMetaItem, ConfigValues } from "@/lib/types";
 import { ProviderKeysPanel } from "@/components/common/ProviderKeysPanel";
 import { StatusDot } from "@/components/common/StatusDot";
@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 import { ChannelWebView } from "./ChannelWebView";
 import { ConfigField } from "./ConfigField";
 import { CHANNEL_LOGIN_COMPONENTS, CHANNEL_PANEL_COMPONENTS } from "@/lib/channel-plugins";
+import { Button } from "@/components/ui";
 
 const statusToColor = (s: string): "ok" | "warn" | "danger" | "offline" => {
   switch (s) {
@@ -25,6 +26,10 @@ export function AdapterCard({
   configs,
   values,
   toggling,
+  busy,
+  reloadDisabled,
+  reloading,
+  onReload,
   onToggleExpand,
   onToggle,
   onOpenTools,
@@ -36,6 +41,10 @@ export function AdapterCard({
   configs: ConfigMetaItem[];
   values: ConfigValues;
   toggling: boolean;
+  busy: boolean;
+  reloadDisabled: boolean;
+  reloading: boolean;
+  onReload: () => void;
   onToggleExpand: () => void;
   onToggle: () => void;
   onOpenTools?: (channel: { key: string; name: string }) => void;
@@ -43,7 +52,7 @@ export function AdapterCard({
   onResetDefaults: () => void;
 }) {
   const { t } = useTranslation("channels");
-  const isRunning = a.status === "running";
+  const isRunning = ["running", "starting", "reconnecting"].includes(a.status);
   // 频道插件（channels/<id>/frontend/）提供登录入口与自定义面板，核心零硬编码
   const PluginLogin = CHANNEL_LOGIN_COMPONENTS[a.key];
   const PluginPanel = CHANNEL_PANEL_COMPONENTS[a.key];
@@ -81,25 +90,27 @@ export function AdapterCard({
             </Suspense>
           )}
           {onOpenTools && (
-            <button onClick={() => onOpenTools({ key: a.key, name: a.name })}
+            <Button size="sm" onClick={() => onOpenTools({ key: a.key, name: a.name })}
               title={t("tools.openTools")}
-              className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-xl border border-border text-muted hover:text-foreground hover:bg-hover transition-colors">
+              >
               <Blocks size={14} />
               {t("tools.openTools")}
-            </button>
+            </Button>
           )}
-          <button onClick={onToggle} disabled={toggling}
+          <Button size="sm" aria-label={t("reloadChannel", { name: a.name })} title={t("reloadChannel", { name: a.name })} onClick={onReload} disabled={reloadDisabled} loading={reloading}>
+            {!reloading && <RefreshCw size={14} />}{t("reloadOne")}
+          </Button>
+          <Button size="sm" onClick={onToggle} disabled={busy} loading={toggling}
             className={cn(
-              "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-xl border transition-colors disabled:opacity-70",
               toggling
                 ? "border-border text-warn bg-warn-subtle cursor-wait"
                 : isRunning
                   ? "border-[rgba(239,68,68,0.3)] text-danger hover:bg-danger-subtle"
                   : "border-[rgba(34,197,94,0.3)] text-ok hover:bg-ok-subtle",
             )}>
-            <Power size={14} className={toggling ? "animate-spin" : ""} />
+            {!toggling && <Power size={14} />}
             {toggling ? (isRunning ? t("stopping") : t("starting")) : isRunning ? t("stop") : t("start")}
-          </button>
+          </Button>
         </div>
       </div>
 

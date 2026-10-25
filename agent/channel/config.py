@@ -21,6 +21,8 @@ from __future__ import annotations
 import importlib
 import json
 import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Type
 
@@ -197,31 +199,36 @@ def load_channel_config_model(channel_id: str) -> Optional[Type[ChannelConfig]]:
     return model
 
 
-def register_channel_schema(channel_id: str) -> bool:
-    """注册单个频道的配置存储与 schema（幂等），返回是否成功。
-
-    幂等：重复调用仅刷新 schema 定义与重载配置文件，已有值不被默认值覆盖。
-    """
+@contextmanager
+def channel_schema_registration(channel_id: str) -> Iterator[None]:
+    """暂存频道 schema、store 与监听；作用域失败时恢复原声明和配置值。"""
     from core.registration import registration_transaction
 
     from .config_watcher import get_config_watcher
 
     channel_dir = channels_dir() / channel_id
     if not (channel_dir / "adapter.py").exists():
-        return False
+        raise ValueError(f"频道不存在: {channel_id}")
     model = load_channel_config_model(channel_id)
     if model is None:
-        return False
+        raise ValueError(f"频道 {channel_id} 配置模型加载失败")
     store = ChannelConfigStore(channel_id, channel_dir / "channel_config.json", model)
+    with registration_transaction("agent.channel"):
+        ConfigManager.register_store(f"{channel_id}_", store)
+        ConfigRegistry.unregister_group(f"adapter/{channel_id}")
+        register_model_configs(
+            f"adapter/{channel_id}", model,
+            key_prefix=channel_id, only_fields=_declared_fields(model),
+        )
+        get_config_watcher().watch(str(store.path), store.reload_notify)
+        yield
+
+
+def register_channel_schema(channel_id: str) -> bool:
+    """幂等注册频道配置；刷新声明与文件值，已有值不被默认值覆盖。"""
     try:
-        with registration_transaction("agent.channel"):
-            ConfigManager.register_store(f"{channel_id}_", store)
-            ConfigRegistry.unregister_group(f"adapter/{channel_id}")
-            register_model_configs(
-                f"adapter/{channel_id}", model,
-                key_prefix=channel_id, only_fields=_declared_fields(model),
-            )
-            get_config_watcher().watch(str(store.path), store.reload_notify)
+        with channel_schema_registration(channel_id):
+            pass
     except Exception as exc:
         log(f"频道配置注册失败: {channel_id} - {exc}", "ERROR", tag="通道")
         return False

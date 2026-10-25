@@ -132,12 +132,23 @@ def _mount_one_module_router(app: FastAPI, kind: str, name: str) -> None:
         return
     build_router = getattr(mod, "build_router", None)
     if not callable(build_router):
+        _unmount_module_router(app, prefix)
         return
-    _unmount_module_router(app, prefix)
+    previous_routes = None
+    previous_auth = dict(getattr(app.state, "module_auth_routes", {}))
     try:
-        _include_module_router(app, build_router(), prefix=prefix, tags=[tag_tpl.format(name)])
+        replacement = build_router()
+        if not isinstance(replacement, APIRouter):
+            raise TypeError("build_router must return APIRouter")
+        previous_routes = list(app.router.routes)
+        _unmount_module_router(app, prefix)
+        _include_module_router(app, replacement, prefix=prefix, tags=[tag_tpl.format(name)])
         log(f"模块路由已热挂载: {prefix}")
     except Exception as exc:
+        if previous_routes is not None:
+            app.router.routes[:] = previous_routes
+            app.state.module_auth_routes = previous_auth
+            app.openapi_schema = None
         log(f"模块路由热挂载失败: {name} - {exc}", "WARNING")
 
 
@@ -146,6 +157,7 @@ def _include_module_router(app: FastAPI, router: APIRouter, *, prefix: str, tags
     auth_routes = [Route(prefix + route.path, endpoint=route.endpoint, methods=route.methods)
                    for route in router.routes if isinstance(route, Route)]
     app.include_router(router, prefix=prefix, tags=list(tags))
+    app.openapi_schema = None
     if not hasattr(app.state, "module_auth_routes"):
         app.state.module_auth_routes = {}
     app.state.module_auth_routes[prefix] = auth_routes
@@ -170,6 +182,7 @@ def _unmount_module_router(app: FastAPI, prefix: str) -> int:
     for r in doomed:
         routes.remove(r)
     if doomed:
+        app.openapi_schema = None
         log(f"模块路由已热卸载: {prefix} ({len(doomed)} 条)")
     return len(doomed)
 

@@ -24,6 +24,7 @@ from agent.channel.qr_login import (
     QR_WAIT,
     QrSessionStore,
 )
+from core.lifecycle import Lifecycle
 from core.log import log
 
 from .ilink_client import (
@@ -243,6 +244,13 @@ class QrLoginManager:
         if session:
             await self._close(session)
 
+    async def close(self) -> None:
+        """关闭所有扫码会话；关闭失败时保留会话，供宿主重试。"""
+        for session_id, session in self._store.items():
+            if not session.http_session.is_closed:
+                await session.http_session.aclose()
+            self._store.discard(session_id)
+
 
 _qr_manager: Optional[QrLoginManager] = None
 
@@ -251,6 +259,7 @@ def get_qr_manager() -> QrLoginManager:
     global _qr_manager
     if _qr_manager is None:
         _qr_manager = QrLoginManager()
+    Lifecycle.register("channel.weixin.qr_login", _qr_manager, cleanup=_qr_manager.close)
     return _qr_manager
 
 

@@ -80,6 +80,10 @@ Cognee 同步队列概览独立于全量构建阶段展示：待同步为 `pendi
   消息渲染器，详见 [ui-contributions.md](ui-contributions.md)
 - 插件 API 复用核心 axios 实例（`import { api, apiErrorMessage } from "@/lib/api"`）
 
+频道卡片与工具实体分别提供定向重载，全量同步保留在各自工具栏。频道配置有未保存草稿时
+禁用重载，保存、启停和重载提交期间禁用冲突操作；失败也刷新真实状态，部分失败或同步
+正在进行不提示成功。工具目录缓存失效由 `lib/tool-catalog.ts` 统一收口，避免页面之间相互依赖。
+
 ## 共享动效与弹层生命周期
 
 表单使用 `Input`、`Textarea`、`Select`、`Switch`；`form-control` 统一边框、字体、禁用态和

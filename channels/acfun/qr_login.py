@@ -28,6 +28,7 @@ from agent.channel.qr_login import (
     QrSessionStore,
     qr_result,
 )
+from core.lifecycle import Lifecycle
 from core.log import log
 
 _QR_BASE = "https://scan.acfun.cn/rest/pc-direct/qr"
@@ -159,6 +160,11 @@ class AcfunQrLoginManager:
     async def discard(self, session_id: str) -> None:
         self._store.discard(session_id)
 
+    def close(self) -> None:
+        """清理扫码会话；网络请求使用短生命周期客户端，无常驻连接。"""
+        for session_id, _session in self._store.items():
+            self._store.discard(session_id)
+
 
 _QR_MANAGER: Optional[AcfunQrLoginManager] = None
 
@@ -168,4 +174,5 @@ def get_qr_manager() -> AcfunQrLoginManager:
     global _QR_MANAGER
     if _QR_MANAGER is None:
         _QR_MANAGER = AcfunQrLoginManager()
+    Lifecycle.register("channel.acfun.qr_login", _QR_MANAGER, cleanup=_QR_MANAGER.close)
     return _QR_MANAGER

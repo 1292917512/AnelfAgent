@@ -705,6 +705,26 @@ class TestInboundPipeline:
 # ======================================================================
 
 class TestQrLoginManager:
+    async def test_close_releases_sessions_and_retains_failed_client_for_retry(self):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+
+        from channels.weixin.qr_login import QrLoginManager
+
+        manager = QrLoginManager()
+        closed = SimpleNamespace(is_closed=False, aclose=AsyncMock())
+        failed = SimpleNamespace(is_closed=False, aclose=AsyncMock(side_effect=RuntimeError("busy")))
+        manager._store.add("closed", SimpleNamespace(http_session=closed))
+        manager._store.add("failed", SimpleNamespace(http_session=failed))
+        with pytest.raises(RuntimeError, match="busy"):
+            await manager.close()
+        closed.aclose.assert_awaited_once()
+        assert manager._store.get("closed") is None
+        assert manager._store.get("failed") is not None
+        failed.aclose.side_effect = None
+        await manager.close()
+        assert manager._store.items() == []
+
     def _make_manager(self, monkeypatch, qr_responses, status_responses):
         """qr_responses/status_responses: 依次返回的响应队列。"""
         from channels.weixin import qr_login as qr_mod

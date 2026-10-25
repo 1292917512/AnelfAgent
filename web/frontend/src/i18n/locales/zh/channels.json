@@ -96,6 +96,13 @@
     "inline_keyboard": "内联键盘",
     "streaming": "流式输出"
   },
-  "reload": "热同步",
+  "reload": "热同步全部频道",
+  "reloadOne": "重载",
+  "reloadChannel": "重载频道 {{name}}",
+  "reloadHint": "单频道重载会更新其适配器、配置和工具，并重新连接运行中的频道。其他频道不受影响；有未保存配置时请先保存或重置。前端开发模式自动热更新。",
+  "reloadBusy": "频道同步正在进行，请稍后重试。",
+  "reloadFailed": "部分频道重载失败：{{names}}。请检查频道状态与运行日志。",
+  "reloadSuccess": "频道 {{name}} 已重载",
+  "reloadAllSuccess": "频道热同步完成，更新 {{count}} 个模块",
   "reloading": "热同步中..."
 }

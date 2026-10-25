@@ -96,6 +96,13 @@
     "inline_keyboard": "Inline Keyboard",
     "streaming": "Streaming"
   },
-  "reload": "Sync",
+  "reload": "Sync all channels",
+  "reloadOne": "Reload",
+  "reloadChannel": "Reload channel {{name}}",
+  "reloadHint": "Reload updates one channel's adapter, configuration and tools, reconnecting it if running. Other channels stay connected. Save or reset pending configuration first. Frontend development uses hot updates.",
+  "reloadBusy": "Channel synchronization is in progress. Please try again shortly.",
+  "reloadFailed": "Some channels failed to reload: {{names}}. Check channel status and server logs.",
+  "reloadSuccess": "Channel {{name}} reloaded",
+  "reloadAllSuccess": "Channel synchronization complete: {{count}} modules updated",
   "reloading": "Syncing..."
 }

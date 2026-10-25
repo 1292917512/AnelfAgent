@@ -125,7 +125,8 @@ class ChannelManager(BaseEntity):
         name = getattr(channel, "display_name", cid)
         log(f"轻量频道已注册: {cid} ({name})", tag="通道")
 
-    def unregister(self, channel_id: str) -> None:
+    def unregister(self, channel_id: str, *, replacing: bool = False) -> None:
+        """回收实例、监听和工具；替换实例时保留启停意图与已学习的路由。"""
         channel = self._channels.pop(channel_id, None)
         if channel:
             try:
@@ -140,9 +141,10 @@ class ChannelManager(BaseEntity):
                 log(f"频道工具注销失败: {exc}", "WARNING", tag="通道")
             if isinstance(channel, BaseEntity):
                 EntityRegistry.unregister(channel.get_entity_name())
-            self._desired_running.pop(channel_id, None)
-            self._channel_map = {key: cid for key, cid in self._channel_map.items() if cid != channel_id}
-            self._group_targets = {key for key in self._group_targets if not key.startswith(channel_id + ":")}
+            if not replacing:
+                self._desired_running.pop(channel_id, None)
+                self._channel_map = {key: cid for key, cid in self._channel_map.items() if cid != channel_id}
+                self._group_targets = {key for key in self._group_targets if not key.startswith(channel_id + ":")}
             log(f"频道已注销: {channel_id}", tag="通道")
 
     def get(self, channel_id: str) -> Optional[BaseChannel]:
@@ -176,6 +178,14 @@ class ChannelManager(BaseEntity):
 
     def _operation_lock(self, channel_id: str) -> asyncio.Lock:
         return self._operation_locks.setdefault(channel_id, asyncio.Lock())
+
+    async def reload_channel(self, channel_id: str) -> None:
+        """串行替换频道源码与实例，与启停和看门狗共用锁且不覆盖停止意图。"""
+        from .reload import reload_channel
+
+        async with self._operation_lock(channel_id):
+            self._desired_running.setdefault(channel_id, get_config_bool(config_key(channel_id, "enabled"), False))
+            await reload_channel(self, channel_id)
 
     async def start_channel(self, channel_id: str) -> bool:
         self._desired_running[channel_id] = True

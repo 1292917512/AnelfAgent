@@ -54,6 +54,22 @@ async def toggle_adapter(key: str) -> Dict[str, str]:
         raise server_error("切换频道", e) from e
 
 
+@router.post("/{key}/reload")
+async def reload_channel(key: str) -> Dict[str, Any]:
+    """按实际频道目录定向重载，不重连其他频道；失败保留可管理的实例。"""
+    try:
+        result = await _adapter_svc.reload_channels(key)
+    except KeyError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except Exception as exc:
+        raise server_error("重载频道", exc) from exc
+    if result.get("skipped"):
+        raise HTTPException(409, "频道同步正在进行，请稍后重试")
+    if result.get("failed"):
+        raise HTTPException(500, "频道重载失败，请检查频道状态与运行日志")
+    return result
+
+
 @router.post("/{key}/test/health")
 async def test_channel_health(key: str) -> Dict[str, Any]:
     return await _adapter_svc.test_channel_health(key)

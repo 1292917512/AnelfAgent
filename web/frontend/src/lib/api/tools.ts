@@ -14,7 +14,7 @@ import type {
   ConfigValues,
   EntityDetail,
   EntityListItem,
-  EntityReloadResult,
+  ModuleSyncResult,
   HookEntry,
   HooksConfig,
   LlmHooksOverview,
@@ -45,7 +45,7 @@ export const toolsApi = {
   toggleGroup: (group: string) => api.put(`/tools/group/${encodeURIComponent(group)}/toggle`),
   updateMeta: (name: string, data: { tags?: string[]; description?: string }) =>
     api.put(`/tools/${encodeURIComponent(name)}/meta`, data),
-  reload: () => api.post<EntityReloadResult>("/tools/reload"),
+  reload: () => api.post<ModuleSyncResult>("/tools/reload"),
   plugins: () => api.get<PluginInfo[]>("/tools/plugins"),
 };
 
@@ -56,7 +56,7 @@ export const entitiesApi = {
   catalog: () => api.get("/entities/catalog"),
   statistics: () => api.get("/entities/statistics"),
   detail: (name: string) => api.get<EntityDetail>(`/entities/${encodeURIComponent(name)}`),
-  reload: (name: string) => api.post<EntityReloadResult>(`/entities/${encodeURIComponent(name)}/reload`),
+  reload: (name: string) => api.post<ModuleSyncResult>(`/entities/${encodeURIComponent(name)}/reload`),
   config: (name: string) => api.get(`/entities/${encodeURIComponent(name)}/config`),
   updateConfig: (name: string, key: string, value: unknown) =>
     api.put(`/entities/${encodeURIComponent(name)}/config`, { key, value }),
@@ -115,7 +115,7 @@ export const mcpApi = {
 
 export const adaptersApi = {
   list: () => api.get<AdapterListResult>("/adapters/"),
-  reload: () => api.post("/adapters/reload"),
+  reload: (key: string | null = null) => api.post<ModuleSyncResult>(key ? `/adapters/${encodeURIComponent(key)}/reload` : "/adapters/reload"),
   toggle: (key: string) => api.put(`/adapters/${encodeURIComponent(key)}/toggle`),
   testHealth: (key: string) =>
     api.post<ChannelTestHealthResult>(`/adapters/${encodeURIComponent(key)}/test/health`),

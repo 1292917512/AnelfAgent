@@ -25,6 +25,7 @@ class _FakeManager:
         self.activated: List[str] = []
         self.stopped: List[str] = []
         self.unregistered: List[str] = []
+        self.reloaded: List[str] = []
 
     def list_channels(self) -> Dict[str, Any]:
         return dict(self._channels)
@@ -42,6 +43,9 @@ class _FakeManager:
         self.unregistered.append(channel_id)
         self._channels.pop(channel_id, None)
 
+    async def reload_channel(self, channel_id: str) -> None:
+        self.reloaded.append(channel_id)
+
 
 @pytest.fixture(autouse=True)
 def _isolate(monkeypatch: pytest.MonkeyPatch):
@@ -51,7 +55,7 @@ def _isolate(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(hotplug, "_failed_channels", set())
     monkeypatch.setattr(ConfigRegistry, "get_all_groups", classmethod(lambda cls: []))
     # 静默事件广播（测试无 web 订阅方）
-    monkeypatch.setattr(hotplug, "_emit", lambda event, cid: None)
+    monkeypatch.setattr(hotplug, "_emit", AsyncMock())
     yield
     for key in ("c_new_enabled", "c_old_enabled", "c1_enabled"):
         ConfigManager.set(key, None)
@@ -179,10 +183,8 @@ class TestSyncChannels:
 
         result = await hotplug.sync_channels(reload_existing=True)
         assert result["reloaded"] == ["c1"]
-        assert manager.stopped == ["c1"]
-        assert manager.unregistered == ["c1"]
-        assert calls["registered"] == ["c1"]
-        assert manager.activated == ["c1"]
+        assert manager.reloaded == ["c1"]
+        assert manager.stopped == [] and calls["registered"] == []
 
     async def test_failed_add_retried_next_sync(
         self, monkeypatch: pytest.MonkeyPatch,
@@ -212,3 +214,21 @@ class TestSyncChannels:
         monkeypatch.setattr(hotplug, "_sync_running", True)
         result = await hotplug.sync_channels()
         assert result["skipped"] == "in_progress"
+
+    async def test_targeted_reload_leaves_unrelated_add_remove_and_retry_pending(self, monkeypatch):
+        manager = _FakeManager({"c1": object(), "removed": object()})
+        monkeypatch.setattr(hotplug, "get_channel_manager", lambda: manager)
+        monkeypatch.setattr(hotplug, "scan_channel_dirs", lambda: {"c1", "new", "failed"})
+        monkeypatch.setattr(hotplug, "_synced_channels", {"removed", "c1"})
+        monkeypatch.setattr(hotplug, "_failed_channels", {"failed"})
+        result = await hotplug.sync_channels(True, channel_id="c1")
+        assert result == {"added": [], "removed": [], "reloaded": ["c1"], "failed": [], "total": 3}
+        assert manager.reloaded == ["c1"] and manager.unregistered == []
+        assert hotplug._failed_channels == {"failed"}
+        assert hotplug._synced_channels == {"removed", "c1"}
+
+    @pytest.mark.parametrize("name", ["missing", "../c1", "c1.adapter"])
+    async def test_invalid_target_does_not_fall_back_to_global_sync(self, monkeypatch, name):
+        monkeypatch.setattr(hotplug, "scan_channel_dirs", lambda: {"c1"})
+        with pytest.raises(KeyError):
+            await hotplug.sync_channels(True, channel_id=name)

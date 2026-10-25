@@ -234,6 +234,12 @@ reconcile 对账范式（对齐插件装卸载）：监听目录结构（子目�
 失败回滚、持久化状态回放和路由事件；不会装卸或重载其他实体。工具目录及实体详情根据
 分组声明归属提供单实体入口，内核与频道工具不猜测为实体目录。
 
+频道定向同步使用 `sync_channels(channel_id=...)` / `POST /adapters/{id}/reload`，
+复用全量同步的单飞护栏，只处理目标频道并保留其他频道的待重试记录。
+频道实例替换由 ChannelManager 的操作锁保护，和启停、看门狗串行；配置声明使用
+注册撤销日志，附属服务由 Lifecycle 回收，失败时保留资源所有权。具体重载与依赖边界
+见[频道分册](channels-and-scopes.md#运行时重载)。
+
 ## 存储卷（core/storage_volume.py）
 
 所有持久化数据统一登记为存储卷（8 卷：agent 主库 / memory / skill_vectors / stickers / audio /

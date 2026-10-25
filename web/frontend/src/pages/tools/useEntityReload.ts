@@ -1,13 +1,10 @@
-import { useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { entitiesApi, toolsApi } from "@/lib/api";
 import { toast } from "@/components/ui";
+import { refreshToolCatalog } from "@/lib/tool-catalog";
 
-/** 工具注册变化后同步目录、详情与标签；不重建正在编辑的面板。 */
-export async function refreshToolCatalog(client: QueryClient): Promise<void> {
-  await Promise.all(["tools-grouped", "entity-detail", "entities", "tool-tags", "unified-tags", "plugins"].map((key) =>
-    client.invalidateQueries({ queryKey: [key] })));
-}
+export { refreshToolCatalog } from "@/lib/tool-catalog";
 
 /** 单实体与全量重载共用反馈和缓存失效，后台跳过或部分失败不显示为成功。 */
 export function useEntityReload() {

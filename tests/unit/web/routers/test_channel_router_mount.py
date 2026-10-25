@@ -8,6 +8,41 @@ from __future__ import annotations
 
 
 class TestChannelRouterMount:
+    def test_hot_reload_updates_routes_removes_obsolete_routes_and_preserves_failed_build(self, monkeypatch):
+        from fastapi import APIRouter, FastAPI
+        from fastapi.testclient import TestClient
+
+        import channels.weixin.adapter as module
+        import web.server as server
+
+        app = FastAPI()
+
+        def router(version):
+            result = APIRouter()
+
+            @result.get(f"/version{version}")
+            def version_route():
+                return {"version": version}
+
+            return result
+
+        monkeypatch.setattr(module, "build_router", lambda: router(1))
+        server._mount_one_module_router(app, "channel", "weixin")
+        client = TestClient(app)
+        assert client.get("/api/channels/weixin/version1").json() == {"version": 1}
+        assert "/api/channels/weixin/version1" in client.get("/openapi.json").json()["paths"]
+        monkeypatch.setattr(module, "build_router", lambda: router(2))
+        server._mount_one_module_router(app, "channel", "weixin")
+        assert client.get("/api/channels/weixin/version1").status_code == 404
+        assert client.get("/api/channels/weixin/version2").json() == {"version": 2}
+        assert "/api/channels/weixin/version1" not in client.get("/openapi.json").json()["paths"]
+        monkeypatch.setattr(module, "build_router", lambda: None)
+        server._mount_one_module_router(app, "channel", "weixin")
+        assert client.get("/api/channels/weixin/version2").status_code == 200
+        monkeypatch.delattr(module, "build_router")
+        server._mount_one_module_router(app, "channel", "weixin")
+        assert client.get("/api/channels/weixin/version2").status_code == 404
+
     def test_server_mounts_channel_routers(self, monkeypatch):
         """create_app() 挂载微信扫码路由，端到端走通（mock QR 管理器）。"""
         from unittest.mock import AsyncMock

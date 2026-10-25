@@ -14,6 +14,7 @@ import { useUnsavedChanges } from "@/components/common/UnsavedChanges";
 import { AsyncState } from "@/components/common/AsyncState";
 import { ListToolbar } from "@/components/common/ListToolbar";
 import { Button } from "@/components/ui";
+import { useChannelReload } from "./useChannelReload";
 
 export function ChannelsPanel({ onOpenTools }: {
   onOpenTools?: (channel: { key: string; name: string }) => void;
@@ -70,13 +71,8 @@ export function ChannelsPanel({ onOpenTools }: {
       if (complete) showSaved();
     },
   });
-  const reload = useMutation({
-    mutationFn: adaptersApi.reload,
-    onSuccess: () => Promise.all([
-      client.invalidateQueries({ queryKey: ["adapters"] }),
-      client.invalidateQueries({ queryKey: ["configMeta"] }),
-    ]),
-  });
+  const reload = useChannelReload();
+  const busy = toggle.isPending || reload.isPending || save.isPending;
   const update = (key: string, value: unknown) => { draft.update(key, value); resetSaved(); };
   const visible = (key: string, name = "") => !isChannelHidden(key) && (key + " " + name).toLowerCase().includes(search.trim().toLowerCase());
   const registered = adapters.data?.adapters ?? [];
@@ -88,14 +84,15 @@ export function ChannelsPanel({ onOpenTools }: {
     <div className="space-y-5">
       <ListToolbar search={search} onSearch={setSearch} count={count}>
         {saved && !draft.dirty && <span role="status" className="flex items-center gap-1 text-xs text-ok"><CheckCircle size={14} />{t("savedOk")}</span>}
-        {draft.dirty && <Button size="sm" onClick={draft.reset} disabled={save.isPending}><RotateCcw size={14} />{t("common:reset")}</Button>}
-        <Button size="sm" onClick={() => reload.mutate()} loading={reload.isPending} disabled={draft.dirty || toggle.isPending}>
+        {draft.dirty && <Button size="sm" onClick={draft.reset} disabled={busy}><RotateCcw size={14} />{t("common:reset")}</Button>}
+        <Button size="sm" onClick={() => reload.mutate(null)} loading={reload.isPending && reload.variables === null} disabled={draft.dirty || busy}>
           <RefreshCw size={14} />{t("reload")}
         </Button>
-        <Button variant="primary" size="sm" onClick={() => save.mutate(draft.patch)} disabled={!draft.dirty} loading={save.isPending}>
+        <Button variant="primary" size="sm" onClick={() => save.mutate(draft.patch)} disabled={!draft.dirty || busy} loading={save.isPending}>
           <Save size={14} />{t("saveConfig")}{draft.dirty && ` (${draft.dirtyKeys.length})`}
         </Button>
       </ListToolbar>
+      <p className="text-xs leading-relaxed text-muted">{t("reloadHint")}</p>
       <AsyncState pending={adapters.isPending || metadata.isPending}
         error={!adapters.data ? adapters.error : !metadata.data ? metadata.error : undefined}
         retry={() => { void adapters.refetch(); void metadata.refetch(); }}>
@@ -105,15 +102,18 @@ export function ChannelsPanel({ onOpenTools }: {
             {matches.map((adapter) => (
               <AdapterCard key={adapter.key} adapter={adapter} isOpen={expanded === adapter.key} configs={configs[adapter.key] ?? []}
                 values={draft.values} toggling={toggle.isPending && toggle.variables === adapter.key}
+                busy={busy} reloadDisabled={draft.dirty || busy} reloading={reload.isPending && reload.variables === adapter.key}
+                onReload={() => reload.mutate(adapter.key)}
                 onToggleExpand={() => setExpanded(expanded === adapter.key ? null : adapter.key)}
-                onToggle={() => { if (!toggle.isPending) toggle.mutate(adapter.key); }} onOpenTools={onOpenTools}
+                onToggle={() => { if (!busy) toggle.mutate(adapter.key); }} onOpenTools={onOpenTools}
                 onUpdateVal={update} onResetDefaults={() => { for (const item of configs[adapter.key] ?? []) update(item.key, item.default); }} />
             ))}
             {unmatched.map((key) => (
               <UnmatchedGroupCard key={key} channelKey={key} configs={configs[key] ?? []} values={draft.values}
                 isOpen={expanded === key} toggling={toggle.isPending && toggle.variables === key}
+                busy={busy}
                 onToggleExpand={() => setExpanded(expanded === key ? null : key)}
-                onStart={() => { if (!toggle.isPending) toggle.mutate(key); }} onUpdateVal={update} />
+                onStart={() => { if (!busy) toggle.mutate(key); }} onUpdateVal={update} />
             ))}
           </div>
         )}

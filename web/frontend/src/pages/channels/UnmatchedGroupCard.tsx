@@ -14,6 +14,7 @@ export function UnmatchedGroupCard({
   values,
   isOpen,
   toggling,
+  busy,
   onToggleExpand,
   onStart,
   onUpdateVal,
@@ -23,6 +24,7 @@ export function UnmatchedGroupCard({
   values: ConfigValues;
   isOpen: boolean;
   toggling: boolean;
+  busy: boolean;
   onToggleExpand: () => void;
   onStart: () => void;
   onUpdateVal: (key: string, val: unknown) => void;
@@ -58,7 +60,7 @@ export function UnmatchedGroupCard({
           )}
           <button
             onClick={onStart}
-            disabled={toggling}
+            disabled={busy}
             className={cn(
               "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-xl border transition-colors disabled:opacity-70",
               toggling

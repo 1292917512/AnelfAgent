@@ -629,6 +629,11 @@ def _start_payload() -> Dict[str, Any]:
 
 
 class TestQrLoginManager:
+    def test_close_clears_cached_sessions(self, qr_manager):
+        qr_manager._store.add("session", object())
+        qr_manager.close()
+        assert qr_manager._store.items() == []
+
     async def test_start(self, qr_manager):
         _FakeAsyncClient.queue.append(_FakeResp(_start_payload()))
         result = await qr_manager.start()
