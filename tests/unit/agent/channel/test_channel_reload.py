@@ -137,12 +137,15 @@ async def test_reload_refreshes_private_dependencies_tools_and_config_without_re
 
 
 @pytest.mark.parametrize("failure", ["syntax", "import", "config", "start"])
-async def test_reload_failure_restores_original_code_schema_listener_and_tools(runtime, failure):
+@pytest.mark.parametrize("entity_enabled", [True, False])
+async def test_reload_failure_restores_original_code_schema_listener_and_tools(runtime, failure, entity_enabled):
     root, manager, watcher = runtime
     previous = manager.get("reload_demo")
+    EntityRegistry.set_enabled(previous.get_entity_name(), entity_enabled, persist=False)
     module = sys.modules["channels.reload_demo.adapter"]
     store = ConfigManager._store_for("reload_demo_label")
     callback = watcher._callbacks[str(root / "reload_demo" / "channel_config.json")]
+    apis = list(previous._registered_apis)
     _write_channel(root, "reload_demo", "v2", start="raise RuntimeError('bad start')" if failure == "start" else "pass")
     if failure == "syntax":
         (root / "reload_demo" / "helper.py").write_text("broken (", encoding="utf-8")
@@ -158,6 +161,8 @@ async def test_reload_failure_restores_original_code_schema_listener_and_tools(r
     assert ConfigManager._store_for("reload_demo_label") is store
     assert watcher._callbacks[str(root / "reload_demo" / "channel_config.json")] == callback
     assert len(ConfigManager._listeners["reload_demo_"]) == 1
+    assert EntityRegistry.get(previous.get_entity_name()).enabled is entity_enabled
+    assert previous._registered_apis == apis
     assert await _version() == "v1"
 
 

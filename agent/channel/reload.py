@@ -94,6 +94,7 @@ async def reload_channel(manager: ChannelManager, channel_id: str) -> None:
 
     previous = manager.get(channel_id)
     metadata = EntityRegistry.get(previous.get_entity_name()) if previous else None
+    entity_enabled = metadata.enabled if metadata else False
     detached = False
     stranded: BaseException | None = None
     _prepare_sources(channel_id)
@@ -141,6 +142,8 @@ async def reload_channel(manager: ChannelManager, channel_id: str) -> None:
             if detached:
                 if metadata is not None:
                     EntityRegistry.register(metadata)
+                    EntityRegistry.activate_entity(metadata.name)
+                    EntityRegistry.set_enabled(metadata.name, entity_enabled, persist=False)
                 ConfigManager.add_listener(previous._config_key_prefix, previous._on_config_changed)
                 manager.register(previous)
             if manager._desired_running[channel_id]:
