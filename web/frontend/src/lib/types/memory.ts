@@ -64,6 +64,8 @@ export interface CogneeConfig {
   compact_enabled: boolean;
   compact_interval_seconds: number;
   compact_cleanup_interval_seconds: number;
+  compact_cleanup_version_threshold: number;
+  compact_cleanup_growth_mb: number;
   compact_max_versions_per_run: number;
   compact_cleanup_budget_seconds: number;
   compact_retention_days: number;

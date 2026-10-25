@@ -48,6 +48,8 @@ class CogneeConfigUpdate(BaseModel):
     compact_enabled: Optional[bool] = None
     compact_interval_seconds: Optional[float] = None
     compact_cleanup_interval_seconds: Optional[float] = None
+    compact_cleanup_version_threshold: Optional[int] = None
+    compact_cleanup_growth_mb: Optional[float] = None
     compact_max_versions_per_run: Optional[int] = None
     compact_cleanup_budget_seconds: Optional[float] = None
     compact_retention_days: Optional[float] = None

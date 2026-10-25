@@ -127,6 +127,8 @@ def compact_lance_tree(
     result: dict[str, Any] = {
         "databases": 0,
         "tables": 0,
+        "tables_visited": 0,
+        "tables_total": 0,
         "bytes_reclaimed": 0,
         "errors": [],
         "executed_tasks": 0,
@@ -159,6 +161,7 @@ def compact_lance_tree(
             continue
         tables.extend((connection, db_dir.name, name) for name in sorted(table_names))
     offset = rotation % len(tables) if tables else 0
+    result["tables_total"] = len(tables)
     tasks_left = 0 if prune_only else DEFAULT_MAX_TASKS_PER_RUN
     versions_left = max(1, int(max_versions))
     started = time.monotonic()
@@ -190,6 +193,7 @@ def compact_lance_tree(
         except Exception as exc:
             result["errors"].append(f"{db_name}/{table_name}: {exc}")
     result["next_rotation"] = (offset + visited) % len(tables) if tables else 0
+    result["tables_visited"] = visited
     return result
 
 

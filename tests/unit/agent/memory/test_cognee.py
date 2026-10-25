@@ -465,11 +465,15 @@ def test_config_defaults_on_and_preserves_explicit_choice(
     assert config.chat.source == config.embedding.source == "auto"
     assert config.compact_max_versions_per_run == 1000
     assert config.compact_cleanup_budget_seconds == 120
+    assert config.compact_cleanup_version_threshold == 1000 and config.compact_cleanup_growth_mb == 256
     config.compact_max_versions_per_run = 0
     config.compact_cleanup_budget_seconds = -1
+    config.compact_cleanup_version_threshold = -1
+    config.compact_cleanup_growth_mb = -1
     config.normalized()
     assert config.compact_max_versions_per_run == 1
     assert config.compact_cleanup_budget_seconds == 0
+    assert config.compact_cleanup_version_threshold == config.compact_cleanup_growth_mb == 0
 
 
 @pytest.mark.asyncio
@@ -1671,12 +1675,14 @@ class _CompactFakeClient(FakeIndexTransactions):
         return {
             "databases": 1,
             "tables": 2,
+            "tables_visited": 2,
+            "tables_total": 2,
             "bytes_reclaimed": 600,
             "errors": [],
         }
 
 
-@pytest.mark.parametrize("mode", ["automatic", "cleanup", "compact"])
+@pytest.mark.parametrize("mode", ["automatic", "cleanup", "compact", "disabled"])
 async def test_cleanup_continuations_publish_progress_and_yield_between_rounds(store, tmp_path, monkeypatch, mode):
     client = _CompactFakeClient()
     coordinator = CogneeCoordinator(store, client, CogneeConfig(
@@ -1701,6 +1707,8 @@ async def test_cleanup_continuations_publish_progress_and_yield_between_rounds(s
             progress = coordinator._maintenance_status
             assert progress.rounds_completed == 1 and progress.old_versions_removed == 3
             assert progress.bytes_reclaimed == 600
+            if mode == "disabled":
+                coordinator.config.enabled = False
 
     monkeypatch.setattr(client, "compact_vector_storage", clean)
     monkeypatch.setattr("agent.memory.cognee.coordinator.cognee_storage_stats.schedule_refresh", lambda _: None)
@@ -1709,9 +1717,13 @@ async def test_cleanup_continuations_publish_progress_and_yield_between_rounds(s
         if mode == "automatic":
             await asyncio.wait_for(coordinator._maybe_compact(busy=True), 1)
         else:
-            await coordinator.request_compact(prune_only=mode == "cleanup")
+            await coordinator.request_compact(prune_only=mode in {"cleanup", "disabled"})
         assert not started.is_set()
     result, _ = await asyncio.wait_for(asyncio.gather(coordinator._maintenance_task, other), 5)
+    if mode == "disabled":
+        assert events == [True, "projection"] and result["rounds"] == 1
+        assert coordinator._cleanup_pressure.pending and not coordinator._cleanup_pressure.failed
+        return
     assert events == [mode != "compact", "projection", True, True]
     assert result["rounds"] == 3 and result["old_versions_removed"] == 9
     assert result["bytes_reclaimed"] == 1800 and not result["budget_exhausted"]
@@ -1734,6 +1746,7 @@ async def test_cleanup_continuations_stop_at_budget_error_or_no_progress(store, 
         if stop == "failure" and calls == 2:
             raise RuntimeError("next round failed; previous recovery point retained")
         return {"databases": 1, "tables": 1, "bytes_reclaimed": 0,
+                "tables_visited": 1, "tables_total": 1,
                 "errors": ["table cleanup failed"] if stop == "table_error" else [],
                 "old_versions_removed": 0 if stop == "no_progress" else 2,
                 "next_rotation": 0, "budget_exhausted": True}
@@ -1744,14 +1757,98 @@ async def test_cleanup_continuations_stop_at_budget_error_or_no_progress(store, 
         compact_cleanup_budget_seconds=0 if stop == "single" else 10 if stop == "budget" else 120))
     await coordinator.request_compact(prune_only=True)
     result = await coordinator._maintenance_task
-    assert calls == (1 if stop in {"single", "table_error"} else 2)
-    assert result["rounds"] == (1 if stop in {"single", "failure", "table_error"} else 2)
+    assert calls == (1 if stop in {"single", "table_error", "no_progress"} else 2)
+    assert result["rounds"] == (1 if stop in {"single", "failure", "table_error", "no_progress"} else 2)
     assert result["old_versions_removed"] == (0 if stop == "no_progress" else result["rounds"] * 2)
     assert bool(result.get("error")) is (stop == "failure")
     assert coordinator._maintenance_cost_ns == calls * 7_000_000_000
     assert coordinator._maintenance_status is None
     if stop == "failure":
         assert "已完成 1 轮" in coordinator.last_compact_summary
+
+
+@pytest.mark.parametrize("signal", ["versions", "growth", "none", "unknown", "disabled", "cooldown", "slow", "timer", "failed", "off"])
+async def test_growth_cleanup_triggers_early_with_cooldown_and_time_fallback(store, tmp_path, monkeypatch, signal):
+    from agent.memory.cognee.cleanup_policy import VersionFootprint
+
+    base = 1_000_000_000
+    clock_ns = base + 120_000_000_000
+    monkeypatch.setattr("agent.memory.cognee.coordinator.time.monotonic_ns", lambda: clock_ns)
+    tracker = "agent.memory.cognee.coordinator.cognee_storage_stats"
+    read_stats = AsyncMock(side_effect=AssertionError("trigger must not scan data files"))
+    monkeypatch.setattr(tracker + ".get", read_stats)
+    monkeypatch.setattr(tracker + ".schedule_refresh", lambda _: None)
+    client = _CompactFakeClient()
+    client.publication_status = {"lance_version_files": 15, "lance_bytes": 100}
+    config = CogneeConfig(data_root=str(tmp_path), write_breaker_enabled=False,
+        compact_cleanup_interval_seconds=3600, compact_cleanup_version_threshold=5, compact_cleanup_growth_mb=1)
+    coordinator = CogneeCoordinator(store, client, config)
+    coordinator._last_cleanup_ns = coordinator._last_compact_ns = base
+    coordinator._cleanup_pressure.finish(VersionFootprint(10, 100), pending=False, failed=signal == "failed")
+    if signal in {"none", "growth"}:
+        client.publication_status["lance_version_files"] = 14
+    if signal == "growth":
+        client.publication_status["lance_bytes"] += 1024**2
+    if signal in {"unknown", "timer"}:
+        client.publication_status = {}
+    if signal == "disabled":
+        config.compact_cleanup_version_threshold = config.compact_cleanup_growth_mb = 0
+    if signal == "off":
+        config.compact_enabled = False
+    if signal == "cooldown":
+        clock_ns = base + 59_000_000_000
+    if signal == "slow":
+        coordinator._maintenance_cost_ns = 100_000_000_000
+    if signal == "timer":
+        clock_ns = base + 3_600_000_000_000
+    if signal in {"versions", "growth"}:
+        coordinator._last_compact_ns = None  # 增长压力优先清理，不在同一时机安排碎片重写。
+    expected = signal in {"versions", "growth", "timer"}
+    async with coordinator._projection_lock:
+        await asyncio.wait_for(coordinator._maybe_compact(), 1)
+        task = coordinator._maintenance_task
+        await coordinator._maybe_compact()
+        assert (task is not None) is expected
+        assert coordinator._maintenance_task is task and not client.compact_calls
+    if expected:
+        await task
+    assert client.cleanup_modes == ([True] if expected else [])
+    read_stats.assert_not_awaited()
+    if signal == "failed":
+        clock_ns = base + 3_600_000_000_000
+        await coordinator._maybe_compact()
+        await coordinator._maintenance_task
+        assert not coordinator._cleanup_pressure.failed and client.cleanup_modes == [True]
+
+
+async def test_pressure_continuation_covers_unvisited_tables_across_budgets_without_empty_loops(store, tmp_path, monkeypatch):
+    clock_ns = 1_000_000_000
+    monkeypatch.setattr("agent.memory.cognee.coordinator.time.monotonic_ns", lambda: clock_ns)
+    monkeypatch.setattr("agent.memory.cognee.coordinator.cognee_storage_stats.schedule_refresh", lambda _: None)
+    client = _CompactFakeClient()
+    client.publication_status = {"lance_version_files": 100, "lance_bytes": 100}
+    original = client.compact_vector_storage
+
+    async def scan(retention: float, *, prune_only: bool = False) -> dict[str, Any]:
+        result = await original(retention, prune_only=prune_only)
+        return {**result, "old_versions_removed": 0, "tables_visited": 8,
+                "tables_total": 26, "next_rotation": len(client.compact_calls) * 8 % 26, "budget_exhausted": True}
+
+    monkeypatch.setattr(client, "compact_vector_storage", scan)
+    coordinator = CogneeCoordinator(store, client, CogneeConfig(data_root=str(tmp_path),
+        write_breaker_enabled=False, compact_cleanup_interval_seconds=3600, compact_cleanup_budget_seconds=0))
+    coordinator._last_compact_ns = clock_ns
+    await coordinator.request_compact(prune_only=True)
+    await coordinator._maintenance_task
+    for _ in range(3):
+        assert coordinator._cleanup_pressure.pending
+        clock_ns += 60_000_000_000
+        await coordinator._maybe_compact(busy=True)
+        await coordinator._maintenance_task
+    assert len(client.compact_calls) == 4 and not coordinator._cleanup_pressure.pending
+    clock_ns += 60_000_000_000
+    await coordinator._maybe_compact(busy=True)
+    assert len(client.compact_calls) == 4
 
 
 @pytest.mark.parametrize("clock_ns", [1_000_000_000, 172_800_000_000_000])
@@ -1891,6 +1988,9 @@ async def test_slow_maintenance_yields_to_sync_and_defers_fragment_rewrites(stor
     await coordinator._maybe_compact(busy=True)
     await coordinator._maintenance_task
     assert client.cleanup_modes == [True, True]
+    await coordinator._maybe_compact()
+    assert client.cleanup_modes == [True, True]  # 碎片合并也不能绕过刚结束维护的冷却。
+    clock_ns += 1_800_000_000_000
     await coordinator._maybe_compact()
     await coordinator._maintenance_task
     assert client.cleanup_modes == [True, True, False]  # 空闲时完成到期的碎片合并。

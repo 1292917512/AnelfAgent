@@ -13,6 +13,7 @@ from core.log import log
 from ..memory_store import MemoryStore
 from ..projection import projection_dataset
 from ..store.projection_state import ProjectionState
+from .cleanup_policy import CleanupPressure, VersionFootprint
 from .client import CogneeClient
 from .config import CogneeConfig
 from .errors import error_text as _error_text
@@ -52,6 +53,7 @@ class CogneeCoordinator:
         self._last_compact_ns: int | None = None
         self._last_cleanup_ns: int | None = None
         self._maintenance_cost_ns = 0
+        self._cleanup_pressure = CleanupPressure()
         # 空闲窗口作业（run_in_idle_window 提交，worker 在队列排空后执行）
         self._idle_job: Optional[Any] = None
         self._idle_done = asyncio.Event()
@@ -286,10 +288,11 @@ class CogneeCoordinator:
         self._start_maintenance(prune_only=prune_only)
         return {"ok": True, "scheduled": True}
 
-    def _start_maintenance(self, *, prune_only: bool) -> asyncio.Task[dict[str, Any]]:
+    def _start_maintenance(self, *, prune_only: bool, continuing: bool = False) -> asyncio.Task[dict[str, Any]]:
         """自动与手动维护共用单槽任务，由协调器生命周期回收。"""
         if self._maintenance_task and not self._maintenance_task.done():
             return self._maintenance_task
+        self._cleanup_pressure.begin(continuing=continuing)
         self._maintenance_status = CogneeMaintenanceStatus(mode="cleanup" if prune_only else "compact")
 
         async def run() -> dict[str, Any]:
@@ -302,6 +305,7 @@ class CogneeCoordinator:
                     )
                 return result
             except Exception as exc:
+                self._cleanup_pressure.failed = True
                 self.last_compact_at = time.time()
                 rounds = self._maintenance_status.rounds_completed if self._maintenance_status else 0
                 self.last_compact_summary = f"已完成 {rounds} 轮，失败: {_error_text(exc)}"
@@ -526,8 +530,10 @@ class CogneeCoordinator:
                 pass  # 超时属正常等待结束（正常控制流，非异常）
 
     async def _maybe_compact(self, *, busy: bool = False) -> None:
-        """繁忙时只清理版本；自动维护冷却至少为上次总耗时的九倍，避免抢占同步。"""
+        """提交后的增长压力提前触发版本清理，时间兜底和独立冷却限制维护占比。"""
         if not self.config.enabled or not self.config.compact_enabled or self._maintenance_status is not None:
+            return
+        if not self._projection_allowed():
             return
         now_ns = time.monotonic_ns()
         interval_ns = int(self.config.compact_interval_seconds * 1e9)
@@ -535,10 +541,20 @@ class CogneeCoordinator:
         cleanup_interval = max(int(self.config.compact_cleanup_interval_seconds * 1e9),
                                self._maintenance_cost_ns * 9)
         cleanup_due = self._last_cleanup_ns is None or now_ns - self._last_cleanup_ns >= cleanup_interval
-        full = due and not busy
-        if not (full or cleanup_due):
+        footprint = VersionFootprint.from_publication(self.client.publication_status)
+        pressure = self._cleanup_pressure.reason(footprint,
+            versions=self.config.compact_cleanup_version_threshold,
+            growth_bytes=int(self.config.compact_cleanup_growth_mb * 1024 * 1024))
+        pressure_cooldown = max(60_000_000_000, self._maintenance_cost_ns * 2)
+        pressure_due = pressure is not None and (
+            self._last_cleanup_ns is None or now_ns - self._last_cleanup_ns >= pressure_cooldown)
+        full = due and not busy and cleanup_due and pressure is None
+        if not (full or cleanup_due or pressure_due):
             return
-        self._start_maintenance(prune_only=not full)
+        if pressure_due and pressure is not None:
+            reason = {"versions": "版本数量增长", "growth": "向量库文件增长", "backlog": "上轮清理预算未完成"}[pressure]
+            log(f"Cognee 自动版本清理触发: {reason}，已提交指标 {footprint}", tag="记忆")
+        self._start_maintenance(prune_only=not full, continuing=pressure_due and pressure == "backlog")
 
     async def _run_compact(self, *, prune_only: bool = False) -> dict[str, Any]:
         """在时间预算内续跑有进展的清理；每轮独立发布并向其他持锁作业让路。"""
@@ -549,20 +565,27 @@ class CogneeCoordinator:
                     "errors": [], "budget_exhausted": False}
                 deadline: int | None = None
                 cost_ns = 0
-                no_progress_rotations: set[int] = set()
+                footprint: VersionFootprint | None = None
+                budget_expired = False
+                covered = False
+                blocked = False
+                backend_failed = False
                 try:
                     while True:
                         async with self._projection_lock:
                             self._require_open()
                             if not self.config.enabled:
+                                blocked = True
                                 total["error"] = "Cognee 已停用，取消后续维护"
                                 break
                             now = time.monotonic_ns()
                             if deadline is None:
                                 deadline = now + int(self.config.compact_cleanup_budget_seconds * 1e9)
                             elif now >= deadline:
+                                budget_expired = True
                                 break
                             if not self._projection_allowed():
+                                blocked = True
                                 total["error"] = self._pause_reason
                                 break
                             if self._maintenance_status:
@@ -571,7 +594,9 @@ class CogneeCoordinator:
                                 result = await self._compact_storage(prune_only=prune_only or total["rounds"] > 0)
                             finally:
                                 cost_ns += time.monotonic_ns() - now
+                            footprint = VersionFootprint.from_publication(self.client.publication_status)
                             if "error" in result:
+                                backend_failed = True
                                 total["error"] = result["error"]
                                 break
                             total["rounds"] += 1
@@ -579,27 +604,34 @@ class CogneeCoordinator:
                             for key in ("tables", "old_versions_removed", "bytes_reclaimed", "executed_tasks"):
                                 total[key] += int(result.get(key, 0))
                             total["errors"].extend(result["errors"])
+                            backend_failed |= bool(result["errors"])
                             total["budget_exhausted"] = bool(result.get("budget_exhausted"))
+                            covered = self._cleanup_pressure.observe_round(
+                                removed=int(result.get("old_versions_removed", 0)),
+                                visited=result["tables_visited"], total=result["tables_total"])
+                            if covered:
+                                total["budget_exhausted"] = False
                             if self._maintenance_status:
                                 self._maintenance_status.rounds_completed = total["rounds"]
                                 self._maintenance_status.old_versions_removed = total["old_versions_removed"]
                                 self._maintenance_status.bytes_reclaimed = total["bytes_reclaimed"]
-                        if total["errors"] or not total["budget_exhausted"] or time.monotonic_ns() >= deadline:
+                        if total["errors"] or not total["budget_exhausted"] or covered:
                             break
-                        if result.get("old_versions_removed", 0):
-                            no_progress_rotations.clear()
-                        else:
-                            # 空表也要向后轮换；同一轮换点再次无进展时停止，避免标记版本造成空转。
-                            rotation = int(result.get("next_rotation", 0))
-                            if rotation in no_progress_rotations:
-                                break
-                            no_progress_rotations.add(rotation)
+                        if time.monotonic_ns() >= deadline:
+                            budget_expired = True
+                            break
                         if self._maintenance_status:
                             self._maintenance_status.phase = "queued"
                         await asyncio.sleep(0)
                 finally:
                     if cost_ns:
                         self._maintenance_cost_ns = cost_ns
+                if total["rounds"]:
+                    self._cleanup_pressure.finish(footprint,
+                        pending=(budget_expired or blocked) and total["budget_exhausted"] and not covered,
+                        failed=backend_failed)
+                elif backend_failed:
+                    self._cleanup_pressure.failed = True
                 if total["rounds"]:
                     self.last_compact_summary = (
                         f"已完成 {total['rounds']} 轮，清理 {total['old_versions_removed']} 个旧版本，"

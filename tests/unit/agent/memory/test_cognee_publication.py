@@ -55,6 +55,46 @@ def test_restore_all_index_components_without_touching_source(tmp_path):
     assert source.read_bytes() == b"authoritative-after"
 
 
+def test_version_growth_metrics_use_only_committed_files_and_backfill_without_rebuilding(tmp_path, monkeypatch):
+    root = tmp_path / "index"
+    table = root / "system/databases/user/test.lance.db/facts.lance"
+    versions = table / "_versions"
+    versions.mkdir(parents=True)
+    (versions / "1.manifest").write_bytes(b"one")
+    (versions / "2.manifest").write_bytes(b"two")
+    (table / "data").mkdir()
+    (table / "data/current.lance").write_bytes(b"rows")
+    (root / "system/graph.lbug").write_bytes(b"excluded graph")
+    checkpoints = IndexCheckpoints(root)
+    checkpoints.load()
+    assert checkpoints.state["lance_version_files"] == 2
+    assert checkpoints.state["lance_bytes"] == 10
+    committed = checkpoints.state["committed"]
+    proof = (checkpoints.control / committed / "proof.json").read_bytes()
+    # 已有恢复点的计量从校验后的清单补齐，不复制数据库或改写恢复点。
+    for key in ("lance_version_files", "lance_bytes"):
+        checkpoints.state.pop(key)
+    checkpoints._save()
+    before = (checkpoints.control / "state.json").read_bytes()
+    adopted = IndexCheckpoints(root)
+    with monkeypatch.context() as patch:
+        patch.setattr(adopted, "_copy", Mock(side_effect=AssertionError("must not rebuild")))
+        adopted.load()
+    assert adopted.state["committed"] == committed
+    assert adopted.state["lance_version_files"] == 2 and adopted.state["lance_bytes"] == 10
+    assert (checkpoints.control / "state.json").read_bytes() == before
+    assert (checkpoints.control / committed / "proof.json").read_bytes() == proof
+    adopted.mark_open()
+    (versions / "3.manifest").write_bytes(b"uncommitted")
+    client = CogneeClient(CogneeConfig(data_root=str(root)))
+    client._checkpoints = adopted
+    assert client.publication_status["lance_version_files"] == 2
+    restored = IndexCheckpoints(root)
+    restored.load()
+    assert restored.state["lance_version_files"] == 2 and restored.state["lance_bytes"] == 10
+    assert not (versions / "3.manifest").exists()
+
+
 def test_failed_snapshot_keeps_previous_commit_and_copy_budget(tmp_path, monkeypatch):
     root = tmp_path / "index"
     (root / "data").mkdir(parents=True)
@@ -570,8 +610,11 @@ async def test_cancelled_transaction_does_not_publish(tmp_path, monkeypatch):
     assert not (tmp_path / "data").exists()
 
 
-@pytest.mark.parametrize("maintenance", [False, True])
-async def test_read_only_transaction_does_not_clone_or_reopen(tmp_path, monkeypatch, maintenance):
+@pytest.mark.parametrize("maintenance,reclaimed", [(False, 0), (True, 0), (True, 8)])
+async def test_only_actual_maintenance_changes_publish_a_recovery_point(tmp_path, monkeypatch, maintenance, reclaimed):
+    garbage = tmp_path / "system/databases/test.lance.db/data/old.lance"
+    garbage.parent.mkdir(parents=True)
+    garbage.write_bytes(b"obsolete")
     client = CogneeClient(CogneeConfig(data_root=str(tmp_path)))
     checkpoints = IndexCheckpoints(tmp_path)
     checkpoints.load()
@@ -579,8 +622,13 @@ async def test_read_only_transaction_does_not_clone_or_reopen(tmp_path, monkeypa
     monkeypatch.setattr(client, "initialize", AsyncMock(return_value=CogneeAvailability(
         installed=True, enabled=True, ready=True)))
     process = AsyncMock()
-    process.call.return_value = {"errors": [], "executed_tasks": 0, "old_versions_removed": 0,
-                                 "next_rotation": 1}
+    async def compact(*args, **kwargs):
+        if reclaimed:
+            garbage.unlink()
+        return {"errors": [], "executed_tasks": 0, "old_versions_removed": 0,
+                "bytes_reclaimed": reclaimed, "next_rotation": 1}
+
+    process.call.side_effect = compact
     monkeypatch.setattr(client, "_worker", AsyncMock(return_value=process))
     inspect = AsyncMock(return_value=IndexManifest())
     stop = AsyncMock()
@@ -591,9 +639,13 @@ async def test_read_only_transaction_does_not_clone_or_reopen(tmp_path, monkeypa
     async with client.write_transaction():
         if maintenance:
             await client.compact_vector_storage(1, prune_only=True)
-    inspect.assert_awaited_once()
-    stop.assert_not_awaited()
-    commit.assert_not_called()
+    assert inspect.await_count == (3 if reclaimed else 1)
+    assert stop.await_count == (2 if reclaimed else 0)
+    assert commit.call_count == (1 if reclaimed else 0)
+    assert client.publication_status["lance_bytes"] == (0 if reclaimed else 8)
+    if reclaimed:
+        IndexCheckpoints(tmp_path).load()
+        assert not garbage.exists()
 
 
 async def test_reopen_failure_prevents_publication_and_latches_fault(tmp_path, monkeypatch):
@@ -882,6 +934,8 @@ async def test_real_cleanup_continuations_preserve_tagged_versions_and_published
                                            external_metadata={"anelf_content_hash": "cleanup-test"})
         ingestion = await client.add([item], dataset_name="anelf_global", incremental_loading=True)
         before = client.publication_status["commits"]
+        version_files = client.publication_status["lance_version_files"]
+        assert version_files >= 7 and client.publication_status["lance_bytes"] > 0
         original = client.compact_vector_storage
         calls = 0
 
@@ -899,6 +953,7 @@ async def test_real_cleanup_continuations_preserve_tagged_versions_and_published
         failed = await coordinator._maintenance_task
         assert failed["rounds"] == 1 and "error" in failed
         assert client.publication_status["commits"] == before + 1
+        assert client.publication_status["lance_version_files"] == version_files - 1
         recovered = lancedb.connect(str(db_dir)).open_table("facts")
         assert {version["version"] for version in recovered.list_versions()} == {2, 3, 4, 5, 6, 7}
         del recovered
@@ -908,6 +963,7 @@ async def test_real_cleanup_continuations_preserve_tagged_versions_and_published
         assert result["rounds"] > 1 and result["old_versions_removed"] == 4
         assert result["executed_tasks"] == 0 and not result["errors"]
         assert client.publication_status["commits"] == before + 5
+        assert client.publication_status["lance_version_files"] == version_files - 5
         assert {row["id"] for row in await client.list_data(ingestion["dataset_id"])} == {item.data_id}
     finally:
         await coordinator.close()

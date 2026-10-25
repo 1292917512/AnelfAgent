@@ -191,6 +191,8 @@ async def test_http_save_during_projection_returns_and_preserves_latest_config(
                 "chat": {"extra_args": {"timeout": 300, "top_p": 0.9}},
                 "native_watchdog_restart_seconds": 900,
                 "compact_cleanup_interval_seconds": 120,
+                "compact_cleanup_version_threshold": 500,
+                "compact_cleanup_growth_mb": 128,
                 "compact_max_versions_per_run": 5000,
                 "compact_cleanup_budget_seconds": 300,
                 "project_graph_enabled": False,
@@ -200,6 +202,8 @@ async def test_http_save_during_projection_returns_and_preserves_latest_config(
             assert persisted.chat.extra_args == {"timeout": 300, "top_p": 0.9}
             assert persisted.native_watchdog_restart_seconds == 900
             assert persisted.compact_cleanup_interval_seconds == 120
+            assert persisted.compact_cleanup_version_threshold == 500
+            assert persisted.compact_cleanup_growth_mb == 128
             assert persisted.compact_max_versions_per_run == 5000
             assert persisted.compact_cleanup_budget_seconds == 300
             assert not persisted.project_graph_enabled
@@ -211,6 +215,8 @@ async def test_http_save_during_projection_returns_and_preserves_latest_config(
             assert schema["compact_max_versions_per_run"]["section"] == "storage"
             assert schema["compact_max_versions_per_run"]["min"] == 1
             assert schema["compact_cleanup_budget_seconds"]["advanced"]
+            assert schema["compact_cleanup_version_threshold"]["min"] == 0
+            assert schema["compact_cleanup_growth_mb"]["advanced"]
             response = await http.put("/memory/cognee/config", json={"chat": {"extra_args": {"top_p": 0.9}}})
             assert response.status_code == 200, response.text
             assert load_cognee_config().chat.extra_args == {"top_p": 0.9}

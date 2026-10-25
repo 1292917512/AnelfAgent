@@ -118,7 +118,8 @@ class CogneeClient:
         state = self._checkpoints.state if self._checkpoints else {}
         return {"phase": self._phase, "error": self._fault,
                 "commits": max(0, state.get("commits", 0) - 1),
-                "cloned_bytes": state.get("cloned_bytes", 0), "copied_bytes": state.get("copied_bytes", 0)}
+                "cloned_bytes": state.get("cloned_bytes", 0), "copied_bytes": state.get("copied_bytes", 0),
+                **{key: state[key] for key in ("lance_version_files", "lance_bytes") if key in state}}
 
     def reset_fault(self) -> None:
         """显式重试或新建代际才解开原生崩溃熔断，不自动反复打开坏库。"""
@@ -363,7 +364,8 @@ class CogneeClient:
             self._transaction_writes |= write
             result = await (await self._worker()).call(method, *args, timeout=limit, **kwargs)
             if (method == "compact_vector_storage" and not result["errors"]
-                    and result["executed_tasks"] == 0 and result["old_versions_removed"] == 0):
+                    and result["executed_tasks"] == 0 and result["old_versions_removed"] == 0
+                    and result["bytes_reclaimed"] == 0):
                 self._transaction_writes = previous_writes
             return result
         availability = await self.initialize()

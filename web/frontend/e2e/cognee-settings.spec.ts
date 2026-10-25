@@ -96,6 +96,8 @@ test("Cognee settings separate deadlines and preserve overrides across edits and
     { key: "sync_batch_size", type: "int", section: "sync", min: 1 },
     { key: "native_watchdog_enabled", type: "bool", section: "storage", advanced: true },
     { key: "compact_cleanup_interval_seconds", type: "float", section: "storage", advanced: true, min: 60 },
+    { key: "compact_cleanup_version_threshold", type: "int", section: "storage", advanced: true, min: 0 },
+    { key: "compact_cleanup_growth_mb", type: "float", section: "storage", advanced: true, min: 0 },
     { key: "compact_max_versions_per_run", type: "int", section: "storage", min: 1 },
     { key: "compact_cleanup_budget_seconds", type: "float", section: "storage", advanced: true, min: 0 },
     { key: "data_root", type: "string", section: "storage", read_only: true, advanced: true },
@@ -104,6 +106,7 @@ test("Cognee settings separate deadlines and preserve overrides across edits and
     enabled: true, timeout_seconds: 300, pipeline_timeout_seconds: 3600, sync_batch_size: 2,
     native_watchdog_enabled: true, data_root: "/data/memory/cognee", search_types: ["CHUNKS"],
     compact_cleanup_interval_seconds: 600,
+    compact_cleanup_version_threshold: 1000, compact_cleanup_growth_mb: 256,
     compact_max_versions_per_run: 1000, compact_cleanup_budget_seconds: 120,
     chat: { source: "auto", model_id: "", provider: "openai", model: "", api_key: "", endpoint: "",
       api_version: "", instructor_mode: "", max_completion_tokens: 0, reasoning_effort: "",
@@ -173,12 +176,16 @@ test("Cognee settings separate deadlines and preserve overrides across edits and
   await storage.locator("summary").filter({ hasText: "Advanced settings" }).click();
   await expect(storage.getByRole("spinbutton", { name: "Version Cleanup Interval (s)" })).toHaveValue("600");
   await storage.getByRole("spinbutton", { name: "Version Cleanup Interval (s)" }).fill("120");
+  await expect(storage.getByRole("spinbutton", { name: "Version growth cleanup threshold" })).toHaveValue("1000");
+  await storage.getByRole("spinbutton", { name: "Version growth cleanup threshold" }).fill("500");
+  await storage.getByRole("spinbutton", { name: "Vector-store growth cleanup threshold (MB)" }).fill("128");
   await expect(storage.getByRole("spinbutton", { name: "Versions to clean per round" })).toHaveValue("1000");
   await storage.getByRole("spinbutton", { name: "Versions to clean per round" }).fill("5000");
   await storage.getByRole("spinbutton", { name: "Cleanup continuation budget (seconds)" }).fill("300");
   await storage.getByRole("button", { name: "Save", exact: true }).click();
   await expect.poll(() => patches.length).toBe(4);
   expect(patches[3]).toEqual({ compact_cleanup_interval_seconds: 120,
+    compact_cleanup_version_threshold: 500, compact_cleanup_growth_mb: 128,
     compact_max_versions_per_run: 5000, compact_cleanup_budget_seconds: 300 });
   await expect(storage.getByText("/data/memory/cognee", { exact: true })).toBeVisible();
   await expect(storage.getByRole("textbox")).toHaveCount(0);

@@ -29,6 +29,14 @@ PARTS = ("system", "data", "anelf-embedding.json")
 CONTROL = ".publication"
 
 
+def _count_lance_file(stats: dict[str, int], path: str, size: int) -> None:
+    """复用已验证文件清单计量 LanceDB，不把图库、原文或快照副本计入增长。"""
+    if path.startswith("system/databases/") and ".lance.db/" in path:
+        stats["lance_bytes"] += size
+        if "/_versions/" in path and path.endswith(".manifest"):
+            stats["lance_version_files"] += 1
+
+
 def runtime_versions() -> dict[str, str]:
     """版本用于审计与升级验收，不把普通依赖升级等同于投影重建。"""
     versions = {}
@@ -105,7 +113,7 @@ class IndexCheckpoints:
         """关闭引擎后单次遍历复制；逐项拒绝链接，落盘时同时建立文件清单。"""
         self._safe(source)
         self._safe(destination)
-        stats = {"cloned_bytes": 0, "copied_bytes": 0}
+        stats = {"cloned_bytes": 0, "copied_bytes": 0, "lance_version_files": 0, "lance_bytes": 0}
         files: dict[str, int] = {}
 
         def copy_entry(original: Path, target: Path, relative: str, info: os.stat_result) -> None:
@@ -141,6 +149,7 @@ class IndexCheckpoints:
             if copied_size != size:
                 raise RuntimeError(f"索引文件复制大小不一致: {relative}")
             files[relative] = copied_size
+            _count_lance_file(stats, relative, copied_size)
 
         destination.mkdir(parents=True)
         for name in PARTS:
@@ -166,7 +175,12 @@ class IndexCheckpoints:
         else:
             self.state = {"version": 1, "dirty": False, "committed": "", "commits": 0}
             self.commit()
-        self._read_proof(verify_files=True)
+        proof = self._read_proof(verify_files=True)
+        if "files" in proof and not all(key in self.state for key in ("lance_version_files", "lance_bytes")):
+            metrics = {"lance_version_files": 0, "lance_bytes": 0}
+            for name, size in proof["files"].items():
+                _count_lance_file(metrics, name, size)
+            self.state.update(metrics)
         if self.state.get("dirty"):
             self.restore()
         with FileLock(str(self.control / "worker.lock"), timeout=0):
