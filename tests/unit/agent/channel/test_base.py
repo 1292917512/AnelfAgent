@@ -295,6 +295,21 @@ class TestSegmentMapFailures:
         assert resp.success is True
         assert resp.message_id == "empty"
 
+    async def test_session_id_is_forwarded_to_segment_sender(self):
+        ch = SegmentMapChannel()
+        received = {}
+
+        async def send(chat_id, text, **kwargs):
+            received.update(kwargs)
+            return json.dumps({"success": True})
+
+        ch.send_text = send
+        request = _seg_request("text")
+        request.extra["session_id"] = "notification"
+        resp = await ch.forward_message(request)
+        assert resp.success is True
+        assert received["session_id"] == "notification"
+
     async def test_success_without_message_id_is_success(self):
         """无平台 ID 的频道：success 即送达，不因缺 message_id 误判失败。"""
         ch = SegmentMapChannel()

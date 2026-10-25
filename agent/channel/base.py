@@ -325,6 +325,9 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
         """按段类型调用 send_* 方法（文本带 reply_to/parse_mode，媒体带 caption）。"""
         seg_type = seg.type.value
         kwargs: Dict[str, Any] = {"channel_type": request.channel.channel_type.value}
+        session_id = request.extra.get("session_id")
+        if session_id:
+            kwargs["session_id"] = session_id
         if seg_type == "text":
             args: Tuple[Any, ...] = (seg.content,)
             if request.reply_to:
