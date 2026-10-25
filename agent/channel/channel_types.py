@@ -63,9 +63,9 @@ def _ok(data: Optional[dict] = None) -> str:
     return json.dumps({"success": True, **(data or {})}, ensure_ascii=False)
 
 
-def _err(msg: str) -> str:
-    """构造错误响应 JSON。"""
-    return json.dumps({"success": False, "error": msg}, ensure_ascii=False)
+def _err(msg: str, data: Optional[dict] = None) -> str:
+    """构造失败响应 JSON，可附部分送达等结构化事实。"""
+    return json.dumps({**(data or {}), "success": False, "error": msg}, ensure_ascii=False)
 
 
 _AT_RE = re.compile(r'\[at_uid:([^\]]+)\]')

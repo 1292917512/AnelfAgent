@@ -313,3 +313,18 @@ class TestSegmentMapFailures:
         resp = await ch.forward_message(_seg_request("text"))
         assert resp.success is False
         assert "返回格式异常" in resp.error
+
+    async def test_failed_sender_retains_partial_platform_ids(self):
+        ch = SegmentMapChannel()
+
+        async def partial(chat_id, text, **kwargs):
+            return json.dumps({
+                "success": False, "error": "后续段失败",
+                "message_ids": ["platform-part-1"], "delivered_chunks": 1,
+            }, ensure_ascii=False)
+
+        ch.send_text = partial
+        resp = await ch.forward_message(_seg_request("text"))
+        assert resp.success is False
+        assert resp.message_ids == ["platform-part-1"]
+        assert resp.message_id == "platform-part-1"

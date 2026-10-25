@@ -5,7 +5,7 @@ import type { ConfigMetaItem, ConfigValues } from "@/lib/types";
 import { StatusDot } from "@/components/common/StatusDot";
 import { cn } from "@/lib/utils";
 import { ConfigField } from "./ConfigField";
-import { CHANNEL_LOGIN_COMPONENTS } from "@/lib/channel-plugins";
+import { CHANNEL_LOGIN_COMPONENTS, CHANNEL_PANEL_COMPONENTS } from "@/lib/channel-plugins";
 
 /** 未注册为频道的配置组卡片（可启用 + 配置表单） */
 export function UnmatchedGroupCard({
@@ -30,8 +30,9 @@ export function UnmatchedGroupCard({
   onUpdateVal: (key: string, val: unknown) => void;
 }) {
   const { t } = useTranslation("channels");
-  // 未注册频道同样可携带插件登录入口（如扫码登录在启用前可用）
+  // 未注册频道同样可携带插件登录入口与专属面板（如扫码登录在启用前可用）
   const PluginLogin = CHANNEL_LOGIN_COMPONENTS[channelKey];
+  const PluginPanel = CHANNEL_PANEL_COMPONENTS[channelKey];
   return (
     <div className={cn(
       "rounded-xl border transition-colors bg-card",
@@ -75,6 +76,11 @@ export function UnmatchedGroupCard({
       </div>
       {isOpen && (
         <div className="border-t border-border p-4 space-y-4">
+          {PluginPanel && (
+            <Suspense fallback={null}>
+              <PluginPanel />
+            </Suspense>
+          )}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {configs.map((meta) => (
               <ConfigField key={meta.key} meta={meta} prefix={`${channelKey}_`}
