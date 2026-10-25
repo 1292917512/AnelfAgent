@@ -29,7 +29,7 @@ def validate_sdk(module: Any) -> None:
         "cognee.infrastructure.databases.graph.ladybug.adapter": {
             "LadybugAdapter": ("_submit_to_executor_locked", "_drop_native_resources", "close", "delete_graph",
                                "find_node_source_refs_by_dataset", "find_edge_source_refs_by_dataset",
-                               "get_node_delete_data", "get_edge_delete_data"),
+                               "get_node_delete_data", "get_edge_delete_data", "checkpoint"),
         },
         "cognee.infrastructure.databases.graph.get_graph_engine": {
             "_create_graph_engine": ("cache_clear", "cache_await_closed"),
@@ -75,6 +75,9 @@ def validate_sdk(module: Any) -> None:
     require_parameters(planner.execute_source_ref_removal,
                        {"graph_engine", "vector_engine", "node_data", "edge_data", "refs_by_node", "refs_by_edge"},
                        "execute_source_ref_removal")
+    require_parameters(planner._cleanup_orphaned_edge_types,
+                       {"graph_engine", "vector_engine", "unowned_edges", "edge_data"},
+                       "_cleanup_orphaned_edge_types")
     require_parameters(data_item, {"data", "label", "external_metadata", "data_id", "node_set", "literal_text"}, "DataItem")
     chunks = importlib.import_module("cognee.modules.retrieval.chunks_retriever").ChunksRetriever
     require_parameters(chunks, {"top_k", "node_name", "node_name_filter_operator"}, "ChunksRetriever")

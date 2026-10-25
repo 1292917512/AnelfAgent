@@ -1,4 +1,6 @@
-"""删除窗口内复用来源定位，所有归属判定和写入仍委托 Cognee 原生规划器。
+"""删除窗口内复用来源定位、合并检查点与关系类型收尾。
+
+公开删除仍逐篇授权、加锁和实时判定归属；候选事务发布前完成全部收尾。
 
 模型看到什么：不改变模型输入、召回正文或标签。
 token 影响：不调用模型；减少派生索引删除中的重复扫描。
@@ -7,6 +9,7 @@ token 影响：不调用模型；减少派生索引删除中的重复扫描。
 
 from __future__ import annotations
 
+import json
 from collections import defaultdict
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -15,16 +18,24 @@ from functools import wraps
 from typing import Any
 from uuid import UUID
 
+from .ladybug_guard import CheckpointWindow, install_checkpoints
+
 NodeRefs = dict[str, list[str]]
 EdgeRefs = dict[Any, list[str]]
-_active: ContextVar[DeletionReads | None] = ContextVar("cognee_deletion_reads", default=None)
+_active: ContextVar[DeletionWindow | None] = ContextVar("cognee_deletion_window", default=None)
 
 
-class DeletionReads:
-    """只缓存目标定位；共享归属每次从图中重读，删除结束即回收对应缓存。"""
+class DeletionWindow:
+    """只保留本轮目标定位与候选关系类型；成功收尾前不批准发布。"""
 
     def __init__(self) -> None:
         self._documents: dict[tuple[int, str, str], tuple[NodeRefs, EdgeRefs]] = {}
+        self._pending: set[tuple[str, str]] = set()
+        self._checkpoints = CheckpointWindow()
+        self._edge_types: dict[int, tuple[Any, Any, set[str]]] = {}
+
+    def includes(self, dataset_id: str, data_id: str) -> bool:
+        return (dataset_id, data_id) in self._pending
 
     async def prepare(self, targets: list[tuple[str, str]]) -> None:
         from cognee.context_global_variables import set_database_global_context_variables
@@ -32,6 +43,7 @@ class DeletionReads:
         from cognee.infrastructure.databases.provenance.markers import stores_provenance_in_graph
         from cognee.infrastructure.databases.unified import get_unified_engine
 
+        self._pending = {(dataset, document) for dataset, document in targets}
         grouped: dict[str, set[str]] = defaultdict(set)
         for dataset, document in targets:
             grouped[dataset].add(document)
@@ -59,19 +71,39 @@ class DeletionReads:
                 for document, refs in selected.items():
                     self._documents[id(graph), dataset, document] = refs
 
+    async def completed(self, dataset_id: str, data_id: str) -> None:
+        """公开删除成功后确认目标；最后一篇统一收尾，异常仍由外层事务恢复。"""
+        target = (dataset_id, data_id)
+        if target not in self._pending:
+            return
+        if len(self._pending) > 1:
+            self._pending.remove(target)
+            return
+        with self.scope():
+            for graph, vector, candidates in self._edge_types.values():
+                await _prune_edge_types(graph, vector, candidates)
+        await self._checkpoints.flush()
+        self._pending.remove(target)
+        self._documents.clear()
+        self._edge_types.clear()
+
     @contextmanager
     def scope(self) -> Iterator[None]:
         token = _active.set(self)
         try:
-            yield
+            with self._checkpoints.scope():
+                yield
         finally:
             _active.reset(token)
 
 
 def install() -> None:
-    """只替换删除前的来源定位；不修改 SDK 文件、锁、授权或删除顺序。"""
+    """仅在宿主删除窗口适配 SDK；窗口外保持原始检查点及收尾行为。"""
+    from cognee.infrastructure.databases.graph.ladybug.adapter import LadybugAdapter
+    from cognee.infrastructure.databases.unified import provenance_delete_planner as planner
     from cognee.infrastructure.databases.unified.provenance_delete_planner import execute_source_ref_removal
     from cognee.infrastructure.databases.unified.unified_store_engine import UnifiedStoreEngine
+    from cognee.modules.graph.utils.prepare_edges_for_storage import get_edge_retrieval_text
 
     original = UnifiedStoreEngine.delete_by_document
     if getattr(original, "_anelf_deletion_reads", False):
@@ -97,3 +129,44 @@ def install() -> None:
 
     delete_document.__dict__["_anelf_deletion_reads"] = True
     UnifiedStoreEngine.delete_by_document = delete_document
+
+    install_checkpoints(LadybugAdapter)
+    original_cleanup = planner._cleanup_orphaned_edge_types
+
+    @wraps(original_cleanup)
+    async def cleanup(graph_engine: Any, vector_engine: Any, unowned_edges: Any, edge_data: Any) -> None:
+        graph, vector = graph_engine, vector_engine
+        window = _active.get()
+        if window is None or not isinstance(graph, LadybugAdapter):
+            await original_cleanup(graph, vector, unowned_edges, edge_data)
+            return
+        if not unowned_edges:
+            return
+        _, _, texts = window._edge_types.setdefault(id(graph), (graph, vector, set()))
+        texts.update(text for edge in unowned_edges
+                     if (text := get_edge_retrieval_text(edge_data[edge].edge_text, edge.relationship_name)))
+
+    planner._cleanup_orphaned_edge_types = cleanup
+
+
+async def _prune_edge_types(graph: Any, vector: Any, candidates: set[str]) -> None:
+    """只读取关系文本列，一轮判定孤立类型；共享文本仍有任一关系使用就保留。"""
+    from cognee.modules.graph.models.EdgeType import EdgeType
+    from cognee.modules.graph.utils.prepare_edges_for_storage import get_edge_retrieval_text
+
+    if not candidates:
+        return
+    rows = await graph.query(
+        "MATCH ()-[r:EDGE]->() RETURN DISTINCT r.relationship_name, "
+        "CAST(json_extract(r.properties, '$.edge_text') AS STRING)",
+    )
+    orphaned = {str(EdgeType.id_for(text)) for text in candidates}
+    for name, text in rows:
+        label = get_edge_retrieval_text(json.loads(text) if text else None, name)
+        if label:
+            orphaned.discard(str(EdgeType.id_for(label)))
+    if orphaned:
+        identities = sorted(orphaned)
+        await graph.delete_nodes(identities)
+        if await vector.has_collection("EdgeType_relationship_name"):
+            await vector.delete_data_points("EdgeType_relationship_name", identities)

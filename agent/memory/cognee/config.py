@@ -118,6 +118,8 @@ class CogneeConfig:
     improve_interval_seconds: float = field(default=0.0, metadata={"section": "sync", "advanced": True})
     sync_interval_seconds: float = field(default=5.0, metadata={"section": "sync", "advanced": True, "min": 0.5})
     sync_batch_size: int = field(default=20, metadata={"section": "sync", "min": 1})
+    sync_max_documents_per_group: int = field(default=64, metadata={"section": "sync", "advanced": True, "min": 1})
+    sync_max_characters_per_group: int = field(default=192000, metadata={"section": "sync", "advanced": True, "min": 1})
     max_retries: int = field(default=5, metadata={"section": "sync", "min": 1})
     # LanceDB 物理压缩：同步队列空闲时按共享预算轮换维护向量表，
     # 回收删除/更新遗留的历史版本（最新版本永远保留，逻辑数据不受影响）。
@@ -182,6 +184,8 @@ class CogneeConfig:
         self.improve_interval_seconds = float(self.improve_interval_seconds)
         self.sync_interval_seconds = max(0.5, float(self.sync_interval_seconds))
         self.sync_batch_size = max(1, int(self.sync_batch_size))
+        self.sync_max_documents_per_group = max(1, int(self.sync_max_documents_per_group))
+        self.sync_max_characters_per_group = max(1, int(self.sync_max_characters_per_group))
         self.max_retries = max(1, int(self.max_retries))
         self.compact_interval_seconds = max(600.0, float(self.compact_interval_seconds))
         self.compact_cleanup_interval_seconds = max(60.0, float(self.compact_cleanup_interval_seconds))

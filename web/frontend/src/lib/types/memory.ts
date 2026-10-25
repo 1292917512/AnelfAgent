@@ -60,6 +60,8 @@ export interface CogneeConfig {
   improve_interval_seconds: number;
   sync_interval_seconds: number;
   sync_batch_size: number;
+  sync_max_documents_per_group: number;
+  sync_max_characters_per_group: number;
   max_retries: number;
   compact_enabled: boolean;
   compact_interval_seconds: number;

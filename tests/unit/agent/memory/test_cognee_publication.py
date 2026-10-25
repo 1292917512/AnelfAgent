@@ -1106,18 +1106,20 @@ def test_host_does_not_inherit_or_import_native_sdk():
     assert b"isolated" in result.stdout
 
 
-@pytest.mark.parametrize("optimized", [False, True])
-async def test_deletion_reads_reduce_real_graph_scans_without_changing_shared_ownership(tmp_path, monkeypatch, optimized):
+@pytest.mark.parametrize("mode", ["original", "located", "batched"])
+async def test_deletion_reads_reduce_real_graph_scans_without_changing_shared_ownership(tmp_path, monkeypatch, mode):
     import cognee.context_global_variables as context
     import cognee.infrastructure.databases.unified as unified_module
     from cognee.infrastructure.databases.graph.ladybug.adapter import LadybugAdapter
     from cognee.infrastructure.databases.provenance import EdgeIdentity, make_chunk_source_ref_key, make_source_ref_key
     from cognee.infrastructure.databases.provenance.markers import mark_graph_provenance_if_empty
+    from cognee.infrastructure.databases.unified import provenance_delete_planner
     from cognee.infrastructure.databases.unified.capabilities import EngineCapability
     from cognee.infrastructure.databases.unified.unified_store_engine import UnifiedStoreEngine
     from cognee.infrastructure.engine import DataPoint
+    from cognee.modules.graph.models.EdgeType import EdgeType
 
-    from agent.memory.cognee.deletion import DeletionReads, install
+    from agent.memory.cognee.deletion import DeletionWindow, install
 
     class Entity(DataPoint):
         name: str
@@ -1157,14 +1159,20 @@ async def test_deletion_reads_reduce_real_graph_scans_without_changing_shared_ow
     keys = [make_source_ref_key(dataset, doc) if i % 2 == 0
             else make_chunk_source_ref_key(dataset, doc, uuid4()) for i, doc in enumerate(documents)]
     nodes = [Entity(name=f"retired-{i}") for i in range(count)]
+    texts = ["orphan relation", 'shared "关系" \\ text']
+    types = [EdgeType(relationship_name=text, number_of_edges=1) for text in texts]
     shared, cross, late = Entity(name="shared"), Entity(name="cross-dataset"), Entity(name="live-owner")
     unrelated = [Entity(name=f"unrelated-{i}") for i in range(background)]
     install()
+    optimized = mode != "original"
+    if mode == "located":
+        monkeypatch.setattr(provenance_delete_planner, "_cleanup_orphaned_edge_types",
+                            provenance_delete_planner._cleanup_orphaned_edge_types.__wrapped__)
     monkeypatch.setattr(context, "set_database_global_context_variables", database_context)
     monkeypatch.setattr(unified_module, "get_unified_engine", AsyncMock(return_value=engine))
     try:
         assert await mark_graph_provenance_if_empty(graph)
-        await graph.add_nodes([*nodes, shared, cross, late, *unrelated])
+        await graph.add_nodes([*nodes, shared, cross, late, *unrelated, *types])
         for node, key in zip(nodes, keys, strict=True):
             await graph.attach_node_source_refs([str(node.id)], [key], str(uuid4()))
         await graph.attach_node_source_refs([str(shared.id)], [keys[0], keep_key], str(uuid4()))
@@ -1174,6 +1182,15 @@ async def test_deletion_reads_reduce_real_graph_scans_without_changing_shared_ow
         edge = EdgeIdentity(str(shared.id), str(cross.id), "linked")
         await graph.add_edges([(edge.source_id, edge.target_id, edge.relationship_name, {"edge_text": "linked"})])
         await graph.attach_edge_source_refs([edge], [keys[0], keys[1], keep_key], str(uuid4()))
+        for i, node in enumerate(nodes):
+            for text in texts:
+                retired = EdgeIdentity(str(node.id), str(shared.id), text)
+                await graph.add_edges([(retired.source_id, retired.target_id, retired.relationship_name,
+                                        {"edge_text": f"  {text}  "})])
+                await graph.attach_edge_source_refs([retired], [keys[i]], str(uuid4()))
+        await graph.add_edges([(str(shared.id), str(cross.id), "different predicate", {"edge_text": texts[1]})])
+        query = AsyncMock(wraps=graph.query)
+        monkeypatch.setattr(graph, "query", query)
         read_nodes, read_edges = graph.find_node_source_refs_by_dataset, graph.find_edge_source_refs_by_dataset
         snapshot = None
 
@@ -1191,15 +1208,18 @@ async def test_deletion_reads_reduce_real_graph_scans_without_changing_shared_ow
         edge_scan = AsyncMock(wraps=edge_rows)
         monkeypatch.setattr(graph, "find_node_source_refs_by_dataset", node_scan)
         monkeypatch.setattr(graph, "find_edge_source_refs_by_dataset", edge_scan)
-        reads = DeletionReads()
+        reads = DeletionWindow()
+        if mode == "located":
+            monkeypatch.setattr(reads._checkpoints, "scope", nullcontext)
         started = time.monotonic()
         if optimized:
             await reads.prepare([(str(dataset), str(documents[0]))])
             assert not reads._documents and node_scan.await_count == edge_scan.await_count == 0
-            await reads.prepare([(str(dataset), str(doc)) for doc in documents])
+            await reads.prepare(json.loads(json.dumps([(str(dataset), str(doc)) for doc in documents])))
             assert len(reads._documents) == count  # 不保存无关文档的完整来源图。
         # 定位完成后增加保留者，证明删除决策重读实时归属，而非使用定位快照。
         await graph.attach_node_source_refs([str(late.id)], [keep_key], str(uuid4()))
+        query.reset_mock()
         with reads.scope() if optimized else nullcontext():
             with pytest.raises(RuntimeError, match="vector failure"):
                 await engine.delete_by_document(str(dataset), str(documents[0]))
@@ -1207,6 +1227,8 @@ async def test_deletion_reads_reduce_real_graph_scans_without_changing_shared_ow
             assert before_retry[str(nodes[0].id)].source_ref_keys == [keys[0]]
             for doc in documents:
                 await engine.delete_by_document(str(dataset), str(doc))
+                if optimized:
+                    await reads.completed(str(dataset), str(doc))
         elapsed = time.monotonic() - started
         assert node_scan.await_count == edge_scan.await_count == (1 if optimized else count + 1)
         remaining = await graph.get_node_delete_data([str(node.id) for node in [*nodes, shared, cross, late]])
@@ -1217,10 +1239,66 @@ async def test_deletion_reads_reduce_real_graph_scans_without_changing_shared_ow
         assert {str(node.id) for node in nodes} <= vector.deleted
         assert not {str(shared.id), str(cross.id), str(late.id)} & vector.deleted
         assert not reads._documents
-        print(json.dumps({"optimized": optimized, "documents": count, "full_scans": node_scan.await_count + edge_scan.await_count,
-                          "seconds": round(elapsed, 4)}))
+        assert set(await graph.get_node_delete_data([str(row.id) for row in types])) == {str(types[1].id)}
+        assert str(types[0].id) in vector.deleted and str(types[1].id) not in vector.deleted
+        checkpoints = sum(call.args[0].strip().upper().startswith("CHECKPOINT") for call in query.await_args_list)
+        assert (checkpoints == 1 if mode == "batched" else checkpoints > count), checkpoints
+        print(json.dumps({"mode": mode, "documents": count, "full_scans": node_scan.await_count + edge_scan.await_count,
+                          "checkpoints": checkpoints, "seconds": round(elapsed, 4)}))
     finally:
         await graph.close()
+
+
+@pytest.mark.parametrize("deferred", [False, True])
+async def test_deletion_window_coalesces_checkpoints_before_native_capacity_is_exhausted(tmp_path, deferred):
+    from cognee.infrastructure.databases.graph.ladybug.adapter import LadybugAdapter
+
+    from agent.memory.cognee.deletion import DeletionWindow, install
+
+    install()
+    path = str(tmp_path / "graph")
+    graph = LadybugAdapter(path, kuzu_buffer_pool_size=64 << 20, kuzu_max_db_size=128 << 20, kuzu_num_threads=2)
+    window = DeletionWindow()
+    # 不需要来源扫描：本例隔离检查点引起的原生映射区耗尽。
+    await window.prepare([("dataset", "document")])
+    completed = 0
+    try:
+        with window.scope() if deferred else nullcontext():
+            try:
+                for i in range(200):
+                    await graph.query("MERGE (n:Node {id: 'counter'}) SET n.name=$name", {"name": str(i)})
+                    await graph.checkpoint()
+                    completed += 1
+            except RuntimeError as exc:
+                assert not deferred and "Maximum database size" in str(exc)
+        if deferred:
+            await window.completed("dataset", "document")
+            assert completed == 200 and not window._checkpoints._graphs
+        else:
+            assert completed < 200
+    finally:
+        await graph.close()
+    if deferred:
+        reopened = LadybugAdapter(path, kuzu_buffer_pool_size=64 << 20, kuzu_max_db_size=128 << 20, kuzu_num_threads=2)
+        try:
+            assert [list(row) for row in await reopened.query("MATCH (n:Node {id: 'counter'}) RETURN n.name")] == [["199"]]
+        finally:
+            await reopened.close()
+
+
+async def test_relation_type_cleanup_protects_normalized_shared_ids_and_empty_text_fallback():
+    from cognee.modules.graph.models.EdgeType import EdgeType
+
+    from agent.memory.cognee.deletion import _prune_edge_types
+
+    assert EdgeType.id_for("Case relation") == EdgeType.id_for("CASE RELATION")
+    graph, vector = AsyncMock(), AsyncMock()
+    graph.query.return_value = [("another predicate", json.dumps("CASE RELATION")), ("Fallback", None)]
+    vector.has_collection.return_value = True
+    await _prune_edge_types(graph, vector, {"Case relation", "fallback", "orphan"})
+    expected = [str(EdgeType.id_for("orphan"))]
+    graph.delete_nodes.assert_awaited_once_with(expected)
+    vector.delete_data_points.assert_awaited_once_with("EdgeType_relationship_name", expected)
 
 
 def test_native_imports_stay_inside_worker_adapters():
@@ -1237,6 +1315,49 @@ def test_native_imports_stay_inside_worker_adapters():
                     if path.parent != root / "agent/memory/cognee" or path.name not in allowed:
                         violations.append(str(path.relative_to(root)))
     assert violations == []
+
+
+@pytest.mark.parametrize("method", ["cognify", "improve"])
+@pytest.mark.parametrize("flush_fails", [False, True])
+async def test_sdk_pipeline_flushes_coalesced_native_writes_before_return(tmp_path, monkeypatch, method, flush_fails):
+    from cognee.infrastructure.databases.graph.ladybug.adapter import LadybugAdapter
+
+    from agent.memory.cognee.deletion import install
+    from agent.memory.cognee.sdk_client import SDKClient
+
+    install()
+    graph = LadybugAdapter(str(tmp_path / "graph"), kuzu_buffer_pool_size=64 << 20,
+                           kuzu_max_db_size=128 << 20, kuzu_num_threads=2)
+    query = graph.query
+    checkpoints = 0
+
+    async def checked_query(statement, *args, **kwargs):
+        nonlocal checkpoints
+        if statement.startswith("CHECKPOINT"):
+            checkpoints += 1
+            if flush_fails:
+                raise OSError("checkpoint flush failed")
+        return await query(statement, *args, **kwargs)
+
+    async def pipeline(*args, **kwargs):
+        for i in range(200):
+            await graph.query("MERGE (n:Node {id: 'counter'}) SET n.name=$name", {"name": str(i)})
+            await graph.checkpoint()
+        assert checkpoints == 0
+        return {"stages": []}
+
+    client = SDKClient(CogneeConfig(data_root=str(tmp_path)))
+    monkeypatch.setattr(client, "_call", pipeline)
+    monkeypatch.setattr(graph, "query", checked_query)
+    try:
+        if flush_fails:
+            with pytest.raises(OSError, match="checkpoint flush failed"):
+                await getattr(client, method)()
+        else:
+            assert await getattr(client, method)() == {"stages": []}
+        assert checkpoints == 1
+    finally:
+        await graph.close()
 
 
 @pytest.mark.parametrize("processed,chunks", [(True, "full"), (True, ""), (False, "full")])

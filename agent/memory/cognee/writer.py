@@ -2,8 +2,8 @@
 
 只处理一个批次，不创建任务、持有调度锁或修改重建状态。
 
-模型看到什么：沿用原有投影正文及 Cognee 提示词，仅缩小失败重试的发布范围。
-token 影响：已提交小组不再重复抽取，正常首次同步的模型调用不增加。
+模型看到什么：沿用原有投影正文及 Cognee 提示词，按实际文档变更量划分发布范围。
+token 影响：不增加单文档抽取调用；已提交小组不因后续失败重复抽取。
 缓存影响：只调整后台投影调度，不触碰对话提示词前缀。
 """
 
@@ -206,11 +206,15 @@ class ProjectionWriter:
     async def _push_projection_groups(
         self, dataset_name: str, entries: list[ProjectionEntry], *, graph: bool,
     ) -> None:
-        """重试按来源缩小发布范围；已提交小组不受后续失败及增强回调影响。"""
+        """按文档量与重试次数限制发布组；同一来源保留完整事务边界。"""
         published = False
-        for group in _retry_groups(entries):
-            sources = {int(item["queue_id"]): item for item, _document in group}
-            with self.progress.batch(list(sources.values())):
+        sources = {int(item["queue_id"]): item for item, _ in entries}
+        mappings = {int(item["queue_id"]): await self.store.get_cognee_mapping(
+            item["entry_id"], entry_kind=item["entry_kind"])
+            for item in sources.values()}
+        for group in _publication_groups(entries, mappings, self.config):
+            group_sources = {int(item["queue_id"]): item for item, _document in group}
+            with self.progress.batch(list(group_sources.values())):
                 published |= await self._push_projection_group(dataset_name, group, graph=graph)
         if published:
             with self.progress.batch(list({int(item["queue_id"]): item for item, _document in entries}.values())):
@@ -264,11 +268,13 @@ class ProjectionWriter:
                 if not data_id:
                     raise RuntimeError("Cognee 投影缺少稳定文档 ID")
                 data_items.append(data_item)
-                await self.store.projection_state.stage(item["entry_kind"], item["entry_id"], dataset_name, data_id)
             existing_ids = {identity for _, identity in existing}
-            additions = [data_item for (item, document), data_item in zip(entries, data_items, strict=True)
-                         if not document.part_key or item["payload"].get("force")
-                         or str(_value(data_item, "data_id", "")) not in existing_ids]
+            additions: list[InputDocument] = []
+            for (item, document), data_item in zip(entries, data_items, strict=True):
+                data_id = str(_value(data_item, "data_id", ""))
+                if not document.part_key or item["payload"].get("force") or data_id not in existing_ids:
+                    await self.store.projection_state.stage(item["entry_kind"], item["entry_id"], dataset_name, data_id)
+                    additions.append(data_item)
             self._observe_write()
             async with self.client.write_transaction():
                 dataset_id = next(iter(existing))[0] if existing else ""
@@ -319,7 +325,8 @@ class ProjectionWriter:
             self.last_error = error_text(exc)
             log(
                 f"Cognee 同步失败 [stage:{stage}][dataset:{dataset_name}] "
-                f"{len(entries)} 条，耗时 {time.monotonic() - started:.1f}s: {self.last_error}",
+                f"{len({int(item['queue_id']) for item, _ in entries})} 条来源 / {len(entries)} 篇文档，"
+                f"耗时 {time.monotonic() - started:.1f}s: {self.last_error}",
                 "WARNING", tag="思维",
             )
             failed: set[int] = set()
@@ -341,8 +348,10 @@ class ProjectionWriter:
         )
 
 
-def _retry_groups(entries: list[ProjectionEntry]) -> Iterator[list[ProjectionEntry]]:
-    """首次整组发布，重试按持久化次数递减组宽；同一来源的分片不可拆分。"""
+def _publication_groups(
+    entries: list[ProjectionEntry], mappings: dict[int, dict[str, Any] | None], config: CogneeConfig,
+) -> Iterator[list[ProjectionEntry]]:
+    """按变更文档数及正文长度装箱；单个超限来源独占一组，不拆散原子映射。"""
     sources: dict[int, list[ProjectionEntry]] = defaultdict(list)
     for entry in entries:
         sources[int(entry[0]["queue_id"])].append(entry)
@@ -352,8 +361,31 @@ def _retry_groups(entries: list[ProjectionEntry]) -> Iterator[list[ProjectionEnt
     for attempts, cohort in cohorts.items():
         divisor = 1 << min(attempts, len(cohort).bit_length())
         width = max(1, (len(cohort) + divisor - 1) // divisor)
-        for start in range(0, len(cohort), width):
-            yield [entry for source in cohort[start:start + width] for entry in source]
+        group: list[ProjectionEntry] = []
+        source_count = documents = characters = 0
+        for source in cohort:
+            added, chars = _source_cost(source, mappings[int(source[0][0]["queue_id"])])
+            if group and (source_count >= width or documents + added > config.sync_max_documents_per_group
+                          or characters + chars > config.sync_max_characters_per_group):
+                yield group
+                group, source_count, documents, characters = [], 0, 0, 0
+            group.extend(source)
+            source_count += 1
+            documents += added
+            characters += chars
+        if group:
+            yield group
+
+
+def _source_cost(entries: list[ProjectionEntry], mapping: dict[str, Any] | None) -> tuple[int, int]:
+    """只计算变化分片的摄入和退役；保留分片不占模型和删除预算。"""
+    previous = {row.part_key: row.content_hash for row in mapped_documents(mapping)}
+    current = {document.part_key: document.fingerprint for _, document in entries}
+    changed = [document for item, document in entries if item["payload"].get("force")
+               or not document.part_key or previous.get(document.part_key) != document.fingerprint]
+    retired = (sum(current.get(key) != digest for key, digest in previous.items())
+               if previous else int(mapping is not None))
+    return len(changed) + retired, sum(len(document.text) for document in changed)
 
 
 def _value(item: Any, key: str, default: Any) -> Any:

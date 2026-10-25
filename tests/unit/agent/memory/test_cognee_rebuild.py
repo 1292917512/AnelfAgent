@@ -300,6 +300,8 @@ async def test_large_node_fragments_preserve_old_index_and_update_only_changed_r
     await coordinator.rebuild.verify_backend(coordinator.rebuild.state, await store.projection_state.mappings())
 
     unchanged = {part.part_key: part.data_id for part in parts}
+    staged = AsyncMock(wraps=store.projection_state.stage)
+    monkeypatch.setattr(store.projection_state, "stage", staged)
     added.clear()
     deleted.clear()
     evidence[1] += "再次修订。"
@@ -310,6 +312,8 @@ async def test_large_node_fragments_preserve_old_index_and_update_only_changed_r
     assert changed and all(key.startswith("edges-0-") for key in changed)
     reindexed_hub = [doc for doc in added if doc["external_metadata"]["anelf_graph_node_id"] == str(node_id)]
     assert len(reindexed_hub) == len(changed) < len(parts)
+    kept = {part.data_id for part in current if part.part_key not in changed}
+    assert not kept.intersection(call.args[3] for call in staged.await_args_list)
     assert set(deleted) & {part.data_id for part in current} == set()
     # 删除节点必须清理所有分片，并保留所有其他节点的有效映射。
     await store.graph.set_node_archived(hub, True)
@@ -1124,7 +1128,8 @@ async def test_failed_ingestion_then_source_change_leaves_no_orphan(coordinator,
 
 
 @pytest.mark.parametrize("failure", ["cognify", "verify", "publish"])
-async def test_retry_groups_keep_healthy_commits_across_failure_and_restart(coordinator, store, monkeypatch, failure):
+@pytest.mark.parametrize("bounded", [False, True])
+async def test_retry_groups_keep_healthy_commits_across_failure_and_restart(coordinator, store, monkeypatch, failure, bounded):
     ids = [await store.add(MemoryEntry(content=f"旧事实 {i}", memory_type=MemoryType.SEMANTIC)) for i in range(8)]
     await coordinator._process_batch(await store.claim_cognee_sync_batch(20))
     previous = {mid: await store.get_cognee_mapping(mid) for mid in ids}
@@ -1165,22 +1170,27 @@ async def test_retry_groups_keep_healthy_commits_across_failure_and_restart(coor
     monkeypatch.setattr(client, "verify_graph_documents", verify)
     monkeypatch.setattr(client, "write_transaction", transactional)
     coordinator.config.max_retries = 3
+    coordinator.config.sync_max_documents_per_group = 8 if bounded else 64
     for mid in ids:
         entry = await store.get(mid)
         entry.content = f"新事实 {mid}"
         await store.update(entry)
     await coordinator._process_batch(await store.claim_cognee_sync_batch(20))
-    assert groups == [ids]
-    assert all([await store.get_cognee_mapping(mid) == previous[mid] for mid in ids])
+    initial = [ids[:4], ids[4:]] if bounded else [ids]
+    assert groups == initial
+    for mid in ids:
+        mapping = await store.get_cognee_mapping(mid)
+        assert (mapping["data_id"] != previous[mid]["data_id"]) is (bounded and mid in ids[4:])
     retry_ns = time.time_ns() + 10_000_000_000
     monkeypatch.setattr("agent.memory.store.cognee_queue.time.time_ns", lambda: retry_ns)
     await coordinator._process_batch(await store.claim_cognee_sync_batch(20))
-    assert groups == [ids, ids[:4], ids[4:]]
+    assert groups == initial + ([ids[:2], ids[2:4]] if bounded else [ids[:4], ids[4:]])
     assert coordinator.writer.last_error  # 后一个成功小组不能掩盖前一个小组失败。
     for mid in ids:
         current = await store.get_cognee_mapping(mid)
-        assert (current["data_id"] != previous[mid]["data_id"]) is (mid in ids[4:])
-    assert (await store.get_cognee_sync_status())["pending"] == 4
+        assert (current["data_id"] != previous[mid]["data_id"]) is (mid in ids[2 if bounded else 4:])
+    remaining = ids[:2 if bounded else 4]
+    assert (await store.get_cognee_sync_status())["pending"] == len(remaining)
     await store.close()
     reopened = MemoryStore(store._db_path)
     reopened.set_cognee_projection_enabled(True)
@@ -1188,10 +1198,10 @@ async def test_retry_groups_keep_healthy_commits_across_failure_and_restart(coor
     try:
         retry_ns += 10_000_000_000
         batch = await reopened.claim_cognee_sync_batch(20)
-        assert [item["entry_id"] for item in batch] == ids[:4]
+        assert [item["entry_id"] for item in batch] == remaining
         assert all(item["attempts"] == 2 for item in batch)
         await coordinator._process_batch(batch)
-        assert groups[-4:] == [[mid] for mid in ids[:4]]
+        assert groups[-len(remaining):] == [[mid] for mid in remaining]
         status = await reopened.get_cognee_sync_status()
         assert status["pending"] == 0 and status["failed"] == 1
         for mid in ids:
@@ -1204,10 +1214,12 @@ async def test_retry_groups_keep_healthy_commits_across_failure_and_restart(coor
         await reopened.close()
 
 
-async def test_retry_groups_keep_all_fragments_of_each_source_together(coordinator, store, monkeypatch):
+@pytest.mark.parametrize("bounded", [False, True])
+async def test_retry_groups_keep_all_fragments_of_each_source_together(coordinator, store, monkeypatch, bounded):
     from agent.memory.graph import fragments
 
     monkeypatch.setattr(fragments, "MAX_DOCUMENT_CHARS", 400)
+    coordinator.config.sync_max_documents_per_group = 1 if bounded else 64
     for i in range(3):
         await store.graph.add_relation(f"topic:左{i}", "连接", f"topic:右{i}", evidence="完整关系证据。" * 100)
     client = coordinator.client
@@ -1250,14 +1262,33 @@ async def test_retry_groups_keep_all_fragments_of_each_source_together(coordinat
     retry_ns = time.time_ns() + 10_000_000_000
     monkeypatch.setattr("agent.memory.store.cognee_queue.time.time_ns", lambda: retry_ns)
     await coordinator._process_batch(await store.claim_cognee_sync_batch(20))
-    assert [len(group) for group in groups] == [6, 3, 3]
+    assert [len(group) for group in groups] == ([1] * 7 if bounded else [6, 3, 3])
     assert coordinator.writer.last_error
     mappings = await store.projection_state.mappings()
-    assert len(mappings) == 3
+    assert len(mappings) == (5 if bounded else 3)
     for mapping in mappings:
         assert len(json.loads(mapping["documents_json"])) == expected[mapping["entry_id"]]
     assert len(client.documents[coordinator.writer.relations_dataset]) == sum(
         expected[mapping["entry_id"]] for mapping in mappings)
+
+
+@pytest.mark.parametrize("document_limit,character_limit", [(4, 10000), (100, 120)])
+def test_publication_budget_counts_only_changed_parts_and_retirement(document_limit, character_limit):
+    from agent.memory.cognee.documents import ProjectionDocument
+    from agent.memory.cognee.writer import _publication_groups, _source_cost
+
+    item = {"queue_id": 1, "payload": {}, "attempts": 0}
+    retained = [(item, ProjectionDocument("old" * 100, f"hash-{i}", {}, part_key=f"part-{i}")) for i in range(10)]
+    mapping = {"documents_json": json.dumps([
+        {"part_key": f"part-{i}", "content_hash": f"hash-{i}", "data_id": f"id-{i}"} for i in range(11)])}
+    retained[-1] = (item, ProjectionDocument("x" * 100, "changed", {}, part_key="part-9"))
+    second = ({"queue_id": 2, "payload": {}, "attempts": 0}, ProjectionDocument("y" * 20, "new", {}))
+    third = ({"queue_id": 3, "payload": {}, "attempts": 0}, ProjectionDocument("z", "newer", {}))
+    assert _source_cost(retained, mapping) == (3, 100)  # 一个变更、两个退役，九篇保留。
+    config = CogneeConfig(sync_max_documents_per_group=document_limit,
+                          sync_max_characters_per_group=character_limit)
+    groups = list(_publication_groups([*retained, second, third], {1: mapping, 2: None, 3: None}, config))
+    assert [[entry[0]["queue_id"] for entry in group] for group in groups] == [[1] * 10 + [2], [3]]
 
 
 async def test_post_publish_enhancement_failure_does_not_retry_completed_sources(coordinator, store):

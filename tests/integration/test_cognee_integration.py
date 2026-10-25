@@ -173,6 +173,7 @@ async def test_real_relation_fragments_incremental_update_preserves_committed_do
     config = load_cognee_config()
     config.enabled = config.sync_enabled = True
     config.project_memories_enabled = config.project_graph_enabled = True
+    config.sync_max_documents_per_group = 4
     config.data_root = str(tmp_path / "cognee")
     config.timeout_seconds = config.pipeline_timeout_seconds = 180
     config.write_breaker_enabled = False

@@ -19,7 +19,7 @@ from core.log import log
 
 from . import adapters, ladybug_guard
 from .config import CogneeConfig
-from .deletion import DeletionReads
+from .deletion import DeletionWindow
 from .embedding_identity import validate_embedding
 from .llm_bridge import (
     CogneeConfigError,
@@ -54,7 +54,7 @@ class SDKClient:
         self._embedding_payload: dict[str, Any] = {}
         self._chat_payload: dict[str, Any] = {}
         self._summary_datasets: set[str] = set()
-        self._deletion_reads: DeletionReads | None = None
+        self._deletion_window: DeletionWindow | None = None
         self.projection_ready = True
         self.projection_namespace = ""
 
@@ -84,7 +84,7 @@ class SDKClient:
         重置配置标记后由 initialize 串行重新映射；原生 LLM 适配器按调用读取
         当前配置，带缓存的 Instructor 与 embedding 引擎使用配置内容作为键。
         """
-        self._deletion_reads = None
+        self._deletion_window = None
         self.config = config.normalized()
         self._configured = False
         self._import_error = ""
@@ -117,7 +117,7 @@ class SDKClient:
         在召回与投影工作停止后统一调用。关闭不删除数据或改变投影状态。
         """
         self.quiesce()
-        self._deletion_reads = None
+        self._deletion_window = None
         await asyncio.gather(*self._calls, return_exceptions=True)
         if self._module is None:
             return
@@ -304,9 +304,12 @@ class SDKClient:
         return dataset in self._summary_datasets
 
     async def improve(self, dataset: str = "main_dataset", **kwargs: Any) -> Any:
-        self._deletion_reads = None
-        result = await self._call("improve", dataset=dataset,
-                                  timeout=self.config.pipeline_timeout_seconds, **kwargs)
+        self._deletion_window = None
+        checkpoints = ladybug_guard.CheckpointWindow()
+        with checkpoints.scope():
+            result = await self._call("improve", dataset=dataset,
+                                      timeout=self.config.pipeline_timeout_seconds, **kwargs)
+        await checkpoints.flush()
         value = result.model_dump(mode="json") if hasattr(result, "model_dump") else result
         stages = value.get("stages", []) if isinstance(value, dict) else []
         if any(stage.get("stage") == "global_context_index" and stage.get("status") in
@@ -316,7 +319,7 @@ class SDKClient:
 
     # v1/lower-level public API
     async def add(self, data: Any, **kwargs: Any) -> Any:
-        self._deletion_reads = None
+        self._deletion_window = None
         self._summary_datasets.clear()
         from cognee.tasks.ingestion.data_item import DataItem
 
@@ -371,12 +374,12 @@ class SDKClient:
                              dataset_name=dataset_name, node_set=node_set)
 
     async def cognify(self, **kwargs: Any) -> Any:
-        self._deletion_reads = None
-        return await self._call(
-            "cognify",
-            timeout=self.config.pipeline_timeout_seconds,
-            **kwargs,
-        )
+        self._deletion_window = None
+        checkpoints = ladybug_guard.CheckpointWindow()
+        with checkpoints.scope():
+            result = await self._call("cognify", timeout=self.config.pipeline_timeout_seconds, **kwargs)
+        await checkpoints.flush()
+        return result
 
 
     # Dataset namespace
@@ -423,8 +426,8 @@ class SDKClient:
         return await self._call("datasets.list_data", _to_uuid(dataset_id), **kwargs)
 
     async def delete_dataset(self, dataset_id: str) -> None:
-        self._deletion_reads = None
         """经 SDK 删除指定数据集及其索引，保留仍被其他数据集引用的原文。"""
+        self._deletion_window = None
         await self._call("datasets.empty_dataset", _to_uuid(dataset_id), timeout=self.config.pipeline_timeout_seconds)
         self._datasets_until = 0
 
@@ -437,19 +440,22 @@ class SDKClient:
 
 
     async def prepare_deletions(self, targets: list[tuple[str, str]]) -> None:
-        """在无并发增写的删除窗口中预取目标归属；失败时不保留部分准备缓存。"""
-        self._deletion_reads = None
-        reads = DeletionReads()
-        await reads.prepare(targets)
-        self._deletion_reads = reads
+        """开始无并发增写的删除窗口；定位、检查点与收尾仅限本轮目标。"""
+        self._deletion_window = None
+        window = DeletionWindow()
+        await window.prepare(targets)
+        self._deletion_window = window
 
     async def delete_data(self, dataset_id: Any, data_id: Any, **kwargs: Any) -> Any:
         self._summary_datasets.clear()
         self._datasets_until = 0.0
-        if self._deletion_reads is None:
+        if self._deletion_window is None or not self._deletion_window.includes(str(dataset_id), str(data_id)):
             return await self._call("datasets.delete_data", _to_uuid(dataset_id), _to_uuid(data_id), **kwargs)
-        with self._deletion_reads.scope():
-            return await self._call("datasets.delete_data", _to_uuid(dataset_id), _to_uuid(data_id), **kwargs)
+        window = self._deletion_window
+        with window.scope():
+            result = await self._call("datasets.delete_data", _to_uuid(dataset_id), _to_uuid(data_id), **kwargs)
+        await window.completed(str(dataset_id), str(data_id))
+        return result
 
 
     async def verify_graph_documents(self, dataset_id: str, data_ids: list[str]) -> None:
@@ -512,7 +518,7 @@ class SDKClient:
         实现见 `storage.compact_lance_tree`；最新版本永远保留，逻辑数据不受影响。
         须在无并发写入时调用（协调器批次间窗口）。
         """
-        self._deletion_reads = None
+        self._deletion_window = None
         if not self._configured:
             availability = await self.initialize()
             if not availability.ready:

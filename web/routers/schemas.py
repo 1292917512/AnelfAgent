@@ -44,6 +44,8 @@ class CogneeConfigUpdate(BaseModel):
     improve_interval_seconds: Optional[float] = None
     sync_interval_seconds: Optional[float] = None
     sync_batch_size: Optional[int] = None
+    sync_max_documents_per_group: Optional[int] = None
+    sync_max_characters_per_group: Optional[int] = None
     max_retries: Optional[int] = None
     compact_enabled: Optional[bool] = None
     compact_interval_seconds: Optional[float] = None

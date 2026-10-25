@@ -195,6 +195,8 @@ async def test_http_save_during_projection_returns_and_preserves_latest_config(
                 "compact_cleanup_growth_mb": 128,
                 "compact_max_versions_per_run": 5000,
                 "compact_cleanup_budget_seconds": 300,
+                "sync_max_documents_per_group": 32,
+                "sync_max_characters_per_group": 96000,
                 "project_graph_enabled": False,
             })
             assert response.status_code == 200, response.text
@@ -206,12 +208,16 @@ async def test_http_save_during_projection_returns_and_preserves_latest_config(
             assert persisted.compact_cleanup_growth_mb == 128
             assert persisted.compact_max_versions_per_run == 5000
             assert persisted.compact_cleanup_budget_seconds == 300
+            assert persisted.sync_max_documents_per_group == 32
+            assert persisted.sync_max_characters_per_group == 96000
             assert not persisted.project_graph_enabled
             schema = {field["key"]: field for field in response.json()["options"]["settings_fields"]}
             assert set(schema) == set(persisted.to_dict()) - {"chat", "embedding"}
             assert schema["data_root"]["read_only"]
             assert schema["timeout_seconds"]["section"] == "recall"
             assert schema["pipeline_timeout_seconds"]["section"] == "sync"
+            assert schema["sync_max_documents_per_group"]["section"] == "sync"
+            assert schema["sync_max_characters_per_group"]["advanced"]
             assert schema["compact_max_versions_per_run"]["section"] == "storage"
             assert schema["compact_max_versions_per_run"]["min"] == 1
             assert schema["compact_cleanup_budget_seconds"]["advanced"]

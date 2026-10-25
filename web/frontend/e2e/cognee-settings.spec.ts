@@ -94,6 +94,8 @@ test("Cognee settings separate deadlines and preserve overrides across edits and
     { key: "search_types", type: "string_list", section: "recall", advanced: true },
     { key: "pipeline_timeout_seconds", type: "float", section: "sync", min: 1 },
     { key: "sync_batch_size", type: "int", section: "sync", min: 1 },
+    { key: "sync_max_documents_per_group", type: "int", section: "sync", advanced: true, min: 1 },
+    { key: "sync_max_characters_per_group", type: "int", section: "sync", advanced: true, min: 1 },
     { key: "native_watchdog_enabled", type: "bool", section: "storage", advanced: true },
     { key: "compact_cleanup_interval_seconds", type: "float", section: "storage", advanced: true, min: 60 },
     { key: "compact_cleanup_version_threshold", type: "int", section: "storage", advanced: true, min: 0 },
@@ -104,6 +106,7 @@ test("Cognee settings separate deadlines and preserve overrides across edits and
   ];
   let config = {
     enabled: true, timeout_seconds: 300, pipeline_timeout_seconds: 3600, sync_batch_size: 2,
+    sync_max_documents_per_group: 64, sync_max_characters_per_group: 192000,
     native_watchdog_enabled: true, data_root: "/data/memory/cognee", search_types: ["CHUNKS"],
     compact_cleanup_interval_seconds: 600,
     compact_cleanup_version_threshold: 1000, compact_cleanup_growth_mb: 256,
@@ -168,9 +171,14 @@ test("Cognee settings separate deadlines and preserve overrides across edits and
   await dialog.getByRole("tab", { name: "Sync and build" }).click();
   await expect(dialog.getByRole("spinbutton", { name: "Build stage timeout (seconds)" })).toHaveValue("3600");
   await dialog.getByRole("spinbutton", { name: "Build stage timeout (seconds)" }).fill("4200");
+  await dialog.getByRole("tabpanel", { name: "Sync and build" }).locator("summary").filter({ hasText: "Advanced settings" }).click();
+  await expect(dialog.getByRole("spinbutton", { name: "Document changes per publication" })).toHaveValue("64");
+  await dialog.getByRole("spinbutton", { name: "Document changes per publication" }).fill("32");
+  await dialog.getByRole("spinbutton", { name: "New text characters per publication" }).fill("96000");
   await dialog.getByRole("button", { name: "Save", exact: true }).click();
   await expect.poll(() => patches.length).toBe(3);
-  expect(patches[2]).toEqual({ pipeline_timeout_seconds: 4200 });
+  expect(patches[2]).toEqual({ pipeline_timeout_seconds: 4200,
+    sync_max_documents_per_group: 32, sync_max_characters_per_group: 96000 });
   await dialog.getByRole("tab", { name: "Storage protection" }).click();
   const storage = dialog.getByRole("tabpanel", { name: "Storage protection" });
   await storage.locator("summary").filter({ hasText: "Advanced settings" }).click();

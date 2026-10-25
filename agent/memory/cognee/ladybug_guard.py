@@ -34,7 +34,10 @@ import functools
 import threading
 import time
 import weakref
+from collections.abc import Iterator
 from concurrent.futures import Future
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, Callable, Optional
 
 from core.latebind import LateBinding
@@ -56,6 +59,54 @@ _INSTALLED_ATTR = "_anel_ladybug_guard"
 
 #: WAL 容错标记（Database 子类幂等判据）
 _WAL_TOLERANT_ATTR = "_anel_wal_tolerant"
+
+_checkpoints: ContextVar[CheckpointWindow | None] = ContextVar("cognee_checkpoints", default=None)
+
+
+class CheckpointWindow:
+    """合并受快照保护的写阶段检查点；查询仍正常提交，失败交给外层恢复。"""
+
+    def __init__(self) -> None:
+        self._graphs: dict[int, Any] = {}
+
+    def request(self, graph: Any) -> None:
+        self._graphs[id(graph)] = graph
+
+    @contextmanager
+    def scope(self) -> Iterator[None]:
+        token = _checkpoints.set(self)
+        try:
+            yield
+        finally:
+            _checkpoints.reset(token)
+
+    async def flush(self) -> None:
+        """排空阶段内全部请求；任一检查点失败不得批准当前候选。"""
+        token = _checkpoints.set(None)
+        try:
+            for graph in self._graphs.values():
+                await graph.checkpoint()
+            self._graphs.clear()
+        finally:
+            _checkpoints.reset(token)
+
+
+def install_checkpoints(adapter_cls: Any) -> None:
+    """只合并显式受保护窗口中的检查点；原生自动检查点和窗口外调用不变。"""
+    original = adapter_cls.checkpoint
+    if getattr(original, "_anelf_checkpoints", False):
+        return
+
+    @functools.wraps(original)
+    async def checkpoint(graph: Any) -> None:
+        window = _checkpoints.get()
+        if window is None:
+            await original(graph)
+        else:
+            window.request(graph)
+
+    checkpoint.__dict__["_anelf_checkpoints"] = True
+    adapter_cls.checkpoint = checkpoint
 
 
 class _GateHold:
