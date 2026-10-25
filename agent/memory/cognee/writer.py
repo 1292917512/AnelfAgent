@@ -364,7 +364,15 @@ def _publication_groups(
         group: list[ProjectionEntry] = []
         source_count = documents = characters = 0
         for source in cohort:
-            added, chars = _source_cost(source, mappings[int(source[0][0]["queue_id"])])
+            try:
+                added, chars = _source_cost(source, mappings[int(source[0][0]["queue_id"])])
+            except ValueError:
+                # 损坏映射交给已有写入异常边界报告，不能阻断其他已认领来源。
+                if group:
+                    yield group
+                    group, source_count, documents, characters = [], 0, 0, 0
+                yield source
+                continue
             if group and (source_count >= width or documents + added > config.sync_max_documents_per_group
                           or characters + chars > config.sync_max_characters_per_group):
                 yield group
