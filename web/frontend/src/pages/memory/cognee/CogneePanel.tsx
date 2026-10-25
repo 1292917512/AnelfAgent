@@ -27,6 +27,7 @@ export function CogneePanel() {
     refetchInterval: (query) => {
       const data = query.state.data;
       return data?.sync.processing || data?.sync.pending || data?.sync.configuration_pending
+        || data?.sync.maintenance
         || data?.retirement?.running || data?.projection?.phase === "building" ? 5000 : 15000;
     },
     throwOnError: false,
@@ -73,6 +74,10 @@ export function CogneePanel() {
         {sync?.maintenance && <p role="status" className="pb-2 text-sm text-accent">
           {t(`cognee.maintenance${sync.maintenance.phase === "queued" ? "Queued" : "Running"}`, {
             action: t(`cognee.${sync.maintenance.mode}`),
+          })}
+          {" · "}{t("cognee.maintenanceProgress", {
+            rounds: sync.maintenance.rounds_completed, versions: sync.maintenance.old_versions_removed,
+            size: formatSize(sync.maintenance.bytes_reclaimed),
           })}
         </p>}
         {sync?.last_compact_summary && (

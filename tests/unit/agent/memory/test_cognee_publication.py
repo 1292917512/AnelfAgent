@@ -14,6 +14,7 @@ import time
 import weakref
 from contextlib import asynccontextmanager, nullcontext
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, Mock
 from uuid import uuid4
 
@@ -821,18 +822,23 @@ def test_manifest_accepts_sdk_nodeset_identity_but_preserves_exact_metadata(tags
         plan.validate(candidate)
 
 
-@pytest.mark.timeout(180)
-async def test_real_ingestion_publishes_colliding_tags_without_changing_document_identity(tmp_path, monkeypatch):
+@pytest.fixture
+def offline_index_config(tmp_path, monkeypatch) -> CogneeConfig:
     from agent.memory.cognee.config import CogneeChatModelConfig, CogneeEmbeddingModelConfig
 
     monkeypatch.setattr("agent.llm.get_llm_manager", lambda: None)
     # 摄入与索引提交不需要模型；仅关闭供应商连通性探测，不替换 SDK 或持久化。
     monkeypatch.setenv("COGNEE_SKIP_CONNECTION_TEST", "true")
-    config = CogneeConfig(data_root=str(tmp_path / "index"), write_breaker_enabled=False,
+    return CogneeConfig(data_root=str(tmp_path / "index"), write_breaker_enabled=False,
         chat=CogneeChatModelConfig(source="custom", model="gpt-4o", api_key="offline-test",
                                   endpoint="http://127.0.0.1:1/v1"),
         embedding=CogneeEmbeddingModelConfig(source="custom", provider="openai", model="text-embedding-3-small",
                                              api_key="offline-test", endpoint="http://127.0.0.1:1/v1", dimensions=1536))
+
+
+@pytest.mark.timeout(180)
+async def test_real_ingestion_publishes_colliding_tags_without_changing_document_identity(offline_index_config):
+    config = offline_index_config
     client = CogneeClient(config)
     tags = ["topic:WOL", "topic:WoL", "topic:two words", "topic:two_words"]
     metadata = {"anelf_content_hash": "source-hash", "anelf_attribution": {"tags": tags}}
@@ -850,6 +856,66 @@ async def test_real_ingestion_publishes_colliding_tags_without_changing_document
         assert client.publication_status["commits"] == 2
     finally:
         await client.close()
+
+
+@pytest.mark.timeout(240)
+async def test_real_cleanup_continuations_preserve_tagged_versions_and_published_documents(offline_index_config, store, monkeypatch):
+    import lancedb
+
+    from agent.memory.cognee.coordinator import CogneeCoordinator
+
+    config = offline_index_config
+    config.compact_max_versions_per_run = 2
+    config.compact_retention_days = 0
+    config.compact_cleanup_budget_seconds = 180
+    db_dir = Path(config.data_root) / "system/databases/offline/backlog.lance.db"
+    connection = lancedb.connect(str(db_dir))
+    table = connection.create_table("facts", [{"id": 0, "vector": [0.0, 1.0]}])
+    for identity in range(1, 7):
+        table.add([{"id": identity, "vector": [float(identity), 1.0]}])
+    table.to_lance().tags.create("preserve", 2)
+    del table, connection
+    client = CogneeClient(config)
+    coordinator = CogneeCoordinator(store, client, config)
+    try:
+        item = await client.make_data_item("完整保留的源文档", label="memory", dataset_name="anelf_global",
+                                           external_metadata={"anelf_content_hash": "cleanup-test"})
+        ingestion = await client.add([item], dataset_name="anelf_global", incremental_loading=True)
+        before = client.publication_status["commits"]
+        original = client.compact_vector_storage
+        calls = 0
+
+        async def fail_second_round(retention: float, **kwargs: Any) -> dict[str, Any]:
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                async with client.write_transaction():
+                    await original(retention, **kwargs)
+                    raise RuntimeError("candidate cleanup failed before publication")
+            return await original(retention, **kwargs)
+
+        monkeypatch.setattr(client, "compact_vector_storage", fail_second_round)
+        await coordinator.request_compact(prune_only=True)
+        failed = await coordinator._maintenance_task
+        assert failed["rounds"] == 1 and "error" in failed
+        assert client.publication_status["commits"] == before + 1
+        recovered = lancedb.connect(str(db_dir)).open_table("facts")
+        assert {version["version"] for version in recovered.list_versions()} == {2, 3, 4, 5, 6, 7}
+        del recovered
+        monkeypatch.setattr(client, "compact_vector_storage", original)
+        await coordinator.request_compact(prune_only=True)
+        result = await coordinator._maintenance_task
+        assert result["rounds"] > 1 and result["old_versions_removed"] == 4
+        assert result["executed_tasks"] == 0 and not result["errors"]
+        assert client.publication_status["commits"] == before + 5
+        assert {row["id"] for row in await client.list_data(ingestion["dataset_id"])} == {item.data_id}
+    finally:
+        await coordinator.close()
+    # 关闭后的恢复流程和重新打开都保留最新行、用户标记版本及已提交的清理结果。
+    reopened = lancedb.connect(str(db_dir)).open_table("facts")
+    assert reopened.count_rows() == 7
+    assert {version["version"] for version in reopened.list_versions()} == {2, 7}
+    assert reopened.to_lance().checkout_version("preserve").count_rows() == 2
 
 
 async def test_query_vector_is_reused_across_rpc_scopes_and_released():

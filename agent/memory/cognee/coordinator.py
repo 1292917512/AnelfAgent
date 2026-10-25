@@ -297,11 +297,14 @@ class CogneeCoordinator:
                 result = await self._run_compact(prune_only=prune_only)
                 if "error" in result:
                     self.last_compact_at = time.time()
-                    self.last_compact_summary = f"失败: {result['error']}"
+                    self.last_compact_summary = (
+                        f"已完成 {result.get('rounds', 0)} 轮，失败: {result['error']}"
+                    )
                 return result
             except Exception as exc:
                 self.last_compact_at = time.time()
-                self.last_compact_summary = f"失败: {_error_text(exc)}"
+                rounds = self._maintenance_status.rounds_completed if self._maintenance_status else 0
+                self.last_compact_summary = f"已完成 {rounds} 轮，失败: {_error_text(exc)}"
                 log(f"Cognee 后台维护失败: {self.last_compact_summary}", "WARNING", tag="记忆")
                 return {"error": self.last_compact_summary}
 
@@ -535,27 +538,80 @@ class CogneeCoordinator:
         full = due and not busy
         if not (full or cleanup_due):
             return
-        await self._start_maintenance(prune_only=not full)
+        self._start_maintenance(prune_only=not full)
 
     async def _run_compact(self, *, prune_only: bool = False) -> dict[str, Any]:
+        """在时间预算内续跑有进展的清理；每轮独立发布并向其他持锁作业让路。"""
         with activity_owner(kind="maintenance", label="Cognee", owner_id="cognee"):
             async with activity_scope(uuid.uuid4().hex[:8], "") as activity, activity_step("cognee_compact") as step:
-                async with self._projection_lock:
-                    self._require_open()
-                    if not self.config.enabled:
-                        raise RuntimeError("Cognee 已停用，取消尚未执行的维护")
-                    if self._maintenance_status:
-                        self._maintenance_status.phase = "running"
-                    if not self._projection_allowed():
-                        step.status, step.detail = "error", self._pause_reason
-                        activity.status, activity.error = "failed", self._pause_reason
-                        return {"error": self._pause_reason}
-                    result = await self._compact_storage(prune_only=prune_only)
-                    step.detail = self.last_compact_summary
-                    if "error" in result:
-                        step.status = "error"
-                        activity.status, activity.error = "failed", str(result["error"])
-                    return result
+                total: dict[str, Any] = {"rounds": 0, "databases": 0, "tables": 0,
+                    "old_versions_removed": 0, "bytes_reclaimed": 0, "executed_tasks": 0,
+                    "errors": [], "budget_exhausted": False}
+                deadline: int | None = None
+                cost_ns = 0
+                no_progress_rotations: set[int] = set()
+                try:
+                    while True:
+                        async with self._projection_lock:
+                            self._require_open()
+                            if not self.config.enabled:
+                                total["error"] = "Cognee 已停用，取消后续维护"
+                                break
+                            now = time.monotonic_ns()
+                            if deadline is None:
+                                deadline = now + int(self.config.compact_cleanup_budget_seconds * 1e9)
+                            elif now >= deadline:
+                                break
+                            if not self._projection_allowed():
+                                total["error"] = self._pause_reason
+                                break
+                            if self._maintenance_status:
+                                self._maintenance_status.phase = "running"
+                            try:
+                                result = await self._compact_storage(prune_only=prune_only or total["rounds"] > 0)
+                            finally:
+                                cost_ns += time.monotonic_ns() - now
+                            if "error" in result:
+                                total["error"] = result["error"]
+                                break
+                            total["rounds"] += 1
+                            total["databases"] = max(total["databases"], result["databases"])
+                            for key in ("tables", "old_versions_removed", "bytes_reclaimed", "executed_tasks"):
+                                total[key] += int(result.get(key, 0))
+                            total["errors"].extend(result["errors"])
+                            total["budget_exhausted"] = bool(result.get("budget_exhausted"))
+                            if self._maintenance_status:
+                                self._maintenance_status.rounds_completed = total["rounds"]
+                                self._maintenance_status.old_versions_removed = total["old_versions_removed"]
+                                self._maintenance_status.bytes_reclaimed = total["bytes_reclaimed"]
+                        if total["errors"] or not total["budget_exhausted"] or time.monotonic_ns() >= deadline:
+                            break
+                        if result.get("old_versions_removed", 0):
+                            no_progress_rotations.clear()
+                        else:
+                            # 空表也要向后轮换；同一轮换点再次无进展时停止，避免标记版本造成空转。
+                            rotation = int(result.get("next_rotation", 0))
+                            if rotation in no_progress_rotations:
+                                break
+                            no_progress_rotations.add(rotation)
+                        if self._maintenance_status:
+                            self._maintenance_status.phase = "queued"
+                        await asyncio.sleep(0)
+                finally:
+                    if cost_ns:
+                        self._maintenance_cost_ns = cost_ns
+                if total["rounds"]:
+                    self.last_compact_summary = (
+                        f"已完成 {total['rounds']} 轮，清理 {total['old_versions_removed']} 个旧版本，"
+                        f"回收 {total['bytes_reclaimed'] / 1024 / 1024:.1f}MB"
+                        + ("，余量留待后续维护" if total["budget_exhausted"] else "")
+                        + (f"，{len(total['errors'])} 个错误" if total["errors"] else "")
+                    )
+                step.detail = self.last_compact_summary
+                if "error" in total or total["errors"]:
+                    step.status = "error"
+                    activity.status, activity.error = "failed", str(total.get("error") or total["errors"])
+                return total
 
     async def _compact_storage(self, *, prune_only: bool = False) -> dict[str, Any]:
         started = self._last_cleanup_ns = time.monotonic_ns()

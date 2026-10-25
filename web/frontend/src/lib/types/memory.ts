@@ -64,6 +64,8 @@ export interface CogneeConfig {
   compact_enabled: boolean;
   compact_interval_seconds: number;
   compact_cleanup_interval_seconds: number;
+  compact_max_versions_per_run: number;
+  compact_cleanup_budget_seconds: number;
   compact_retention_days: number;
   write_breaker_enabled: boolean;
   write_breaker_threshold_mb: number;
@@ -231,7 +233,10 @@ export interface CogneeStatus {
     configuration_error?: string;
     last_compact_at?: number;
     last_compact_summary?: string;
-    maintenance?: { mode: "cleanup" | "compact"; phase: "queued" | "running" } | null;
+    maintenance?: {
+      mode: "cleanup" | "compact"; phase: "queued" | "running";
+      rounds_completed: number; old_versions_removed: number; bytes_reclaimed: number;
+    } | null;
   };
 }
 

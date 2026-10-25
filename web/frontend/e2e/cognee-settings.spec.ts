@@ -28,7 +28,8 @@ test("Cognee cleanup progress advances without claiming the index is already com
 });
 
 test("Cognee maintenance is hidden, explained, confirmed and tracked without holding the page", async ({ page }, info) => {
-  let maintenance: { mode: "cleanup" | "compact"; phase: "queued" | "running" } | null = null;
+  let maintenance: { mode: "cleanup" | "compact"; phase: "queued" | "running";
+    rounds_completed: number; old_versions_removed: number; bytes_reclaimed: number } | null = null;
   let summary = "";
   const requests: boolean[] = [];
   await page.route("**/api/memory/cognee/status", route => route.fulfill({ json: {
@@ -39,7 +40,8 @@ test("Cognee maintenance is hidden, explained, confirmed and tracked without hol
   await page.route("**/api/memory/cognee/compact?*", route => {
     const prune = new URL(route.request().url()).searchParams.get("prune_only") === "true";
     requests.push(prune);
-    maintenance = { mode: prune ? "cleanup" : "compact", phase: "queued" };
+    maintenance = { mode: prune ? "cleanup" : "compact", phase: "queued",
+      rounds_completed: 0, old_versions_removed: 0, bytes_reclaimed: 0 };
     return route.fulfill({ json: { ok: true, scheduled: true } });
   });
   await page.goto("/webui/memory?tab=cognee");
@@ -68,8 +70,11 @@ test("Cognee maintenance is hidden, explained, confirmed and tracked without hol
   await panel.getByRole("button", { name: "Close", exact: true }).click();
   await expect(panel).toBeHidden();
   await expect(page.getByRole("status").filter({ hasText: "Clean expired versions:" })).toContainText("waiting");
-  maintenance = { mode: "cleanup", phase: "running" };
+  maintenance = { mode: "cleanup", phase: "running", rounds_completed: 2,
+    old_versions_removed: 6000, bytes_reclaimed: 1048576 };
   await expect(page.getByRole("status").filter({ hasText: "Clean expired versions:" })).toContainText("running", { timeout: 10000 });
+  await expect(page.getByRole("status").filter({ hasText: "Clean expired versions:" })).toContainText("2 rounds completed");
+  await expect(page.getByRole("status").filter({ hasText: "Clean expired versions:" })).toContainText("6000 old versions cleaned");
   maintenance = null;
   summary = "Maintenance completed; current data retained";
   await expect(page.getByText(/Maintenance completed; current data retained/)).toBeVisible({ timeout: 10000 });
@@ -91,12 +96,15 @@ test("Cognee settings separate deadlines and preserve overrides across edits and
     { key: "sync_batch_size", type: "int", section: "sync", min: 1 },
     { key: "native_watchdog_enabled", type: "bool", section: "storage", advanced: true },
     { key: "compact_cleanup_interval_seconds", type: "float", section: "storage", advanced: true, min: 60 },
+    { key: "compact_max_versions_per_run", type: "int", section: "storage", min: 1 },
+    { key: "compact_cleanup_budget_seconds", type: "float", section: "storage", advanced: true, min: 0 },
     { key: "data_root", type: "string", section: "storage", read_only: true, advanced: true },
   ];
   let config = {
     enabled: true, timeout_seconds: 300, pipeline_timeout_seconds: 3600, sync_batch_size: 2,
     native_watchdog_enabled: true, data_root: "/data/memory/cognee", search_types: ["CHUNKS"],
     compact_cleanup_interval_seconds: 600,
+    compact_max_versions_per_run: 1000, compact_cleanup_budget_seconds: 120,
     chat: { source: "auto", model_id: "", provider: "openai", model: "", api_key: "", endpoint: "",
       api_version: "", instructor_mode: "", max_completion_tokens: 0, reasoning_effort: "",
       extra_args: { top_p: 0.9 } as Record<string, unknown> },
@@ -165,9 +173,13 @@ test("Cognee settings separate deadlines and preserve overrides across edits and
   await storage.locator("summary").filter({ hasText: "Advanced settings" }).click();
   await expect(storage.getByRole("spinbutton", { name: "Version Cleanup Interval (s)" })).toHaveValue("600");
   await storage.getByRole("spinbutton", { name: "Version Cleanup Interval (s)" }).fill("120");
+  await expect(storage.getByRole("spinbutton", { name: "Versions to clean per round" })).toHaveValue("1000");
+  await storage.getByRole("spinbutton", { name: "Versions to clean per round" }).fill("5000");
+  await storage.getByRole("spinbutton", { name: "Cleanup continuation budget (seconds)" }).fill("300");
   await storage.getByRole("button", { name: "Save", exact: true }).click();
   await expect.poll(() => patches.length).toBe(4);
-  expect(patches[3]).toEqual({ compact_cleanup_interval_seconds: 120 });
+  expect(patches[3]).toEqual({ compact_cleanup_interval_seconds: 120,
+    compact_max_versions_per_run: 5000, compact_cleanup_budget_seconds: 300 });
   await expect(storage.getByText("/data/memory/cognee", { exact: true })).toBeVisible();
   await expect(storage.getByRole("textbox")).toHaveCount(0);
   await expect(dialog.getByRole("link", { name: "View storage location in unified data management" })).toHaveAttribute("href", "/webui/data");

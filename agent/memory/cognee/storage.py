@@ -108,6 +108,7 @@ def compute_storage_stats(root: Path) -> StorageStatsDict:
 
 def compact_lance_tree(
     databases_root: Path, retention_days: float, *, rotation: int = 0, prune_only: bool = False,
+    max_versions: int = 1000,
 ) -> dict[str, Any]:
     """按共享预算压缩数据树，保留期内的版本与最新数据保持可读。
 
@@ -118,7 +119,6 @@ def compact_lance_tree(
     import lancedb
     from cognee_db_workers.lancedb_compaction import (
         DEFAULT_MAX_TASKS_PER_RUN,
-        DEFAULT_MAX_VERSIONS_PER_RUN,
         compact_fragments,
         lance_core_mismatch,
         prune_superseded_versions,
@@ -160,7 +160,7 @@ def compact_lance_tree(
         tables.extend((connection, db_dir.name, name) for name in sorted(table_names))
     offset = rotation % len(tables) if tables else 0
     tasks_left = 0 if prune_only else DEFAULT_MAX_TASKS_PER_RUN
-    versions_left = DEFAULT_MAX_VERSIONS_PER_RUN
+    versions_left = max(1, int(max_versions))
     started = time.monotonic()
     visited = 0
     for connection, db_name, table_name in tables[offset:] + tables[:offset]:

@@ -126,6 +126,8 @@ class CogneeConfig:
     compact_enabled: bool = field(default=True, metadata={"section": "storage"})
     compact_interval_seconds: float = field(default=86400.0, metadata={"section": "storage", "advanced": True, "min": 600})
     compact_cleanup_interval_seconds: float = field(default=600.0, metadata={"section": "storage", "advanced": True, "min": 60})
+    compact_max_versions_per_run: int = field(default=1000, metadata={"section": "storage", "min": 1})
+    compact_cleanup_budget_seconds: float = field(default=120.0, metadata={"section": "storage", "advanced": True, "min": 0})
     compact_retention_days: float = field(default=1.0, metadata={"section": "storage", "min": 0})
     # 写盘熔断：滑动窗口内进程自身写入速率超阈值时暂停投影认领与
     # 自动压缩（冷却期后重评），防止 Kùzu checkpoint 风暴撞爆磁盘配额
@@ -181,6 +183,8 @@ class CogneeConfig:
         self.max_retries = max(1, int(self.max_retries))
         self.compact_interval_seconds = max(600.0, float(self.compact_interval_seconds))
         self.compact_cleanup_interval_seconds = max(60.0, float(self.compact_cleanup_interval_seconds))
+        self.compact_max_versions_per_run = max(1, int(self.compact_max_versions_per_run))
+        self.compact_cleanup_budget_seconds = max(0.0, float(self.compact_cleanup_budget_seconds))
         self.compact_retention_days = max(0.0, float(self.compact_retention_days))
         self.write_breaker_threshold_mb = max(1.0, float(self.write_breaker_threshold_mb))
         self.write_breaker_window_seconds = max(10.0, float(self.write_breaker_window_seconds))

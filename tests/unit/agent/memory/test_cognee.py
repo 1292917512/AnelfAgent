@@ -463,6 +463,13 @@ def test_config_defaults_on_and_preserves_explicit_choice(
 
     assert config.enabled is (saved or {}).get("enabled", True)
     assert config.chat.source == config.embedding.source == "auto"
+    assert config.compact_max_versions_per_run == 1000
+    assert config.compact_cleanup_budget_seconds == 120
+    config.compact_max_versions_per_run = 0
+    config.compact_cleanup_budget_seconds = -1
+    config.normalized()
+    assert config.compact_max_versions_per_run == 1
+    assert config.compact_cleanup_budget_seconds == 0
 
 
 @pytest.mark.asyncio
@@ -1432,8 +1439,7 @@ def test_compaction_preserves_retained_versions_and_rotates_shared_budget(tmp_pa
         versions[name] = {row["version"] for row in table.list_versions()}
 
     monkeypatch.setattr(compaction, "DEFAULT_MAX_TASKS_PER_RUN", 1)
-    monkeypatch.setattr(compaction, "DEFAULT_MAX_VERSIONS_PER_RUN", 2)
-    retained = compact_lance_tree(db_dir.parent, 1.0)
+    retained = compact_lance_tree(db_dir.parent, 1.0, max_versions=2)
     assert retained["errors"] == []
     assert retained["executed_tasks"] == 1
     assert retained["old_versions_removed"] == 0
@@ -1444,7 +1450,7 @@ def test_compaction_preserves_retained_versions_and_rotates_shared_budget(tmp_pa
     assert len(connection.open_table("first").to_lance().get_fragments()) == 1
     assert len(connection.open_table("second").to_lance().get_fragments()) == 5
 
-    rotated = compact_lance_tree(db_dir.parent, 0.0, rotation=1)
+    rotated = compact_lance_tree(db_dir.parent, 0.0, rotation=1, max_versions=2)
     assert rotated["errors"] == []
     assert rotated["executed_tasks"] == 1
     assert rotated["old_versions_removed"] == 2
@@ -1459,13 +1465,14 @@ async def test_compaction_cancel_drains_native_write_before_unlocking(store, tmp
     loop = asyncio.get_running_loop()
 
     def compact(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        assert kwargs["max_versions"] == 5000
         loop.call_soon_threadsafe(started.set)
         if not release.wait(5):
             raise TimeoutError("test did not release native writer")
         return {}
 
     monkeypatch.setattr("agent.memory.cognee.storage.compact_lance_tree", compact)
-    config = CogneeConfig(data_root=str(tmp_path), write_breaker_enabled=False)
+    config = CogneeConfig(data_root=str(tmp_path), write_breaker_enabled=False, compact_max_versions_per_run=5000)
     client = CogneeClient(config)
     client._configured = True
     coordinator = CogneeCoordinator(store, client, config)
@@ -1669,15 +1676,95 @@ class _CompactFakeClient(FakeIndexTransactions):
         }
 
 
+@pytest.mark.parametrize("mode", ["automatic", "cleanup", "compact"])
+async def test_cleanup_continuations_publish_progress_and_yield_between_rounds(store, tmp_path, monkeypatch, mode):
+    client = _CompactFakeClient()
+    coordinator = CogneeCoordinator(store, client, CogneeConfig(
+        data_root=str(tmp_path), write_breaker_enabled=False))
+    events: list[bool | str] = []
+    started = asyncio.Event()
+    original = client.compact_vector_storage
+
+    async def clean(retention: float, *, prune_only: bool = False) -> dict[str, Any]:
+        assert coordinator._projection_lock.locked()
+        events.append(prune_only)
+        started.set()
+        await asyncio.sleep(0)
+        result = await original(retention, prune_only=prune_only)
+        return {**result, "old_versions_removed": 3, "next_rotation": len(client.compact_calls),
+                "budget_exhausted": len(client.compact_calls) < 3}
+
+    async def projection() -> None:
+        await started.wait()
+        async with coordinator._projection_lock:
+            events.append("projection")
+            progress = coordinator._maintenance_status
+            assert progress.rounds_completed == 1 and progress.old_versions_removed == 3
+            assert progress.bytes_reclaimed == 600
+
+    monkeypatch.setattr(client, "compact_vector_storage", clean)
+    monkeypatch.setattr("agent.memory.cognee.coordinator.cognee_storage_stats.schedule_refresh", lambda _: None)
+    other = asyncio.create_task(projection())
+    async with coordinator._projection_lock:
+        if mode == "automatic":
+            await asyncio.wait_for(coordinator._maybe_compact(busy=True), 1)
+        else:
+            await coordinator.request_compact(prune_only=mode == "cleanup")
+        assert not started.is_set()
+    result, _ = await asyncio.wait_for(asyncio.gather(coordinator._maintenance_task, other), 5)
+    assert events == [mode != "compact", "projection", True, True]
+    assert result["rounds"] == 3 and result["old_versions_removed"] == 9
+    assert result["bytes_reclaimed"] == 1800 and not result["budget_exhausted"]
+    assert coordinator._maintenance_status is None
+    assert "已完成 3 轮" in coordinator.last_compact_summary
+
+
+@pytest.mark.parametrize("stop", ["budget", "single", "failure", "table_error", "no_progress"])
+async def test_cleanup_continuations_stop_at_budget_error_or_no_progress(store, tmp_path, monkeypatch, stop):
+    clock_ns = 1_000_000_000
+    monkeypatch.setattr("agent.memory.cognee.coordinator.time.monotonic_ns", lambda: clock_ns)
+    monkeypatch.setattr("agent.memory.cognee.coordinator.cognee_storage_stats.schedule_refresh", lambda _: None)
+    client = _CompactFakeClient()
+    calls = 0
+
+    async def clean(retention: float, *, prune_only: bool = False) -> dict[str, Any]:
+        nonlocal clock_ns, calls
+        calls += 1
+        clock_ns += 7_000_000_000
+        if stop == "failure" and calls == 2:
+            raise RuntimeError("next round failed; previous recovery point retained")
+        return {"databases": 1, "tables": 1, "bytes_reclaimed": 0,
+                "errors": ["table cleanup failed"] if stop == "table_error" else [],
+                "old_versions_removed": 0 if stop == "no_progress" else 2,
+                "next_rotation": 0, "budget_exhausted": True}
+
+    monkeypatch.setattr(client, "compact_vector_storage", clean)
+    coordinator = CogneeCoordinator(store, client, CogneeConfig(data_root=str(tmp_path),
+        write_breaker_enabled=False,
+        compact_cleanup_budget_seconds=0 if stop == "single" else 10 if stop == "budget" else 120))
+    await coordinator.request_compact(prune_only=True)
+    result = await coordinator._maintenance_task
+    assert calls == (1 if stop in {"single", "table_error"} else 2)
+    assert result["rounds"] == (1 if stop in {"single", "failure", "table_error"} else 2)
+    assert result["old_versions_removed"] == (0 if stop == "no_progress" else result["rounds"] * 2)
+    assert bool(result.get("error")) is (stop == "failure")
+    assert coordinator._maintenance_cost_ns == calls * 7_000_000_000
+    assert coordinator._maintenance_status is None
+    if stop == "failure":
+        assert "已完成 1 轮" in coordinator.last_compact_summary
+
+
 @pytest.mark.parametrize("clock_ns", [1_000_000_000, 172_800_000_000_000])
 async def test_cleanup_has_its_own_interval_and_does_not_rewrite_fragments(store, tmp_path, monkeypatch, clock_ns):
     monkeypatch.setattr("agent.memory.cognee.coordinator.time.monotonic_ns", lambda: clock_ns)
     client = _CompactFakeClient()
     coordinator = CogneeCoordinator(store, client, CogneeConfig(data_root=str(tmp_path), write_breaker_enabled=False))
     await coordinator._maybe_compact()
+    await coordinator._maintenance_task
     assert client.cleanup_modes == [False]
     clock_ns += int(coordinator.config.compact_cleanup_interval_seconds * 1e9)
     await coordinator._maybe_compact()
+    await coordinator._maintenance_task
     assert client.cleanup_modes == [False, True]
     await coordinator._maybe_compact()
     assert client.cleanup_modes == [False, True]
@@ -1728,7 +1815,9 @@ async def test_manual_cleanup_returns_while_batch_busy_and_deduplicates_requests
             response = await asyncio.wait_for(coordinator.request_compact(prune_only=True), 2)
             assert response == {"ok": True, "scheduled": True}
             task = coordinator._maintenance_task
-            assert coordinator._maintenance_status.model_dump() == {"mode": "cleanup", "phase": "queued"}
+            assert coordinator._maintenance_status.mode == "cleanup"
+            assert coordinator._maintenance_status.phase == "queued"
+            assert coordinator._maintenance_status.rounds_completed == 0
             assert (await coordinator.request_compact(prune_only=True))["ok"]
             assert not (await coordinator.request_compact())["ok"]
             await coordinator._maybe_compact()
@@ -1793,28 +1882,29 @@ async def test_slow_maintenance_yields_to_sync_and_defers_fragment_rewrites(stor
     client = SlowMaintenance()
     coordinator = CogneeCoordinator(store, client, CogneeConfig(data_root=str(tmp_path), write_breaker_enabled=False))
     await coordinator._maybe_compact(busy=True)
+    await coordinator._maintenance_task
     assert client.cleanup_modes == [True]  # 繁忙时不自动合并碎片。
     clock_ns += 600_000_000_000
     await coordinator._maybe_compact(busy=True)
     assert client.cleanup_modes == [True]  # 配置周期已到，实际维护成本要求继续让出同步。
     clock_ns += 1_200_000_000_000
     await coordinator._maybe_compact(busy=True)
+    await coordinator._maintenance_task
     assert client.cleanup_modes == [True, True]
     await coordinator._maybe_compact()
+    await coordinator._maintenance_task
     assert client.cleanup_modes == [True, True, False]  # 空闲时完成到期的碎片合并。
     await coordinator.request_compact()
     await coordinator._maintenance_task
     assert client.cleanup_modes == [True, True, False, False]  # 显式请求不受自动冷却拦截。
 
 
-def test_version_only_maintenance_rotates_budget_and_preserves_latest_rows(tmp_path, monkeypatch):
+@pytest.mark.parametrize("max_versions", [1, 2, 5])
+def test_version_only_maintenance_rotates_budget_and_preserves_latest_rows(tmp_path, monkeypatch, max_versions):
     lancedb = pytest.importorskip("lancedb")
-    import cognee_db_workers.lancedb_compaction as compaction
-
     import agent.memory.cognee.storage as storage
 
     monkeypatch.setattr(storage, "_MAINTENANCE_TABLE_BUDGET", 1)
-    monkeypatch.setattr(compaction, "DEFAULT_MAX_VERSIONS_PER_RUN", 2)
     db_dir = tmp_path / "system/databases/test.lance.db"
     conn = lancedb.connect(str(db_dir))
     for name in ("a", "b"):
@@ -1822,12 +1912,16 @@ def test_version_only_maintenance_rotates_budget_and_preserves_latest_rows(tmp_p
         for i in range(1, 5):
             table.add([{"id": i, "vector": [float(i), 1.0]}])
     rotation = 0
-    for _ in range(4):
-        result = storage.compact_lance_tree(db_dir.parent, 0, rotation=rotation, prune_only=True)
+    removed = 0
+    for _ in range(2 * ((4 + max_versions - 1) // max_versions)):
+        result = storage.compact_lance_tree(db_dir.parent, 0, rotation=rotation, prune_only=True,
+                                          max_versions=max_versions)
         rotation = result["next_rotation"]
-        assert result["old_versions_removed"] == 2
+        assert 0 < result["old_versions_removed"] <= max_versions
+        removed += result["old_versions_removed"]
         assert result["executed_tasks"] == 0
         assert not result["errors"]
+    assert removed == 8
     for name in ("a", "b"):
         table = conn.open_table(name)
         assert table.count_rows() == 5

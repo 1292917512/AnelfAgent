@@ -94,6 +94,9 @@ class CogneeMaintenanceStatus(BaseModel):
 
     mode: Literal["cleanup", "compact"]
     phase: Literal["queued", "running"] = "queued"
+    rounds_completed: int = 0
+    old_versions_removed: int = 0
+    bytes_reclaimed: int = 0
 
 
 class CogneeSyncStatus(BaseModel):

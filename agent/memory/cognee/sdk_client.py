@@ -527,6 +527,7 @@ class SDKClient:
             retention_days,
             rotation=self._compact_rotation,
             prune_only=prune_only,
+            max_versions=self.config.compact_max_versions_per_run,
         ), name="memory.cognee.compact")
         try:
             return await asyncio.shield(task)

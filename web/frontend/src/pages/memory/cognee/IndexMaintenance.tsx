@@ -6,6 +6,7 @@ import { Button, ConfirmDialog, Modal, toast } from "@/components/ui";
 import { QueryError } from "@/components/common/AsyncState";
 import { memoryApi } from "@/lib/api";
 import type { CogneeMaintenanceAction, CogneeStatus } from "@/lib/types";
+import { formatSize } from "@/lib/utils";
 
 const actions: CogneeMaintenanceAction[] = ["cleanup", "compact", "backfill", "rebuild", "freshRebuild"];
 
@@ -53,6 +54,10 @@ export function IndexMaintenance({ status, stale, onChanged }: {
         {status?.sync.maintenance && <p role="status" className="text-sm text-accent">
           {t(`cognee.maintenance${status.sync.maintenance.phase === "queued" ? "Queued" : "Running"}`, {
             action: t(`cognee.${status.sync.maintenance.mode}`),
+          })}
+          {" · "}{t("cognee.maintenanceProgress", {
+            rounds: status.sync.maintenance.rounds_completed, versions: status.sync.maintenance.old_versions_removed,
+            size: formatSize(status.sync.maintenance.bytes_reclaimed),
           })}
         </p>}
         {stale && <p role="alert" className="text-sm text-danger">{t("cognee.maintenanceStale")}</p>}
