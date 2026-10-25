@@ -5,6 +5,19 @@
     "rules": "System Rules"
   },
   "searchPlaceholder": "Search tool name, description, tags...",
+  "searchTools": "Find tools",
+  "sourceFilter": "Tool sources",
+  "allSources": "All sources",
+  "catalogHint": "Choose a source, then combine status, tags and keywords. Separate multiple keywords with spaces.",
+  "unclassified": "{{count}} tools do not provide source metadata yet and remain searchable under All sources. Update and restart the backend to filter them by source.",
+  "groupMatches": "{{count}} / {{total}} matching",
+  "groupToggleHint": "The group switch affects every tool in this group, including tools hidden by the current filters.",
+  "origins": {
+    "core": { "label": "Core tools", "short": "Built in · Restart to update", "hint": "Core tools belong to the framework. Code changes require a backend restart; entity synchronization does not reload the core." },
+    "entity": { "label": "Entity extensions", "short": "Modules · Reload entry points", "hint": "Entity reload updates tool and router entry points. Changes to stateful services and helper modules still require a restart." },
+    "channel": { "label": "Channel tools", "short": "Messaging · Reload with channel", "hint": "Channel tools belong to adapters. Reload the channel from Channel Management; running connections will reconnect." },
+    "external": { "label": "External integrations", "short": "MCP and other extensions", "hint": "Remote MCP tools and other extensions are updated through their integration managers. Entity synchronization does not update remote services." }
+  },
   "noMatch": "No matching tools",
   "noTools": "No tools registered",
   "disableGroup": "Disable entire group",

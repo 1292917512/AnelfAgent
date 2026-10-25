@@ -1,10 +1,41 @@
-"""工具管理服务 -- 工具列表、分组管理、启禁用、属性编辑、热重载、插件列表。"""
+"""工具管理服务 -- 工具列表、分组管理、启禁用、属性编辑、热重载、插件列表。
+
+来源元数据仅供管理界面展示，不修改模型工具 schema、标签或路由规则。
+"""
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, TypedDict
 
 from core.log import log
+
+if TYPE_CHECKING:
+    from core.entity import EntityMetadata
+
+
+class ToolOrigin(TypedDict):
+    """展示用工具来源，不参与模型标签、权限或工具路由。"""
+
+    kind: Literal["core", "entity", "channel", "external"]
+    module: str
+
+
+def tool_origin(metadata: EntityMetadata) -> ToolOrigin:
+    """根据声明来源与函数定义区分内核、实体、频道和远端扩展，不依赖工具名或标签。"""
+    module = str(getattr(metadata.func or metadata.entity_class, "__module__", "") or "")
+    parts = module.split(".")
+    if metadata.source == "mcp" and "mcp_original_name" in metadata.meta:
+        return {"kind": "external", "module": metadata.owner}
+    if metadata.source.startswith("channel.") and module == "agent.channel.tool_bridge":
+        channel = metadata.source.split(".", 1)[1]
+        return {"kind": "channel", "module": f"channels.{channel}" if channel != "auto" else module}
+    if parts[0] == "entities" and len(parts) > 1 and not parts[1].startswith("_"):
+        return {"kind": "entity", "module": module}
+    if parts[0] == "channels":
+        return {"kind": "channel", "module": module}
+    if parts[0] in {"core", "agent"}:
+        return {"kind": "core", "module": module}
+    return {"kind": "external", "module": module or metadata.source}
 
 
 def _group_sort_key(group: str) -> tuple:
@@ -25,6 +56,7 @@ class ToolService:
             {
                 "name": e.name,
                 "source": e.source,
+                "origin": tool_origin(e),
                 "group": e.group,
                 "enabled": e.enabled,
                 "description": e.description,
@@ -53,6 +85,7 @@ class ToolService:
             groups[g]["tools"].append({
                 "name": e.name,
                 "source": e.source,
+                "origin": tool_origin(e),
                 "enabled": e.enabled,
                 "description": e.description,
                 "tags": list(e.tags),

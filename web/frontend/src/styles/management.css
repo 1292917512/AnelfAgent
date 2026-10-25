@@ -6,6 +6,12 @@
 .tool-group-header { display: flex; align-items: center; gap: 16px; padding-inline: 16px; }
 .tool-item { display: flex; align-items: start; gap: 20px; padding: 18px 20px; }
 .tool-item-actions { display: flex; flex-shrink: 0; align-items: center; gap: 6px; }
+.tool-source-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.tool-source-card { display: flex; align-items: center; gap: 12px; min-width: 0; min-height: 96px; padding: 16px; text-align: left; border: 1px solid var(--border); border-radius: 12px; background: var(--card); transition: background-color var(--duration-fast), border-color var(--duration-fast), box-shadow var(--duration-fast); }
+.tool-source-card:hover { border-color: var(--border-strong); background: var(--bg-hover); }
+.tool-source-card.is-active { border-color: var(--accent); background: var(--accent-subtle); box-shadow: 0 0 0 1px var(--accent); }
+.tool-source-icon { display: grid; flex-shrink: 0; place-items: center; width: 36px; height: 36px; border-radius: 10px; color: var(--accent); background: var(--bg-elevated); }
+@media (max-width: 1100px) { .tool-source-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .config-item-control { margin-left: auto; }
 .config-item-control > input, .config-item-control > select { min-height: 36px; }
 @media (max-width: 767px) {
@@ -13,6 +19,10 @@
   .tools-filterbar > .app-select-field { min-width: 0; flex: 1; }
   .tools-filterbar input, .filter-chip, .app-switch { min-height: 44px; }
   .tool-group-header { gap: 10px; padding-inline: 12px; }
+  .tool-source-grid { gap: 8px; }
+  .tool-source-card { display: grid; grid-template-columns: 1fr auto; gap: 8px; padding: 12px; }
+  .tool-source-card > span:nth-child(2) { grid-column: 1 / -1; grid-row: 2; }
+  .tool-source-card > span:last-child { grid-column: 2; grid-row: 1; }
   .tool-item { flex-wrap: wrap; gap: 10px; padding: 16px; }
   .tool-item > div:first-child { flex-basis: 100%; }
   .tool-item-actions { margin-left: auto; }

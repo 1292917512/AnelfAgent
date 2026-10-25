@@ -45,6 +45,11 @@ class TestGroupNameResolution:
         keys = {item["key"] for item in config["items"]}
         assert "svc_demo_enabled" in keys
 
+    def test_group_detail_describes_the_group_instead_of_its_first_tool(self, svc, group_entity, monkeypatch):
+        monkeypatch.setattr(EntityRegistry, "get_group_description", lambda group: "Module management")
+        assert svc.get_entity_detail(group_entity)["description"] == "Module management"
+        assert svc.get_entity_detail("svc_demo_tool")["description"] != "Module management"
+
     def test_update_config_by_group_name(self, svc: EntityService, group_entity: str) -> None:
         assert svc.update_entity_config(group_entity, "svc_demo_enabled", False) is True
         assert ConfigManager.get("svc_demo_enabled") is False

@@ -1,5 +1,5 @@
 import { useMemo, Suspense } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, useSearchParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { entitiesApi } from "@/lib/api";
@@ -28,6 +28,7 @@ type EntityTab = "overview" | "config" | "tools" | "panel";
 export default function EntityDetail() {
   const { name } = useParams<{ name: string }>();
   const navigate = useNavigate();
+  const [params] = useSearchParams();
   const { t } = useTranslation("entities");
   const queryClient = useQueryClient();
   const reload = useEntityReload();
@@ -56,7 +57,7 @@ export default function EntityDetail() {
   if (!entity) return <div className="p-5"><PageSkeleton /></div>;
 
   const manifest = entity.manifest;
-  const displayName = manifest?.display_name || entity.group || entity.name;
+  const displayName = manifest?.display_name || t(`tools:groups.${entity.group}`, { defaultValue: entity.group || entity.name });
   const tabs = [
     ...(PanelComponent ? [{ key: "panel" as EntityTab, label: t("tabs.panel"), icon: PanelRight }] : []),
     { key: "overview" as EntityTab, label: t("tabs.overview"), icon: LayoutDashboard },
@@ -70,7 +71,7 @@ export default function EntityDetail() {
       <div className="px-4 md:px-6 py-4 border-b border-border">
         <div className="flex flex-wrap items-center gap-3">
           <button
-            onClick={() => navigate("/tools")}
+            onClick={() => navigate(`/tools${params.get("catalog") ? `?${params.get("catalog")}` : ""}`)}
             aria-label={t("backToTools")}
             className="grid size-10 shrink-0 place-items-center rounded-lg text-muted hover:text-foreground hover:bg-hover transition-colors"
           >

@@ -88,6 +88,7 @@ class EntityService:
             return None
 
         group = metadata.group
+        group_view = EntityRegistry.get(name) is None
 
         # 该分组下的工具列表
         group_tools = []
@@ -117,8 +118,8 @@ class EntityService:
         detail: Dict[str, Any] = {
             "name": metadata.name,
             "type": metadata.entity_type.value,
-            "description": metadata.description,
-            "enabled": metadata.enabled if EntityRegistry.get(name) else all(
+            "description": (EntityRegistry.get_group_description(group) or metadata.description) if group_view else metadata.description,
+            "enabled": metadata.enabled if not group_view else all(
                 item.enabled for item in EntityRegistry.get_by_group(group)
             ),
             "group": group,

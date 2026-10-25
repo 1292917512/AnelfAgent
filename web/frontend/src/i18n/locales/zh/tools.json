@@ -5,6 +5,19 @@
     "rules": "系统规则"
   },
   "searchPlaceholder": "搜索工具名、描述、标签...",
+  "searchTools": "检索工具",
+  "sourceFilter": "工具来源",
+  "allSources": "全部来源",
+  "catalogHint": "选择来源区块，再组合状态、标签与关键词缩小范围。多个关键词用空格分隔。",
+  "unclassified": "{{count}} 个工具尚未提供来源信息，仍可在全部来源中检索；更新并重启后端后可按来源筛选。",
+  "groupMatches": "匹配 {{count}} / {{total}}",
+  "groupToggleHint": "分组开关作用于整个分组，包括当前筛选未显示的工具。",
+  "origins": {
+    "core": { "label": "核心工具", "short": "框架内置 · 修改后重启", "hint": "核心工具由框架提供，代码修改需要重启后端；实体热同步不会更新内核。" },
+    "entity": { "label": "实体扩展", "short": "独立模块 · 入口可重载", "hint": "实体工具按模块重载工具与路由入口；有状态服务及辅助模块修改仍需重启。" },
+    "channel": { "label": "频道工具", "short": "通信能力 · 随频道重载", "hint": "频道工具由适配器提供；在通道管理页重载对应频道，运行中的连接会重新建立。" },
+    "external": { "label": "外部接入", "short": "MCP 与其他扩展", "hint": "远端 MCP 与其他扩展由各自接入管理器更新；实体热同步不会更新远端服务。" }
+  },
   "noMatch": "没有匹配的工具",
   "noTools": "暂无工具注册",
   "disableGroup": "禁用整个分组",

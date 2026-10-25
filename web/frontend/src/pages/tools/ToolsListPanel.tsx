@@ -1,7 +1,7 @@
 import { Select } from "@/components/ui/Select";
 import { PopoverContent } from "@/components/ui/PopoverContent";
-import { useMemo, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useDeferredValue, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { RefreshCw, Search, SlidersHorizontal, X } from "lucide-react";
@@ -14,9 +14,12 @@ import { SectionBoundary } from "@/components/common/SectionBoundary";
 import { ToolGroupCard } from "./ToolGroupCard";
 import { ToolEditModal } from "./ToolEditModal";
 import { PluginsCard } from "./PluginsCard";
-import type { ToolGroup } from "@/lib/types";
+import type { ToolGroup, ToolOriginKind } from "@/lib/types";
 import type { EditState } from "./types";
 import { refreshToolCatalog, useEntityReload } from "./useEntityReload";
+import { ToolSources } from "./ToolSources";
+import { TOOL_ORIGINS } from "./catalog";
+import { useSearchParamUpdates } from "@/hooks/useSearchParamUpdates";
 
 const EMPTY_GROUPS: ToolGroup[] = [];
 
@@ -25,29 +28,27 @@ export function ToolsListPanel() {
   const { t } = useTranslation(["tools", "common"]);
   const navigate = useNavigate();
   const client = useQueryClient();
-  const [params, setParams] = useSearchParams();
+  const [params, updateParams] = useSearchParamUpdates();
   // 检索词以本地状态为即时事实源,URL 参数只是持久化副本(挂载时恢复,供刷新与分享)。
   // 受控值若由 URL 异步状态直接回喂,导航迟到落地会用旧值覆写输入框,打断 IME 组合输入。
   const [search, setSearch] = useState(() => params.get("q") ?? "");
+  const deferredSearch = useDeferredValue(search);
+  const origin = TOOL_ORIGINS.find((kind) => kind === params.get("origin")) ?? "all";
   const requestedStatus = params.get("status");
   const status = requestedStatus === "enabled" || requestedStatus === "disabled" ? requestedStatus : "all";
   const tags = useMemo(() => [...new Set(params.getAll("tag").filter(Boolean))], [params]);
   const [tagSearch, setTagSearch] = useState("");
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [editing, setEditing] = useState<EditState | null>(null);
-  const updateFilter = (key: string, values: string[]) => setParams((current) => {
-    const next = new URLSearchParams(current);
+  const updateFilter = (key: string, values: string[]) => updateParams((next) => {
     next.delete(key);
     values.filter(Boolean).forEach((value) => next.append(key, value));
-    return next;
-  }, { replace: true });
+  });
   const resetFilters = () => {
     setSearch("");
-    setParams((current) => {
-      const next = new URLSearchParams(current);
-      ["q", "status", "tag"].forEach((key) => next.delete(key));
-      return next;
-    }, { replace: true });
+    updateParams((next) => {
+      ["q", "status", "tag", "origin"].forEach((key) => next.delete(key));
+    });
   };
   const query = useQuery({ queryKey: ["tools-grouped"], queryFn: () => toolsApi.grouped().then((r) => r.data), refetchInterval: 10000, throwOnError: false });
   const tagQuery = useQuery({ queryKey: ["tool-tags"], queryFn: () => tagsApi.toolTags().then((r) => r.data), throwOnError: false });
@@ -64,25 +65,40 @@ export function ToolsListPanel() {
   });
   const busy = toggle.isPending || reload.isPending || save.isPending;
   const groups = query.data ?? EMPTY_GROUPS;
-  const keyword = search.trim().toLocaleLowerCase();
-  const filtered = useMemo(() => groups.flatMap((group) => {
-    const groupMatch = [group.group, group.description, t(`groups.${group.group}`, { defaultValue: group.group })].some((value) => value.toLocaleLowerCase().includes(keyword));
-    const tools = group.tools.filter((tool) => (status === "all" || tool.enabled === (status === "enabled"))
-      && tags.every((tag) => tool.tags.includes(tag))
-      && (!keyword || groupMatch || [tool.name, tool.description, ...tool.tags].some((value) => value.toLocaleLowerCase().includes(keyword))));
-    return tools.length ? [{ ...group, tools }] : [];
-  }), [groups, keyword, status, tags, t]);
-  const activeFilters = !!keyword || status !== "all" || tags.length > 0;
+  const keyword = deferredSearch.trim().toLocaleLowerCase();
+  const counts = useMemo(() => {
+    const result: Record<ToolOriginKind, number> = { core: 0, entity: 0, channel: 0, external: 0 };
+    for (const group of groups) for (const tool of group.tools) if (tool.origin) result[tool.origin.kind]++;
+    return result;
+  }, [groups]);
+  const filtered = useMemo(() => {
+    const terms = keyword.split(/\s+/).filter(Boolean);
+    return groups.flatMap((group) => {
+      const groupText = [group.group, group.description, t(`groups.${group.group}`, { defaultValue: group.group })].join(" ");
+      const tools = group.tools.filter((tool) => {
+        if ((origin !== "all" && tool.origin?.kind !== origin) || (status !== "all" && tool.enabled !== (status === "enabled")) || !tags.every((tag) => tool.tags.includes(tag))) return false;
+        const text = [groupText, tool.name, tool.description, tool.source, tool.origin?.module ?? "", ...tool.tags].join(" ").toLocaleLowerCase();
+        return terms.every((term) => text.includes(term));
+      });
+      return tools.length ? [{ ...group, tools }] : [];
+    });
+  }, [groups, keyword, origin, status, tags, t]);
+  const expandMatches = !!keyword || status !== "all" || tags.length > 0;
+  const activeFilters = expandMatches || origin !== "all";
   const total = groups.reduce((sum, group) => sum + group.total_count, 0);
   const enabled = groups.reduce((sum, group) => sum + group.enabled_count, 0);
   const matched = filtered.reduce((sum, group) => sum + group.tools.length, 0);
+  const unclassified = total - Object.values(counts).reduce((sum, count) => sum + count, 0);
   return <div className="space-y-4">
+    <ToolSources value={origin} counts={counts} total={total} pending={query.isPending} onChange={(kind) => updateFilter("origin", kind === "all" ? [] : [kind])} />
+    {unclassified > 0 && <p role="status" className="text-xs leading-relaxed text-muted">{t("unclassified", { count: unclassified })}</p>}
+    <div className="rounded-xl border border-border bg-card p-4 space-y-4">
     <div className="flex flex-wrap items-center justify-between gap-3">
       <p className="text-sm text-muted" role="status">{activeFilters ? t("matchedCount", { count: matched }) : t("enabledCount", { enabled, total })}</p>
-      <Button size="sm" onClick={() => reload.mutate(null)} disabled={busy} loading={reload.isPending && reload.variables === null}><RefreshCw size={15} />{t("reload")}</Button>
+      {(origin === "all" || origin === "entity") && <Button size="sm" onClick={() => reload.mutate(null)} disabled={busy} loading={reload.isPending && reload.variables === null}><RefreshCw size={15} />{t("reload")}</Button>}
     </div>
-    <p className="text-xs leading-relaxed text-muted">{t("reloadHint")}</p>
-    <div className="tools-filterbar">
+    <p className="text-xs leading-relaxed text-muted">{origin === "all" ? t("catalogHint") : t(`origins.${origin}.hint`)}</p>
+    <div className="tools-filterbar" role="search" aria-label={t("searchTools")}>
       <div className="relative min-w-0 flex-1"><Search size={16} className="pointer-events-none absolute left-3 top-3 text-muted" />
         <Input value={search} aria-label={t("searchPlaceholder")} placeholder={t("searchPlaceholder")} onChange={(event) => { setSearch(event.target.value); updateFilter("q", [event.target.value]); }} className="pl-9" />
       </div>
@@ -104,17 +120,18 @@ export function ToolsListPanel() {
       {tags.map((tag) => <button key={tag} className="filter-chip is-active" aria-label={t("removeTag", { tag })} onClick={() => updateFilter("tag", tags.filter((value) => value !== tag))}>{tag}<X size={13} /></button>)}
       <Button variant="ghost" size="sm" onClick={resetFilters}>{t("resetFilters")}</Button>
     </div>}
+    </div>
     <AsyncState pending={query.isPending} error={!query.data ? query.error : undefined} retry={() => void query.refetch()}>
       {query.error && <QueryError compact error={query.error} retry={() => void query.refetch()} />}
       {filtered.length ? <div className="space-y-3">{filtered.map((group) => <ToolGroupCard key={group.group} group={group}
-        isOpen={expanded[group.group] ?? activeFilters} busy={busy}
+        isOpen={expanded[group.group] ?? expandMatches} busy={busy}
         reloading={reload.isPending && reload.variables === group.reload_module}
         onReload={(module) => reload.mutate(module)}
-        onToggle={() => setExpanded((current) => ({ ...current, [group.group]: !(current[group.group] ?? activeFilters) }))}
+        onToggle={() => setExpanded((current) => ({ ...current, [group.group]: !(current[group.group] ?? expandMatches) }))}
         onToggleGroup={() => toggle.mutate({ name: group.group, group: true })}
         onToggleTool={(name) => toggle.mutate({ name, group: false })}
         onEditTool={(tool) => { save.reset(); setEditing({ name: tool.name, tags: [...tool.tags], description: tool.description }); }}
-        onOpenEntity={(groupName) => navigate(`/entities/${encodeURIComponent(groupName)}`)} />)}</div>
+        onOpenEntity={(groupName) => navigate(`/entities/${encodeURIComponent(groupName)}${params.size ? `?catalog=${encodeURIComponent(params.toString())}` : ""}`)} />)}</div>
         : <p className="rounded-xl border border-dashed border-border py-12 text-center text-sm text-muted">{t(activeFilters ? "noMatch" : "noTools")}</p>}
     </AsyncState>
     <SectionBoundary>{plugins.error ? <QueryError compact error={plugins.error} retry={() => void plugins.refetch()} /> : plugins.data && <PluginsCard plugins={plugins.data} />}</SectionBoundary>
