@@ -473,7 +473,7 @@ class GraphStore:
         """新增关系：节点不存在自动建档；(s,p,o) 已存在则更新强度/证据（upsert）。"""
         pred, strength, evidence = self._validate_relation(predicate, strength, evidence)
         if origin not in EDGE_ORIGINS:
-            origin = "manual_tool"
+            raise ValueError(f"未知关系来源: {origin!r}，允许值: {', '.join(EDGE_ORIGINS)}")
         db = await self._conn.get_db()
         async with self._conn.tx(db):
             # 抽取名称只用于建档或补全占位名；已有名称由显式编辑维护。

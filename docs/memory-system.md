@@ -192,6 +192,7 @@ SDK 可导入 `RecallPolicy`、`recall_options`、`set_turn_recall_policy`。
 ## 关系图谱（agent/memory/graph/）
 
 - **更新约束**：自动关系抽取只为新节点或占位名称补名，不覆盖已有名称；显式改名仍传播到全部邻居。重复关系及相同字段不刷新时间、不入投影队列；强度变化只更新原生召回信号，证据、归属、来源和名称变化仍触发投影。
+- **来源契约**：自动捕获与心跳关系抽取统一使用 `heartbeat_extract`；手动工具为 `manual_tool`，界面写入为 `web_ui`。未知来源在任何写入前拒绝，不能回退为具有改名语义的手动来源。
 - **治理范围**：一次模型执行固定首次领取的议程范围，后续只复核这些项目；剩余事实留下一次任务，不以本轮为空宣称全库清空。豁免和本轮范围在查询上限前过滤，旧豁免不因展示数量限制失效。不同会话及子执行独立领取。
 - **权威存储** `graph/store.py`：graph_nodes/graph_edges，(s,p,o) 唯一 upsert + 别名归一 + 软删 +
   cognee 投影入队；检索命中即计数（access_count/last_accessed_ns）

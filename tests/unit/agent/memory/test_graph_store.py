@@ -96,6 +96,18 @@ async def test_extraction_can_fill_placeholder_name_and_restore_archived_node(st
     assert not (await store.graph.get_node("user:qq:1"))["archived"]
 
 
+@pytest.mark.parametrize("origin", ["auto_capture", "unknown"])
+async def test_unknown_relation_origin_cannot_become_a_manual_rename(store, origin: str) -> None:
+    graph = store.graph
+    await graph.upsert_node("user:qq:1", label="正式名称")
+    store.set_cognee_projection_enabled(True)
+    with pytest.raises(ValueError, match="未知关系来源"):
+        await graph.add_relation("user:qq:1", "关联", "topic:新节点", subject_label="意外覆盖", origin=origin)
+    assert (await graph.get_node("user:qq:1"))["label"] == "正式名称"
+    assert await graph.get_node("topic:新节点") is None
+    assert await store.claim_cognee_sync_batch(10) == []
+
+
 @pytest.mark.asyncio
 async def test_add_relation_rejects_self_loop_and_empty_predicate(store) -> None:
     with pytest.raises(ValueError):

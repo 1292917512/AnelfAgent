@@ -552,7 +552,7 @@ class AutoCapturePipeline:
                     symmetric=cand["symmetric"],
                     strength=cand["strength"],
                     evidence=cand["evidence"],
-                    origin="auto_capture",
+                    origin="heartbeat_extract",
                 )
                 stored += 1
             except ValueError as exc:

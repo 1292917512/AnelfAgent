@@ -59,6 +59,57 @@ class _FakeSqlite:
         return rows[-limit:]
 
 
+async def test_relation_capture_cannot_rename_hubs_and_enqueue_their_entire_neighborhood(store, monkeypatch):
+    import agent.memory.auto_capture as ac
+
+    graph = store.graph
+    owner = await graph.upsert_node("user:qq:1", label="正式用户名称")
+    group = await graph.upsert_node("group:qq:100", label="正式群名称")
+    edge = await graph.add_relation("group:qq:100", "包含成员", "user:qq:1",
+                                    evidence="既有成员关系", origin="heartbeat_extract")
+    db = await store._conn.get_db()
+    async with store._conn.tx(db):
+        await db.executemany(
+            "INSERT INTO graph_nodes(node_key,node_type,label,created_ns,updated_ns) VALUES(?,?,?,?,?)",
+            [(f"topic:neighbor-{i}", "topic", f"邻居 {i}", 1, 1) for i in range(1000)],
+        )
+        await db.execute(
+            "INSERT INTO graph_edges(subject_id,predicate,object_id,created_ns,updated_ns) "
+            "SELECT ?, '关联', id, 1, 1 FROM graph_nodes WHERE node_key LIKE 'topic:neighbor-%'",
+            (owner["id"],),
+        )
+    store.set_cognee_projection_enabled(True)
+    candidate = {"subject": "group:qq:100", "predicate": "包含成员", "object": "user:qq:1",
+                 "subject_label": "模型临时群称呼", "object_label": "模型临时用户称呼", "evidence": "既有成员关系"}
+    llm = AsyncMock(return_value=json.dumps([candidate], ensure_ascii=False))
+    monkeypatch.setattr(ac, "light_llm", llm)
+    pipeline = ac.AutoCapturePipeline(SimpleNamespace(memory_store=store), _FakeSqlite([]))
+    messages = [{"role": "user", "content": "这是足够长的已存在成员关系材料，自动捕获应保留正式实体名称，不能把其他历史邻居全部重新标脏。"}]
+    assert await pipeline._extract_relations("group:qq:100", messages) == 1
+    assert (await store.get_cognee_sync_status())["pending"] == 0
+    assert (await graph.get_node("user:qq:1"))["label"] == "正式用户名称"
+    assert (await graph.get_node("group:qq:100"))["label"] == "正式群名称"
+    unchanged = await graph.get_relation(edge["id"])
+    assert unchanged["updated"] == edge["updated"] and unchanged["origin"] == "heartbeat_extract"
+    # 旧缺陷留下的手动来源仅修正这条关系，不再触发枢纽改名。
+    async with store._conn.tx(db):
+        await db.execute("UPDATE graph_edges SET origin='manual_tool' WHERE id=?", (edge["id"],))
+    assert await pipeline._extract_relations("group:qq:100", messages) == 1
+    in_flight = await store.claim_cognee_sync_batch(2000)
+    assert {item["entry_id"] for item in in_flight} == {owner["id"], group["id"]}
+    assert len(in_flight) == 2
+    llm.return_value = json.dumps([{**candidate, "predicate": "跟进", "evidence": "新增关系事实"}], ensure_ascii=False)
+    assert await pipeline._extract_relations("group:qq:100", messages) == 1
+    batch = await store.claim_cognee_sync_batch(2000)
+    assert {item["entry_id"] for item in batch} == {owner["id"], group["id"]}
+    assert len(batch) == 2
+    assert not {item["queue_id"] for item in in_flight} & {item["queue_id"] for item in batch}
+    for item in in_flight:
+        await store.complete_cognee_sync(item["queue_id"], item["entry_id"], entry_kind=item["entry_kind"])
+    remaining = await (await db.execute("SELECT id FROM cognee_sync_queue ORDER BY id")).fetchall()
+    assert {row["id"] for row in remaining} == {item["queue_id"] for item in batch}
+
+
 class TestFetchPending:
     async def test_backlog_fully_consumed_in_batches(self) -> None:
         """积压超过单批窗口时按游标分批取全量（不再永久漏提）。"""
