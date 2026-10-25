@@ -8,7 +8,7 @@ import wave
 
 import pytest
 
-from agent.voice import VoiceLeaseBusy, VoiceSessionManager, voice_sink_port
+from agent.voice import VoiceLeaseBusy, VoiceSessionManager, VoiceUtterance, voice_sink_port
 from core.audio_frames import AudioFrame
 
 
@@ -132,15 +132,25 @@ class TestEndpointing:
 
     async def test_watchdog_finalizes_without_new_frames(self, manager, sink):
         """最后一帧之后无新帧，看门狗按静音阈值兜底收束。"""
+        delivered = asyncio.Event()
+        original_sink = voice_sink_port.get()
+
+        async def notify(utterance: VoiceUtterance) -> None:
+            await original_sink(utterance)
+            delivered.set()
+
+        voice_sink_port.set(notify)
         manager.start_session("o1", "conn-a", 48000)
         for _ in range(30):
             await manager.accept_frame("o1", "conn-a", LOUD)
-        await asyncio.sleep(0.6)  # silence(200ms) + 宽限(200ms)
+        await asyncio.wait_for(delivered.wait(), timeout=5)
         assert len(sink) == 1
 
 
 class TestConnectionCleanup:
-    async def test_drop_connection_flushes_owned_sessions(self, manager, sink):
+    async def test_drop_connection_flushes_owned_sessions(self, manager, sink, monkeypatch):
+        # 仅验证断线归属；另一连接的静音定时器由看门狗用例独立覆盖。
+        monkeypatch.setattr(manager, "_arm_watchdog", lambda session, silence_ms: None)
         manager.start_session("o1", "conn-a", 48000)
         manager.start_session("o2", "conn-b", 48000)
         for _ in range(30):
