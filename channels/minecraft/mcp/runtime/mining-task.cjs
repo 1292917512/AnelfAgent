@@ -4,7 +4,7 @@ const { randomUUID } = require('node:crypto')
 const { setTimeout: sleep, setImmediate: yieldFrame } = require('node:timers/promises')
 const { Vec3 } = require('vec3')
 const { Movements, goals } = require('mineflayer-pathfinder')
-const { MiningError, key, protectFloor, restrictMovements } = require('./mining-safety.cjs')
+const { MiningError, key, equipHarvestTool, protectFloor, restrictMovements } = require('./mining-safety.cjs')
 
 /** @typedef {import('mineflayer').Bot & {tool: import('mineflayer-tool').Tool}} Bot */
 /** @typedef {import('./mining-store.cjs').MineRecord} MineRecord */
@@ -12,7 +12,7 @@ const { MiningError, key, protectFloor, restrictMovements } = require('./mining-
 /** @typedef {{locks:{begin:(name:string,onCancel:()=>void)=>{signal:AbortSignal,actionId?:string,origin?:MineRecord['origin'],release:(outcome?:MineRecord['phase'],reason?:string)=>void}},
  * events:{push:(type:string,data:unknown)=>unknown}}} Context */
 /** @typedef {{x:number,y:number,z:number}} Position */
-/** @typedef {{direction:MineRecord['direction'],depth:number,length:number,item:string,count:number,minY?:number}} MineOptions */
+/** @typedef {{direction:MineRecord['direction'],depth:number,length:number,item:string,count:number,minY?:number,requireTorches?:boolean}} MineOptions */
 const natural = new Set(['stone', 'deepslate', 'dirt', 'grass_block', 'granite', 'diorite', 'andesite', 'tuff',
   'calcite', 'coal_ore', 'iron_ore', 'copper_ore', 'gold_ore', 'redstone_ore', 'lapis_ore', 'diamond_ore',
   'emerald_ore', 'deepslate_coal_ore', 'deepslate_iron_ore', 'deepslate_copper_ore', 'deepslate_gold_ore',
@@ -191,8 +191,9 @@ class MineTask {
     for (const p of route) {
       this.inspectColumn(p)
       for (let y = 0; y < 3; y++) {
-        if (!air.has(this.block(vec(p).offset(0, y, 0)).name)) {
-          throw new MiningError('MINING_RETURN_BLOCKED', `Return passage obstructed at ${key(p)}. Excavation stopped.`)
+        const block = this.block(vec(p).offset(0, y, 0))
+        if (!air.has(block.name)) {
+          throw new MiningError('MINING_RETURN_BLOCKED', `Return passage obstructed by ${block.name} at ${key(block.position)}. Excavation stopped.`)
         }
       }
     }
@@ -251,7 +252,7 @@ class MineTask {
     if (this.bot.inventory.emptySlotCount() < 2) throw new MiningError('MINING_FULL', 'Keep two inventory slots free; return to unload.')
     const reserve = this.bot.inventory.items().filter(i => ['cobblestone', 'dirt', 'cobbled_deepslate'].includes(i.name) || i.name.endsWith('_planks')).reduce((n, i) => n + i.count, 0)
     if (reserve < 8) throw new MiningError('MINING_LOW_SUPPLIES', 'Bring at least 8 spare dirt, cobblestone or planks before mining.')
-    if (this.record.depth + this.record.length >= 4 && inventoryCount(this.bot, 'torch') < 1) {
+    if (this.record.requireTorches !== false && this.record.depth + this.record.length >= 4 && inventoryCount(this.bot, 'torch') < 1) {
       throw new MiningError('MINING_LOW_SUPPLIES', 'Bring torches for the underground passage before continuing.')
     }
   }
@@ -275,7 +276,7 @@ class MineTask {
       this.inspectColumn(p)
       const block = this.block(vec(p).offset(0, y, 0))
       if (air.has(block.name)) continue
-      await this.action(() => this.bot.tool.equipForBlock(block, { requireHarvest: true, getFromChest: false }))
+      await this.action(() => equipHarvestTool(this.bot, block))
       const item = this.bot.heldItem
       if (item) {
         const maximum = this.bot.registry.itemsByName[item.name]?.maxDurability
@@ -297,7 +298,7 @@ class MineTask {
     await this.checkpoint()
     await this.walk(p, route)
     await sleep(600, undefined, { signal: this.controller.signal })
-    if (this.record.steps % 4 === 0) await this.light()
+    if (this.record.steps % 4 === 0 && (this.record.requireTorches !== false || inventoryCount(this.bot, 'torch') > 0)) await this.light()
     await this.checkpoint()
   }
 

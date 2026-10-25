@@ -27,6 +27,17 @@ class MiningError extends Error {
 /** @param {{x:number,y:number,z:number}} p */
 function key (p) { return `${Math.floor(p.x)},${Math.floor(p.y)},${Math.floor(p.z)}` }
 
+/** Prefer empty hands when a held tool offers no harvesting or speed benefit.
+ * @param {Bot & {tool: import('mineflayer-tool').Tool}} bot @param {Block} block
+ */
+async function equipHarvestTool (bot, block) {
+  await bot.tool.equipForBlock(block, { requireHarvest: true, getFromChest: false })
+  if (bot.heldItem && block.canHarvest(null) && typeof block.digTime === 'function' &&
+      block.digTime(null, false, false, false) <= block.digTime(bot.heldItem.type, false, false, false, bot.heldItem.enchants)) {
+    await bot.unequip('hand')
+  }
+}
+
 /** @param {Movements} movements @returns {Movements} */
 function restrictMovements (movements) {
   const gatherMode = movements.anelfGatherMode
@@ -187,4 +198,4 @@ function installSafety (bot) {
   }
 }
 
-module.exports = { MiningError, key, restrictMovements, protectFloor, assertFloorSafe, isOwnSupport, canHarvestBlock, installSafety, descendTemporarySupport, breakForFall, recentDeliberateFall }
+module.exports = { MiningError, key, equipHarvestTool, restrictMovements, protectFloor, assertFloorSafe, isOwnSupport, canHarvestBlock, installSafety, descendTemporarySupport, breakForFall, recentDeliberateFall }
