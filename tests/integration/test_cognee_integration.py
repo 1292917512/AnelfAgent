@@ -234,6 +234,29 @@ async def test_real_relation_fragments_incremental_update_preserves_committed_do
         assert retained and not retained.intersection(identity for batch in writes for identity in batch)
         documents = await client.list_data(mapping["dataset_id"])
         assert retained <= {row["id"] for row in documents}
+        # 分片节点退役已发布但未确认时恢复，重建所有被删除分片并保留其他来源。
+        relation_ids = [edge["id"] for edge in await store.graph.edges_for_scopes(["project:蓝鸢"], limit=20)]
+        previous_commits = client.publication_status["commits"]
+        await store.graph.set_node_archived("project:蓝鸢", True)
+
+        async def interrupted(*args, **kwargs):
+            assert kwargs.get("delete_mapping")
+            raise asyncio.CancelledError()
+
+        with monkeypatch.context() as patch:
+            patch.setattr(store, "complete_cognee_sync", interrupted)
+            with pytest.raises(asyncio.CancelledError):
+                await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
+        assert client.publication_status["commits"] == previous_commits + 1
+        assert {row["data_id"] for row in await store.projection_state.staged("graph_node", node_id)} == {
+            part.data_id for part in current}
+        await store.graph.set_node_archived("project:蓝鸢", False)
+        for edge_id in relation_ids:
+            assert await store.graph.set_relation_archived(edge_id, False)
+        await store.requeue_stale_cognee_sync(0)
+        await drain()
+        assert {part.data_id for part in mapped_documents(await store.get_cognee_mapping(node_id, entry_kind="graph_node"))} == {
+            part.data_id for part in current}
         # 有真实图/向量数据的版本清理也经过发布门；原生映射和所有当前分片不变。
         before_cleanup = await store.projection_state.mappings()
         maintenance = await client.compact_vector_storage(0, prune_only=True)
@@ -320,6 +343,59 @@ async def test_real_split_retry_preserves_published_index_and_resumes_after_rest
         assert len(await client.list_data(mapping["dataset_id"])) == 4
         assert [entry.content for mid in ids if (entry := await store.get(mid))] == texts
         assert await store.projection_state.staged() == []
+    finally:
+        await client.close()
+        await store.close()
+
+
+@pytest.mark.timeout(900)
+async def test_real_grouped_delete_resumes_after_publication_before_native_ack(tmp_path, monkeypatch):
+    """真实模型、图向量库及恢复点验证删除发布后中断，原始归档完整且可幂等确认。"""
+    config = load_cognee_config()
+    config.enabled = config.sync_enabled = True
+    config.data_root = str(tmp_path / "cognee")
+    config.timeout_seconds = config.pipeline_timeout_seconds = 180
+    config.write_breaker_enabled = False
+    config.improve_interval_seconds = 0
+    store = MemoryStore(str(tmp_path / "memory.sqlite3"))
+    store.set_cognee_projection_enabled(True)
+    client = CogneeClient(config, source_mappings=store.projection_state.publication_sources)
+    coordinator = CogneeCoordinator(store, client, config)
+    texts = ["蓝鸢项目由林舟负责维护。", "白鹭项目部署在南京，由许岚负责。"]
+    try:
+        await coordinator.rebuild.initialize(config)
+        ids = [await store.add(MemoryEntry(content=text, memory_type=MemoryType.SEMANTIC)) for text in texts]
+        await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
+        assert not coordinator.writer.last_error
+        before = client.publication_status["commits"]
+        for mid in ids:
+            assert await store.archive_memory(mid)
+
+        async def interrupted(*args, **kwargs):
+            assert kwargs.get("delete_mapping")
+            raise asyncio.CancelledError()
+
+        with monkeypatch.context() as patch:
+            patch.setattr(store, "complete_cognee_sync", interrupted)
+            with pytest.raises(asyncio.CancelledError):
+                await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
+        assert client.publication_status["commits"] == before + 1
+        assert len(await store.projection_state.mappings()) == len(await store.projection_state.staged()) == 2
+        await client.close()
+        await store.close()
+        store = MemoryStore(str(tmp_path / "memory.sqlite3"))
+        store.set_cognee_projection_enabled(True)
+        client = CogneeClient(config, source_mappings=store.projection_state.publication_sources)
+        coordinator = CogneeCoordinator(store, client, config)
+        await coordinator.rebuild.initialize(config)
+        await store.requeue_stale_cognee_sync(0)
+        await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
+        assert not coordinator.writer.last_error, coordinator.writer.last_error
+        assert await store.projection_state.mappings() == await store.projection_state.staged() == []
+        status = await store.get_cognee_sync_status()
+        assert status["pending"] == status["failed"] == 0
+        assert {row["id"]: row["content"] for row in await store.list_archived()} == dict(zip(ids, texts, strict=True))
+        await coordinator.rebuild.verify_backend(coordinator.rebuild.state, [])
     finally:
         await client.close()
         await store.close()

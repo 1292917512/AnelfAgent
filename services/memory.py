@@ -90,12 +90,13 @@ class MemoryService:
             memory_type=_parse_memory_type(memory_type), limit=limit,
         )
 
-    async def get_ltm(self, mem_id: int) -> Any:
+    async def get_ltm(self, mem_id: int) -> Optional[Dict[str, Any]]:
         rt = require_runtime()
         store = rt.memory_store
         if not store:
             return None
-        return await store.get(mem_id)
+        entry = await store.get(mem_id)
+        return entry.model_dump(mode="json") if entry is not None else None
 
     async def delete_ltm(self, mem_id: int) -> bool:
         rt = require_runtime()

@@ -313,7 +313,7 @@ async def test_large_node_fragments_preserve_old_index_and_update_only_changed_r
     reindexed_hub = [doc for doc in added if doc["external_metadata"]["anelf_graph_node_id"] == str(node_id)]
     assert len(reindexed_hub) == len(changed) < len(parts)
     kept = {part.data_id for part in current if part.part_key not in changed}
-    assert not kept.intersection(call.args[3] for call in staged.await_args_list)
+    assert not kept.intersection(row[3] for call in staged.await_args_list for row in call.args[0])
     assert set(deleted) & {part.data_id for part in current} == set()
     # 删除节点必须清理所有分片，并保留所有其他节点的有效映射。
     await store.graph.set_node_archived(hub, True)
@@ -1285,13 +1285,15 @@ def test_publication_budget_counts_only_changed_parts_and_retirement(document_li
     second = ({"queue_id": 2, "payload": {}, "attempts": 0}, ProjectionDocument("y" * 20, "new", {}))
     third = ({"queue_id": 3, "payload": {}, "attempts": 0}, ProjectionDocument("z", "newer", {}))
     assert _source_cost(retained, mapping) == (3, 100)  # 一个变更、两个退役，九篇保留。
+    assert _source_cost(retained, mapping, {"id-0"}) == (4, 400)
     config = CogneeConfig(sync_max_documents_per_group=document_limit,
                           sync_max_characters_per_group=character_limit)
     groups = list(_publication_groups([*retained, second, third], {1: mapping, 2: None, 3: None}, config))
     assert [[entry[0]["queue_id"] for entry in group] for group in groups] == [[1] * 10 + [2], [3]]
 
 
-async def test_invalid_publication_mapping_fails_claims_without_bypassing_integrity_gate(coordinator, store, monkeypatch):
+@pytest.mark.parametrize("operation", ["upsert", "delete"])
+async def test_invalid_publication_mapping_fails_claims_without_bypassing_integrity_gate(coordinator, store, monkeypatch, operation):
     from agent.memory.cognee.manifest import DatasetStamp, DocumentStamp, IndexManifest
 
     ids = [await store.add(MemoryEntry(content=f"原始事实 {i}", memory_type=MemoryType.SEMANTIC)) for i in range(3)]
@@ -1310,13 +1312,18 @@ async def test_invalid_publication_mapping_fails_claims_without_bypassing_integr
     monkeypatch.setattr(coordinator.client, "write_transaction", transactional)
     add = AsyncMock(wraps=coordinator.client.add)
     monkeypatch.setattr(coordinator.client, "add", add)
+    delete = AsyncMock(wraps=coordinator.client.delete_data)
+    monkeypatch.setattr(coordinator.client, "delete_data", delete)
     db = await store._conn.get_db()
     async with store._conn.tx(db):
         await db.execute("UPDATE cognee_entry_map SET documents_json='not-json' WHERE entry_id=?", (ids[1],))
     for mid in ids:
-        entry = await store.get(mid)
-        entry.content = f"更新事实 {mid}"
-        await store.update(entry)
+        if operation == "delete":
+            assert await store.archive_memory(mid)
+        else:
+            entry = await store.get(mid)
+            entry.content = f"更新事实 {mid}"
+            await store.update(entry)
     await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
     status = await store.get_cognee_sync_status()
     assert status["pending"] == 0 and status["failed"] == 3
@@ -1324,9 +1331,167 @@ async def test_invalid_publication_mapping_fails_claims_without_bypassing_integr
     for mid in ids:
         mapping = await store.get_cognee_mapping(mid)
         assert mapping["data_id"] == previous[mid]["data_id"]
-        assert (await store.get(mid)).content == f"更新事实 {mid}"
+        if operation == "upsert":
+            assert (await store.get(mid)).content == f"更新事实 {mid}"
+    if operation == "delete":
+        assert await store.projection_state.staged() == []
+        assert {row["id"]: row["content"] for row in await store.list_archived()} == {
+            mid: f"原始事实 {i}" for i, mid in enumerate(ids)}
     assert len(coordinator.client.documents[coordinator.writer.memory_dataset]) == 3
     add.assert_not_awaited()
+    delete.assert_not_awaited()
+
+
+@pytest.mark.parametrize("failure", ["none", "delete", "publish", "confirm", "cancel"])
+async def test_delete_groups_share_publication_and_resume_after_unconfirmed_commit(coordinator, store, monkeypatch, failure):
+    from agent.memory.cognee.manifest import DatasetStamp, DocumentStamp, IndexManifest
+
+    ids = [await store.add(MemoryEntry(content=f"保留原始正文 {i}", memory_type=MemoryType.SEMANTIC)) for i in range(3)]
+    await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
+    mappings = {mid: await store.get_cognee_mapping(mid) for mid in ids}
+    client = coordinator.client
+    coordinator.config.sync_max_documents_per_group = 64 if failure == "none" else 2
+    transactions = 0
+    fail_once = True
+    original_delete, original_complete = client.delete_data, store.complete_cognee_sync
+    active_store = store
+
+    @asynccontextmanager
+    async def transactional():
+        nonlocal transactions, fail_once
+        snapshot = copy.deepcopy(client.documents)
+        baseline = IndexManifest(datasets={name: DatasetStamp(name=name, documents={
+            key: DocumentStamp(identity="original", content_hash=value["external_metadata"]["anelf_content_hash"])
+            for key, value in documents.items()}) for name, documents in snapshot.items()})
+        baseline.check_sources(await active_store.projection_state.publication_sources())
+        try:
+            yield
+            if failure == "publish" and fail_once:
+                fail_once = False
+                raise OSError("candidate publication failed")
+            transactions += 1
+        except BaseException:
+            client.documents = snapshot
+            raise
+
+    async def delete(dataset, document, **kwargs):
+        nonlocal fail_once
+        await original_delete(dataset, document, **kwargs)
+        if fail_once and failure in {"delete", "cancel"}:
+            fail_once = False
+            if failure == "cancel":
+                raise asyncio.CancelledError()
+            raise RuntimeError("delete failed after mutation")
+
+    async def complete(*args, **kwargs):
+        nonlocal fail_once
+        if kwargs.get("delete_mapping") and failure == "confirm" and fail_once:
+            fail_once = False
+            raise asyncio.CancelledError()
+        await original_complete(*args, **kwargs)
+
+    monkeypatch.setattr(client, "write_transaction", transactional)
+    monkeypatch.setattr(client, "delete_data", delete)
+    monkeypatch.setattr(store, "complete_cognee_sync", complete)
+    for mid in ids:
+        assert await store.archive_memory(mid)
+    batch = await store.claim_cognee_sync_batch(10)
+    if failure in {"confirm", "cancel"}:
+        with pytest.raises(asyncio.CancelledError):
+            await coordinator._process_batch(batch)
+        assert len(await store.projection_state.staged()) == 2
+        if failure == "confirm":
+            assert transactions == 1
+            assert not {mappings[mid]["data_id"] for mid in ids[:2]} & set(client.documents[coordinator.writer.memory_dataset])
+    else:
+        await coordinator._process_batch(batch)
+        assert transactions == 1
+        if failure == "none":
+            assert await store.projection_state.mappings() == []
+        else:
+            assert {row["entry_id"] for row in await store.projection_state.mappings()} == set(ids[:2])
+            assert set(client.documents[coordinator.writer.memory_dataset]) == {mappings[mid]["data_id"] for mid in ids[:2]}
+    await store.close()
+    reopened = MemoryStore(store._db_path)
+    reopened.set_cognee_projection_enabled(True)
+    active_store = reopened
+    try:
+        monkeypatch.setattr(client, "delete_data", original_delete)
+        retry_ns = time.time_ns() + 30_000_000_000
+        monkeypatch.setattr("agent.memory.store.cognee_queue.time.time_ns", lambda: retry_ns)
+        await reopened.requeue_stale_cognee_sync(0)
+        coordinator = CogneeCoordinator(reopened, client, coordinator.config)
+        await coordinator._process_batch(await reopened.claim_cognee_sync_batch(10))
+        assert await reopened.projection_state.mappings() == []
+        assert await reopened.projection_state.staged() == []
+        status = await reopened.get_cognee_sync_status()
+        assert status["pending"] == status["failed"] == 0
+        archived = await reopened.list_archived()
+        assert {entry["id"]: entry["content"] for entry in archived} == {mid: f"保留原始正文 {i}" for i, mid in enumerate(ids)}
+    finally:
+        await reopened.close()
+
+
+async def test_grouped_delete_preserves_new_restore_queued_during_sdk_work(coordinator, store, monkeypatch):
+    mid = await store.add(MemoryEntry(content="删除期间恢复的完整正文", memory_type=MemoryType.SEMANTIC, tags=["topic:keep"]))
+    await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
+    await store.archive_memory(mid)
+    original = coordinator.client.delete_data
+
+    async def delete(*args, **kwargs):
+        await original(*args, **kwargs)
+        assert await store.restore_memory(mid)
+
+    monkeypatch.setattr(coordinator.client, "delete_data", delete)
+    await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
+    assert (await store.get_cognee_sync_status())["pending"] == 1
+    assert await store.get_cognee_mapping(mid) is None
+    monkeypatch.setattr(coordinator.client, "delete_data", original)
+    await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
+    mapping = await store.get_cognee_mapping(mid)
+    entry = await store.get(mid)
+    assert mapping and entry.content == "删除期间恢复的完整正文" and entry.tags == ["topic:keep"]
+    assert (await store.get_cognee_sync_status())["pending"] == 0
+
+
+async def test_fragmented_node_restore_replays_all_unconfirmed_retired_parts(coordinator, store, monkeypatch):
+    from agent.memory.graph import fragments
+    from agent.memory.projection_documents import mapped_documents
+
+    monkeypatch.setattr(fragments, "MAX_DOCUMENT_CHARS", 400)
+    edges: list[int] = []
+    for i in range(2):
+        edge = await store.graph.add_relation("topic:recoverable", "连接", f"topic:peer{i}", evidence="必须完整保留的关系证据。" * 100)
+        edges.append(edge["id"])
+    await coordinator._process_batch(await store.claim_cognee_sync_batch(20))
+    node_id = (await store.graph.get_node("topic:recoverable"))["id"]
+    before = await store.get_cognee_mapping(node_id, entry_kind="graph_node")
+    parts = mapped_documents(before)
+    assert len(parts) > 1
+
+    async def interrupted(*args, **kwargs):
+        assert kwargs.get("delete_mapping")
+        raise asyncio.CancelledError()
+
+    await store.graph.set_node_archived("topic:recoverable", True)
+    with monkeypatch.context() as patch:
+        patch.setattr(store, "complete_cognee_sync", interrupted)
+        with pytest.raises(asyncio.CancelledError):
+            await coordinator._process_batch(await store.claim_cognee_sync_batch(20))
+    staged = await store.projection_state.staged("graph_node", node_id)
+    assert {row["data_id"] for row in staged} == {part.data_id for part in parts}
+    assert not {part.data_id for part in parts} & set(coordinator.client.documents[before["dataset_id"]])
+    await store.graph.set_node_archived("topic:recoverable", False)
+    for edge_id in edges:
+        assert await store.graph.set_relation_archived(edge_id, False)
+    await store.requeue_stale_cognee_sync(0)
+    await coordinator._process_batch(await store.claim_cognee_sync_batch(20))
+    assert not coordinator.writer.last_error, coordinator.writer.last_error
+    after = await store.get_cognee_mapping(node_id, entry_kind="graph_node")
+    assert {part.data_id for part in mapped_documents(after)} == {part.data_id for part in parts}
+    assert {part.data_id for part in parts} <= set(coordinator.client.documents[after["dataset_id"]])
+    assert await store.projection_state.staged() == []
+    assert not (await store.projection_state.audit())["missing_or_stale"]
 
 
 async def test_post_publish_enhancement_failure_does_not_retry_completed_sources(coordinator, store):
@@ -1463,7 +1628,7 @@ async def test_generation_cleanup_during_build_preserves_sources_progress_and_re
         await db.execute("UPDATE cognee_entry_map SET dataset_id='anelf_legacy'")
         await db.commit()
     elif block == "staged":
-        await store.projection_state.stage("memory", mid, "anelf_legacy", "uncommitted")
+        await store.projection_state.stage([("memory", mid, "anelf_legacy", "uncommitted")])
     elif block == "unknown":
         coordinator.client.documents["anelf_relations"]["unknown"] = {"id": "unknown"}
     elif block == "backup":

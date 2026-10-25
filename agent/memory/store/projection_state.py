@@ -194,12 +194,13 @@ class ProjectionStateStore:
             if row is None or row[0] != payload:
                 raise RuntimeError(f"旧文档留存校验失败: {data_id}")
 
-    async def stage(self, kind: str, entry_id: int, dataset: str, data_id: str) -> None:
-        """网络写入前记录稳定目标；异常重试或内容变化后仍能清理未提交副本。"""
+    async def stage(self, documents: list[tuple[str, int, str, str]]) -> None:
+        """一次原生事务记录本组稳定目标；新增与退役均可在发布后幂等确认。"""
+        if not documents:
+            return
         db = await self._conn.get_db()
         async with self._conn.tx(db):
-            await db.execute("INSERT OR IGNORE INTO cognee_projection_attempts VALUES(?,?,?,?)",
-                             (kind, entry_id, dataset, data_id))
+            await db.executemany("INSERT OR IGNORE INTO cognee_projection_attempts VALUES(?,?,?,?)", documents)
 
     async def staged(self, kind: str = "", entry_id: int = 0) -> list[dict[str, Any]]:
         db = await self._conn.get_db()

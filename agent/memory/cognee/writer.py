@@ -63,8 +63,6 @@ class ProjectionWriter:
 
         deletes = [item for item in batch if item["operation"] == "delete"]
         upserts = [item for item in batch if item["operation"] == "upsert"]
-        for item in deletes:
-            await self._process_delete(item)
 
         memory_upserts: dict[str, list[dict[str, Any]]] = defaultdict(list)
         graph_upserts: list[dict[str, Any]] = []
@@ -72,7 +70,7 @@ class ProjectionWriter:
             if item["entry_kind"] != ENTRY_KIND_GRAPH_NODE:
                 latest = await self.store.get(item["entry_id"])
                 if latest is None:
-                    await self._process_delete(item)
+                    deletes.append(item)
                     continue
                 item = {**item, "payload": {**entry_projection_payload(latest, item["entry_id"]),
                                            "force": bool(item["payload"].get("force"))}}
@@ -82,11 +80,12 @@ class ProjectionWriter:
                 else:
                     await self._complete_without_projection(item)
             elif not memory_is_projectable(item["payload"]):
-                await self._process_delete({**item, "operation": "delete"})
+                deletes.append(item)
             elif self.config.project_memories_enabled:
                 memory_upserts[self.memory_dataset].append(item)
             else:
                 await self._complete_without_projection(item)
+        await self._process_deletes(deletes)
         for dataset_name, items in memory_upserts.items():
             await self._process_upsert_group(dataset_name, items)
         if graph_upserts:
@@ -98,23 +97,47 @@ class ProjectionWriter:
             item["queue_id"], item["entry_id"], entry_kind=item["entry_kind"],
         )
 
-    async def _process_delete(self, item: dict[str, Any]) -> None:
-        with self.progress.batch([item]):
-            await self._delete_projection(item)
+    async def _process_deletes(self, items: list[dict[str, Any]]) -> None:
+        """汇总实际退役目标并按共享预算发布，不为每条无效来源分别复制恢复点。"""
+        targets: dict[int, set[tuple[str, str]]] = {}
+        costs: dict[int, tuple[int, int]] = {}
+        for item in items:
+            try:
+                selected = await self._superseded_targets(item)
+                if selected:
+                    queue_id = int(item["queue_id"])
+                    targets[queue_id], costs[queue_id] = selected, (len(selected), 0)
+                else:
+                    await self._confirm_delete(item)
+            except Exception as exc:
+                await self._fail(item, exc)
+        for group in _source_groups([item for item in items if int(item["queue_id"]) in targets], costs, self.config):
+            with self.progress.batch(group):
+                started = time.monotonic()
+                group_targets = set().union(*(targets[int(item["queue_id"])] for item in group))
+                self.progress.stage("delete")
+                try:
+                    async with self.client.write_transaction():
+                        # 基线验收后才登记在途删除；发布与映射确认之间中断也可幂等续跑。
+                        retiring: list[tuple[str, int, str, str]] = []
+                        for item in group:
+                            mapping = await self.store.get_cognee_mapping(item["entry_id"], entry_kind=item["entry_kind"])
+                            if mapping:
+                                retiring.extend((item["entry_kind"], item["entry_id"], document["dataset_name"], document["data_id"])
+                                                for document in expand_mapping(mapping))
+                        await self.store.projection_state.stage(retiring)
+                        await self._delete_targets(group_targets)
+                    for item in group:
+                        await self._confirm_delete(item)
+                except Exception as exc:
+                    log(f"Cognee 退役失败: {len(group)} 条来源 / {len(group_targets)} 篇文档，"
+                        f"耗时 {time.monotonic() - started:.1f}s: {error_text(exc)}", "WARNING", tag="存储")
+                    for item in group:
+                        await self._fail(item, exc)
 
-    async def _delete_projection(self, item: dict[str, Any]) -> None:
-        self.progress.stage("delete")
-        try:
-            targets = await self._superseded_targets(item)
-            if targets:
-                async with self.client.write_transaction():
-                    await self._delete_targets(targets)
-            await self.store.complete_cognee_sync(
-                item["queue_id"], item["entry_id"],
-                entry_kind=item["entry_kind"], delete_mapping=True,
-            )
-        except Exception as exc:
-            await self._fail(item, exc)
+    async def _confirm_delete(self, item: dict[str, Any]) -> None:
+        await self.store.complete_cognee_sync(item["queue_id"], item["entry_id"],
+                                             entry_kind=item["entry_kind"], delete_mapping=True)
 
     async def _delete_targets(self, targets: set[tuple[str, str]]) -> None:
         """去重并预取本次清理范围，SDK 串行删除及逐项进度均位于原发布事务。"""
@@ -177,13 +200,14 @@ class ProjectionWriter:
     async def _process_graph_upserts(self, items: list[dict[str, Any]]) -> None:
         """读取一致的邻域及出处快照；证据变化重投影，强度变化不重投影。"""
         grouped: dict[str, list[ProjectionEntry]] = defaultdict(list)
+        deletes: list[dict[str, Any]] = []
         for item in items:
             mapping = await self.store.get_cognee_mapping(item["entry_id"], entry_kind=item["entry_kind"])
             projection = await self.store.graph.projection_fragments_snapshot(
                 item["entry_id"], fragmented=bool(mapped_documents(mapping)))
             if projection is None:
                 # 节点已归档/不存在：按删除处理
-                await self._process_delete({**item, "operation": "delete"})
+                deletes.append(item)
                 continue
             fingerprint, fragments = projection
             if (not item["payload"].get("force") and mapping
@@ -200,6 +224,7 @@ class ProjectionWriter:
             for key, text, digest, attribution in fragments:
                 grouped[dataset].append(({**item, "projection_hash": fingerprint},
                     ProjectionDocument(text, digest, attribution, part_key=key)))
+        await self._process_deletes(deletes)
         for dataset_name, entries in grouped.items():
             await self._push_projection_groups(dataset_name, entries, graph=True)
 
@@ -212,7 +237,10 @@ class ProjectionWriter:
         mappings = {int(item["queue_id"]): await self.store.get_cognee_mapping(
             item["entry_id"], entry_kind=item["entry_kind"])
             for item in sources.values()}
-        for group in _publication_groups(entries, mappings, self.config):
+        attempted = {int(item["queue_id"]): {row["data_id"] for row in
+                     await self.store.projection_state.staged(item["entry_kind"], item["entry_id"])}
+                     for item in sources.values()}
+        for group in _publication_groups(entries, mappings, self.config, attempted=attempted):
             group_sources = {int(item["queue_id"]): item for item, _document in group}
             with self.progress.batch(list(group_sources.values())):
                 published |= await self._push_projection_group(dataset_name, group, graph=graph)
@@ -241,12 +269,15 @@ class ProjectionWriter:
             data_items: list[InputDocument] = []
             sources: dict[int, list[int]] = defaultdict(list)
             existing: set[tuple[str, str]] = set()
+            attempted: set[tuple[str, str]] = set()
             for index, (item, document) in enumerate(entries):
                 queue_id = int(item["queue_id"])
                 if queue_id not in sources:
                     mapping = await self.store.get_cognee_mapping(item["entry_id"], entry_kind=item["entry_kind"])
                     if mapping:
                         existing.update((str(row["dataset_id"]), str(row["data_id"])) for row in expand_mapping(mapping))
+                    attempted.update((row["dataset_name"], row["data_id"]) for row in
+                                     await self.store.projection_state.staged(item["entry_kind"], item["entry_id"]))
                 sources[queue_id].append(index)
                 payload = item["payload"]
                 metadata = {
@@ -270,11 +301,14 @@ class ProjectionWriter:
                 data_items.append(data_item)
             existing_ids = {identity for _, identity in existing}
             additions: list[InputDocument] = []
+            staging: list[tuple[str, int, str, str]] = []
             for (item, document), data_item in zip(entries, data_items, strict=True):
                 data_id = str(_value(data_item, "data_id", ""))
-                if not document.part_key or item["payload"].get("force") or data_id not in existing_ids:
-                    await self.store.projection_state.stage(item["entry_kind"], item["entry_id"], dataset_name, data_id)
+                if (not document.part_key or item["payload"].get("force") or data_id not in existing_ids
+                        or (dataset_name, data_id) in attempted):
+                    staging.append((item["entry_kind"], item["entry_id"], dataset_name, data_id))
                     additions.append(data_item)
+            await self.store.projection_state.stage(staging)
             self._observe_write()
             async with self.client.write_transaction():
                 dataset_id = next(iter(existing))[0] if existing else ""
@@ -350,47 +384,58 @@ class ProjectionWriter:
 
 def _publication_groups(
     entries: list[ProjectionEntry], mappings: dict[int, dict[str, Any] | None], config: CogneeConfig,
+    *, attempted: dict[int, set[str]] | None = None,
 ) -> Iterator[list[ProjectionEntry]]:
     """按变更文档数及正文长度装箱；单个超限来源独占一组，不拆散原子映射。"""
     sources: dict[int, list[ProjectionEntry]] = defaultdict(list)
     for entry in entries:
         sources[int(entry[0]["queue_id"])].append(entry)
-    cohorts: dict[int, list[list[ProjectionEntry]]] = defaultdict(list)
-    for source in sources.values():
-        cohorts[max(0, int(source[0][0].get("attempts", 0)))].append(source)
+    costs: dict[int, tuple[int, int]] = {}
+    for queue_id, source in sources.items():
+        try:
+            costs[queue_id] = _source_cost(source, mappings[queue_id], (attempted or {}).get(queue_id))
+        except ValueError:
+            # 损坏映射独占一组，由已有写入异常边界报告，不滞留已认领条目。
+            costs[queue_id] = (config.sync_max_documents_per_group + 1, 0)
+    for group in _source_groups([source[0][0] for source in sources.values()], costs, config):
+        yield [entry for item in group for entry in sources[int(item["queue_id"])]]
+
+
+def _source_groups(
+    items: list[dict[str, Any]], costs: dict[int, tuple[int, int]], config: CogneeConfig,
+) -> Iterator[list[dict[str, Any]]]:
+    """新增与退役共用组预算、失败次数和来源原子性，不混合首次与重试任务。"""
+    cohorts: dict[int, list[dict[str, Any]]] = defaultdict(list)
+    for item in items:
+        cohorts[max(0, int(item.get("attempts", 0)))].append(item)
     for attempts, cohort in cohorts.items():
         divisor = 1 << min(attempts, len(cohort).bit_length())
         width = max(1, (len(cohort) + divisor - 1) // divisor)
-        group: list[ProjectionEntry] = []
-        source_count = documents = characters = 0
-        for source in cohort:
-            try:
-                added, chars = _source_cost(source, mappings[int(source[0][0]["queue_id"])])
-            except ValueError:
-                # 损坏映射交给已有写入异常边界报告，不能阻断其他已认领来源。
-                if group:
-                    yield group
-                    group, source_count, documents, characters = [], 0, 0, 0
-                yield source
-                continue
-            if group and (source_count >= width or documents + added > config.sync_max_documents_per_group
+        group: list[dict[str, Any]] = []
+        documents = characters = 0
+        for item in cohort:
+            added, chars = costs[int(item["queue_id"])]
+            if group and (len(group) >= width or documents + added > config.sync_max_documents_per_group
                           or characters + chars > config.sync_max_characters_per_group):
                 yield group
-                group, source_count, documents, characters = [], 0, 0, 0
-            group.extend(source)
-            source_count += 1
+                group, documents, characters = [], 0, 0
+            group.append(item)
             documents += added
             characters += chars
         if group:
             yield group
 
 
-def _source_cost(entries: list[ProjectionEntry], mapping: dict[str, Any] | None) -> tuple[int, int]:
+def _source_cost(entries: list[ProjectionEntry], mapping: dict[str, Any] | None,
+                 attempted: set[str] | None = None) -> tuple[int, int]:
     """只计算变化分片的摄入和退役；保留分片不占模型和删除预算。"""
-    previous = {row.part_key: row.content_hash for row in mapped_documents(mapping)}
+    parts = mapped_documents(mapping)
+    previous = {row.part_key: row.content_hash for row in parts}
+    retry_parts = {row.part_key for row in parts if row.data_id in (attempted or ())}
     current = {document.part_key: document.fingerprint for _, document in entries}
     changed = [document for item, document in entries if item["payload"].get("force")
-               or not document.part_key or previous.get(document.part_key) != document.fingerprint]
+               or not document.part_key or previous.get(document.part_key) != document.fingerprint
+               or document.part_key in retry_parts]
     retired = (sum(current.get(key) != digest for key, digest in previous.items())
                if previous else int(mapping is not None))
     return len(changed) + retired, sum(len(document.text) for document in changed)
