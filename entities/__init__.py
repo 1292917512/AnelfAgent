@@ -72,6 +72,6 @@ async def discover_entity_lifecycles() -> int:
     return registered
 
 
-async def reload_entities(reload_existing: bool = True) -> Dict[str, Any]:
-    """热同步实体：对账 entities/ 目录，新增热插入、消失热拔除、存续热重载。"""
-    return await _hotplug.sync_entities(reload_existing=reload_existing)
+async def reload_entities(reload_existing: bool = True, *, entity_name: str | None = None) -> Dict[str, Any]:
+    """热同步全部或指定实体，复用目录对账、状态回放与并发保护。"""
+    return await _hotplug.sync_entities(reload_existing=reload_existing, entity_name=entity_name)

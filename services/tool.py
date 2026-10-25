@@ -36,6 +36,7 @@ class ToolService:
     def list_grouped_tools(self) -> List[Dict[str, Any]]:
         """返回按实体分组的工具列表（含分组描述和启用状态）。"""
         from core.entity import EntityRegistry, EntityType
+        from services.entity import entity_module_for_group
 
         groups: Dict[str, Dict[str, Any]] = {}
         for e in EntityRegistry.get_by_type(EntityType.TOOL):
@@ -43,6 +44,7 @@ class ToolService:
             if g not in groups:
                 groups[g] = {
                     "group": g,
+                    "reload_module": entity_module_for_group(g),
                     "description": EntityRegistry.get_group_description(g),
                     "tools": [],
                     "enabled_count": 0,

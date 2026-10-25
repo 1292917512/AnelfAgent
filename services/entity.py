@@ -7,6 +7,16 @@ from typing import Any, Dict, List, Optional
 from core.log import log
 
 
+def entity_module_for_group(group: str) -> str | None:
+    """从分组声明归属解析实体模块，不将频道、内核或分组别名当作目录名。"""
+    from core.entity import EntityRegistry
+
+    parts = EntityRegistry.get_group_module(group).split(".")
+    if len(parts) >= 2 and parts[0] == "entities" and parts[1].isidentifier() and not parts[1].startswith("_"):
+        return parts[1]
+    return None
+
+
 class EntityService:
     """实体系统业务逻辑层。"""
 
@@ -112,6 +122,7 @@ class EntityService:
                 item.enabled for item in EntityRegistry.get_by_group(group)
             ),
             "group": group,
+            "reload_module": entity_module_for_group(group),
             "source": metadata.source,
             "tags": metadata.tags,
             "config_group": metadata.config_group,
@@ -124,6 +135,12 @@ class EntityService:
             "providers": providers,
         }
         return detail
+
+    async def reload_module(self, name: str) -> Dict[str, Any]:
+        """仅热同步指定实体的代码入口，保留状态资源并回放持久化工具设置。"""
+        from entities import reload_entities
+
+        return await reload_entities(reload_existing=True, entity_name=name)
 
     def get_entity_config(self, name: str) -> Optional[Dict[str, Any]]:
         """获取实体配置。"""

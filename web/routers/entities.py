@@ -61,6 +61,20 @@ async def get_entity_config(name: str) -> Dict[str, Any]:
     return config
 
 
+@router.post("/{name}/reload")
+async def reload_entity(name: str) -> Dict[str, Any]:
+    """按实际模块名重载实体入口，与全量热同步共享并发保护。"""
+    try:
+        result = await _entity_svc.reload_module(name)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    if result.get("skipped"):
+        raise HTTPException(409, "实体同步正在进行，请稍后重试")
+    if result["failed"]:
+        raise HTTPException(500, f"实体 '{name}' 重载失败，原有工具注册已保留，请检查服务日志")
+    return result
+
+
 @router.put("/{name}/config")
 async def update_entity_config(
     name: str,

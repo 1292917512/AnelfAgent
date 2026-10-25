@@ -422,7 +422,7 @@ scripts/check.sh                 # 本地 CI 镜像门禁（push 前跑）
 ```bash
 cd web/frontend
 npm ci
-npm run dev                    # /webui/; /api 代理到 127.0.0.1:8091
+npm run dev                    # /webui/; /api 与 WebSocket 代理到 127.0.0.1:8092
 npm run lint
 npm run typecheck
 npm test

@@ -18,6 +18,8 @@ export default defineConfig({
     { name: "mobile", use: { ...devices["Pixel 7"], defaultBrowserType: "chromium" } },
   ],
   webServer: {
+    // API 由浏览器 fixture 接管；关闭页面时的迟到请求也不能落到本地真实服务。
+    env: { ANELF_WEBUI_API_TARGET: "http://127.0.0.1:9" },
     command: process.env.CI
       ? "node node_modules/vite/bin/vite.js preview --host 127.0.0.1 --port 4173 --strictPort"
       : "node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 4173 --strictPort",

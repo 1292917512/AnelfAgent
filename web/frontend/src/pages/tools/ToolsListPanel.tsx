@@ -16,6 +16,7 @@ import { ToolEditModal } from "./ToolEditModal";
 import { PluginsCard } from "./PluginsCard";
 import type { ToolGroup } from "@/lib/types";
 import type { EditState } from "./types";
+import { refreshToolCatalog, useEntityReload } from "./useEntityReload";
 
 const EMPTY_GROUPS: ToolGroup[] = [];
 
@@ -51,18 +52,12 @@ export function ToolsListPanel() {
   const query = useQuery({ queryKey: ["tools-grouped"], queryFn: () => toolsApi.grouped().then((r) => r.data), refetchInterval: 10000, throwOnError: false });
   const tagQuery = useQuery({ queryKey: ["tool-tags"], queryFn: () => tagsApi.toolTags().then((r) => r.data), throwOnError: false });
   const plugins = useQuery({ queryKey: ["plugins"], queryFn: () => toolsApi.plugins().then((r) => r.data), throwOnError: false });
-  const refresh = async () => { await Promise.all([
-    client.invalidateQueries({ queryKey: ["tools-grouped"] }),
-    client.invalidateQueries({ queryKey: ["entity-detail"] }),
-    client.invalidateQueries({ queryKey: ["tool-tags"] }),
-    client.invalidateQueries({ queryKey: ["unified-tags"] }),
-    client.invalidateQueries({ queryKey: ["plugins"] }),
-  ]); };
+  const refresh = () => refreshToolCatalog(client);
   const toggle = useMutation({
     mutationFn: ({ name, group }: { name: string; group: boolean }) => group ? toolsApi.toggleGroup(name) : toolsApi.toggle(name),
     onSuccess: refresh,
   });
-  const reload = useMutation({ mutationFn: toolsApi.reload, onSuccess: refresh });
+  const reload = useEntityReload();
   const save = useMutation({
     mutationFn: (state: EditState) => toolsApi.updateMeta(state.name, { tags: state.tags, description: state.description }),
     onSuccess: refresh,
@@ -84,8 +79,9 @@ export function ToolsListPanel() {
   return <div className="space-y-4">
     <div className="flex flex-wrap items-center justify-between gap-3">
       <p className="text-sm text-muted" role="status">{activeFilters ? t("matchedCount", { count: matched }) : t("enabledCount", { enabled, total })}</p>
-      <Button size="sm" onClick={() => reload.mutate()} disabled={busy} loading={reload.isPending}><RefreshCw size={15} />{t("reload")}</Button>
+      <Button size="sm" onClick={() => reload.mutate(null)} disabled={busy} loading={reload.isPending && reload.variables === null}><RefreshCw size={15} />{t("reload")}</Button>
     </div>
+    <p className="text-xs leading-relaxed text-muted">{t("reloadHint")}</p>
     <div className="tools-filterbar">
       <div className="relative min-w-0 flex-1"><Search size={16} className="pointer-events-none absolute left-3 top-3 text-muted" />
         <Input value={search} aria-label={t("searchPlaceholder")} placeholder={t("searchPlaceholder")} onChange={(event) => { setSearch(event.target.value); updateFilter("q", [event.target.value]); }} className="pl-9" />
@@ -112,6 +108,8 @@ export function ToolsListPanel() {
       {query.error && <QueryError compact error={query.error} retry={() => void query.refetch()} />}
       {filtered.length ? <div className="space-y-3">{filtered.map((group) => <ToolGroupCard key={group.group} group={group}
         isOpen={expanded[group.group] ?? activeFilters} busy={busy}
+        reloading={reload.isPending && reload.variables === group.reload_module}
+        onReload={(module) => reload.mutate(module)}
         onToggle={() => setExpanded((current) => ({ ...current, [group.group]: !(current[group.group] ?? activeFilters) }))}
         onToggleGroup={() => toggle.mutate({ name: group.group, group: true })}
         onToggleTool={(name) => toggle.mutate({ name, group: false })}

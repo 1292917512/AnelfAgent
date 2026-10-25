@@ -69,6 +69,32 @@ class TestGroupNameResolution:
         assert svc.get_entity_detail(group_entity)["enabled"] is True
         assert not svc.set_entity_enabled("missing-group", False)
 
+    @pytest.mark.parametrize("origin, expected", [
+        ("entities.filesystem.tools", "filesystem"),
+        ("entities.other", "other"),
+        ("agent.memory.tools", None),
+        ("channels.demo.tools", None),
+        ("entities._sdk", None),
+        ("", None),
+    ])
+    def test_reload_module_comes_from_declaration_not_group_alias(self, svc, group_entity, monkeypatch, origin, expected):
+        from services.tool import ToolService
+
+        monkeypatch.setattr(EntityRegistry, "get_group_module", lambda group: origin)
+        assert svc.get_entity_detail(group_entity)["reload_module"] == expected
+        group = next(item for item in ToolService().list_grouped_tools() if item["group"] == group_entity)
+        assert group["reload_module"] == expected
+
+    async def test_single_reload_delegates_to_existing_synchronizer(self, svc, monkeypatch):
+        from unittest.mock import AsyncMock
+
+        import entities
+
+        reload = AsyncMock(return_value={"reloaded": ["filesystem"]})
+        monkeypatch.setattr(entities, "reload_entities", reload)
+        assert await svc.reload_module("filesystem") == {"reloaded": ["filesystem"]}
+        reload.assert_awaited_once_with(reload_existing=True, entity_name="filesystem")
+
 
 class TestValueCoercion:
     """写入值经配置项声明类型矫正与边界收敛（不存裸字符串）。"""

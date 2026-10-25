@@ -14,6 +14,7 @@ import type {
   ConfigValues,
   EntityDetail,
   EntityListItem,
+  EntityReloadResult,
   HookEntry,
   HooksConfig,
   LlmHooksOverview,
@@ -44,7 +45,7 @@ export const toolsApi = {
   toggleGroup: (group: string) => api.put(`/tools/group/${encodeURIComponent(group)}/toggle`),
   updateMeta: (name: string, data: { tags?: string[]; description?: string }) =>
     api.put(`/tools/${encodeURIComponent(name)}/meta`, data),
-  reload: () => api.post("/tools/reload"),
+  reload: () => api.post<EntityReloadResult>("/tools/reload"),
   plugins: () => api.get<PluginInfo[]>("/tools/plugins"),
 };
 
@@ -55,6 +56,7 @@ export const entitiesApi = {
   catalog: () => api.get("/entities/catalog"),
   statistics: () => api.get("/entities/statistics"),
   detail: (name: string) => api.get<EntityDetail>(`/entities/${encodeURIComponent(name)}`),
+  reload: (name: string) => api.post<EntityReloadResult>(`/entities/${encodeURIComponent(name)}/reload`),
   config: (name: string) => api.get(`/entities/${encodeURIComponent(name)}/config`),
   updateConfig: (name: string, key: string, value: unknown) =>
     api.put(`/entities/${encodeURIComponent(name)}/config`, { key, value }),

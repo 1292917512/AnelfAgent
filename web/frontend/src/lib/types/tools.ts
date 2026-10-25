@@ -10,6 +10,7 @@ export interface ToolItem {
 
 export interface ToolGroup {
   group: string;
+  reload_module?: string | null;
   description: string;
   tools: ToolItem[];
   all_enabled: boolean;

@@ -23,7 +23,9 @@ from __future__ import annotations
 import asyncio
 import importlib
 import sys
+from importlib.util import cache_from_source
 from pathlib import Path
+from types import ModuleType
 from typing import Any, Dict, List, Set, Tuple
 
 from core.config import ConfigManager, ConfigRegistry
@@ -63,12 +65,13 @@ def scan_entity_dirs() -> Set[str]:
     return result
 
 
-def _entity_tool_names(name: str) -> List[str]:
-    """按 func.__module__ 前缀扫描该实体当前注册的全部工具名。"""
+def _entity_tool_names(name: str, *, modules: Set[str] | None = None) -> List[str]:
+    """按函数归属扫描实体工具；入口重载可将范围限定到实际执行的模块。"""
     prefix = f"entities.{name}."
     return [
         e.name for e in EntityRegistry.get_by_type(EntityType.TOOL)
         if e.func is not None and getattr(e.func, "__module__", "").startswith(prefix)
+        and (modules is None or getattr(e.func, "__module__", "") in modules)
     ]
 
 
@@ -193,6 +196,22 @@ async def unload_entity(name: str) -> None:
     log(f"实体已热拔除: {name}（工具 {removed_tools} 个）", tag=_TAG)
 
 
+def _invalidate_entry_bytecode(name: str, module: ModuleType) -> None:
+    """仅撤销实体入口的派生字节码，避免同秒同长度编辑命中旧 pyc。"""
+    source = getattr(module, "__file__", None)
+    if source is None:
+        return
+    root = (_entities_dir() / name).resolve()
+    path = Path(source).resolve()
+    expected = root / f"{module.__name__.rsplit('.', 1)[-1]}.py"
+    if path != expected or not path.is_file():
+        raise ImportError(f"实体入口源码路径不匹配: {module.__name__}")
+    cache = Path(cache_from_source(str(path)))
+    if not cache.resolve().is_relative_to(root):
+        raise ImportError(f"实体字节码路径越界: {module.__name__}")
+    cache.unlink(missing_ok=True)
+
+
 def reload_entity(name: str) -> bool:
     """代码热更：按归属注销旧工具后 re-import（被源码删除的工具不再回归）。
 
@@ -200,16 +219,21 @@ def reload_entity(name: str) -> bool:
     身份。状态模块的源码更新需要重启，避免新工具连到未纳入 Lifecycle 的
     第二份资源。reload 原地执行，失败后也保留模块身份供下次修复重试。
     """
-    previous = [EntityRegistry.get(tool_name) for tool_name in _entity_tool_names(name)]
-    for tool_name in _entity_tool_names(name):
-        EntityRegistry.unregister(tool_name)
     module_path = f"entities.{name}.tools"
     mod = sys.modules.get(module_path)
     router = sys.modules.get(f"entities.{name}.router")
+    reloaded_modules = {module_path} | ({router.__name__} if router is not None else set())
+    previous = [EntityRegistry.get(tool_name) for tool_name in _entity_tool_names(name, modules=reloaded_modules)]
+    for tool_name in _entity_tool_names(name, modules=reloaded_modules):
+        EntityRegistry.unregister(tool_name)
     snapshots = [(module, dict(vars(module))) for module in (mod, router) if module is not None]
     before = _snapshot()
     try:
         with registration_transaction(f"entities.{name}"):
+            importlib.invalidate_caches()
+            for module in (mod, router):
+                if module is not None:
+                    _invalidate_entry_bytecode(name, module)
             if mod is not None:
                 importlib.reload(mod)
             else:
@@ -217,7 +241,7 @@ def reload_entity(name: str) -> bool:
             if router is not None:
                 importlib.reload(router)
     except Exception as e:
-        for tool_name in _entity_tool_names(name):
+        for tool_name in _entity_tool_names(name, modules=reloaded_modules):
             EntityRegistry.unregister(tool_name)
         for module, snapshot in snapshots:
             vars(module).clear()
@@ -250,12 +274,13 @@ def _replay_persisted_states() -> None:
     replay_tool_states()
 
 
-async def sync_entities(reload_existing: bool = False) -> Dict[str, Any]:
+async def sync_entities(reload_existing: bool = False, *, entity_name: str | None = None) -> Dict[str, Any]:
     """对账 entities/ 目录与已加载实体：增则热插入，删则热拔除。
 
     Args:
         reload_existing: True（手动刷新）时存续实体做代码热更；
             目录监听自动触发传 False（仅响应增删，不因文件保存打断运行）。
+        entity_name: 指定时仅同步该实体，与全量同步共用单飞护栏。
 
     Returns:
         {added, removed, reloaded, failed, total} 摘要。
@@ -268,13 +293,17 @@ async def sync_entities(reload_existing: bool = False) -> Dict[str, Any]:
         }
     _sync_running = True
     try:
-        return await _sync_entities_locked(reload_existing)
+        return await _sync_entities_locked(reload_existing, entity_name=entity_name)
     finally:
         _sync_running = False
 
 
-async def _sync_entities_locked(reload_existing: bool) -> Dict[str, Any]:
+async def _sync_entities_locked(reload_existing: bool, *, entity_name: str | None = None) -> Dict[str, Any]:
     current = scan_entity_dirs()
+    if entity_name is not None and entity_name not in current:
+        raise ValueError(f"实体模块 '{entity_name}' 不存在")
+    selected = {entity_name} if entity_name is not None else current | _loaded_modules | set(_entity_lifecycles)
+    current &= selected
     added: List[str] = []
     removed: List[str] = []
     reloaded: List[str] = []
@@ -299,7 +328,7 @@ async def _sync_entities_locked(reload_existing: bool) -> Dict[str, Any]:
             failed.append(name)
             log(f"实体接入失败: {name} - {exc}", "ERROR", tag=_TAG)
 
-    for name in sorted((_loaded_modules | set(_entity_lifecycles)) - current):
+    for name in sorted(((_loaded_modules | set(_entity_lifecycles)) & selected) - current):
         try:
             await unload_entity(name)
             removed.append(name)

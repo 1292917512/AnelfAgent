@@ -1,12 +1,13 @@
 import { useId } from "react";
 import { useTranslation } from "react-i18next";
-import { ChevronDown, ExternalLink, Package, Pencil } from "lucide-react";
+import { ChevronDown, ExternalLink, Package, Pencil, RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button, Switch } from "@/components/ui";
 import type { ToolGroup, ToolItem } from "@/lib/types";
 
-export function ToolGroupCard({ group, isOpen, busy, onToggle, onToggleGroup, onToggleTool, onEditTool, onOpenEntity }: {
+export function ToolGroupCard({ group, isOpen, busy, reloading, onReload, onToggle, onToggleGroup, onToggleTool, onEditTool, onOpenEntity }: {
   group: ToolGroup; isOpen: boolean; busy: boolean; onToggle: () => void; onToggleGroup: () => void;
+  reloading: boolean; onReload: (module: string) => void;
   onToggleTool: (name: string) => void; onEditTool: (tool: ToolItem) => void; onOpenEntity: (group: string) => void;
 }) {
   const { t } = useTranslation("tools");
@@ -21,6 +22,8 @@ export function ToolGroupCard({ group, isOpen, busy, onToggle, onToggleGroup, on
         <ChevronDown size={16} className={cn("shrink-0 text-muted transition-transform", isOpen && "rotate-180")} />
       </button>
       <div className="flex shrink-0 items-center gap-2">
+        {group.reload_module && <Button variant="ghost" size="icon" title={t("reloadEntity", { name: group.reload_module })} disabled={busy} loading={reloading}
+          onClick={() => { if (group.reload_module) onReload(group.reload_module); }}>{!reloading && <RefreshCw size={16} />}</Button>}
         <Button variant="ghost" size="icon" title={`${t("openEntity")}: ${title}`} onClick={() => onOpenEntity(group.group)}><ExternalLink size={16} /></Button>
         <Switch label={`${group.all_enabled ? t("disableGroup") : t("enableGroup")}: ${title}`} checked={group.all_enabled} disabled={busy} onChange={onToggleGroup} />
       </div>

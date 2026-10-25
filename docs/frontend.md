@@ -264,6 +264,10 @@ Web 与思维链共用 SSE 连接生命周期实现，终止连接退避重建�
 
 ## 前端开发约定
 
+Vite 开发服务默认将 API 与 WebSocket 转发到本地 WebUI 后端 `127.0.0.1:8092`；
+后端使用其他地址时，启动前设置 `ANELF_WEBUI_API_TARGET`。实体面板组件源码由 Vite Fast Refresh
+更新，清单和语言资源变更重新发现后刷新页面；正式构建的更新仍需构建并刷新页面，后端无需因此重启。
+
 - 页面超过 300 行拆为子面板目录、统一用 TabBar、i18n 覆盖所有文本、`Record<string, unknown>`
   替换为 `lib/types.ts` 接口
 - 分层保持 stores ← pages 单向；Tailwind 构建同时扫描实体面板和频道前端源码，模块内声明的完整

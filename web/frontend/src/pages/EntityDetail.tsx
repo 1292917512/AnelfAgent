@@ -13,12 +13,14 @@ import { SectionBoundary } from "@/components/common/SectionBoundary";
 import { RegisteredConfigPanel } from "./config/RegisteredConfigPanel";
 import { useRouteTab } from "@/hooks/useRouteTab";
 import { getEntityPanel } from "@/lib/entity-panels";
+import { useEntityReload } from "./tools/useEntityReload";
 import {
   ArrowLeft,
   Settings,
   Wrench,
   LayoutDashboard,
   PanelRight,
+  RefreshCw,
 } from "lucide-react";
 
 type EntityTab = "overview" | "config" | "tools" | "panel";
@@ -28,6 +30,7 @@ export default function EntityDetail() {
   const navigate = useNavigate();
   const { t } = useTranslation("entities");
   const queryClient = useQueryClient();
+  const reload = useEntityReload();
 
   const PanelComponent = useMemo(() => name ? getEntityPanel(name) : null, [name]);
   const [tab, setTab] = useRouteTab<EntityTab>(PanelComponent ? ["panel", "overview", "config", "tools"] : ["overview", "config", "tools"], PanelComponent ? "panel" : "overview");
@@ -65,7 +68,7 @@ export default function EntityDetail() {
     <div className="h-full flex flex-col">
       {/* 头部 */}
       <div className="px-4 md:px-6 py-4 border-b border-border">
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <button
             onClick={() => navigate("/tools")}
             aria-label={t("backToTools")}
@@ -86,11 +89,15 @@ export default function EntityDetail() {
               {manifest?.description || entity.description}
             </p>
           </div>
-          <Button size="sm" loading={toggleMutation.isPending} aria-pressed={entity.enabled}
+          <div className="ml-auto flex w-full justify-end gap-2 sm:w-auto">
+          {entity.reload_module && <Button size="sm" title={t("tools:reloadHint")} loading={reload.isPending} disabled={toggleMutation.isPending}
+            onClick={() => { if (entity.reload_module) reload.mutate(entity.reload_module); }}>{!reload.isPending && <RefreshCw size={14} />}{t("tools:reloadEntity", { name: entity.reload_module })}</Button>}
+          <Button size="sm" loading={toggleMutation.isPending} disabled={reload.isPending} aria-pressed={entity.enabled}
             onClick={() => toggleMutation.mutate(!entity.enabled)}>
             <StatusDot status={entity.enabled ? "ok" : "offline"} />
             {entity.enabled ? t("enabled") : t("disabled")}
           </Button>
+          </div>
         </div>
       </div>
 

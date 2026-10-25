@@ -2,6 +2,68 @@ import AxeBuilder from "@axe-core/playwright";
 import { test, expect, openWebChat } from "./fixtures";
 import type { ConfigMetaItem, RecallTestResult, ToolItem } from "../src/lib/types";
 
+test("entity reload targets its owning module and keeps failures, filters and narrow layouts usable", async ({ page, isMobile }, info) => {
+  if (isMobile) await page.setViewportSize({ width: 360, height: 800 });
+  let calls = 0;
+  let allCalls = 0;
+  let version = 1;
+  let release = () => {};
+  const result = { added: [], removed: [], reloaded: ["demo"], failed: [], total: 2 };
+  const tools = () => [{ name: "inspect_service", source: "entity", enabled: true, description: `Inspection implementation ${version}`, tags: [] }];
+  await page.route("**/api/tools/grouped", (route) => route.fulfill({ json: [
+    { group: "module_alias", reload_module: "demo", description: "Service operations", tools: tools(), enabled_count: 1, total_count: 1, all_enabled: true, any_enabled: true },
+    { group: "kernel", description: "Kernel tools", tools: [{ ...tools()[0]!, name: "kernel_inspect" }], enabled_count: 1, total_count: 1, all_enabled: true, any_enabled: true },
+  ] }));
+  await page.route("**/api/tools/plugins", (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/tags/tool", (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/tags/unified", (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/entities/demo/reload", async (route) => {
+    expect(route.request().method()).toBe("POST");
+    calls++;
+    if (calls === 1) { await route.fulfill({ status: 500, json: { detail: "Reload failed; previous tools retained" } }); return; }
+    if (calls === 2) await new Promise<void>((resolve) => { release = resolve; });
+    version++;
+    await route.fulfill({ json: result });
+  });
+  await page.route("**/api/tools/reload", (route) => {
+    allCalls++;
+    return route.fulfill({ json: { ...result, reloaded: [], failed: ["other"] } });
+  });
+  await page.route("**/api/entities/module_alias", (route) => route.fulfill({ json: {
+    name: "inspect_service", group: "module_alias", reload_module: "demo", type: "tool", source: "entity", enabled: true,
+    description: "Service operations", config_group: "", tools: tools(), apis: [], providers: [], manifest: {},
+  } }));
+  await page.goto("/webui/tools?q=inspect");
+  const reload = page.getByRole("button", { name: "Reload entity demo", exact: true });
+  await expect(reload).toBeVisible();
+  await expect(page.getByRole("button", { name: "Reload entity kernel", exact: true })).toHaveCount(0);
+  await reload.click();
+  await expect(page.getByRole("alert")).toContainText("Reload failed; previous tools retained");
+  await expect(page.getByText("Inspection implementation 1", { exact: true }).first()).toBeVisible();
+  await reload.click();
+  await expect(reload).toHaveAttribute("aria-busy", "true");
+  await expect(page.getByRole("button", { name: "Sync all entities", exact: true })).toBeDisabled();
+  release();
+  await expect(reload).toBeEnabled();
+  await expect(page.getByRole("textbox", { name: "Search tool name, description, tags..." })).toHaveValue("inspect");
+  await expect(page.getByText("Inspection implementation 2", { exact: true }).first()).toBeVisible();
+  expect(allCalls).toBe(0);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: info.outputPath("single-entity-reload.png"), animations: "disabled" });
+  await page.getByRole("button", { name: "Sync all entities", exact: true }).click();
+  await expect(page.getByText("Some entities failed to reload: other. Check the server logs.", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Open entity details: module_alias", exact: true }).click();
+  await expect(page.getByText("Service operations", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Reload entity demo", exact: true }).click();
+  await expect.poll(() => calls).toBe(3);
+  expect(allCalls).toBe(1);
+  await page.getByRole("tab", { name: "Tools", exact: true }).click();
+  await expect(page.getByText("Inspection implementation 3", { exact: true })).toBeVisible();
+  await page.evaluate(() => { document.documentElement.dataset.theme = "dark"; document.documentElement.classList.add("dark"); });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: info.outputPath("entity-detail-reload.png"), animations: "disabled" });
+});
+
 test("managed databases show separate engines and route recovery to their shared volume", async ({ page }, info) => {
   let measured = false;
   const forbiddenRequests: string[] = [];

@@ -6,6 +6,8 @@ unload_entity 拆除链完整性（注册表/分组/配置组/Lifecycle 组件/s
 
 from __future__ import annotations
 
+import os
+import py_compile
 import sys
 from pathlib import Path
 from types import ModuleType
@@ -68,6 +70,38 @@ class TestScanEntityDirs:
 
 
 class TestSyncEntities:
+    @pytest.mark.parametrize("success", [True, False])
+    async def test_targeted_reload_does_not_reconcile_unrelated_modules(self, monkeypatch, success) -> None:
+        hotplug._loaded_modules.clear()
+        hotplug._loaded_modules.update({"target", "other", "gone"})
+        monkeypatch.setattr(hotplug, "scan_entity_dirs", lambda: {"target", "other", "new"})
+        loaded: list[str] = []
+        removed: list[str] = []
+        reloaded: list[str] = []
+        events: list[tuple[str, str]] = []
+        replayed: list[bool] = []
+        monkeypatch.setattr(hotplug, "load_entity", lambda name: loaded.append(name) or True)
+        monkeypatch.setattr(hotplug, "unload_entity", AsyncMock(side_effect=lambda name: removed.append(name)))
+        monkeypatch.setattr(hotplug, "reload_entity", lambda name: reloaded.append(name) is None and success)
+        monkeypatch.setattr(hotplug, "_emit", lambda event, name: events.append((event, name)))
+        monkeypatch.setattr(hotplug, "_replay_persisted_states", lambda: replayed.append(True))
+        result = await hotplug.sync_entities(reload_existing=True, entity_name="target")
+        assert reloaded == ["target"] and loaded == [] and removed == []
+        assert result["reloaded"] == (["target"] if success else [])
+        assert result["failed"] == ([] if success else ["target"])
+        assert hotplug._loaded_modules == {"target", "other", "gone"}
+        assert len(events) == len(replayed) == int(success)
+        assert not hotplug._sync_running
+
+    async def test_targeted_reload_rejects_unknown_names_and_shares_singleflight(self, monkeypatch) -> None:
+        monkeypatch.setattr(hotplug, "scan_entity_dirs", lambda: {"valid"})
+        for name in ("missing", "../valid", "_sdk"):
+            with pytest.raises(ValueError, match="不存在"):
+                await hotplug.sync_entities(reload_existing=True, entity_name=name)
+            assert not hotplug._sync_running
+        monkeypatch.setattr(hotplug, "_sync_running", True)
+        assert (await hotplug.sync_entities(reload_existing=True, entity_name="valid"))["skipped"] == "in_progress"
+
     async def test_add_then_remove(self, monkeypatch: pytest.MonkeyPatch) -> None:
         dirs = {"e1"}
         monkeypatch.setattr(hotplug, "scan_entity_dirs", lambda: set(dirs))
@@ -232,6 +266,59 @@ class TestUnloadEntity:
 
 
 class TestReloadEntity:
+    async def test_same_timestamp_same_size_edit_executes_fresh_code(self, tmp_path, monkeypatch) -> None:
+        root = tmp_path / "_hp_fake"
+        root.mkdir()
+        source = root / "tools.py"
+        text = ('from core.entity import EntityRegistry\n'
+                'def result() -> str:\n    return "v1"\n'
+                'EntityRegistry.register_tool(name="_hp_t1", func=result, group="_hp_g1")\n')
+        source.write_text(text, encoding="utf-8")
+        py_compile.compile(str(source), doraise=True)
+        original_stat = source.stat()
+        package = ModuleType("entities._hp_fake")
+        package.__path__ = [str(root)]
+        monkeypatch.setitem(sys.modules, package.__name__, package)
+        monkeypatch.setattr(hotplug, "_entities_dir", lambda: tmp_path)
+        try:
+            assert hotplug.load_entity("_hp_fake")
+            assert await EntityRegistry.execute_tool("_hp_t1") == "v1"
+            source.write_text(text.replace('"v1"', '"v2"'), encoding="utf-8")
+            os.utime(source, ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns))
+            assert source.stat().st_size == original_stat.st_size
+            assert hotplug.reload_entity("_hp_fake")
+            assert await EntityRegistry.execute_tool("_hp_t1") == "v2"
+            def locked_cache(_name: str, _module: ModuleType) -> None:
+                raise PermissionError("locked cache")
+
+            monkeypatch.setattr(hotplug, "_invalidate_entry_bytecode", locked_cache)
+            assert not hotplug.reload_entity("_hp_fake")
+            assert await EntityRegistry.execute_tool("_hp_t1") == "v2"
+        finally:
+            sys.modules.pop("entities._hp_fake.tools", None)
+
+    @pytest.mark.parametrize("success", [True, False])
+    def test_cached_helper_tool_declarations_survive_entry_reload(self, monkeypatch, success) -> None:
+        module = ModuleType("entities._hp_fake.tools")
+        monkeypatch.setitem(sys.modules, module.__name__, module)
+        _register_fake_tool("_hp_t1", "_hp_fake", "_hp_g1")
+        _register_fake_tool("_hp_cached", "_hp_fake", "_hp_g1")
+        cached = EntityRegistry.get("_hp_cached")
+        cached.func.__module__ = "entities._hp_fake.helper"
+        original = EntityRegistry.get("_hp_t1")
+
+        def reload(mod):
+            _register_fake_tool("_hp_new", "_hp_fake", "_hp_g1")
+            if not success:
+                raise RuntimeError("Invalid entry")
+            return mod
+
+        monkeypatch.setattr(hotplug.importlib, "reload", reload)
+        assert hotplug.reload_entity("_hp_fake") is success
+        assert EntityRegistry.get("_hp_cached") is cached
+        assert EntityRegistry.get("_hp_t1") is (None if success else original)
+        assert (EntityRegistry.get("_hp_new") is not None) is success
+
     def test_reload_keeps_resource_and_port_identity(self, monkeypatch) -> None:
         tools = ModuleType("entities._hp_fake.tools")
         manager = ModuleType("entities._hp_fake.manager")

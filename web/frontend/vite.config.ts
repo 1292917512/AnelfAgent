@@ -118,8 +118,9 @@ export default defineConfig({
     },
     proxy: {
       "/api": {
-        target: "http://127.0.0.1:8091",
+        target: process.env.ANELF_WEBUI_API_TARGET || "http://127.0.0.1:8092",
         changeOrigin: true,
+        ws: true,
       },
     },
   },
