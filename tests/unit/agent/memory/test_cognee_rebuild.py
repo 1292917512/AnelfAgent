@@ -1291,10 +1291,25 @@ def test_publication_budget_counts_only_changed_parts_and_retirement(document_li
     assert [[entry[0]["queue_id"] for entry in group] for group in groups] == [[1] * 10 + [2], [3]]
 
 
-async def test_publication_budget_isolates_damaged_mapping_without_stranding_healthy_sources(coordinator, store):
+async def test_invalid_publication_mapping_fails_claims_without_bypassing_integrity_gate(coordinator, store, monkeypatch):
+    from agent.memory.cognee.manifest import DatasetStamp, DocumentStamp, IndexManifest
+
     ids = [await store.add(MemoryEntry(content=f"原始事实 {i}", memory_type=MemoryType.SEMANTIC)) for i in range(3)]
     await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
     previous = {mid: await store.get_cognee_mapping(mid) for mid in ids}
+    first = previous[ids[0]]
+    baseline = IndexManifest(datasets={first["dataset_id"]: DatasetStamp(name=first["dataset_name"], documents={
+        row["data_id"]: DocumentStamp(identity="original", content_hash=row["content_hash"])
+        for row in previous.values()})})
+
+    @asynccontextmanager
+    async def transactional():
+        baseline.check_sources(await store.projection_state.publication_sources())
+        yield
+
+    monkeypatch.setattr(coordinator.client, "write_transaction", transactional)
+    add = AsyncMock(wraps=coordinator.client.add)
+    monkeypatch.setattr(coordinator.client, "add", add)
     db = await store._conn.get_db()
     async with store._conn.tx(db):
         await db.execute("UPDATE cognee_entry_map SET documents_json='not-json' WHERE entry_id=?", (ids[1],))
@@ -1304,13 +1319,14 @@ async def test_publication_budget_isolates_damaged_mapping_without_stranding_hea
         await store.update(entry)
     await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
     status = await store.get_cognee_sync_status()
-    assert status["pending"] == 0 and status["failed"] == 1
+    assert status["pending"] == 0 and status["failed"] == 3
     assert coordinator.writer.last_error
     for mid in ids:
         mapping = await store.get_cognee_mapping(mid)
-        assert (mapping["data_id"] != previous[mid]["data_id"]) is (mid != ids[1])
+        assert mapping["data_id"] == previous[mid]["data_id"]
         assert (await store.get(mid)).content == f"更新事实 {mid}"
     assert len(coordinator.client.documents[coordinator.writer.memory_dataset]) == 3
+    add.assert_not_awaited()
 
 
 async def test_post_publish_enhancement_failure_does_not_retry_completed_sources(coordinator, store):
