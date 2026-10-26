@@ -234,6 +234,18 @@ reconcile 对账范式（对齐插件装卸载）：监听目录结构（子目�
 失败回滚、持久化状态回放和路由事件；不会装卸或重载其他实体。工具目录及实体详情根据
 分组声明归属提供单实体入口，内核与频道工具不猜测为实体目录。
 
+AI 运维入口位于 `entities/devops/tools.py`：`reload_entity(entity_name)` 和
+`reload_channel(channel_id)` 使用实际目录名定向重载；`sync_modules(target, reload_existing)`
+按 entities/channels/all 对账，默认不主动重载正常存续模块，频道失败目标沿用原重试策略。
+三个工具均声明 CRITICAL，经统一审批执行；参数规则可使用 `reload_entity(filesystem)`、
+`reload_channel(qq)` 或 `sync_modules(entities)` 按目标匹配。频道操作通过 `_sdk` 桥复用原敏感开关，
+all 在任何修改前完成频道权限预检。忙碌、部分失败和异常返回统一工具错误并保留各同步器的真实摘要；
+批量是逐模块事务，已成功的模块不因其他失败整体回滚。单模块回执从当前注册表派生工具名
+与所属分组，指引 AI 用 `list_entity_methods` 刷新参数再实际调用；失败回执列出的仍可能是回滚后的旧实现。
+取消沿原协程向上传播，不另设后台重载任务。源码写入沿用文件工具的沙箱与权限授权，代码热同步不改变该授权。
+实体只刷新 tools.py/router.py；缓存中的辅助模块、进程级状态、`_sdk` 桥接面及核心框架修改须重启。
+依赖由 uv 管理，代码重载不能代替依赖安装。
+
 频道定向同步使用 `sync_channels(channel_id=...)` / `POST /adapters/{id}/reload`，
 复用全量同步的单飞护栏，只处理目标频道并保留其他频道的待重试记录。
 频道实例替换由 ChannelManager 的操作锁保护，和启停、看门狗串行；配置声明使用

@@ -111,6 +111,7 @@ __all__ = [
     "tool", "deferred_tool", "entity", "activate_group",
     "entity_manifest", "entity_config", "context_provider",
     "push_notify", "register_entity_llm_hook", "emit_chat_extension",
+    "channel_sensitive_allowed", "sync_channel_modules",
     "get_embedder", "wake_embedding_worker", "register_embedding_backlog",
     "CredentialField", "register_provider_key", "get_provider_key", "set_provider_key", "set_provider_fields",
     "list_provider_keys",
@@ -259,6 +260,18 @@ def activate_tool_group_now(group: str, rounds: int = 0) -> int:
         return tool_activation.activate(group, rounds or None)
     except Exception:
         return 0
+
+
+def channel_sensitive_allowed() -> bool:
+    """复用频道管理工具的敏感操作开关，实体层不维护第二份权限策略。"""
+    from agent.channel.tool_bridge import _sensitive_check
+    return _sensitive_check()
+
+
+async def sync_channel_modules(reload_existing: bool = False, *, channel_id: str | None = None) -> Dict[str, Any]:
+    """桥接原频道同步器；调用方的工具声明与统一执行门负责审批。"""
+    from agent.channel.hotplug import sync_channels
+    return await sync_channels(reload_existing=reload_existing, channel_id=channel_id)
 
 
 def notify_tool_set_changed() -> None:

@@ -180,3 +180,12 @@ def test_unknown_group_actor_cannot_bypass_user_restriction():
         PermissionRule(pattern="t", effect="allow", users=["123"], scope="qq"),
     ])
     assert rules.evaluate("t", {}, "qq", "").decision == PermissionDecision.ASK
+
+
+@pytest.mark.parametrize("tool,key", [("reload_entity", "entity_name"), ("reload_channel", "channel_id"), ("sync_modules", "target")])
+def test_module_reload_rules_match_the_target_instead_of_serialized_json(tool, key):
+    rules = PermissionRuleSet(default_effect=PermissionEffect.DENY, rules=[
+        _rule(f"{tool}(approved)", PermissionEffect.ALLOW),
+    ])
+    assert rules.evaluate(tool, {key: "approved"}, "", "").decision == PermissionDecision.AUTO_ALLOW
+    assert rules.evaluate(tool, {key: "other"}, "", "").decision == PermissionDecision.AUTO_DENY

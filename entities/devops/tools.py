@@ -6,6 +6,12 @@
 - 构建前端并重启（构建失败则不重启）
 - 从远程拉取项目最新代码，可一步完成更新并重启
 - 遇到 Git 冲突时提示联系主人
+- 单实体/单频道代码重载与批量目录同步复用既有同步器，全部声明 CRITICAL 走统一审批
+
+热同步 Model Experience：
+① 模型看到三个按需发现的工具及真实增删、重载、失败/忙碌摘要与当前工具发现指引，失败不可视为完成。
+② token 影响为三个工具 schema 与按模块数增长的结果；不常驻注入运维提示。
+③ 结果进入工具链尾部，工具目录更新沿用注册表版本和追加冻结，不改稳定消息前缀。
 
 重启交接体验（Model Experience 三行声明）：
 ① 模型看到什么——重启类工具返回值指示 AI 立即 end_reply 结束本轮；
@@ -20,9 +26,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any, Dict, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 from entities._sdk import (
+    channel_sensitive_allowed,
     context_provider,
     entity,
     get_current_channel,
@@ -32,8 +39,9 @@ from entities._sdk import (
 )
 
 from . import service
+from .module_reload import SyncTarget, reload_channel_module, reload_entity_module, sync_module_directories
 
-entity("devops", "运维管理 - 应用重启、前端构建、项目代码更新")
+entity("devops", "运维管理 - 模块热同步、应用重启、前端构建、项目代码更新")
 
 
 def _result(action: str, **fields: Any) -> str:
@@ -52,6 +60,57 @@ def _restart_handoff(message: str) -> Dict[str, str]:
 
 # 重启后唤醒推送的延迟（等频道与长驻服务就绪，保证回复可路由回原频道）
 _WAKE_DELAY_SECONDS = 5.0
+
+
+def _reload_result(raw: str, *, module: str = "", channel_id: str = "") -> str:
+    """从当前注册表派生发现指引，避免把旧目录或成功摘要当成新实现验证。"""
+    from core.entity import EntityRegistry, EntityType
+
+    payload = json.loads(raw)
+    if payload.get("cause") in {"permission", "param", "not_found"}:
+        return raw
+    groups: Dict[str, List[str]] = {}
+    for item in EntityRegistry.get_by_type(EntityType.TOOL):
+        owned = module and item.func is not None and getattr(item.func, "__module__", "").startswith(f"entities.{module}.")
+        if item.enabled and (owned or (channel_id and item.source == f"channel.{channel_id}")):
+            groups.setdefault(item.group, []).append(item.name)
+    payload["current_tools"] = [{"group": group, "names": sorted(names)} for group, names in sorted(groups.items())]
+    payload["next_step"] = "先用 list_entity_methods(group=所属分组) 刷新工具名与参数，再实际调用验证实现；这里列出的是当前注册版本，失败后可能仍是旧版本。"
+    if channel_id:
+        payload["next_step"] += "频道公共能力从 channel_ops 分组发现。"
+    return json.dumps(payload, ensure_ascii=False)
+
+
+@tool(name="reload_entity", group="devops", tags=["core"], risk="CRITICAL", timeout=120)
+async def reload_entity(entity_name: str) -> str:
+    """热重载单个实体的工具和路由代码；保留状态资源，失败沿用原同步器回滚。
+
+    Args:
+        entity_name: entities/ 下的实际模块目录名，不是工具分组名；核心/状态模块修改需 restart_app
+    """
+    return _reload_result(await reload_entity_module(entity_name), module=entity_name.strip())
+
+
+@tool(name="reload_channel", group="devops", tags=["core"], risk="CRITICAL", timeout=120,
+      check_fn=channel_sensitive_allowed)
+async def reload_channel(channel_id: str) -> str:
+    """热重载单个频道的代码与 schema；原启停意图不变，运行中的连接会短暂重连。
+
+    Args:
+        channel_id: channels/ 下的实际目录名；重载当前会话频道可能短暂中断连接，需核对重连状态
+    """
+    return _reload_result(await reload_channel_module(channel_id), channel_id=channel_id.strip())
+
+
+@tool(name="sync_modules", group="devops", tags=["core"], risk="CRITICAL", timeout=900)
+async def sync_modules(target: SyncTarget = "all", reload_existing: bool = False) -> str:
+    """批量同步实体或频道目录；默认不主动重载正常存续模块，显式 reload_existing=true 才全部重载。
+
+    Args:
+        target: entities、channels 或 all；涉及频道时遵守频道敏感操作开关
+        reload_existing: 是否同时重载全部存续模块；为 true 时运行中的频道会重连，各模块单独回滚，非全局事务
+    """
+    return await sync_module_directories(target, reload_existing)
 
 
 # ── 重启应用 ──────────────────────────────────────────────────────────

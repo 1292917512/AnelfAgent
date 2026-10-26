@@ -13,6 +13,9 @@ from agent.utils.workspace import workspace_paths_port
 # 各工具的"关键参数"提取器：参数模式匹配的比对对象
 _ARG_KEYS: Dict[str, tuple] = {
     "run_shell_command": ("command",),
+    "reload_entity": ("entity_name",),
+    "reload_channel": ("channel_id",),
+    "sync_modules": ("target",),
     "python_exec": ("code",),
     "read_file": ("file_path",),
     "write_file": ("file_path",),
