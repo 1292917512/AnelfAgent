@@ -4,6 +4,8 @@
 
 **Continuous Memory · Cross-Channel Presence · Proactive Work · Growing Skills · AI Self-Maintenance · Module Hot Reload**
 
+**[🌐 Official Website · anelf.cn](https://anelf.cn)**
+
 [简体中文](README.md) | **English**
 
 [![CI](https://github.com/1292917512/AnelfAgent/actions/workflows/ci.yml/badge.svg)](https://github.com/1292917512/AnelfAgent/actions/workflows/ci.yml)
@@ -365,4 +367,4 @@ Thanks to [LiteLLM](https://github.com/BerriAI/litellm), [FastAPI](https://githu
 
 AnelfAgent communicates with NapCat through OneBot without including or modifying its source. External components and services retain their own licenses and terms.
 
-[MIT License](LICENSE) © 2025–2026 AnelfAgent Contributors · [GitHub](https://github.com/1292917512/AnelfAgent)
+[MIT License](LICENSE) © 2025–2026 AnelfAgent Contributors · [Official Website](https://anelf.cn) · [GitHub](https://github.com/1292917512/AnelfAgent)

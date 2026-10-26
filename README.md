@@ -4,6 +4,8 @@
 
 **连续记忆 · 跨频道在场 · 主动行动 · 技能生长 · AI 自维护 · 模块热更新**
 
+**[🌐 官方网站 · anelf.cn](https://anelf.cn)**
+
 **简体中文** | [English](README_EN.md)
 
 [![CI](https://github.com/1292917512/AnelfAgent/actions/workflows/ci.yml/badge.svg)](https://github.com/1292917512/AnelfAgent/actions/workflows/ci.yml)
@@ -364,4 +366,4 @@ npm run build
 
 AnelfAgent 经 OneBot 与 NapCat 通信，不包含或修改其源码；各外部组件与服务遵循各自的许可和使用条款。
 
-[MIT License](LICENSE) © 2025–2026 AnelfAgent Contributors · [GitHub](https://github.com/1292917512/AnelfAgent)
+[MIT License](LICENSE) © 2025–2026 AnelfAgent Contributors · [官方网站](https://anelf.cn) · [GitHub](https://github.com/1292917512/AnelfAgent)
