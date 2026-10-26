@@ -295,6 +295,21 @@ class TestSegmentMapFailures:
         assert resp.success is True
         assert resp.message_id == "empty"
 
+    async def test_session_id_is_forwarded_to_segment_sender(self):
+        ch = SegmentMapChannel()
+        received = {}
+
+        async def send(chat_id, text, **kwargs):
+            received.update(kwargs)
+            return json.dumps({"success": True})
+
+        ch.send_text = send
+        request = _seg_request("text")
+        request.extra["session_id"] = "notification"
+        resp = await ch.forward_message(request)
+        assert resp.success is True
+        assert received["session_id"] == "notification"
+
     async def test_success_without_message_id_is_success(self):
         """无平台 ID 的频道：success 即送达，不因缺 message_id 误判失败。"""
         ch = SegmentMapChannel()
@@ -313,3 +328,18 @@ class TestSegmentMapFailures:
         resp = await ch.forward_message(_seg_request("text"))
         assert resp.success is False
         assert "返回格式异常" in resp.error
+
+    async def test_failed_sender_retains_partial_platform_ids(self):
+        ch = SegmentMapChannel()
+
+        async def partial(chat_id, text, **kwargs):
+            return json.dumps({
+                "success": False, "error": "后续段失败",
+                "message_ids": ["platform-part-1"], "delivered_chunks": 1,
+            }, ensure_ascii=False)
+
+        ch.send_text = partial
+        resp = await ch.forward_message(_seg_request("text"))
+        assert resp.success is False
+        assert resp.message_ids == ["platform-part-1"]
+        assert resp.message_id == "platform-part-1"

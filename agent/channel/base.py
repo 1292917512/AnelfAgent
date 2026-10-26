@@ -294,10 +294,10 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
                     failures.append(f"段类型 {seg_type} 发送异常: {exc}")
                     continue
                 ok, ids, error = self._parse_segment_result(result_json)
+                message_ids.extend(ids)
                 if not ok:
                     failures.append(f"段类型 {seg_type} 发送失败: {error}")
                     continue
-                message_ids.extend(ids)
             if failures:
                 return SendResponse(
                     success=False,
@@ -325,6 +325,9 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
         """按段类型调用 send_* 方法（文本带 reply_to/parse_mode，媒体带 caption）。"""
         seg_type = seg.type.value
         kwargs: Dict[str, Any] = {"channel_type": request.channel.channel_type.value}
+        session_id = request.extra.get("session_id")
+        if session_id:
+            kwargs["session_id"] = session_id
         if seg_type == "text":
             args: Tuple[Any, ...] = (seg.content,)
             if request.reply_to:
@@ -351,14 +354,14 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
             return False, [], "返回格式异常"
         if not isinstance(result, dict):
             return False, [], "返回格式异常"
-        if not result.get("success"):
-            return False, [], str(result.get("error") or "未知错误")
         ids: List[str] = []
         for mid in result.get("message_ids") or []:
             ids.append(str(mid))
         single = result.get("message_id")
         if single:
             ids.append(str(single))
+        if not result.get("success"):
+            return False, ids, str(result.get("error") or "未知错误")
         return True, ids, ""
 
     # ------------------------------------------------------------------

@@ -25,7 +25,7 @@ export default defineUiContributions([
 - `workspace.tools`：工作区工具栏的「工具」入口，适合低频操作，不挤占文件与对话空间。
 - `dashboard.cards`：总览卡片区域，适合模块状态与摘要。
 - `dashboard.actions`：总览页头「服务与维护」入口，重启、部署等低频操作在独立弹窗中呈现。
-- `app.routes`：模块整页；声明 `path`（绝对路径）、`group`（导航分组）和可选 `icon`。频道与实体共用这一入口，核心路由及参数化路径不能被覆盖。
+- `app.routes`：模块整页；声明 `path`（绝对路径）、`group`（导航分组）和可选 `icon`。频道与实体共用这一入口，核心路由及参数化路径不能被覆盖。该槽位会同时进入主侧栏与命令面板；频道自身的登录、配置或管理面板应使用 `ChannelPlugin.panel`，不得再注册独立整页。
 - `data.tabs`：数据页签；声明 `tab`，组件通过 `?tab=<tab>` 直接访问。
 - `system.restart`：需要重启的界面只挂载该控件，重启 API、确认和进度由提供模块持有。
 - `audio.overview.cards` / `audio.identify.after`：音频总览与识别页的扩展区域。
