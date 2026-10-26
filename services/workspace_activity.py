@@ -439,8 +439,11 @@ class WorkspaceActivityService:
         self._changed(run)
 
     async def _file(self, payload: dict[str, Any]) -> None:
+        raw_diff = sanitize_text(str(payload.get("diff", "")))
         entry = {"kind": "file", "path": relative_workspace_path(str(payload.get("path", ""))),
-                 "diff": sanitize_text(str(payload.get("diff", "")))[:MAX_TEXT],
+                 "diff": raw_diff[:MAX_TEXT],
+                 "operation": payload.get("operation", "renamed" if payload.get("move_from") else "modified"),
+                 "truncated": bool(payload.get("truncated")) or len(raw_diff) > MAX_TEXT,
                  "move_from": relative_workspace_path(str(payload.get("move_from") or "")),
                  "binary": bool(payload.get("binary")),
                  "additions": payload.get("additions", 0), "removals": payload.get("removals", 0)}

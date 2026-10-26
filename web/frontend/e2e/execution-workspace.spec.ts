@@ -521,3 +521,64 @@ test("streams through a busy workspace without remounting completed tool results
   expect(await stableTool?.evaluate((element) => element.isConnected)).toBe(true);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });
+
+
+test("round changes collect child edits, stay lazy, and update without mixing other sessions", async ({ page }, info) => {
+  await installEventStream(page);
+  const root = activity("file-parent", { truncated: true, entries: [
+    { id: "f1", ts: 1, kind: "file", path: "src/note.txt", operation: "modified", additions: 1, removals: 1,
+      diff: "--- a/note.txt\n+++ b/note.txt\n@@ -1 +1 @@\n--- old\n\\ No newline at end of file\n+++ new\n\\ No newline at end of file\n" },
+  ] });
+  const child = activity("file-child", { kind: "delegation", parent_id: root.id, actor: "File reviewer", status: "completed", ended_at: Date.now() / 1000, entries: [
+    { id: "f2", ts: 2, kind: "file", path: "old.txt", operation: "created", additions: 1, removals: 0, diff: "@@ -0,0 +1 @@\n+child content\n" },
+    { id: "f3", ts: 3, kind: "file", path: "renamed.txt", move_from: "old.txt", operation: "renamed", additions: 0, removals: 0, diff: "" },
+    { id: "f4", ts: 4, kind: "file", path: "data.bin", operation: "deleted", binary: true, additions: 0, removals: 0, diff: "" },
+  ] });
+  const other = activity("other-session", { started_at: root.started_at - 1, source: { ...root.source, target: "other" }, entries: [] });
+  let records = [other, root, child];
+  await page.route(/\/api\/workspace\/activity(?:\?.*)?$/, (route) => route.fulfill({ json: { epoch: "changes", revision: 10, runs: records } }));
+  await page.goto("/webui/");
+  const trigger = page.getByRole("button", { name: "Round changes", exact: true });
+  await expect(trigger).toContainText("3");
+  await expect(page.locator(".activity-changes")).toHaveCount(0);
+  await trigger.click();
+  const panel = page.getByRole("dialog", { name: "Round changes", exact: true });
+  await expect(panel.locator(".activity-change-toggle")).toHaveCount(3);
+  await expect(panel.locator("table")).toHaveCount(0);
+  await expect(panel).toContainText("may be incomplete");
+  await expect(panel).toContainText("Undo is unavailable");
+  await panel.getByRole("button", { name: /src\/note.txt/ }).click();
+  await expect(panel.locator("table")).toContainText("-- old");
+  await expect(panel.locator("table")).toContainText("++ new");
+  await panel.getByRole("button", { name: /renamed.txt/ }).click();
+  await expect(panel).toContainText("File reviewer");
+  await expect(panel).toContainText("old.txt");
+  await expect(panel.locator("table")).toHaveCount(0);
+  await panel.locator('button[title="old.txt"]').click();
+  await expect(panel.locator("table")).toContainText("child content");
+  await panel.getByRole("textbox", { name: "Filter by file path" }).fill("DATA");
+  await expect(panel.locator(".activity-change-toggle")).toHaveCount(1);
+  await expect(panel.locator("table")).toHaveCount(0);
+  await panel.getByRole("button", { name: /data.bin/ }).click();
+  await expect(panel).toContainText("Binary file changed");
+  await panel.getByRole("textbox", { name: "Filter by file path" }).fill("");
+  await panel.getByRole("button", { name: /src\/note.txt/ }).click();
+  expect(await panel.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: info.outputPath("round-changes.png"), animations: "disabled" });
+  await page.keyboard.press("Escape");
+  await expect(trigger).toBeFocused();
+  await expect(page.locator(".activity-changes")).toHaveCount(0);
+  const updated = { ...root, revision: 2, entries: [...root.entries,
+    { id: "f5", ts: 5, kind: "file" as const, path: "live.txt", diff: "+live", additions: 1, removals: 0 },
+  ] };
+  records = [other, updated, child];
+  await page.evaluate((run) => window.dispatchEvent(new CustomEvent("test-activity", { detail: { event: "activity", data: { epoch: "changes", run } } })), updated);
+  await expect(trigger).toContainText("4");
+  await page.getByRole("button", { name: /qq · other/ }).click();
+  await trigger.click();
+  await expect(panel).toContainText("No file changes recorded");
+  await page.keyboard.press("Escape");
+  await page.reload();
+  await expect(trigger).toBeVisible();
+});

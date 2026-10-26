@@ -6,6 +6,7 @@
  * - hunk 之间用 `⋮` 省略行分隔（而非 `@@` 头直出）；
  * - `+/-` 符号列与内容列定宽对齐，内容换行时续行保持 gutter 缩进。
  */
+import { useTranslation } from "react-i18next";
 import { useState } from "react";
 import { FileDiff, ChevronDown, ChevronRight, ArrowRight, FileWarning } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -24,11 +25,14 @@ function FileHeader({ meta, additions, removals, open, onToggle }: {
   open: boolean;
   onToggle: () => void;
 }) {
+  const { t } = useTranslation("workbench");
   const isRename = Boolean(meta.move_from);
   const fromName = isRename ? (meta.move_from!.split("/").pop() ?? meta.move_from!) : null;
   const toName = meta.path.split("/").pop() ?? meta.path;
   return (
     <button
+      aria-expanded={open}
+      title={meta.move_from ? `${meta.move_from} → ${meta.path}` : meta.path}
       onClick={onToggle}
       className="flex items-center gap-2 w-full px-2.5 py-1.5 text-left hover:bg-elevated transition-colors"
     >
@@ -45,14 +49,14 @@ function FileHeader({ meta, additions, removals, open, onToggle }: {
       ) : (
         <span className="font-mono text-foreground/80 truncate">{toName}</span>
       )}
-      {!isRename && !meta.binary && (
+      {!meta.binary && (
         <>
           <span className="shrink-0 text-green-600">+{additions}</span>
           <span className="shrink-0 text-red-500">-{removals}</span>
         </>
       )}
       {meta.binary && (
-        <span className="shrink-0 text-amber-600 dark:text-amber-400 text-[11px]">binary</span>
+        <span className="shrink-0 text-amber-600 dark:text-amber-400 text-[11px]">{t("activity.changes.binaryLabel")}</span>
       )}
     </button>
   );
@@ -73,7 +77,7 @@ function parseUnifiedDiff(diff: string): DiffLine[] {
   const raws = diff.split("\n");
   for (let i = 0; i < raws.length; i++) {
     const raw = raws[i]!;
-    if (raw.startsWith("---") || raw.startsWith("+++")) continue;
+    if (!lines.length && (raw.startsWith("--- ") || raw.startsWith("+++ "))) continue;
     // "\ No newline at end of file" 是前一行 +/- 的附属标记，不是内容行：
     // 计入 context 会虚增新旧行号（其后全部行号偏移）
     if (raw.startsWith("\\")) continue;
@@ -156,6 +160,8 @@ export function DiffView({
   removals,
   move_from,
   binary,
+  truncated,
+  defaultOpen = true,
 }: {
   path: string;
   diff: string;
@@ -163,9 +169,12 @@ export function DiffView({
   removals: number;
   move_from?: string;
   binary?: boolean;
+  truncated?: boolean;
+  defaultOpen?: boolean;
 }) {
-  const [open, setOpen] = useState(true);
-  const lines = parseUnifiedDiff(diff);
+  const { t } = useTranslation("workbench");
+  const [open, setOpen] = useState(defaultOpen);
+  const lines = open && !binary ? parseUnifiedDiff(diff) : [];
 
   return (
     <div className="rounded border border-border/60 bg-elevated text-xs overflow-hidden">
@@ -178,10 +187,11 @@ export function DiffView({
       />
       {open && binary && (
         <div className="border-t border-border/40 px-3 py-2 text-muted text-[11px]">
-          {/* 二进制改动：无 unified diff，占位说明（Codex 此处反而没做） */}
-          二进制文件已改动（无法按行展示差异）
+          {t("activity.changes.binary")}
         </div>
       )}
+      {open && truncated && <p className="border-t border-border/40 px-3 py-2 text-muted">{t("activity.changes.truncated")}</p>}
+      {open && !binary && !diff && !truncated && <p className="border-t border-border/40 px-3 py-2 text-muted">{t("activity.changes.noTextChanges")}</p>}
       {open && !binary && lines.length > 0 && (
         <div className="border-t border-border/40 overflow-x-auto max-h-64 overflow-y-auto">
           <table className="w-full font-mono border-collapse">

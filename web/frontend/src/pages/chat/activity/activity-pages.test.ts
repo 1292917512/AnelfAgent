@@ -2,6 +2,7 @@ import { expect, it } from "vitest";
 import type { ActivityRun } from "@/lib/types/activity";
 import { activityFamilies, activityPages } from "./activity-pages";
 import { activitySummary } from "./activity-summary";
+import { activityFileChanges } from "./activity-changes";
 import { activitySideGroups } from "./activity-side";
 
 function run(id: string, start: number, end: number | null, parent_id = ""): ActivityRun {
@@ -94,4 +95,21 @@ it("summarizes only the selected family, merging continuations and retaining que
   expect([summary.steps, summary.done]).toEqual([2, 1]);
   expect(activitySummary(other, [other]).delegates).toEqual([]);
   expect(activitySummary(other, [other]).plans).toEqual([]);
+});
+
+it("groups file edits across child runs and carries history along renames without copying entries", () => {
+  const parent = run("parent", 1, 5);
+  parent.entries = [
+    { id: "a", ts: 1, kind: "file", path: "a.ts", diff: "+a", additions: 1, removals: 0 },
+    { id: "c", ts: 4, kind: "file", path: "b.ts", move_from: "a.ts", diff: "", additions: 0, removals: 0 },
+  ];
+  const child = run("child", 2, 3, "parent");
+  child.entries = [{ id: "b", ts: 2, kind: "file", path: "a.ts", diff: "+b", additions: 2, removals: 1 }];
+  const files = activityFileChanges([parent, child]);
+  expect(files).toHaveLength(1);
+  expect(files[0]).toMatchObject({ path: "b.ts", additions: 3, removals: 1 });
+  expect(files[0]?.edits.map(({ entry }) => entry.id)).toEqual(["a", "b", "c"]);
+  expect(files[0]?.edits[1]?.entry).toBe(child.entries[0]);
+  expect(activityFileChanges([child])[0]?.path).toBe("a.ts");
+  expect(parent.entries[0]).toMatchObject({ path: "a.ts" });
 });

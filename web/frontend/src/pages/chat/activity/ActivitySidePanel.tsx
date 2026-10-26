@@ -1,7 +1,7 @@
 import { PopoverContent } from "@/components/ui/PopoverContent";
 import { useContext, useMemo, useState } from "react";
 import * as Popover from "@radix-ui/react-popover";
-import { ArrowUpRight, Bot, Brain, Gauge, ListTodo, Webhook, X } from "lucide-react";
+import { ArrowUpRight, Bot, Brain, FileDiff, Gauge, ListTodo, Webhook, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { ActivityRun } from "@/lib/types/activity";
 import { formatElapsedCompact } from "@/lib/format";
@@ -10,10 +10,12 @@ import { ActivityInspection } from "@/components/common/ActivityInspection";
 import { HookJudgmentRow } from "@/components/common/HookJudgmentRow";
 import { ActivityEntryView } from "./ActivityEntryView";
 import { ActivitySourceLabel } from "./ActivityReferences";
+import { ActivityChanges } from "./ActivityChanges";
+import { activityFileChanges } from "./activity-changes";
 import { activitySideGroups, type ActivitySideView } from "./activity-side";
 
 const sections = [
-  { id: "records", views: [{ id: "recollection", icon: Brain }, { id: "judgments", icon: Gauge }] },
+  { id: "records", views: [{ id: "recollection", icon: Brain }, { id: "judgments", icon: Gauge }, { id: "changes", icon: FileDiff }] },
   { id: "running", views: [{ id: "tasks", icon: ListTodo }, { id: "delegates", icon: Bot }, { id: "background", icon: Webhook }] },
 ] as const;
 
@@ -32,28 +34,30 @@ function RunningExecution({ run }: { run: ActivityRun }) {
 }
 
 /** 同一活动快照的侧边详情；关闭时不渲染内容，不增加请求或订阅。 */
-export function ActivitySidePanel({ runs, work }: { runs: ActivityRun[]; work: ActivityRun[] }) {
+export function ActivitySidePanel({ runs, work, changesRuns }: { runs: ActivityRun[]; work: ActivityRun[]; changesRuns: ActivityRun[] }) {
   const { t } = useTranslation("workbench");
-  const [selected, setSelected] = useState<ActivitySideView | null>(null);
+  const [selected, setSelected] = useState<ActivitySideView | "changes" | null>(null);
   const inspect = useContext(ActivityInspection);
   const groups = useMemo(() => activitySideGroups(runs, work), [runs, work]);
+  const files = useMemo(() => activityFileChanges(changesRuns), [changesRuns]);
   return <aside className="activity-side-rail" aria-label={t("activity.side.title")}>
     {sections.map((section) => <div key={section.id} className="activity-side-section" role="group" aria-label={t(`activity.side.${section.id}`)}>
     {section.views.map(({ id, icon: Icon }) => {
-      const items = groups[id];
+      const items = id === "changes" ? [] : groups[id];
       const entries = items.flatMap((group) => group.entries);
-      const count = id === "judgments" ? entries.reduce((total, entry) => total + (entry.kind === "hook" ? entry.judgments?.length ?? 0 : 0), 0)
+      const count = id === "changes" ? files.length : id === "judgments" ? entries.reduce((total, entry) => total + (entry.kind === "hook" ? entry.judgments?.length ?? 0 : 0), 0)
         : items.reduce((total, group) => total + Math.max(1, group.entries.length), 0);
       const running = section.id === "running" ? count > 0 : entries.some((entry) => id === "judgments" && entry.kind === "hook"
         ? entry.judgments?.some((judgment) => judgment.status === "running") : "status" in entry && entry.status === "running");
-      const label = id === "recollection" ? t("activity.recollectionTitle") : t(`activity.side.${id}`);
+      const label = id === "changes" ? t("activity.changes.title") : id === "recollection" ? t("activity.recollectionTitle") : t(`activity.side.${id}`);
       return <Popover.Root key={id} open={selected === id} onOpenChange={(open) => setSelected(open ? id : null)}>
         <Popover.Trigger asChild><button type="button" className="activity-side-trigger" aria-label={label} title={label} data-running={running}>
           <Icon size={16} /><span className="activity-side-label">{label}</span><span className="activity-side-count">{count || ""}</span>
         </button></Popover.Trigger>
-        <PopoverContent side="left" align="start" sideOffset={8} collisionPadding={12} className="activity-side-window" aria-label={label}>
+        <PopoverContent side="left" align="start" sideOffset={8} collisionPadding={12} className={`activity-side-window${id === "changes" ? " activity-changes-window" : ""}`} aria-label={label}>
           <header><h3>{label}</h3><Popover.Close asChild><button type="button" aria-label={t("activity.side.close")}><X size={16} /></button></Popover.Close></header>
           <div className="activity-side-body">
+            {id === "changes" ? <ActivityChanges files={files} incomplete={changesRuns.some((run) => run.truncated)} /> : <>
             {id === "recollection" && <p className="activity-note">{t("activity.recollectionHint")}</p>}
             {section.id === "running" && count > 0 && <p className="activity-note">{t("activity.side.runningHint")}</p>}
             {!items.length && <p className="activity-note">{t(section.id === "running" ? "activity.side.noRunning" : "activity.side.empty")}</p>}
@@ -64,6 +68,7 @@ export function ActivitySidePanel({ runs, work }: { runs: ActivityRun[]; work: A
                 ? <div key={entry.id} className="space-y-2">{entry.judgments?.map((judgment) => <HookJudgmentRow key={judgment.id} judgment={judgment} />)}</div>
                 : <ActivityEntryView key={entry.id} entry={entry} current={false} live={run.status === "running"} onReveal={(runId) => inspect?.([runId])} />)}
             </section>)}
+            </>}
           </div>
         </PopoverContent>
       </Popover.Root>;

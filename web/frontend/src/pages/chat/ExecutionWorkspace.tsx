@@ -111,7 +111,7 @@ function ActivityFeed({ epoch, runs, clearing, onClear }: { epoch: string; runs:
     </nav>}
     <div className="activity-workspace-body relative min-h-0 flex-1">
       {currentPage && <ActivityStageRail segments={segments} scroll={scroll} onNavigate={pauseFollowing} />}
-      <ActivitySidePanel key={`${page?.id}:${family}`} runs={visibleRuns} work={selectedFamily?.runs ?? runs} />
+      <ActivitySidePanel key={`${page?.id}:${family}`} runs={visibleRuns} work={selectedFamily?.runs ?? runs} changesRuns={selectedFamily?.runs ?? page?.runs ?? []} />
       <div ref={scroll} className="activity-feed h-full overflow-y-auto overscroll-contain" data-following={following} tabIndex={0} aria-label={t("activity.timeline")}
         {...handlers}
         onWheel={(event) => { handlers.onWheel(event); if (event.target instanceof Node && event.currentTarget.contains(event.target) && event.deltaY < -25 && (scroll.current?.scrollTop ?? 1) <= 0 && !nestedContent(event.target)) older(); }}

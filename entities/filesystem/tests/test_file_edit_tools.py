@@ -531,3 +531,90 @@ class TestLongPrompts:
         assert "零匹配" in schemas["search_files"]  # 多行描述须完整进入模型 schema
         assert "truncated" in schemas["list_directory"]
         assert "edit_file" in schemas["write_file"]  # 优先用 edit 的引导
+
+
+async def test_file_changes_cover_mutations_and_keep_thread_turn_identity(workspace, monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+
+    from core.activity import current_activity_id
+    from entities.filesystem import change_events
+
+    frames = []
+    arrived = asyncio.Event()
+
+    async def collect(event, payload):
+        frames.append(payload)
+        arrived.set()
+
+    monkeypatch.setattr(change_events.event_bus, "emit", collect)
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(change_events, "get_background_registry", lambda: SimpleNamespace(_loop=loop))
+    token = current_activity_id.set("file-turn")
+    try:
+        first, second, third = [workspace / name for name in ("a.txt", "b.txt", "c.txt")]
+        assert json.loads(tools.write_file(str(first), "first"))["ok"]
+        assert _edit(first, "first", "second")["ok"]
+        assert json.loads(tools.append_file(str(first), "\nthird"))["ok"]
+        assert json.loads(tools.copy_file(str(first), str(second)))["ok"]
+        assert json.loads(tools.move_file(str(second), str(third)))["ok"]
+        await asyncio.to_thread(tools.delete_file, str(third))
+        while len(frames) < 6:
+            arrived.clear()
+            await asyncio.wait_for(arrived.wait(), timeout=2)
+        assert [frame["operation"] for frame in frames] == ["created", "modified", "modified", "created", "renamed", "deleted"]
+        assert all(frame["turn_id"] == "file-turn" for frame in frames)
+        assert frames[1]["diff"].count("No newline at end of file") == 2
+        assert (frames[-1]["additions"], frames[-1]["removals"]) == (0, 2)
+        assert frames[-2]["move_from"] == str(second)
+        assert _edit(first, "missing", "ignored").get("error")
+        assert json.loads(tools.write_file(str(first), "second\nthird"))["ok"]
+        await asyncio.sleep(0)
+        assert len(frames) == 6
+    finally:
+        current_activity_id.reset(token)
+
+
+async def test_file_change_capture_bounds_large_and_binary_files(workspace, monkeypatch):
+    import asyncio
+
+    from entities.filesystem import change_events
+
+    frames = []
+
+    async def collect(event, payload):
+        frames.append(payload)
+
+    monkeypatch.setattr(change_events.event_bus, "emit", collect)
+    large = workspace / "large.txt"
+    binary = workspace / "data.bin"
+    large.write_bytes(b"x" * (change_events.MAX_CAPTURE_BYTES + 1))
+    binary.write_bytes(b"bin\x00data")
+    assert json.loads(tools.delete_file(str(large)))["ok"]
+    assert json.loads(tools.delete_file(str(binary)))["ok"]
+    await asyncio.sleep(0)
+    assert frames[0]["truncated"] is True
+    assert frames[1]["binary"] is True
+    assert all(frame["diff"] == "" and frame["operation"] == "deleted" for frame in frames)
+
+
+async def test_copy_change_points_to_actual_file_when_destination_is_directory(workspace, monkeypatch):
+    import asyncio
+
+    from entities.filesystem import change_events
+
+    frames = []
+
+    async def collect(event, payload):
+        frames.append(payload)
+
+    monkeypatch.setattr(change_events.event_bus, "emit", collect)
+    source = workspace / "source.txt"
+    source.write_text("text\n", encoding="utf-8")
+    destination = workspace / "folder"
+    destination.mkdir()
+    assert json.loads(tools.copy_file(str(source), str(destination)))["ok"]
+    await asyncio.sleep(0)
+    assert frames[0]["path"] == str(destination / source.name)
+    assert frames[0]["operation"] == "created"
+    assert "+text" in frames[0]["diff"]

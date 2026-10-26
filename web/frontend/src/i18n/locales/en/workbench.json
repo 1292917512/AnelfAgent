@@ -212,6 +212,24 @@
   "clearView": "Clear displayed messages",
   "chatFocus": "Conversation reading mode",
   "activity": {
+    "changes": {
+      "binaryLabel": "Binary",
+      "title": "Round changes",
+      "files": "{{count}} files",
+      "hint": "File operations recorded for the selected activity, including sub-agents. Counts sum recorded edits, not the net diff against Git. Shell and external edits are not tracked.",
+      "search": "Filter by file path",
+      "noMatch": "No matching files.",
+      "empty": "No file changes recorded for this activity.",
+      "incomplete": "Some activity records were omitted. This list may be incomplete.",
+      "noUndo": "Undo is unavailable: these display records do not retain original file snapshots.",
+      "created": "Created",
+      "modified": "Modified",
+      "deleted": "Deleted",
+      "renamed": "Renamed",
+      "binary": "Binary file changed; a line diff is unavailable.",
+      "truncated": "Large or unreadable content is omitted; the diff may be incomplete.",
+      "noTextChanges": "No line changes (rename, empty file or identical content)."
+    },
     "control": {
       "stop": "Stop execution",
       "resume": "Continue execution",

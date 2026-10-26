@@ -49,6 +49,7 @@ from entities._sdk import (
     tool_error,
 )
 from entities.filesystem import edit_utils, file_state, notes_guard
+from entities.filesystem.change_events import FileSnapshot, capture_file, emit_file_change
 from entities.filesystem.ops_context import track_fs_op
 from entities.filesystem.path_feedback import path_error, shell_path_hint
 
@@ -402,7 +403,9 @@ def write_file(file_path: str, content: str) -> str:
             _, encoding, eol = _read_text_with_metadata(fp)
         else:
             encoding, eol = "utf-8", "LF"
+        before = capture_file(fp)
         _write_text_with_metadata(fp, content, encoding, eol)
+        emit_file_change(fp, before, capture_file(fp))
         file_state.record_write(fp, content.replace("\r\n", "\n"), os.path.getmtime(fp))
         return json.dumps({"ok": True, "path": fp, "size": len(content),
                            "location": _location_of(fp)}, ensure_ascii=False)
@@ -459,6 +462,7 @@ def edit_file(file_path: str, old_string: str, new_string: str, replace_all: boo
                 return guard
             try:
                 _write_text_with_metadata(fp, new_string, "utf-8", "LF")
+                emit_file_change(fp, FileSnapshot(exists=False), capture_file(fp))
                 file_state.record_write(fp, new_string, os.path.getmtime(fp))
                 return json.dumps({"ok": True, "path": fp,
                                    "message": f"文件创建成功: {fp}",
@@ -508,6 +512,7 @@ def edit_file(file_path: str, old_string: str, new_string: str, replace_all: boo
     if updated == content:
         return _err("替换未产生任何变化，应用编辑失败。", 13)
 
+    before = capture_file(fp)
     try:
         _write_text_with_metadata(fp, updated, encoding, eol)
     except Exception as e:
@@ -515,7 +520,7 @@ def edit_file(file_path: str, old_string: str, new_string: str, replace_all: boo
 
     file_state.record_write(fp, updated, os.path.getmtime(fp))
     additions, removals = edit_utils.diff_stats(content, updated)
-    _emit_file_diff(fp, content, updated, additions, removals)
+    emit_file_change(fp, before, capture_file(fp))
     replaced = occurrences if replace_all else 1
     result: Dict[str, Any] = {"ok": True, "path": fp,
                               "message": f"文件已更新（+{additions} -{removals} 行）。",
@@ -524,71 +529,6 @@ def edit_file(file_path: str, old_string: str, new_string: str, replace_all: boo
         result["replaced"] = replaced
         result["message"] = f"已替换全部 {replaced} 处（+{additions} -{removals} 行）。"
     return json.dumps(result, ensure_ascii=False)
-
-
-def _emit_file_diff(fp: str, old_content: str, new_content: str,
-                    additions: int, removals: int) -> None:
-    """编辑成功后发出 diff 展示事件（过程性，不进模型上下文；webui 通道订阅）。"""
-    try:
-        import asyncio
-
-        from core.event_bus import event_bus
-        from core.stream_events import EVENT_FILE_DIFF
-        from entities._sdk import get_current_scope
-        diff = edit_utils.unified_diff(os.path.basename(fp), old_content, new_content)
-        from entities.filesystem.scan import looks_binary
-        payload = {
-            "scope": get_current_scope(),
-            "path": fp,
-            "diff": diff,
-            "additions": additions,
-            "removals": removals,
-            "binary": looks_binary(fp),
-        }
-        try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(event_bus.emit(EVENT_FILE_DIFF, payload))
-        except RuntimeError:
-            # 同步工具在 to_thread 工作线程中执行：经后台注册表绑定的主循环桥回
-            from entities._sdk import get_background_registry
-            registry = get_background_registry()
-            registry_loop = getattr(registry, "_loop", None) if registry else None
-            if registry_loop and registry_loop.is_running():
-                registry_loop.call_soon_threadsafe(
-                    lambda: asyncio.ensure_future(event_bus.emit(EVENT_FILE_DIFF, payload)))
-    except Exception:
-        pass  # 展示事件失败不影响编辑主流程
-
-
-def _emit_rename_diff(src: str, dst: str) -> None:
-    """rename 的 diff 事件（A → B 语义，无增删行；前端按 rename 形态渲染）。"""
-    try:
-        import asyncio
-
-        from core.event_bus import event_bus
-        from core.stream_events import EVENT_FILE_DIFF
-        from entities._sdk import get_current_scope
-        payload = {
-            "scope": get_current_scope(),
-            "path": dst,
-            "move_from": src,
-            "diff": "",
-            "additions": 0,
-            "removals": 0,
-            "binary": False,
-        }
-        try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(event_bus.emit(EVENT_FILE_DIFF, payload))
-        except RuntimeError:
-            from entities._sdk import get_background_registry
-            registry = get_background_registry()
-            registry_loop = getattr(registry, "_loop", None) if registry else None
-            if registry_loop and registry_loop.is_running():
-                registry_loop.call_soon_threadsafe(
-                    lambda: asyncio.ensure_future(event_bus.emit(EVENT_FILE_DIFF, payload)))
-    except Exception:
-        pass
 
 
 def _shell_write_check_enabled() -> bool:
@@ -627,6 +567,7 @@ def append_file(path: str, content: str) -> str:
     """
     try:
         fp = safe_path(path)
+        before = capture_file(fp)
         # 追加同样会改写文件：与 write_file/edit_file 一致接入严格 read-before-write 门
         # （不自动建基线——未读取过的已有文件须先 read_file，防止盲追加重复/错位内容；
         # 已读取后外部修改仍被 check_writable 的 mtime+内容比对捕获）
@@ -642,6 +583,7 @@ def append_file(path: str, content: str) -> str:
             if guard:
                 return guard
             _write_text_with_metadata(fp, content, "utf-8", "LF")
+        emit_file_change(fp, before, capture_file(fp))
         # 若缓存中有该文件的读取记录，追加后同步刷新，避免后续编辑被误判为过期
         if file_state.get_cache().get(fp) is not None:
             new_content, _, _ = _read_text_with_metadata(fp)
@@ -763,7 +705,10 @@ def copy_file(src: str, dst: str) -> str:
             return tool_error(f"源文件不存在: {src}", cause=ErrorCause.NOT_FOUND,
                               retryable=False)
         os.makedirs(os.path.dirname(dst_fp) or ".", exist_ok=True)
-        shutil.copy2(src_fp, dst_fp)
+        target = os.path.join(dst_fp, os.path.basename(src_fp)) if os.path.isdir(dst_fp) else dst_fp
+        before = capture_file(target)
+        copied_path = shutil.copy2(src_fp, dst_fp)
+        emit_file_change(copied_path, before, capture_file(copied_path))
         return json.dumps({"ok": True, "src": src_fp, "dst": dst_fp,
                            "location": _location_of(dst_fp)}, ensure_ascii=False)
     except Exception as e:
@@ -787,9 +732,9 @@ def move_file(src: str, dst: str) -> str:
             return tool_error(f"源路径不存在: {src}", cause=ErrorCause.NOT_FOUND,
                               retryable=False)
         os.makedirs(os.path.dirname(dst_fp) or ".", exist_ok=True)
-        shutil.move(src_fp, dst_fp)
-        # rename 也以 diff 事件呈现（A → B 形态，无增删行），改动集面板可回看
-        _emit_rename_diff(src_fp, dst_fp)
+        before = capture_file(src_fp)
+        moved_path = shutil.move(src_fp, dst_fp)
+        emit_file_change(moved_path, before, capture_file(moved_path), move_from=src_fp)
         return json.dumps({"ok": True, "src": src_fp, "dst": dst_fp,
                            "location": _location_of(dst_fp)}, ensure_ascii=False)
     except Exception as e:
@@ -809,7 +754,9 @@ def delete_file(path: str) -> str:
         if not os.path.isfile(fp):
             return tool_error(f"文件不存在或不是文件: {path}",
                               cause=ErrorCause.NOT_FOUND, retryable=False)
+        before = capture_file(fp)
         os.remove(fp)
+        emit_file_change(fp, before, FileSnapshot(exists=False))
         return json.dumps({"ok": True, "deleted": fp,
                            "location": _location_of(fp)}, ensure_ascii=False)
     except Exception as e:

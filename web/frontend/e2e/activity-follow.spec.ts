@@ -154,9 +154,9 @@ test("side rail separates records from running work and removes completed items 
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto("/webui/");
   const rail = page.getByRole("complementary", { name: "Execution details" });
-  await expect(rail.getByRole("button")).toHaveCount(5);
+  await expect(rail.getByRole("button")).toHaveCount(6);
   expect(await rail.getByRole("button").evaluateAll((buttons) => buttons.map((button) => button.getAttribute("aria-label"))))
-    .toEqual(["Recollection", "Decisions", "Running tasks", "Running subagents", "Background tasks"]);
+    .toEqual(["Recollection", "Decisions", "Round changes", "Running tasks", "Running subagents", "Background tasks"]);
   const background = rail.getByRole("button", { name: "Background tasks", exact: true });
   await expect(background.locator(".activity-side-count")).toHaveText("1");
   expect(await background.evaluate((element) => element.getBoundingClientRect().right <= element.closest("aside")!.getBoundingClientRect().right)).toBe(true);

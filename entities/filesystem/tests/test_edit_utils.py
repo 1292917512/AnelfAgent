@@ -124,3 +124,8 @@ class TestDiff:
     def test_unified_diff_contains_paths(self):
         diff = edit_utils.unified_diff("f.txt", "a\n", "b\n")
         assert "a/f.txt" in diff and "b/f.txt" in diff
+
+    def test_unterminated_lines_and_header_like_content_remain_distinct(self):
+        diff = edit_utils.unified_diff("f.txt", "-- old", "++ new")
+        assert "\n--- old\n\\ No newline at end of file\n+++ new\n" in diff
+        assert edit_utils.diff_stats("-- old", "++ new") == (1, 1)

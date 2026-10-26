@@ -80,6 +80,8 @@ export interface ChatStreamingDiff {
   diff: string;
   additions: number;
   removals: number;
+  operation?: "created" | "modified" | "deleted" | "renamed";
+  truncated?: boolean;
   /** rename/move 的源路径（A → B 形态；普通编辑缺省） */
   move_from?: string;
   /** 二进制文件改动（无 unified diff，显示占位卡） */
@@ -215,15 +217,10 @@ export interface SseMediaEvent extends SseEventBase {
 
 export interface SseExtensionEvent extends SseEventBase { extension: ChatExtension }
 
-export interface SseFileDiffEvent extends SseEventBase {
+export interface SseFileDiffEvent extends SseEventBase, ChatStreamingDiff {
   turn_id?: string;
-  path: string;
-  diff: string;
-  additions: number;
-  removals: number;
-  move_from?: string;
-  binary?: boolean;
 }
+
 
 export type SseContextUsageEvent = ContextUsage & SseEventBase;
 

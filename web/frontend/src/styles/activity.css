@@ -287,3 +287,22 @@
   .activity-hover-card[data-state="open"] { animation: none; }
   .activity-run-outcome, .activity-run-status .animate-spin { animation: none; }
 }
+
+.activity-changes-window { width: min(600px, calc(100vw - 28px), var(--radix-popover-content-available-width)); }
+.activity-changes > * + * { margin-top: 12px; }
+.activity-changes-summary { display: flex; align-items: center; gap: 10px; font-size: 13px; font-variant-numeric: tabular-nums; }
+.activity-changes-summary strong { font-weight: 600; }
+.activity-changes-search { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 9px; color: var(--muted); }
+.activity-changes-search:focus-within { border-color: var(--accent); }
+.activity-changes-search input { width: 100%; min-width: 0; background: transparent; color: var(--text); font-size: 12px; outline: none; }
+.activity-change-file { border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+.activity-change-toggle { display: flex; align-items: center; gap: 8px; width: 100%; padding: 11px 10px; text-align: left; font-size: 12px; font-variant-numeric: tabular-nums; transition: background var(--duration-fast) var(--ease-out); }
+.activity-change-toggle:hover { background: var(--bg-hover); }
+.activity-change-toggle > svg, .activity-change-toggle > span:not(:first-of-type) { flex-shrink: 0; }
+.activity-change-toggle > svg { transition: transform var(--duration-fast) var(--ease-out); }
+.activity-change-edits { padding: 0 10px 10px; }
+.activity-change-edits > * + * { margin-top: 12px; }
+.activity-change-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 8px 0; font-size: 10px; color: var(--muted); }
+.activity-change-meta > :last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.activity-changes-footnote { border-top: 1px solid var(--border); padding-top: 12px; }
+@media (prefers-reduced-motion: reduce) { .activity-change-toggle, .activity-change-toggle > svg { transition: none; } }

@@ -192,10 +192,11 @@ def unified_diff(path: str, old_content: str, new_content: str,
     """生成 unified diff（供 UI 展示；不注入模型上下文）。"""
     old_lines = old_content.splitlines(keepends=True)
     new_lines = new_content.splitlines(keepends=True)
-    diff = "".join(difflib.unified_diff(
+    chunks = difflib.unified_diff(
         old_lines, new_lines, fromfile=f"a/{path}", tofile=f"b/{path}",
         n=context_lines,
-    ))
+    )
+    diff = "".join(line if line.endswith("\n") else line + "\n\\ No newline at end of file\n" for line in chunks)
     if len(diff) > max_chars:
         diff = diff[:max_chars] + "\n... (diff 过长已截断)"
     return diff
@@ -206,9 +207,9 @@ def diff_stats(old_content: str, new_content: str) -> Tuple[int, int]:
     old_lines = old_content.splitlines()
     new_lines = new_content.splitlines()
     additions = removals = 0
-    for line in difflib.unified_diff(old_lines, new_lines, n=0):
-        if line.startswith("+") and not line.startswith("+++"):
-            additions += 1
-        elif line.startswith("-") and not line.startswith("---"):
-            removals += 1
+    for kind, i1, i2, j1, j2 in difflib.SequenceMatcher(None, old_lines, new_lines).get_opcodes():
+        if kind in {"insert", "replace"}:
+            additions += j2 - j1
+        if kind in {"delete", "replace"}:
+            removals += i2 - i1
     return additions, removals

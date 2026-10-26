@@ -212,6 +212,24 @@
   "clearView": "清空当前显示的消息",
   "chatFocus": "对话阅读模式",
   "activity": {
+    "changes": {
+      "binaryLabel": "二进制",
+      "title": "本轮改动",
+      "files": "{{count}} 个文件",
+      "hint": "显示当前查看轮次及其子代理的文件操作。增删行数为各次修改累计，并非 Git 净差异；Shell 和外部修改不在记录范围内。",
+      "search": "按文件路径筛选",
+      "noMatch": "没有匹配的文件。",
+      "empty": "此轮尚无文件改动记录。",
+      "incomplete": "部分过程记录已省略，文件列表可能不完整。",
+      "noUndo": "暂不支持撤回：展示记录未保留文件的原始快照。",
+      "created": "新建",
+      "modified": "修改",
+      "deleted": "删除",
+      "renamed": "重命名",
+      "binary": "二进制文件已改动，无法按行展示差异。",
+      "truncated": "大文件、过长或无法读取的内容已省略，差异可能不完整。",
+      "noTextChanges": "无文本行变化（重命名、空文件或内容一致）。"
+    },
     "control": {
       "stop": "终止执行",
       "resume": "继续执行",

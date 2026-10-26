@@ -95,3 +95,11 @@ export interface ActivityControlResult {
   interrupted?: boolean;
   cancelled_delegations?: number;
 }
+
+/** 文件列表仅引用活动记录，不复制正文或创建第二份变更账本。 */
+export interface ActivityFileChange {
+  path: string;
+  edits: { run: ActivityRun; entry: Extract<ActivityEntry, { kind: "file" }> }[];
+  additions: number;
+  removals: number;
+}

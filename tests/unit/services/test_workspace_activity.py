@@ -524,11 +524,13 @@ async def test_file_changes_do_not_depend_on_web_channel(activity, monkeypatch, 
     service, frames = activity
     monkeypatch.setattr("services.filesystem.workspace_root", lambda: str(tmp_path))
     async with activity_scope("file", "group_any_channel:42"):
-        await event_bus.emit("file_diff", {"path": str(tmp_path / "new.txt"), "move_from": str(tmp_path / "old.txt"), "diff": "", "binary": True})
+        await event_bus.emit("file_diff", {"path": str(tmp_path / "new.txt"), "move_from": str(tmp_path / "old.txt"), "diff": "", "binary": True, "operation": "renamed", "truncated": True})
     frame = next(frame for frame in frames if frame["event"] == "file_diff")
     assert frame["path"] == "new.txt"
     assert frame["move_from"] == "old.txt"
     assert frame["binary"] is True
+    assert frame["operation"] == "renamed"
+    assert frame["truncated"] is True
     assert service.snapshot()["runs"][0]["entries"][0]["path"] == "new.txt"
 
 

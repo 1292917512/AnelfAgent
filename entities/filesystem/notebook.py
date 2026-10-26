@@ -12,6 +12,7 @@ from typing import Any, Dict, List
 
 from core.log import log
 from entities._sdk import ErrorCause, error_from_exception, tool, tool_error
+from entities.filesystem.change_events import capture_file, emit_file_change
 from entities.filesystem.ops_context import track_fs_op
 
 
@@ -24,9 +25,11 @@ def _load_notebook(fp: str) -> Dict[str, Any]:
 
 
 def _save_notebook(fp: str, nb: Dict[str, Any]) -> None:
+    before = capture_file(fp)
     with open(fp, "w", encoding="utf-8") as f:
         json.dump(nb, f, ensure_ascii=False, indent=1)
         f.write("\n")
+    emit_file_change(fp, before, capture_file(fp))
 
 
 def summarize_notebook(fp: str) -> str:

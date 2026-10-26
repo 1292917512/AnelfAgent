@@ -53,7 +53,7 @@ export const ActivityEntryView = memo(function ActivityEntryView({ entry, though
   if (entry.kind === "context") return <ActivityContext entry={entry} />;
   if (entry.kind === "phase") return <ActivityPhase entry={entry} />;
   if (entry.kind === "hook") return current ? <ActivityPhase entry={entry} /> : <HookExecutionRow run={{ ...entry, started_at: entry.ts }} />;
-  if (entry.kind === "file") return <DiffView {...entry} />;
+  if (entry.kind === "file") return <DiffView {...entry} defaultOpen={false} />;
   if (entry.kind === "model") return <ActivityModel entry={entry} thoughts={thoughts} />;
   if (entry.kind === "text") return <div className="activity-output">{entry.truncated && <p className="activity-note">{t("activity.truncated")}</p>}<Markdown content={entry.content} renderText={renderTaggedText} live={live} /></div>;
   if (entry.kind === "thinking") {
