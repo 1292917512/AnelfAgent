@@ -4,7 +4,8 @@
 
 **连续记忆 · 跨频道在场 · 主动行动 · 技能生长 · AI 自维护 · 模块热更新**
 
-**[🌐 官方网站 · anelf.cn](https://anelf.cn)**
+[![官方网站 · anelf.cn](https://img.shields.io/badge/%E5%AE%98%E6%96%B9%E7%BD%91%E7%AB%99-anelf.cn-2563EB?style=for-the-badge)](https://anelf.cn)
+[![Gitee · 国内镜像](https://img.shields.io/badge/Gitee-%E5%9B%BD%E5%86%85%E9%95%9C%E5%83%8F-C71D23?style=for-the-badge&logo=gitee&logoColor=white)](https://gitee.com/eflyz/AnelfAgent)
 
 **简体中文** | [English](README_EN.md)
 
@@ -40,8 +41,25 @@ QQ、微信、飞书、Telegram、游戏和 Web 工作区是它的不同入口�
 | [uv](https://github.com/astral-sh/uv) | 管理 Python 环境、依赖与锁文件 |
 | 模型 | 可用的聊天模型；语义检索另配 Embedding 模型，语音和生成能力按需添加 |
 
+#### 1. 获取代码
+
+选择一个代码源克隆仓库，后续安装步骤相同。
+
+**[Gitee · 国内镜像](https://gitee.com/eflyz/AnelfAgent)**
+
+```bash
+git clone https://gitee.com/eflyz/AnelfAgent.git
+```
+
+**[GitHub · 主仓库](https://github.com/1292917512/AnelfAgent)**
+
 ```bash
 git clone https://github.com/1292917512/AnelfAgent.git
+```
+
+#### 2. 安装依赖
+
+```bash
 cd AnelfAgent
 
 cp config/llm_clients.example.json config/llm_clients.json
