@@ -1,4 +1,5 @@
 import { create } from "zustand";
+import { version } from "../../package.json";
 import { readLocal, writeLocal } from "@/lib/storage";
 
 export type Theme = "dark" | "light";
@@ -44,7 +45,7 @@ export const useAppStore = create<AppState>((set) => ({
   sidebarCollapsed: readLocal("anelf:sidebar-collapsed") !== "false",
   mobileMenuOpen: false,
   paletteOpen: false,
-  branding: { title: "AnelfAgent", subtitle: "Personal AI workspace", version: "0.3.0" },
+  branding: { title: "AnelfAgent", subtitle: "Personal AI workspace", version },
   configLoaded: false,
   startedAt: null,
   toggleTheme: () => set((state) => {

@@ -1,4 +1,5 @@
 import { test as base, type Page } from "@playwright/test";
+import packageInfo from "../package.json" with { type: "json" };
 
 export const persona = { name: "Daily assistant", description: "General purpose", personality: ["Patient"] };
 export const task = {
@@ -18,7 +19,7 @@ export async function mockApi(page: Page) {
     const path = new URL(route.request().url()).pathname.replace(/^\/api/, "").replace(/\/$/, "");
     const responses: Record<string, unknown> = {
       "/auth/check": { required: false, authenticated: true },
-      "/config/webui": { branding: { title: "AnelfAgent", version: "0.3.0" } },
+      "/config/webui": { branding: { title: "AnelfAgent", version: packageInfo.version } },
       "/status": { ready: true, status: { status: "running", mind_phase: "idle", uptime: 3600, queue_size: 0 } },
       "/status/thinking": { pending_messages: [], general_tasks: [], pending_analysis_count: 0 },
       "/personas": [{ key: "daily", ...persona }, { key: "research", name: "Research assistant", description: "Research and analysis" }],
