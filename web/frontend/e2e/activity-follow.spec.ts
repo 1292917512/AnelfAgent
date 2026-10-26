@@ -19,10 +19,10 @@ async function liveFixture(page: Page, initial: ActivityRun[]) {
       });
     }
   });
-  return async (value: ActivityRun) => {
+  return async (value: ActivityRun, deliver = true) => {
     const updated = { ...value, revision: snapshot.revision + 1 };
     snapshot = { ...snapshot, revision: updated.revision, runs: [...snapshot.runs.filter((item) => item.id !== value.id), updated] };
-    await page.evaluate((payload) => window.dispatchEvent(new CustomEvent("fixture-activity", { detail: payload })), { epoch: snapshot.epoch, run: updated });
+    if (deliver) await page.evaluate((payload) => window.dispatchEvent(new CustomEvent("fixture-activity", { detail: payload })), { epoch: snapshot.epoch, run: updated });
   };
 }
 
@@ -484,4 +484,76 @@ test("round summary isolates conversations and opens nested agents and plans on 
   await expect(header.locator(".activity-round-focus")).toContainText("Separate Web question");
   await expect(agents).toHaveCount(0);
   await expect(plans).toHaveCount(0);
+});
+
+
+test("automatic follow releases the old round before background recovery and pane remount", async ({ page, isMobile }, info) => {
+  const start = Date.now() / 1000 - 30;
+  const first = run("resume-first", start);
+  const publish = await liveFixture(page, [first]);
+  await page.goto("/webui/");
+  const feed = page.locator(".activity-feed");
+  await expect(feed).toHaveAttribute("data-following", "true");
+  await expect.poll(() => feed.evaluate((element) => element.scrollTop)).toBeGreaterThan(100);
+  if (isMobile) {
+    await feed.dispatchEvent("touchstart", { touches: [{ identifier: 1, clientX: 120, clientY: 200 }] });
+    await feed.dispatchEvent("touchmove", { touches: [{ identifier: 1, clientX: 120, clientY: 350 }] });
+    await feed.dispatchEvent("touchend", { changedTouches: [{ identifier: 1, clientX: 120, clientY: 350 }] });
+  } else { await feed.hover(); await page.mouse.wheel(0, -150); }
+  await expect(feed).toHaveAttribute("data-following", "false");
+  await feed.evaluate((element) => { element.scrollTop = 80; element.dispatchEvent(new Event("scroll")); });
+  if (isMobile) {
+    await feed.dispatchEvent("touchstart", { touches: [{ identifier: 2, clientX: 120, clientY: 350 }] });
+    await feed.dispatchEvent("touchmove", { touches: [{ identifier: 2, clientX: 120, clientY: 200 }] });
+  } else { await feed.dispatchEvent("wheel", { deltaY: 200 }); }
+  await feed.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+  if (isMobile) await feed.dispatchEvent("touchend", { changedTouches: [{ identifier: 2, clientX: 120, clientY: 200 }] });
+  await expect(feed).toHaveAttribute("data-following", "true");
+
+  await page.evaluate(() => {
+    Object.defineProperty(document, "hidden", { configurable: true, value: true });
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "hidden" });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await publish({ ...first, status: "completed", ended_at: start + 10 }, false);
+  const second = run("resume-second", start + 20);
+  await publish(second, false);
+  await page.evaluate(() => {
+    Object.defineProperty(document, "hidden", { configurable: true, value: false });
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+    document.dispatchEvent(new Event("visibilitychange"));
+  });
+  await expect(page.locator('[data-activity-run="resume-second"]')).toBeVisible();
+  await expect(page.locator('[data-activity-run="resume-first"]')).toHaveCount(0);
+  await expect(feed).toHaveAttribute("data-following", "true");
+  await expect.poll(() => feed.evaluate((element) => Math.abs(element.scrollHeight - element.clientHeight - element.scrollTop))).toBeLessThan(3);
+
+  if (isMobile) await page.getByRole("button", { name: "Menu", exact: true }).click();
+  await page.getByRole("link", { name: "Overview", exact: true }).click();
+  await publish({ ...second, status: "completed", ended_at: start + 25 });
+  await publish(run("resume-third", start + 30));
+  if (isMobile) await page.getByRole("button", { name: "Menu", exact: true }).click();
+  await page.locator(".sidebar-navigation").getByRole("link", { name: "Workspace", exact: true }).click();
+  await expect(page.locator('[data-activity-run="resume-third"]')).toBeVisible();
+  await expect(feed).toHaveAttribute("data-following", "true");
+  await publish({ ...run("resume-third", start + 30), status: "completed", ended_at: start + 35 });
+  await publish(run("resume-fourth", start + 40));
+  await expect(page.locator('[data-activity-run="resume-fourth"]')).toBeVisible();
+  await expect(page.locator('[data-activity-run="resume-third"]')).toHaveCount(0);
+  await page.getByRole("button", { name: "Following", exact: true }).click();
+  await publish({ ...run("resume-fourth", start + 40), status: "completed", ended_at: start + 45 });
+  await publish(run("resume-fifth", start + 50));
+  await expect(feed).toHaveAttribute("data-following", "false");
+  await expect(page.locator('[data-activity-run="resume-fourth"]')).toBeVisible();
+  await expect(page.locator('[data-activity-run="resume-fifth"]')).toHaveCount(0);
+  if (isMobile) await page.getByRole("button", { name: "Menu", exact: true }).click();
+  await page.getByRole("link", { name: "Overview", exact: true }).click();
+  if (isMobile) await page.getByRole("button", { name: "Menu", exact: true }).click();
+  await page.locator(".sidebar-navigation").getByRole("link", { name: "Workspace", exact: true }).click();
+  await expect(feed).toHaveAttribute("data-following", "false");
+  await expect(page.locator('[data-activity-run="resume-fourth"]')).toBeVisible();
+  await page.getByRole("button", { name: "Follow paused", exact: true }).click();
+  await expect(page.locator('[data-activity-run="resume-fifth"]')).toBeVisible();
+  await expect(feed).toHaveAttribute("data-following", "true");
+  await page.screenshot({ path: info.outputPath("continued-round-follow.png"), animations: "disabled" });
 });

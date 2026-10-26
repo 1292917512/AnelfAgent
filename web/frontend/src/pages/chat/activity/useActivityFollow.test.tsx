@@ -1,13 +1,15 @@
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useActivityFollow } from "./useActivityFollow";
+import type { ActivityReadingPosition } from "@/lib/types/activity";
 
 let resize = () => {};
 let nextFrame = 0;
 const frames = new Map<number, FrameRequestCallback>();
 const paused = vi.fn();
+const resumed = vi.fn();
 beforeEach(() => {
-  frames.clear(); paused.mockClear();
+  frames.clear(); paused.mockClear(); resumed.mockClear();
   vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => { frames.set(++nextFrame, callback); return nextFrame; });
   vi.stubGlobal("cancelAnimationFrame", (id: number) => frames.delete(id));
   vi.stubGlobal("ResizeObserver", class {
@@ -17,8 +19,10 @@ beforeEach(() => {
 });
 afterEach(() => { vi.unstubAllGlobals(); });
 
-function Feed({ revision = "1", current = true }: { revision?: string; current?: boolean }) {
-  const { scroll, content, following, pause, resume, handlers } = useActivityFollow(revision, paused, current);
+function Feed({ revision = "1", current = true, initial, save }: {
+  revision?: string; current?: boolean; initial?: ActivityReadingPosition; save?: (position: ActivityReadingPosition) => void;
+}) {
+  const { scroll, content, following, pause, resume, handlers } = useActivityFollow(revision, paused, current, initial, save, resumed);
   return <><button onClick={pause}>Pause</button><button onClick={resume}>Resume</button>
     <span>{following ? "following" : "reading"}</span>
     <div data-testid="feed" ref={scroll} {...handlers}><div ref={content}><pre data-testid="code" style={{ overflowY: "auto" }}>Code</pre></div></div></>;
@@ -58,6 +62,30 @@ it("follows growth, ignores downward and nested scrolling, and resumes after rea
   feed.scrollTop = 1600;
   fireEvent.scroll(feed); flush();
   expect(screen.getByText("following")).toBeTruthy();
+  expect(resumed).toHaveBeenCalledOnce();
+});
+
+it("persists an explicit pause during reading and keeps it across remount until resumed", () => {
+  const saved = vi.fn();
+  const { unmount } = render(<Feed initial={{ mode: "reading", offset: 0, top: 80 }} save={saved} />);
+  const feed = screen.getByTestId("feed");
+  geometry(feed, 1200, 200, 80);
+  fireEvent.click(screen.getByText("Pause"));
+  expect(saved).toHaveBeenLastCalledWith({ mode: "paused", runId: undefined, entryId: undefined, offset: 0, top: 80 });
+  unmount();
+  render(<Feed initial={saved.mock.lastCall?.[0]} save={saved} />);
+  const reopened = screen.getByTestId("feed");
+  geometry(reopened, 1200, 200, 80);
+  act(resize);
+  fireEvent.wheel(reopened, { deltaY: 100 });
+  reopened.scrollTop = 1000;
+  fireEvent.scroll(reopened); flush();
+  expect(screen.getByText("reading")).toBeTruthy();
+  expect(resumed).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByText("Resume")); flush();
+  expect(screen.getByText("following")).toBeTruthy();
+  expect(resumed).toHaveBeenCalledOnce();
+  expect(saved).toHaveBeenLastCalledWith({ mode: "follow", offset: 0, top: 1000 });
 });
 
 it("cancels queued alignment for user reading and preserves explicit pause and historical navigation", () => {

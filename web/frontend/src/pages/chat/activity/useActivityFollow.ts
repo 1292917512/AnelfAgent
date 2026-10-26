@@ -39,7 +39,7 @@ function consumesScroll(target: EventTarget | null, feed: HTMLElement, delta: nu
 
 /** 跟随布局末尾；上翻阅读暂停，滚回底部恢复，显式暂停保持到手动恢复。 */
 export function useActivityFollow(revision: string, onPause: () => void, current = true,
-  initial?: ActivityReadingPosition, save?: (position: ActivityReadingPosition) => void) {
+  initial?: ActivityReadingPosition, save?: (position: ActivityReadingPosition) => void, onResume?: () => void) {
   const scroll = useRef<HTMLDivElement>(null);
   const content = useRef<HTMLDivElement>(null);
   const enabled = useRef(!initial || initial.mode === "follow");
@@ -89,7 +89,11 @@ export function useActivityFollow(revision: string, onPause: () => void, current
     remember();
     onPause();
   }, [onPause, cancelFrame, remember]);
-  const pause = useCallback(() => { manual.current = true; pauseReading(); }, [pauseReading]);
+  const pause = useCallback(() => {
+    manual.current = true;
+    if (enabled.current) pauseReading();
+    else remember();
+  }, [pauseReading, remember]);
   const schedule = useCallback(() => {
     if (!enabled.current || frame.current != null) return;
     frame.current = requestAnimationFrame(() => {
@@ -106,9 +110,10 @@ export function useActivityFollow(revision: string, onPause: () => void, current
     manual.current = false;
     enabled.current = true;
     setFollowing(true);
+    onResume?.();
     remember();
     schedule();
-  }, [schedule, remember]);
+  }, [schedule, remember, onResume]);
   useLayoutEffect(schedule, [revision, schedule]);
   useEffect(() => {
     const observer = new ResizeObserver(() => {

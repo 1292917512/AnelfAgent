@@ -41,7 +41,7 @@ function ActivityFeed({ epoch, runs, clearing, onClear }: { epoch: string; runs:
   const inspect = useContext(ActivityInspection);
   const pages = useMemo(() => activityPages(runs), [runs]);
   const [initial] = useState(() => useActivityViewStore.getState().read(epoch));
-  const [selected, setSelected] = useState(initial.selected);
+  const [selected, setSelected] = useState(!initial.position || initial.position.mode === "follow" ? null : initial.selected);
   const [family, setFamily] = useState(initial.family);
   const selectedIndex = pages.findIndex((page) => page.id === selected);
   const index = selectedIndex < 0 ? pages.length - 1 : selectedIndex;
@@ -66,10 +66,11 @@ function ActivityFeed({ epoch, runs, clearing, onClear }: { epoch: string; runs:
   const segments = useMemo(() => currentPage ? activitySegments(visibleRuns,
     Object.entries(expanded).filter(([, value]) => value.current && value.open).map(([id]) => id)) : [], [visibleRuns, currentPage, expanded]);
   const pinPage = useCallback(() => { if (page) setSelected(page.id); }, [page]);
+  const releasePage = useCallback(() => setSelected(null), []);
   const { scroll, content, following, pause: pauseFollowing, resume, handlers } = useActivityFollow(`${page?.id}:${family}:${Math.max(0, ...visibleRuns.map((run) => run.revision))}`, pinPage, currentPage, initial.position,
     (position) => useActivityViewStore.getState().save(epoch, { ...view.current,
-      selected: pages.some((item) => item.id === view.current.selected) ? view.current.selected : null,
-      expanded: Object.fromEntries(Object.entries(view.current.expanded).filter(([id]) => runs.some((run) => run.id === id))), position }));
+      selected: position.mode !== "follow" && pages.some((item) => item.id === view.current.selected) ? view.current.selected : null,
+      expanded: Object.fromEntries(Object.entries(view.current.expanded).filter(([id]) => runs.some((run) => run.id === id))), position }), releasePage);
   const toggleRun = useCallback((id: string, open: boolean) => {
     setExpanded((previous) => {
       const retained = Object.fromEntries(Object.entries(previous).filter(([key]) => runs.some((run) => run.id === key)));
@@ -77,7 +78,7 @@ function ActivityFeed({ epoch, runs, clearing, onClear }: { epoch: string; runs:
     });
   }, [runs, currentPage]);
   const toggleCurrentRun = useCallback((id: string, open: boolean) => { pauseFollowing(); toggleRun(id, open); }, [pauseFollowing, toggleRun]);
-  const resumeFollowing = () => { setSelected(null); setExpanded({}); resume(); };
+  const resumeFollowing = () => { setExpanded({}); resume(); };
   const openPage = (next: number) => {
     const target = pages[next];
     if (!target) return;
