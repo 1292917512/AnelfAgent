@@ -1,13 +1,14 @@
 """上下文材料的分层、预算与文件缓存。
 
-模型可见：沿用人设、工具目录、召回来源；动态区注明本轮减少检索时的实际覆盖范围。
-Token：减少检索时增加约百字的范围说明，不另起模型调用。
+模型可见：沿用人设、工具目录、召回来源；资料被裁剪时在动态区说明边界与取回入口。
+Token：画像和检索共享既有上限，省略提示约百字；不另起模型调用。
 缓存：沿用各层指纹、缓存键与消息顺序，不改稳定前缀。
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
+from dataclasses import asdict, dataclass
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from agent.context.inputs import RecollectionInputs
 from agent.context.prompt_layers import FileLayerCache
@@ -22,6 +23,8 @@ from agent.memory.notes import (
     get_memory_dir,
     get_notes_path,
 )
+from core.activity import EVENT_ACTIVITY_CONTEXT
+from core.config import get_config_int
 from core.event_bus import EVENT_THINKING_CONTEXT_BUILD, event_bus
 
 if TYPE_CHECKING:
@@ -122,7 +125,9 @@ class ContextPreparation:
     ) -> List[Dict]:
         """对准备好的召回事实分层、裁剪、缓存并构建完整消息。"""
         entity_scope = anything.entity_scope if anything else ""
-        profile_msgs, memory_msgs, relation_msgs = inputs.profiles, inputs.memories, inputs.relations
+        profile_msgs = [dict(message) for message in inputs.profiles]
+        memory_msgs, relation_msgs = list(inputs.memories), list(inputs.relations)
+        allocation = None
         if lean:
             permanent_text = str(memory_msgs[0]["content"]) if memory_msgs else ""
             memory_msgs = []
@@ -149,13 +154,11 @@ class ContextPreparation:
                 ]
             permanent_text = str(pin_msgs[0]["content"]) if pin_msgs else ""
 
-            # memory 层预算截断：防止低相关召回/画像/技能过度占用上下文
-            # （画像在前优先保留，预算从整体尾部截断）
-            combined = apply_memory_budget(profile_msgs + memory_msgs)
-            profile_msgs = combined[:len(profile_msgs)]
-            memory_msgs = combined[len(profile_msgs):]
-            if inputs.recall_notice:
-                memory_msgs.append({"role": "system", "content": inputs.recall_notice,
+            allocation = allocate_recollection(profile_msgs, memory_msgs)
+            profile_msgs, memory_msgs = allocation.profiles, list(allocation.evidence)
+            notice = "\n".join(part for part in (inputs.recall_notice, allocation.omission_notice()) if part)
+            if notice:
+                memory_msgs.append({"role": "system", "content": notice,
                                     "_source": {"origin": "memory_policy"}})
 
         # Prompt 分层构建：
@@ -171,7 +174,7 @@ class ContextPreparation:
             "context_cache_hit": context_hit,
         })
 
-        return await self.assembly.build_llm_context(
+        messages = await self.assembly.build_llm_context(
             persona_text=persona_text,
             tools_text=tools_text,
             context_text=context_text,
@@ -188,32 +191,11 @@ class ContextPreparation:
             heartbeat_text=heartbeat_text,
             repeat_hint_text=inputs.repeat_hint,
         )
-
-
-def apply_memory_budget(msgs: List[Dict]) -> List[Dict]:
-    """按预算截断 memory 层，贪心保留先到的消息（高分召回优先）。
-
-    召回路径按 语义 → 跨频道 → 技能 顺序合并，先到的消息相关性更高。
-    超预算时截断当前消息并停止，保证总字符不超上限。
-    """
-    from core.config import get_config_int
-    budget = get_config_int("memory_inject_max_chars", 6000)
-    total = sum(len(m.get("content", "")) for m in msgs)
-    if total <= budget:
-        return msgs
-    kept: List[Dict] = []
-    used = 0
-    for m in msgs:
-        chars = len(m.get("content", ""))
-        if used + chars <= budget:
-            kept.append(m)
-            used += chars
-        else:
-            remaining = budget - used
-            if remaining > 200:
-                kept.append({**m, "content": m["content"][:remaining] + "\n（已截断）"})
-            break
-    return kept
+        if allocation is not None:
+            await event_bus.emit(EVENT_ACTIVITY_CONTEXT, {
+                "status": "running", "recall": allocation.report(inputs.recall_level),
+            })
+        return messages
 
 
 def model_context(client: ChatModel, manager: LLMManager | None) -> tuple[str, bool]:
@@ -221,3 +203,80 @@ def model_context(client: ChatModel, manager: LLMManager | None) -> tuple[str, b
     summary = manager.get_models_summary() if manager else ""
     text = "# 可用模型\n" + summary + "\n不要编造工具不存在的功能或数据。" if summary else ""
     return text, bool(isinstance(client, LLMClient) and client.config.supports_vision)
+
+
+_TRUNCATED = "\n（已截断）"
+
+
+def apply_memory_budget(messages: list[dict], *, budget: int | None = None) -> list[dict]:
+    """按已有相关性顺序保留块；标记占用预算，返回副本供组装器注入。"""
+    remaining = max(0, get_config_int("memory_inject_max_chars", 6000) if budget is None else budget)
+    result: list[dict] = []
+    for message in messages:
+        content = str(message.get("content", ""))
+        if not content:
+            continue
+        if len(content) <= remaining:
+            result.append(dict(message))
+            remaining -= len(content)
+        else:
+            if remaining > 200:
+                result.append({**message, "content": content[:remaining - len(_TRUNCATED)] + _TRUNCATED})
+            break
+    return result
+
+
+@dataclass(frozen=True)
+class BudgetGroup:
+    prepared_blocks: int
+    prepared_chars: int
+    injected_blocks: int
+    injected_chars: int
+    truncated_blocks: int
+    omitted_blocks: int
+
+
+@dataclass
+class RecallAllocation:
+    profiles: list[dict]
+    evidence: list[dict]
+    budget: int
+    profile_usage: BudgetGroup
+    evidence_usage: BudgetGroup
+
+    def report(self, level: str) -> dict[str, Any]:
+        """仅输出计数，不复制正文或产生新的记忆事实。"""
+        return {"level": level, "budget_chars": self.budget,
+                "profiles": asdict(self.profile_usage), "evidence": asdict(self.evidence_usage)}
+
+    def omission_notice(self) -> str:
+        """存在省略时提醒模型证据边界，避免将摘录当成完整历史。"""
+        groups = (self.profile_usage, self.evidence_usage)
+        if not any(group.truncated_blocks or group.omitted_blocks for group in groups):
+            return ""
+        return ("[系统注入·资料范围] 画像或检索证据受本轮预算限制，部分内容已截断或省略，"
+                "不代表完整历史。缺少任务进展、约束或出处时，请用 recall 或对应画像工具取回后再判断。")
+
+
+def _usage(before: list[dict], after: list[dict]) -> BudgetGroup:
+    available = [message for message in before if message.get("content")]
+    return BudgetGroup(len(available), sum(len(str(m["content"])) for m in available),
+                       len(after), sum(len(str(m["content"])) for m in after),
+                       sum(m["content"] != original["content"] for m, original in zip(after, available, strict=False)),
+                       len(available) - len(after))
+
+
+def allocate_recollection(profiles: list[dict], evidence: list[dict]) -> RecallAllocation:
+    """两类内容各有保留空间，未使用的配额让给另一类；不改变各自排序。"""
+    budget = max(0, get_config_int("memory_inject_max_chars", 6000))
+    profile_chars = sum(len(str(m.get("content", ""))) for m in profiles)
+    evidence_chars = sum(len(str(m.get("content", ""))) for m in evidence)
+    profile_quota = min(profile_chars, max(budget // 2, budget - evidence_chars))
+    kept_profiles = apply_memory_budget(profiles, budget=profile_quota)
+    used_profiles = sum(len(str(m["content"])) for m in kept_profiles)
+    kept_evidence = apply_memory_budget(evidence, budget=budget - used_profiles)
+    used_evidence = sum(len(str(m["content"])) for m in kept_evidence)
+    if profile_chars > used_profiles and budget - used_evidence > used_profiles:
+        kept_profiles = apply_memory_budget(profiles, budget=budget - used_evidence)
+    return RecallAllocation(kept_profiles, kept_evidence, budget,
+                            _usage(profiles, kept_profiles), _usage(evidence, kept_evidence))

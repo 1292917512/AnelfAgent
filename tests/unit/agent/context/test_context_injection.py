@@ -14,6 +14,47 @@ from agent.mind.prefrontal_cortex import PrefrontalCortex
 from agent.mind.tool_assembly import ToolAssembly
 from agent.planning import nag
 
+
+@pytest.mark.parametrize("profile_chars,evidence_chars", [(6000, 500), (6000, 6000), (0, 7000), (7000, 0), (100, 100)])
+def test_profile_and_retrieval_keep_space_without_changing_originals(profile_chars, evidence_chars):
+    from copy import deepcopy
+
+    from agent.context.preparation import allocate_recollection
+    from core.config import ConfigManager
+
+    ConfigManager.set("memory_inject_max_chars", 6000)
+    profiles = [{"role": "system", "content": "p" * profile_chars}]
+    evidence = [{"role": "system", "content": "e" * evidence_chars, "_source": {"origin": "memory_recall", "id": "mem:17"}}]
+    originals = deepcopy((profiles, evidence))
+    allocation = allocate_recollection(profiles, evidence)
+    assert sum(len(m["content"]) for m in allocation.profiles + allocation.evidence) <= 6000
+    if profile_chars:
+        assert allocation.profiles
+    if evidence_chars:
+        assert allocation.evidence and allocation.evidence[0]["_source"] == evidence[0]["_source"]
+    if evidence_chars < 3000:
+        assert allocation.evidence == ([evidence[0]] if evidence_chars else [])
+    assert (profiles, evidence) == originals
+    if profile_chars + evidence_chars <= 6000:
+        assert not allocation.omission_notice()
+    else:
+        assert "不代表完整历史" in allocation.omission_notice()
+
+
+@pytest.mark.parametrize("budget", [0, 1, 200, 201, 499, 6000])
+def test_budget_includes_partial_marker_and_preserves_source_order(budget):
+    from agent.context.preparation import allocate_recollection
+    from core.config import ConfigManager
+
+    ConfigManager.set("memory_inject_max_chars", budget)
+    evidence = [{"content": "first-identity " + "a" * 3000}, {"content": "second-identity " + "b" * 3000}]
+    allocation = allocate_recollection([{"content": "p" * 6000}], evidence)
+    assert sum(len(m["content"]) for m in allocation.profiles + allocation.evidence) <= budget
+    assert allocation.evidence_usage.omitted_blocks + allocation.evidence_usage.injected_blocks == 2
+    assert allocation.evidence_usage.truncated_blocks <= allocation.evidence_usage.injected_blocks
+    if allocation.evidence:
+        assert allocation.evidence[0]["content"].startswith("first-identity")
+
 # ==================================================================
 # _env_info_block 平台命令方言提示（BSD 用户态注入 / Linux 不注入）
 # ==================================================================

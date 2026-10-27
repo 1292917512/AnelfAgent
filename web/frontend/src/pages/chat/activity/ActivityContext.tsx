@@ -7,6 +7,7 @@ import { formatElapsedCompact } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { TaggedText } from "./ActivityReferences";
 import { SkillEvidence } from "@/components/common/SkillEvidence";
+import { ActivityRecallBudget } from "./ActivityRecallBudget";
 
 type ContextEntry = Extract<ActivityEntry, { kind: "context" }>;
 
@@ -33,9 +34,14 @@ export function ActivityContext({ entry, defaultExpanded = false }: { entry: Con
       <ChevronDown size={14} className={cn("transition-transform", open && "rotate-180")} />
     </button>
     {!running && <div className="activity-context-overview">{Array.from(new Set(entry.blocks.map((block) => block.label))).map((label) => <span key={label}>{label}</span>)}</div>}
+    {entry.recall && entry.status === "done" && <p className="activity-note" title={t("activity.recallBudget.hint")}>
+      {t(`activity.recallBudget.levels.${entry.recall.level}`, { defaultValue: entry.recall.level })}{" · "}
+      {t("activity.recallBudget.summary", { prepared: entry.recall.evidence.prepared_blocks, injected: entry.recall.evidence.injected_blocks })}
+    </p>}
     {entry.error && <p className="activity-note text-warn" role="alert">{entry.error}</p>}
     {open && <div className="activity-context-detail">
       <p className="activity-note">{t("activity.contextHint")}</p>
+      {entry.recall && entry.status === "done" && <ActivityRecallBudget report={entry.recall} />}
       <SkillEvidence skills={entry.skills ?? []} />
       {entry.truncated && <p className="activity-note">{t("activity.truncated")}</p>}
       {entry.blocks.map((block, index) => <ContextBlock key={`${block.layer}:${index}`} block={block} />)}

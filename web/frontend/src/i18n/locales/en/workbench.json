@@ -462,6 +462,29 @@
       "submitted": "{{count}} Web conversations are awaiting execution feedback. Sending does not switch or interrupt other work.",
       "queue": "Pending: {{messages}} message conversations · {{tasks}} tasks · {{incoming}} incoming events",
       "noRecord": "No related execution record has arrived. Existing state will be checked until records become available."
+    },
+    "recallBudget": {
+      "title": "Recall and context budget",
+      "limit": "Content budget: {{count}} characters",
+      "profiles": "Profile material",
+      "evidence": "Retrieved evidence and skill candidates",
+      "summary": "Retrieved material: {{prepared}} prepared, {{injected}} in context",
+      "prepared_blocks": "Prepared",
+      "injected_blocks": "In context",
+      "truncated_blocks": "Of these, truncated",
+      "omitted_blocks": "Omitted",
+      "prepared_blocksHint": "Blocks available before allocation; this does not mean the model received them.",
+      "injected_blocksHint": "Blocks assembled into context, including any partial excerpts.",
+      "truncated_blocksHint": "Blocks included only partially; full material remains available through its source.",
+      "omitted_blocksHint": "Blocks excluded by this turn’s content budget. Original data is retained.",
+      "characters": "Characters: {{prepared}} prepared · {{injected}} in context",
+      "hint": "Profiles and retrieval each retain space and share unused capacity. In context means assembled, not necessarily used by the current step. Policy notices are not evidence; a suggested skill is not an execution.",
+      "levels": {
+        "off": "No automatic search",
+        "tags": "Tag search",
+        "fast": "Local recall",
+        "deep": "Deep recall"
+      }
     }
   },
   "toolView": {

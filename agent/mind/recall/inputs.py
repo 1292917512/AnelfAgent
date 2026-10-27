@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional
 from agent.context.inputs import RecollectionInputs
 from agent.judgment.evidence import dialogue_messages
 from agent.memory.memory_retriever import MemoryRetriever
-from agent.memory.recall_policy import current_recall_policy
+from agent.memory.recall_policy import can_adapt_recall, current_recall_policy
 from agent.mind.cross_channel import recall_cross_channel
 from agent.mind.recall.scopes import extract_related_scopes, extract_scopes_from_anything
 from core.config import get_config_bool, get_config_float
@@ -181,12 +181,19 @@ class Recollection:
                     result.profile_blocks.append(block)
 
         async with asyncio.TaskGroup() as tasks:
-            tasks.create_task(summary())
+            summary_task = tasks.create_task(summary())
             if query and (policy.level == "deep" or get_config_bool("skills_enabled", True)):
                 vector_task = tasks.create_task(embed())
             if not lean:
                 from agent.memory.recall_routing import route_recall
-                policy, result.recall_notice = await route_recall(tail, scope)
+                route_deadline = min(deadline, asyncio.get_running_loop().time() + max(
+                    .1, min(5., get_config_float("memory_recall_route_timeout", 1.))))
+                if can_adapt_recall(scope):
+                    # 复用组装本来就需要的摘要读取；借用者不取消读取，等待也计入分级预算。
+                    await asyncio.wait({summary_task}, timeout=max(0., route_deadline - asyncio.get_running_loop().time()))
+                policy, result.recall_notice = await route_recall(
+                    conversation, scope, summary=str((result.summary or {}).get("summary", "")), deadline=route_deadline)
+            result.recall_level = policy.level
             if lean:
                 tasks.create_task(pins())
             else:

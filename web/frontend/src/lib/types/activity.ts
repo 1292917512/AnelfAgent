@@ -15,11 +15,25 @@ export interface ActivitySkill {
   truncated?: boolean;
   mcp_status?: SkillMCPStatus[];
 }
+export interface RecallBudgetGroup {
+  prepared_blocks: number;
+  prepared_chars: number;
+  injected_blocks: number;
+  injected_chars: number;
+  truncated_blocks: number;
+  omitted_blocks: number;
+}
+export interface RecallBudgetReport {
+  level: string;
+  budget_chars: number;
+  profiles: RecallBudgetGroup;
+  evidence: RecallBudgetGroup;
+}
 export type ActivityEntry =
   | EntryBase & { kind: "phase"; name: string; status: string; duration_ms: number; detail?: string; error?: string }
   | EntryBase & { kind: "notice"; origin: "conversation" | "push" | "cross_channel" | "delivery" | "recovery"; iteration: number; items: ActivityNoticeItem[]; count: number; deferred: number; truncated?: boolean }
   | EntryBase & Omit<HookExecution, "started_at"> & { kind: "hook" }
-  | EntryBase & { kind: "context"; status: string; duration_ms: number; blocks: { layer: string; label: string; content: string }[]; block_count: number; skills?: ActivitySkill[]; error?: string; truncated?: boolean }
+  | EntryBase & { kind: "context"; status: string; duration_ms: number; blocks: { layer: string; label: string; content: string }[]; block_count: number; skills?: ActivitySkill[]; error?: string; truncated?: boolean; recall?: RecallBudgetReport }
   | EntryBase & { kind: "thinking"; content: string; truncated?: boolean }
   | EntryBase & { kind: "text"; content: string; truncated?: boolean }
   | EntryBase & { kind: "tool"; name: string; owner?: string; arguments: string; targets: ActivityTag[]; request_id: string; truncated?: boolean; status: "running" | "done" | "error" | "interrupted"; result?: string; duration_ms?: number }

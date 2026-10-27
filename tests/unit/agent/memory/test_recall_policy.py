@@ -17,16 +17,18 @@ from agent.memory.recall_policy import (
 )
 
 
-@pytest.mark.parametrize(("history", "relations", "expected"), [
-    (.04, .04, "off"), (.04, .15, "off"), (.96, .04, "fast"), (.96, .96, "deep"),
-    (.4, .04, "fast"), (.96, .4, "deep"), (.04, .96, "deep"),
+@pytest.mark.parametrize(("grounded", "history", "relations", "expected"), [
+    (.98, .04, .04, "off"), (.98, .04, .15, "deep"), (.98, .96, .04, "fast"), (.98, .96, .96, "deep"),
+    (.98, .4, .04, "deep"), (.98, .96, .4, "deep"), (.98, .04, .96, "deep"),
+    (.98, .15, .06, "deep"), (.2, .04, .04, "deep"), (.2, .96, .04, "deep"),
+    (.9, .1, .1, "off"), (.9, .9, .1, "fast"), (.8999, .01, .01, "deep"),
 ])
-async def test_semantic_routing_only_reduces_recall_at_high_confidence(monkeypatch, history, relations, expected):
+async def test_semantic_routing_only_reduces_recall_at_high_confidence(monkeypatch, grounded, history, relations, expected):
     from agent.judgment import JudgmentReport, JudgmentSource, NoulAnswer
     from agent.memory import recall_routing as routing
 
     report = JudgmentReport(source=JudgmentSource.TYPESAFE,
-                           answers={"history": NoulAnswer(noul=history), "relations": NoulAnswer(noul=relations)})
+                           answers={"grounded": NoulAnswer(noul=grounded), "history": NoulAnswer(noul=history), "relations": NoulAnswer(noul=relations)})
     judge = AsyncMock(return_value=report)
     monkeypatch.setattr(routing, "load_config", lambda: SimpleNamespace(
         enabled=True, native_configured=True, timeout=10, model="decision-model"))
@@ -67,6 +69,41 @@ async def test_semantic_route_failure_keeps_deep_recall(monkeypatch, failure):
         policy, notice = await asyncio.wait_for(routing.route_recall([
             {"role": "user", "content": "他的新地址和之前有什么变化"}], "user_webui:1"), timeout=1)
     assert policy.level == "deep" and not notice
+
+
+async def test_route_uses_bounded_summary_and_exposes_actual_selection(monkeypatch):
+    from agent.judgment import JudgmentReport, JudgmentSource, NoulAnswer
+    from agent.memory import recall_routing as routing
+    from core.hooks import hook_journal
+
+    report = JudgmentReport(source=JudgmentSource.TYPESAFE, answers={
+        "grounded": NoulAnswer(noul=.97), "history": NoulAnswer(noul=.96), "relations": NoulAnswer(noul=.02)})
+    judge = AsyncMock(return_value=report)
+    monkeypatch.setattr(routing, "load_config", lambda: SimpleNamespace(enabled=True, native_configured=True, timeout=10, model="native"))
+    monkeypatch.setattr(routing, "get_judgment_engine", lambda: SimpleNamespace(judge=judge))
+    async with recall_turn("user_webui:summary"):
+        policy, _ = await routing.route_recall([{"role": "user", "content": "inspect the next step"}], "user_webui:summary",
+                                              summary="verified prior constraint; " * 100)
+    assert policy.level == "fast"
+    state = judge.await_args.args[0]
+    assert len(state["summary"]) <= 1000 and state["coverage"]["summary_truncated"]
+    assert state["coverage"]["excerpt_only"]
+    record = hook_journal.snapshot()["recent"][0]["judgments"][0]
+    assert record["policy"] == "routing" and record["selection"] == "fast" and record["status"] == "proceed"
+    assert record["input_truncated"] and record["probability"] == .96
+
+
+async def test_expired_route_budget_does_not_start_judgment(monkeypatch):
+    from agent.memory import recall_routing as routing
+
+    judge = AsyncMock()
+    monkeypatch.setattr(routing, "load_config", lambda: SimpleNamespace(enabled=True, native_configured=True, timeout=10, model="native"))
+    monkeypatch.setattr(routing, "get_judgment_engine", lambda: SimpleNamespace(judge=judge))
+    async with recall_turn("user_webui:deadline"):
+        policy, _ = await routing.route_recall([{"role": "user", "content": "reconstruct prior decisions"}],
+                                              "user_webui:deadline", deadline=asyncio.get_running_loop().time() - 1)
+    assert policy.level == "deep"
+    judge.assert_not_awaited()
 
 
 @pytest.mark.parametrize("level,tags", [("off", ()), ("fast", ()), ("deep", ()), ("tags", ("user:qq:1", "project:甲"))])

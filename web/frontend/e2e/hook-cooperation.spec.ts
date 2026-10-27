@@ -12,6 +12,44 @@ const child: ActivityRun = { ...parent, id: "hook-child", parent_id: "parent", o
   { id: "tool1", kind: "tool", name: "get_skill", status: "running", arguments: '{"name":"deployment-check"}', targets: [], request_id: "request-1", ts: now - 10 },
 ] };
 
+test("recall routing distinguishes local search from skipping and shows the actual context allocation", async ({ page }, info) => {
+  const assessment = { id: "route-native", provider: "Jev", task: "Automatic recall routing", started_at: now - 5, threshold: .9,
+    status: "proceed" as const, duration_ms: 215, reason: "Explicit fact lookup is sufficient", probability: .96,
+    basis: "Grounded 98%; history needed 96%; historical relations 2%", basis_probability: null,
+    model: "native-model", input_tokens: 1200, output_tokens: 0, input_chars: 1765, input_truncated: true,
+    slow_after_ms: 1000, slow: false, policy: "routing" as const, selection: "fast" };
+  const context = { id: "context-budget", ts: now - 5, kind: "context" as const, status: "done", duration_ms: 650,
+    blocks: [{ layer: "profile", label: "Profile", content: "Identity excerpt" },
+      { layer: "memory", label: "Retrieved history", content: "mem:17 [uid:qq:42] Previous failure and verified constraints" }], block_count: 2,
+    recall: { level: "fast", budget_chars: 6000,
+      profiles: { prepared_blocks: 1, prepared_chars: 6000, injected_blocks: 1, injected_chars: 3000, truncated_blocks: 1, omitted_blocks: 0 },
+      evidence: { prepared_blocks: 2, prepared_chars: 8000, injected_blocks: 1, injected_chars: 3000, truncated_blocks: 1, omitted_blocks: 1 } } };
+  const run: ActivityRun = { ...parent, entry_count: 2, entries: [context,
+    { ...hook, ts: now - 5, kind: "hook", name: "memory.route", status: "done", judgments: [assessment] }] };
+  await page.route(/\/api\/workspace\/activity(?:\?.*)?$/, route => route.fulfill({ json: { epoch: "recall-budget", revision: 1, runs: [run] } }));
+  await page.goto("/webui/");
+  await page.getByRole("button", { name: "Decisions", exact: true }).click();
+  const judgment = page.locator('[data-judgment="route-native"]');
+  await expect(judgment.getByText("Local recall", { exact: true })).toBeVisible();
+  await expect(judgment.getByText("Skip this task", { exact: true })).toHaveCount(0);
+  await judgment.getByRole("button").click();
+  await expect(judgment).toContainText("not recall accuracy");
+  await expect(judgment).toContainText("not complete history");
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "Recollection", exact: true }).click();
+  const panel = page.getByRole("dialog", { name: "Recollection", exact: true });
+  await expect(panel).toContainText("Retrieved material: 2 prepared, 1 in context");
+  await panel.getByRole("button", { name: /Memory and context/ }).click();
+  const budget = page.getByRole("region", { name: "Recall and context budget", exact: true });
+  await expect(budget).toContainText("6000");
+  await expect(budget.getByRole("region", { name: "Profile material", exact: true })).toContainText("3000");
+  await expect(budget.getByRole("region", { name: "Retrieved evidence and skill candidates", exact: true })).toContainText("Omitted");
+  await panel.locator("summary").filter({ hasText: "Retrieved history" }).click();
+  await expect(panel.getByText(/mem:17.*Previous failure/)).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: info.outputPath("recall-budget.png"), animations: "disabled" });
+});
+
 test("background hook details show real execution and update without cluttering the feed", async ({ page }, info) => {
   let snapshot = { epoch: "hooks", revision: 1, runs: [parent, child] };
   const errors: string[] = [];

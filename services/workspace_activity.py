@@ -327,6 +327,8 @@ class WorkspaceActivityService:
                      duration_ms=payload.get("duration_ms", 0),
                      error=sanitize_text(str(payload.get("error", "")))[:MAX_TEXT],
                      truncated=bool(payload.get("truncated")) or remaining < 0)
+        if "recall" in payload:
+            entry["recall"] = deepcopy(payload["recall"])
         if entry["status"] == "done":
             merge_skill_evidence(run, entry["skills"])
         self._changed(run)

@@ -26,6 +26,47 @@ def _pfc() -> ContextAssembly:
     return ContextAssembly(pfc, ToolAssembly(), conversation_data=conversation_data)
 
 
+async def test_large_profile_preserves_retrieved_history_and_reports_final_context(monkeypatch):
+    from copy import deepcopy
+
+    from agent.context.inputs import RecollectionInputs
+    from agent.context.observation import emit_context_summary
+    from core.activity import activity_scope
+    from core.config import ConfigManager
+    from services.workspace_activity import WorkspaceActivityService
+
+    ConfigManager.set("memory_inject_max_chars", 6000)
+    service = WorkspaceActivityService()
+    service.start()
+    pfc = _pfc()
+    preparation = pfc.preparation
+    monkeypatch.setattr(preparation, "build_layers", AsyncMock(return_value=("persona", "tools", "notes", False, False, False, "", "")))
+    inputs = RecollectionInputs(
+        profiles=[{"role": "system", "content": "profile " * 1000}],
+        memories=[{"role": "system", "content": "[系统注入·永久记忆] permanent rule"},
+                  {"role": "system", "content": "mem:17 [uid:qq:1] previous failed attempt; inspect before retry"}],
+        profile_blocks=["confirmed identity"], recall_level="deep")
+    original = deepcopy(inputs)
+    try:
+        async with activity_scope("budget-layout", "user_webui:1"):
+            messages = await preparation.build_recollection(inputs, [{"role": "user", "content": "continue"}], None,
+                persona_parts=[], models_summary="", direct_vision=False)
+            await emit_context_summary(messages, 1)
+        assert inputs == original
+        history = next(m for m in messages if "mem:17" in str(m.get("content", "")))
+        assert history["_layer"] == "memory" and history["_source"]["origin"] == "memory_recall"
+        context = next(e for e in service.snapshot()["runs"][0]["entries"] if e["kind"] == "context")
+        assert context["status"] == "done"
+        report = context["recall"]
+        assert report["level"] == "deep" and report["evidence"]["injected_blocks"] == 1
+        assert report["evidence"]["prepared_blocks"] == 1  # pin 提升到稳定的便签层，策略提示不计证据。
+        assert report["profiles"]["truncated_blocks"] == 1
+        assert report["profiles"]["injected_chars"] + report["evidence"]["injected_chars"] <= 6000
+        assert not any("mem:17" in str(m) for m in messages if m.get("_layer") in {"stable", "summary", "conversation", "context"})
+    finally:
+        service.stop()
+
+
 def _layers(msgs: list[dict]) -> list[str]:
     return [m.get("_layer", "") for m in msgs]
 

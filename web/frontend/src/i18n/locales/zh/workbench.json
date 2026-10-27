@@ -462,6 +462,29 @@
       "submitted": "{{count}} 个 Web 会话正在等待执行反馈；发送消息不会切换或中断其他执行。",
       "queue": "待处理：{{messages}} 个消息会话 · {{tasks}} 项任务 · {{incoming}} 条待接入事件",
       "noRecord": "尚未收到关联执行记录。页面会继续核对已有状态，出现记录后自动展示。"
+    },
+    "recallBudget": {
+      "title": "召回与入模预算",
+      "limit": "内容预算 {{count}} 字符",
+      "profiles": "画像资料",
+      "evidence": "检索证据与技能候选",
+      "summary": "检索资料：已准备 {{prepared}} 块，入模 {{injected}} 块",
+      "prepared_blocks": "已准备",
+      "injected_blocks": "已入模",
+      "truncated_blocks": "其中截断",
+      "omitted_blocks": "已省略",
+      "prepared_blocksHint": "预算分配前的资料块数；不表示模型已读到。",
+      "injected_blocksHint": "最终组装的资料块数，其中可能包含截断摘录。",
+      "truncated_blocksHint": "已入模但未完整保留的资料块；仍可按出处查询全文。",
+      "omitted_blocksHint": "本轮内容预算未容纳的资料块，原始数据仍保留。",
+      "characters": "字符：已准备 {{prepared}} · 入模 {{injected}}",
+      "hint": "画像和检索各保留空间，空余额共享。入模指最终上下文组装，不代表当前步骤已使用；策略提示不计作证据，技能推荐不代表执行。",
+      "levels": {
+        "off": "未自动检索",
+        "tags": "标签召回",
+        "fast": "本地召回",
+        "deep": "深入召回"
+      }
     }
   },
   "toolView": {

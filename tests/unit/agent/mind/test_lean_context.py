@@ -91,6 +91,75 @@ class TestLeanLayeredPrompts:
 
 
 class TestLeanRecollection:
+    @pytest.mark.parametrize("summary_state", ["ready", "slow", "error"])
+    async def test_route_reuses_summary_without_another_model_or_storage_read(self, monkeypatch, summary_state):
+        from agent.memory.recall_policy import RecallPolicy, recall_turn
+        from agent.messages import MessageUser
+        from core.config import ConfigManager
+
+        mind = _fake_mind()
+        release = asyncio.Event()
+        ConfigManager.set("memory_recall_route_timeout", .1)
+
+        async def read_summary(message):
+            if summary_state == "slow":
+                await release.wait()
+            if summary_state == "error":
+                raise RuntimeError("summary unavailable")
+            return {"summary": "prior verified constraints"}
+
+        async def select(conversation, scope, *, summary, deadline):
+            if summary_state == "slow":
+                assert deadline - asyncio.get_running_loop().time() < .05
+            release.set()
+            return RecallPolicy(), ""
+
+        data = SN(get_conversation_summary=AsyncMock(side_effect=read_summary))
+        mind.recollection.conversation_data = data
+        mind.recollection.embedder = SN(embed_query=AsyncMock(return_value=[1.0]))
+        mind.recollection.retriever.recall_split = AsyncMock(return_value=([], []))
+        mind.recollection.retriever.load_relation_snippets = AsyncMock(return_value=[])
+        route = AsyncMock(side_effect=select)
+        monkeypatch.setattr("agent.memory.recall_routing.route_recall", route)
+        monkeypatch.setattr(recall_inputs, "recall_cross_channel", AsyncMock(return_value=[]))
+        monkeypatch.setattr(recall_inputs, "match_skills", AsyncMock(return_value=[]))
+        message = MessageUser(uid="shared", adapter_key="webui", text_content="resume")
+        async with recall_turn(message.entity_scope):
+            result = await mind.recollection.collect([{"role": "user", "content": "resume"}], message,
+                                                     scope=message.entity_scope, adapter="webui", lean=False)
+        assert route.await_args.kwargs["summary"] == ("prior verified constraints" if summary_state == "ready" else "")
+        assert result.summary == (None if summary_state == "error" else {"summary": "prior verified constraints"})
+        data.get_conversation_summary.assert_awaited_once_with(message)
+
+    async def test_cancellation_reaps_borrowed_summary_and_does_not_start_route(self, monkeypatch):
+        from agent.memory.recall_policy import recall_turn
+        from agent.messages import MessageUser
+
+        mind = _fake_mind()
+        entered, closed = asyncio.Event(), asyncio.Event()
+
+        async def summary(*args):
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                closed.set()
+
+        mind.recollection.conversation_data = SN(get_conversation_summary=summary)
+        mind.recollection.embedder = SN(embed_query=AsyncMock(return_value=[1.0]))
+        route = AsyncMock()
+        monkeypatch.setattr("agent.memory.recall_routing.route_recall", route)
+        message = MessageUser(uid="shared", adapter_key="telegram", text_content="resume")
+        async with recall_turn(message.entity_scope):
+            task = asyncio.create_task(mind.recollection.collect([{"role": "user", "content": "resume"}], message,
+                                       scope=message.entity_scope, adapter="telegram", lean=False))
+            await asyncio.wait_for(entered.wait(), 1)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        assert closed.is_set()
+        route.assert_not_awaited()
+
     async def test_route_and_shared_vector_are_prepared_concurrently(self, monkeypatch):
         from agent.memory.recall_policy import RecallPolicy
 
@@ -101,7 +170,7 @@ class TestLeanRecollection:
             started.set()
             return [1.0]
 
-        async def route(conversation, scope):
+        async def route(conversation, scope, **kwargs):
             await asyncio.wait_for(started.wait(), timeout=1)
             return RecallPolicy(), ""
 

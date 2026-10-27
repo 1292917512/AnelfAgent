@@ -176,7 +176,7 @@ register_configs_safe({"memory/recall": {
         "default": 1.0, "min": 0.1, "max": 5.0, "unit": "秒", "advanced": True,
     },
     "memory_recall_route_confidence": {
-        "description": "减少检索所需的最低判断概率：不检索须确信无需历史事实，快速检索须确信无需历史关联；有歧义保留深入检索",
+        "description": "减少检索所需的最低判断概率：须确认背景充分；不检索还须确认无需历史事实，快速检索须确认仅需单项历史事实、无需历史关联；有歧义保留深入检索",
         "default": 0.9, "min": 0.8, "max": 1.0, "advanced": True,
     },
     "memory_recall_level": {

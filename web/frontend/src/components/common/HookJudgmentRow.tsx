@@ -18,6 +18,9 @@ export function HookJudgmentRow({ judgment }: { judgment: HookJudgment }) {
   const [expanded, setExpanded] = useState(false);
   const detailsId = useId();
   const running = judgment.status === "running";
+  const routing = judgment.policy === "routing";
+  const selection = routing && judgment.status === "proceed" && judgment.selection
+    ? t(`hookJudgment.levels.${judgment.selection}`, { defaultValue: judgment.selection }) : "";
   const now = useNow(running);
   const elapsed = running ? Math.max(0, now - judgment.started_at * 1000) : judgment.duration_ms;
   const slow = judgment.status !== "cancelled" && (judgment.slow || (running && judgment.slow_after_ms > 0 && elapsed >= judgment.slow_after_ms));
@@ -33,7 +36,7 @@ export function HookJudgmentRow({ judgment }: { judgment: HookJudgment }) {
         {running ? <Loader2 size={13} className="shrink-0 animate-spin text-accent motion-reduce:animate-none" /> : <Gauge size={13} className="shrink-0 text-muted" />}
         <span className="shrink-0 font-medium text-heading">{judgment.provider}</span>
         <span className="min-w-0 flex-1 truncate text-foreground">{judgment.task}</span>
-        <Badge variant={variants[judgment.status]}>{t(`hookJudgment.status.${judgment.status}`)}</Badge>
+        <Badge variant={variants[judgment.status]}>{selection || t(`hookJudgment.status.${judgment.status}`)}</Badge>
         {slow && <TriangleAlert size={13} className="shrink-0 text-warn" aria-label={t("hookJudgment.slow", { ms: judgment.slow_after_ms })} />}
         <span className="shrink-0 tabular-nums text-muted">{duration}</span>
         <ChevronDown size={13} className={cn("shrink-0 text-muted transition-transform motion-reduce:transition-none", expanded && "rotate-180")} />
@@ -46,7 +49,7 @@ export function HookJudgmentRow({ judgment }: { judgment: HookJudgment }) {
             <Link to="/models?tab=judgment" className="ml-1 underline underline-offset-2">{t("hookJudgment.testSpeed")}</Link>
           </span>
         </div>}
-        {judgment.probability != null && <p className="text-muted">{t("hookJudgment.probability", { value: percent(judgment.probability) })}</p>}
+        {judgment.probability != null && <p className="text-muted">{t(routing ? "hookJudgment.routingProbability" : "hookJudgment.probability", { value: percent(judgment.probability) })}</p>}
         <p className="break-words leading-relaxed text-foreground">{judgment.reason || t("hookJudgment.evaluating")}</p>
         {judgment.basis && <p className="break-words leading-relaxed text-muted">
           {t("hookJudgment.basis", { value: judgment.basis })}
@@ -59,8 +62,8 @@ export function HookJudgmentRow({ judgment }: { judgment: HookJudgment }) {
             <dt>{t("hookJudgment.usage")}</dt><dd className="mt-0.5 tabular-nums text-foreground">{t("hookJudgment.tokens", { input: judgment.input_tokens, output: judgment.output_tokens })}</dd>
           </div>}
         </dl>
-        <p className="leading-relaxed text-muted">{t(judgment.policy === "selective" ? "hookJudgment.selectivePolicy" : "hookJudgment.policy", { threshold: percent(judgment.threshold), confidence: percent(1 - judgment.threshold) })}</p>
-        {judgment.input_truncated && <p className="text-warn">{t("hookJudgment.truncated")}</p>}
+        <p className="leading-relaxed text-muted">{t(routing ? "hookJudgment.routingPolicy" : judgment.policy === "selective" ? "hookJudgment.selectivePolicy" : "hookJudgment.policy", { threshold: percent(judgment.threshold), confidence: percent(1 - judgment.threshold) })}</p>
+        {judgment.input_truncated && <p className="text-warn">{t(routing ? "hookJudgment.routingExcerpt" : "hookJudgment.truncated")}</p>}
       </div>}
     </div>
   );

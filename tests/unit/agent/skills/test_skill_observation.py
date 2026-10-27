@@ -32,7 +32,8 @@ async def test_skill_evidence_tracks_actual_budget_and_never_changes_wire_messag
         ("inspect", "candidate", 0.9), ("archive-check", "candidate", 0.426)]
     assert normalize_for_send(messages) == normalize_for_send([
         {key: value for key, value in message.items() if key != "_source"} for message in original])
-    monkeypatch.setattr("core.config.get_config_int", lambda key, default: 400)
+    from core.config import ConfigManager
+    ConfigManager.set("memory_inject_max_chars", 400)
     visible = context_skills(apply_memory_budget(messages))
     assert len(visible) == 1 and visible[0]["name"] == "inspect" and visible[0]["truncated"]
     assert context_skills(apply_memory_budget([{"content": "Earlier memories " * 400}, *messages])) == []

@@ -318,7 +318,7 @@ _PROMPT_CACHE_CONFIGS = {
             "default": True,
         },
         "memory_inject_max_chars": {
-            "description": "memory 层（语义召回+画像+技能）注入的总字符预算上限",
+            "description": "画像与检索证据（语义召回/跨会话/技能）的内容总字符上限；两类各保留空间，未用额度共享，永久记忆独立保留",
             "default": 6000,
             "advanced": True,
             "unit": "字符",

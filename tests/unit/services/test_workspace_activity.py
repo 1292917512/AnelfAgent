@@ -222,6 +222,7 @@ async def test_context_and_blocked_tools_are_visible_with_terminal_truth(activit
 
 async def test_observed_preparation_and_tools_keep_concurrent_scopes_and_terminal_states(activity, monkeypatch):
     from agent.context.observation import observe_preparation
+    from agent.context.preparation import allocate_recollection
     from agent.mind.diagnostics import ExecutionDiagnostics
     from agent.mind.execution import tool_execution
     from core.tool_context import tool_request
@@ -235,6 +236,9 @@ async def test_observed_preparation_and_tools_keep_concurrent_scopes_and_termina
     @observe_preparation
     async def prepare(messages):
         await asyncio.sleep(0)
+        report = allocate_recollection([], messages).report("deep")
+        await event_bus.emit("activity_context", {"status": "running", "recall": report})
+        report["level"] = "off"  # 观测持有自己的副本，终态摘要保留同一轮统计。
         return messages
 
     async def execute(tc):
@@ -269,6 +273,8 @@ async def test_observed_preparation_and_tools_keep_concurrent_scopes_and_termina
         for scope, cancelled in [("user_webui:1#a", False), ("user_qq:2", True)]:
             context, tool = runs[scope]["entries"]
             assert context["blocks"][0]["content"] == scope
+            assert context["recall"]["level"] == "deep"
+            assert context["recall"]["evidence"]["injected_chars"] == len(scope)
             assert tool["status"] == ("interrupted" if cancelled else "done")
             assert tool["duration_ms"] >= 0
     finally:

@@ -219,7 +219,16 @@
     "tokens": "Input {{input}} · output {{output}} tokens",
     "policy": "Skip only when necessity ≤ {{threshold}} and the unnecessary-work basis probability ≥ {{confidence}}; otherwise proceed.",
     "truncated": "Evidence exceeded the assessment budget. No judgment call was made; original work continues to avoid missing facts.",
-    "selectivePolicy": "Assess each candidate separately; admit only when its useful-choice probability reaches {{threshold}}. Skip uncertain results; use local matching when judgment is unavailable."
+    "selectivePolicy": "Assess each candidate separately; admit only when its useful-choice probability reaches {{threshold}}. Skip uncertain results; use local matching when judgment is unavailable.",
+    "levels": {
+      "off": "No automatic search",
+      "tags": "Tag search",
+      "fast": "Local recall",
+      "deep": "Deep recall"
+    },
+    "routingProbability": "Weakest assessment supporting lighter retrieval: {{value}} (not recall accuracy)",
+    "routingPolicy": "Reduce retrieval only when context is grounded, history needs are clear, and each assessment reaches {{threshold}}. Missing, contradictory or uncertain evidence keeps deep recall.",
+    "routingExcerpt": "Assessment uses bounded dialogue and summary excerpts, not complete history. Lighter retrieval still requires grounded context."
   },
   "hookFlow": {
     "title": "Execution flow",

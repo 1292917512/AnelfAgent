@@ -219,7 +219,16 @@
     "tokens": "输入 {{input}} · 输出 {{output}} token",
     "policy": "仅必要性 ≤ {{threshold}} 且无需执行的依据概率 ≥ {{confidence}} 才跳过；其余继续。",
     "truncated": "事实超出预判预算，未调用判断模型，保留原流程以避免遗漏。",
-    "selectivePolicy": "逐条判断候选，被判定有用的概率达到 {{threshold}} 才补充；不确定则跳过，无判断服务时沿用本地匹配。"
+    "selectivePolicy": "逐条判断候选，被判定有用的概率达到 {{threshold}} 才补充；不确定则跳过，无判断服务时沿用本地匹配。",
+    "levels": {
+      "off": "未自动检索",
+      "tags": "标签召回",
+      "fast": "本地召回",
+      "deep": "深入召回"
+    },
+    "routingProbability": "采用较轻检索的最低判断把握：{{value}}（不等于召回准确率）",
+    "routingPolicy": "只有背景充分、历史需求明确且各判断达到 {{threshold}}，才减少检索；缺失、矛盾或不确定保留深入召回。",
+    "routingExcerpt": "判断使用有界对话/摘要摘录，未覆盖全部历史；是否减少检索仍需结合背景充分性。"
   },
   "hookFlow": {
     "title": "执行流程",

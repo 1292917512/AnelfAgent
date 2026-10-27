@@ -52,7 +52,8 @@ class HookJudgment:
     input_truncated: bool = False
     slow_after_ms: int = 0
     slow: bool = False
-    policy: Literal["preserve", "selective"] = "preserve"
+    policy: Literal["preserve", "selective", "routing"] = "preserve"
+    selection: str = ""
 
 
 @dataclass
