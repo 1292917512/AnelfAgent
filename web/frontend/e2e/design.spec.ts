@@ -95,6 +95,9 @@ test("overflowing memory tabs stay reachable by arrows, wheel, touch and keyboar
   await expect(last).toBeFocused();
   await expect.poll(selectedIsVisible).toBe(true);
   await page.setViewportSize({ width: 3200, height: 1000 });
+  // The page stays capped at 1440px even on a wide viewport; remove that
+  // unrelated container constraint to exercise the no-overflow tab state.
+  await page.locator(".page-container").evaluate(element => { element.style.maxWidth = "none"; });
   await expect(next).toBeHidden();
   await page.setViewportSize({ width: 360, height: 800 });
   await expect(next).toBeDisabled();
