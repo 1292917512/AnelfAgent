@@ -3,10 +3,14 @@
 from __future__ import annotations
 
 import time
+from dataclasses import asdict
+from difflib import unified_diff
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from agent.memory.profiles import ProfileWriter
 from agent.memory.provenance import visible_provenance
+from agent.storage.profile_store import ProfileConflict as ProfileConflict
 from core.log import log
 from services._runtime import require_runtime
 
@@ -105,7 +109,10 @@ class MemoryService:
             return False
         return await store.delete(mem_id, actor="web")
 
-    async def update_ltm(self, mem_id: int, content: str, importance: float = 0.5, tags: Optional[List[str]] = None) -> bool:
+    async def update_ltm(
+        self, mem_id: int, content: str, importance: float = 0.5, tags: Optional[List[str]] = None,
+        *, expected_version: int,
+    ) -> bool:
         rt = require_runtime()
         store = rt.memory_store
         if not store:
@@ -117,7 +124,16 @@ class MemoryService:
         entry.importance = importance
         if tags is not None:
             entry.tags = tags
-        return await store.update(entry, actor="web")
+        if not await store.update(entry, actor="web", expected_version=expected_version):
+            raise ProfileConflict("记忆已变化，请重新读取后修改")
+        return True
+
+    async def memory_timeline(self, memory_id: int = 0, before_id: int = 0, limit: int = 30) -> dict[str, Any]:
+        store = require_runtime().memory_store
+        items = await store.list_audit(memory_id, limit + 1, before_id=before_id) if store else []
+        from core.config import get_config_int
+        return {"items": items[:limit], "next_cursor": items[limit - 1]["id"] if len(items) > limit else None,
+                "retention_days": get_config_int("memory_audit_retention_days", 30)}
 
     async def apply_ltm_evidence(self, mem_id: int, signal: str) -> Optional[Dict[str, Any]]:
         """对一条反思施加用户证据信号（确认/反驳）——反馈回路的人审入口。
@@ -143,7 +159,8 @@ class MemoryService:
         if REFLECTION_TAG not in (entry.tags or []):
             raise ValueError("证据信号仅作用于反思条目")
         record_user_feedback(entry, "confirmed" if signal == "confirm" else "denied")
-        await store.update(entry)
+        if not await store.update(entry, actor="web:evidence", expected_version=entry.version):
+            raise ProfileConflict("反思已变化，请重新读取后反馈")
         return {"ok": True, "score": round(evidence.evidence_score(entry), 3)}
 
     async def create_ltm(self, content: str, memory_type: str = "semantic", importance: float = 0.5, tags: Optional[List[str]] = None) -> int:
@@ -348,27 +365,55 @@ class MemoryService:
 
     async def list_entities(self) -> List[Dict[str, Any]]:
         rt = require_runtime()
-        return await rt.data_center.sqlite.list_entity_profiles()
+        writer = ProfileWriter(rt.data_center.everything_data, rt.memory_store)
+        items = await rt.data_center.sqlite.list_entity_profiles()
+        for item in items:
+            current = await writer.read(item["scope_type"], item["scope_id"])
+            item.update(personality=current["personality"], revision=current["revision"])
+        return items
 
     async def save_entity(
-        self, scope_type: str, scope_id: str, personality: str,
-    ) -> None:
+        self, scope_type: str, scope_id: str, personality: str, revision: str,
+    ) -> dict[str, Any]:
         rt = require_runtime()
-        old = await rt.data_center.sqlite.get_entity_personality(
-            scope_type=scope_type, scope_id=scope_id,
+        result = await ProfileWriter(rt.data_center.everything_data, rt.memory_store).write(
+            scope_type, scope_id, personality, expected_revision=revision, actor="web", reason="手动修订画像",
         )
-        conv_num = old.get("conv_num", 0) if old else 0
-        conv_update_num = old.get("conv_update_num", 0) if old else 0
-        await rt.data_center.sqlite.set_entity_personality(
-            scope_type=scope_type, scope_id=scope_id, personality=personality,
-            conv_num=conv_num, conv_update_num=conv_update_num,
-        )
+        return asdict(result)
 
-    async def delete_entity(self, scope_type: str, scope_id: str) -> None:
+    async def delete_entity(self, scope_type: str, scope_id: str, revision: str) -> dict[str, Any]:
         rt = require_runtime()
-        await rt.data_center.sqlite.delete_entity_profile(
-            scope_type=scope_type, scope_id=scope_id,
+        result = await ProfileWriter(rt.data_center.everything_data, rt.memory_store).write(
+            scope_type, scope_id, "", expected_revision=revision, actor="web", delete=True,
         )
+        return asdict(result)
+
+    async def profile_timeline(
+        self, scope_type: str = "", scope_id: str = "", before_id: int = 0, limit: int = 30,
+    ) -> dict[str, Any]:
+        rt = require_runtime()
+        if scope_type:
+            current = await ProfileWriter(rt.data_center.everything_data, rt.memory_store).read(scope_type, scope_id)
+            scope_type, scope_id = current["scope_type"], current["scope_id"]
+        items = await rt.data_center.sqlite.profiles.timeline(
+            scope_type=scope_type, scope_id=scope_id, before_id=before_id, limit=limit + 1,
+        )
+        return {"items": [item.summary() for item in items[:limit]],
+                "next_cursor": items[limit - 1].id if len(items) > limit else None}
+
+    async def profile_operation(self, operation_id: str) -> dict[str, Any] | None:
+        operation = await require_runtime().data_center.sqlite.profiles.get_operation(operation_id)
+        if operation is None:
+            return None
+        return {**asdict(operation), "diff": "\n".join(unified_diff(
+            operation.before_content.splitlines(), operation.after_content.splitlines(),
+            fromfile="before", tofile="after", lineterm="",
+        ))}
+
+    async def sync_profile(self, operation_id: str) -> dict[str, Any] | None:
+        rt = require_runtime()
+        result = await ProfileWriter(rt.data_center.everything_data, rt.memory_store).resume(operation_id)
+        return asdict(result) if result else None
 
     # ==================================================================
     # 实体别名（跨平台身份关联）

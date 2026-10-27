@@ -644,7 +644,7 @@ LiteLLM 升级另须运行[缓存健康门](context-cache.md#用量与版本变�
 
 | 机制 | 位置 | 说明 |
 |------|------|------|
-| 记忆体系铁律 | `agent/memory/rules_doc.py`（文档持有）+ `config/memory_rules.md`（文件载体，ConfigPaths.MEMORY_RULES）+ `agent.context.assembly._memory_rules_text` | 写入路由（五系统 + 技能分流，一条信息只进一个系统、出处用指针）/ 标签纪律（前缀语义、打标即入联想网络、写前 memory_index 查既有形态、tags 软加权 vs filter_tags 硬过滤）/ 主标签记忆用法 / 披露边界 / 查询路由 / 落盘诚实 / 检索纪律 / 口头纠正（用户说「记错了」时 recall 定位 → update_memory 原地修正 / forget 归档，禁止新旧矛盾并存）/ 图谱治理路由条。缺失时以 DEFAULT_RULES 种子落盘；AI 无写入路径，人类经 Web 记忆页「规则」标签整文档编辑或手编文件；读取走 mtime 缓存，生效文本参与 stable 指纹门控 |
+| 记忆体系铁律 | `agent/memory/rules_doc.py`（文档持有）+ `config/memory_rules.md`（文件载体，ConfigPaths.MEMORY_RULES）+ `agent.context.assembly._memory_rules_text` | 写入路由（五系统 + 技能分流，一条信息只进一个系统、出处用指针）/ 标签纪律（前缀语义、打标即入联想网络、写前 memory_index 查既有形态、tags 软加权 vs filter_tags 硬过滤）/ 主标签记忆用法 / 披露边界 / 查询路由 / 落盘诚实 / 检索纪律 / 口头纠正（用户说「记错了」时 recall 定位 → update_memory 原地修正 / forget 归档，禁止新旧矛盾并存）/ 图谱治理路由条。缺失时以 DEFAULT_RULES 种子落盘；AI 无写入路径，人类经 Web 记忆页「规则」标签整文档编辑或手编文件；每个回复周期读取当前文件，生效文本参与 stable 指纹门控 |
 | 主标签记忆（main:hub） | `agent/memory/hub.py` + provider `memory_hub`（priority 31） | 每轮模型调用读取权威条目，工具链后的动态区注入；初始上下文、自动召回（含近期兜底与深探）、人物画像及永久置顶均不保存 hub 副本。显式工具查询仍可读取 hub，工具历史保留查询时的结果。AI 经 memorize（type:permanent + main:hub）整段 upsert；心跳 `ensure_hub` 自愈骨架；forget 拦截归档。`memory_hub_inject_enabled` 控制注入，字符预算 `memory_hub_inject_max_chars` 默认 3000，超长保留首尾并标记省略。hub 维护资产指针与接力线索，目标进度归 planning |
 | 便签受管区块硬保护 | `agent/memory/notes.py`（`_MANAGED_BLOCK_RE` + `_assert_managed_blocks_intact`） | `<!-- AUTO:name BEGIN/END -->` 标记对圈定的系统受管区块，便签写工具写入前校验逐字节保留，改动/删除即拒绝；系统写入路径直走 `_atomic_write` 天然豁免。通用读写原语 `update_managed_block`/`read_managed_block`（AUTO:memory-status / AUTO:heartbeat-status） |
 | 标签索引观测 | `agent/heartbeat/engine.py::_write_memory_status` | 状态区块仅保留 AI 可行动项（库容/cognee 同步与熔断/最近整理/便签超标）；标签膨胀提醒条件化（总数超 `memory_tag_bloat_threshold`（默认 400，0=关）才注入归并提醒行）；运维遥测不进 prompt，由 memory_stats 工具按需查询 |
@@ -657,12 +657,23 @@ LiteLLM 升级另须运行[缓存健康门](context-cache.md#用量与版本变�
 memorize 返回参数错误，不把其事实转挂到当前会话。旧格式保留给存量迁移与治理，不猜测频道。
 update_memory 使用咨询模式，保留传入标签并返回建议，不报告未执行的改写/拒收。
 
-写入闸门和归并议程按权威数据库修订号复核标签统计，读取等待当前写事务结束，避免 TTL 缓存
-或回滚前的中间状态影响治理；普通召回继续复用 TTL。统计或规则处理失败放行，取消向上传播。
+写入闸门和归并议程按 `tag_revision` 复核标签统计，读取等待当前写事务结束，避免 TTL 缓存
+或回滚前的中间状态影响治理；普通召回继续复用 TTL，到期仅在标签修订变化时重建。
+修订由事务内触发器跟踪活跃记忆的标签/存续状态和活跃图谱节点的 key/label/存续状态，
+正文、重要性的正值调整及 Cognee 同步队列变化不触发词表重建。统计或规则处理失败放行，取消向上传播。
 标签豁免先过滤再截取候选，全部生效规则参与过滤；memory_index 的 tag_exemptions 每页最多
 20 条，使用 tag_exemptions_next_offset 续页，按返回签名经 tag_curation_exempt 撤销。
 分页仅限制工具输出，不限制规则生效范围。召回通道胜出计数只统计最终返回且有正贡献的结果。
 这些建议与豁免只进入动态工具结果，提取词表只进入内部辅助调用，不改主对话稳定前缀。
+
+`memory_index(tag=...)` 按 ID 倒序返回最多 20 条，`count` 为本页条数，`total` 为当前活跃总数，
+`next_before_id` 传入下一次的 `before_id`（null 表示结束）。边改标边续页不会因前页条目移出标签而
+跳过旧条目；新写入或重新挂入的条目从首页复查。每条附 `version`，治理时传给 `update_memory`
+的 `expected_version`。更新期间始终校验读取版本，冲突不写入，须重读后重新判断。
+
+混合召回的软标签以任一精确命中进入候选池，多标签候选先按 IDF 匹配强度限量，避免近期通用标签
+挤掉旧的具体主题；硬标签过滤在候选限量前执行。联想检索复用该候选选择，已返回 ID 在限量前
+排除，避免占满联想配额。`search_by_tags` 的全部命中契约保持不变，软标签不隐式展开层级或别名。
 
 自然语言提及只映射到唯一的标签：同名实体不自动择一，拉丁词不匹配其他单词内部；
 明确提供的标签仍按原有接口检索。文档频率按每条记忆去重计数，结构性标签不参与联想。
@@ -673,10 +684,44 @@ update_memory 使用咨询模式，保留传入标签并返回建议，不报告
 | 机制 | 位置 | 说明 |
 |------|------|------|
 | 证据数学 | `agent/memory/evidence.py`（纯函数零依赖） | 记忆/反思的「可信度」维度（与「记不记得住」分维）：rein/disp 双通道各有独立时钟与半衰期（负向 180 天刻意长于正向 30 天）、读时衰减不改存储、importance 阶梯种子（≥0.9 直通 0.8）、用户确认连击加成、protected 恒 +inf。证据回流来自反思反馈分类与显式人审；去重、合并、任务总结和 AI 自述不作为用户确认 |
-| 反思生命周期 | `agent/memory/reflection_lifecycle.py` + consolidator 集成 | 对象是 `type:reflection` 标签的记忆（self_reflection 任务产出播种，memorize/任务结果两写入点接入）。状态机 pending→confirmed（score≥1.0）→晋升（score≥2.0 且过冷却）/denied；负分进 sub_zero 每日倒计时到期归档。晋升 = LLM 合并裁决（promote/merge/reject，复用 dedup.light_llm）写入目标画像——**晋升是人格生长的唯一通道**；LLM 失败只退避重试绝不静默晋升，5 次死信。终态幂等，重入安全 |
+| 反思生命周期 | `agent/memory/reflection_lifecycle.py` + consolidator 集成 | 对象是 `type:reflection` 标签的记忆（self_reflection 任务产出播种，memorize/任务结果两写入点接入）。状态机 pending→confirmed（score≥1.0）→晋升（score≥2.0 且过冷却）/denied；负分进 sub_zero 每日倒计时到期归档。自动晋升先由 LLM 判断真正的认知主体，再裁决 promote/merge/reject（复用 dedup.light_llm）；参与人标签不等于主体。决策与操作 ID 先持久化，提交校验来源版本与画像基线；失败退避重试，累计 5 次延长至一天，不把基础设施失败记为 denied。AI 也可明确调用画像工具自主修订 |
 | 证据反馈回路 | `reflection_lifecycle.load_verification_block` / `classify_reflection_feedback` / `record_user_feedback` + auto_capture 尾部 | pending/confirmed 反思经画像区「待验证认知」块呈现进对话（呈现即登记 surfaced_at，24h 冷却防追问骚扰）→ auto_capture 周期把该 scope 用户新消息对着「已呈现未裁决」条目跑 light_llm 分类（confirmed +1.0 / denied +1.0 反驳 / ignored -0.2）→ 证据回流驱动晋升/归档；Web 记忆页 ✓/👎 按钮走同一 record_user_feedback（人审直改）。**可见性规则**：带 user:/group: 标签的反思只在对应 scope（含群聊参与人）可见，无实体标签的自认知全局可见——A 的反思绝不注入 B 的对话 |
-| 人格双层 | `agent/memory/self_profile.py` + `agent/mind/recall/coordinator.py` | 宪法层=personas/*.json（用户编辑，stable 层冻结）；生长层=`agent:self` 自画像（personality 表 + ENTITY 记忆镜像双写，覆盖式更新前备份）——随画像区每轮注入；已确认反思块紧随其后（score>0 才呈现）。关系动态走图谱 `agent:self` 节点。铁律已登记路由：自我认知只能写反思等晋升，禁止直接改自画像 |
+| 人格双层 | `agent/memory/self_profile.py` + `agent/mind/recall/coordinator.py` | 宪法层=personas/*.json（用户编辑，stable 层冻结）；生长层=`agent:self` 自画像（entity_profile 主表 + 可重试同步的 ENTITY 镜像）——随画像区每轮注入；已确认反思块紧随其后（score>0 才呈现）。关系动态走图谱 `agent:self` 节点。默认规则区分待验证反思与明确画像修订：AI 可以依据事实直接修订 agent:self，无需人工审核；已有自定义 memory_rules.md 不自动覆盖 |
 | 积极性频率 | `agent/mind/proactivity.py` | `proactivity_level`（0-1 默认 0.5）：元决策 prompt 注入档位指导、心跳 idle 调度拍数按 `1.5-level` 缩放；AI 可经 update_entity_config 自调 |
+
+## 画像操作与保留边界
+
+画像正文的事实源是主库 `entity_profile`。Web、AI 工具、心跳分析与自动晋升统一经
+`ProfileWriter` 提交；`ProfileStore` 在同一主库事务中写入正文和操作回执。编辑先读取
+`revision`，正文或主身份变化时返回冲突，调用方重读后重新决策；会话计数变化不使编辑失效。
+镜像原位更新，保留既有记忆 ID、元数据和各身份独立计数。跨库同步失败不撤销已提交正文；
+既有维护心跳或显式同步操作读取最新正文恢复镜像与在线缓存，不重跑模型、不重放旧正文。
+
+AI 使用 `get_entity_profile` / `update_entity_profile` / `delete_entity_profile` 管理
+user、group 和 agent:self；`profile_history` 按需查看来源、理由、同步状态及前后全文，
+`sync_profiles` 恢复同步，`memory_history` 分页查询普通记忆操作。Web 画像详情提供同样的编辑、删除、时间线和同步重试能力，
+差异和全文只是解释信息，不构成人工审核流程。历史查询不注入稳定前缀。
+写入回执的 `changed` 表示本次调用是否改变当前正文；重试同步只补齐镜像，始终返回
+`changed=false`，不能被解释为新修订或新证据。
+
+历史配置由 `memory/profile_history` 注册：默认保留 30 天、每个画像最多 50 条、全局
+最多 5000 条已完成操作，既有维护心跳执行清理。未同步或来源状态尚未落盘的回执保留到恢复
+完成，避免清理导致重复晋升；故障积压须通过同步状态排查，不能静默丢弃。无变化保存不产生
+空修订。普通记忆继续使用既有 30 天审计窗口，增加结构化状态、原因和操作关联，不复制全文。
+
+保留配置复用 ConfigRegistry 元数据与 ConfigManager 持久化：Web 配置中心和 AI 的
+`get_entity_config("memory/profile_history")` / `update_entity_config` 使用同一声明，
+无需在前端增加字段。`ANELF_PROFILE_HISTORY_DAYS` 等环境变量仍优先于文件值，且不回写文件；
+显式配置保持原值，修改默认值不覆盖用户配置。清理按维护时读取的生效值执行，只清理完成回执。
+
+升级只增加操作表与审计字段，不回填虚构历史，不重写旧画像、不迁移别名、不重置晋升状态；
+旧备份文件保留但不再追加。首次实际修改自然保留旧正文。任务执行日志只有经现有判断调用
+确认具有长期价值才进入记忆，无法判断时保留在既有任务历史摘要，不默认存成反思。
+
+真实模型验收入口为 `tests/integration/test_profile_revision_e2e.py`，设置
+`PROFILE_REVISION_E2E=1` 后运行。测试读取本地已配置的聊天/嵌入模型和实际规则文件，
+经生产工具注册表验证自主修订、历史查询、配置读取、镜像召回及多参与者反思的晋升归属。
+配置副本、数据库和模型运行账本均写入测试临时目录；会消费真实模型 token，默认跳过。
 
 ## 索引完整性：合并统一 + mem:ID + 谱系审计
 
@@ -687,7 +732,7 @@ update_memory 使用咨询模式，保留传入标签并返回建议，不报告
 | 合并语义统一 | `memory_store.merge_into_keep`（唯一底层） | keep（有效分最高者）原地演进（标签并集/访问累加/max 重要性/可选合成内容，version+1），drop 软标记 importance=0 + `metadata.merged_into` 退出全部召回后入既有归档/物删生命周期。protected/ENTITY 画像/规划条目双向准入（不可作 keep 也不可作 drop） |
 | 自动去重边界 | `consolidator` + `merge_into_keep(expected_versions=...)` | 向量相似仅用于寻找候选；正文、来源、标签和元数据均一致才自动合并。事务内复核所有候选版本，期间有修改则取消合并，保留新事实与不同出处 |
 | mem:ID 分层解析 | `memory_store.resolve` + get/update/forget 工具 | 五态：active（含重定向落地）/ merged（链过深）/ archived（可恢复）/ tombstone（gist + redirect_to）/ missing——被合并的旧 id 沿 `merged_into` 链（限 3 跳防环）解析到存活条目，便签与图谱中的 mem:ID 永不失效；变更类操作遇非活跃条目显式引导（防改僵尸） |
-| 谱系审计 | `memory_audit` 表（`actor` 列）+ `list_audit` | 全变更路径（add/update/delete/archive/merge/restore）带触发方归因（tool:*/auto_capture/consolidator/heartbeat_*/task:*/web/planning/reflection*）；出口：get_memory 附最近 5 条事件、`GET /ltm/{id}/audit`；30 天保留（长期谱系走 metadata merged_from/into） |
+| 谱系审计 | `memory_audit` 表（`actor` 列）+ `list_audit` | 全变更路径（add/update/delete/archive/merge/restore）带触发方归因（tool:*/auto_capture/consolidator/heartbeat_*/task:*/web/planning/reflection*）；出口：get_memory 附最近 5 条事件、`GET /memory/timeline?memory_id={id}`（游标分页）；30 天保留（长期谱系走 metadata merged_from/into） |
 | 条目级语义链接 | memorize `linked_to` 参数 + recall 联想带出 | 「本条纠正/补充/依赖哪条」的显式声明（上限 5，存在性校验）；recall 命中关联方时 related 一跳带出（hop="link" 优先于标签共现）。与标签共现职责切分：具体关系用 linked_to，同主题关联靠标签 |
 | 标签归并议程 | `tag_intel.merge_candidates` + consolidator/心跳 memory-status 区块 + `memory_index` 输出 | 确定性候选两类：写法变体（NFKC/小写/空白归一同形）与 topic 包含关系对（df≥2，归并高频方）——事实归系统、决策归 AI（经 update_memory 执行）；无候选零注入；僵尸条目（importance=0）不进统计 |
 
@@ -697,5 +742,5 @@ update_memory 使用咨询模式，保留传入标签并返回建议，不报告
 |------|------|------|
 | temporal_scope 时间语义 | `store/_shared.py::temporal_is_past/temporal_weight` + 检索评分 + 行尾注 | event 提取输出 temporal_scope（episode/state/pattern 白名单）+ `activity_date`。读时判定超期（state 7 天 / episode 3 天，pattern 永不）→ 注入行追加「过去时·可能已变」尾注 + 检索整体降权（`memory_temporal_expired_weight` 0.5，聊往事仍可低权命中，淘汰仍归遗忘曲线）；memorize 工具补 temporal_scope 参数 |
 | 防复读 | `agent/memory/anti_repeat.py` + freshness 块（VOL_SESSION+2） | 生成侧软提示：近期 AI 回复 df≥3 的高频 ngram top5 引导全部回复周期换角度；出站侧的重复内容由「出站事实」provider 动态注入覆盖（见[频道分册](channels-and-scopes.md)） |
-| importance 校准 | `auto_capture._EXTRACT_PROMPT` 校准表 + memorize 工具描述 + `self_profile.PROFILE_MEMORY_IMPORTANCE` | 提取侧锚点表（0.9+ 身份级/明确「记住这个」，0.8 长期偏好与承诺，0.7 阶段动态，0.6 线索，0.5 弱线索不预过滤）；画像 ENTITY 镜像 importance 统一 0.9（身份级事实，四处写入点共用单点常量） |
+| importance 校准 | `auto_capture._EXTRACT_PROMPT` 校准表 + memorize 工具描述 + `self_profile.PROFILE_MEMORY_IMPORTANCE` | 提取侧锚点表（0.9+ 身份级/明确「记住这个」，0.8 长期偏好与承诺，0.7 阶段动态，0.6 线索，0.5 弱线索不预过滤）；画像 ENTITY 镜像 importance 统一 0.9（身份级事实，由 ProfileWriter 统一维护） |
 | 事件时间本体 | `agent/memory/auto_capture.py` | event 提取输出 temporal_scope（白名单校验，未提供则留空）落 metadata；date 落 `activity_date` |

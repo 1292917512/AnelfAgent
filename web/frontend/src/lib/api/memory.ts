@@ -2,6 +2,7 @@
 
 import { api } from "./client";
 import type {
+  EntityProfile, EntityAlias, ProfileWriteResult, ProfileOperation, ProfileOperationDetail, MemoryOperation, OperationPage, MemoryRecord,
   CogneeConfig,
   CogneeCoverageRepairResult,
   CogneeDatasetCatalog,
@@ -53,11 +54,11 @@ export const memoryApi = {
   ltm: {
     list: (memoryType?: string, limit = 200) =>
       api.get("/memory/ltm", { params: { memory_type: memoryType, limit } }),
-    get: (id: number) => api.get(`/memory/ltm/${id}`),
+    get: (id: number) => api.get<MemoryRecord>(`/memory/ltm/${id}`),
     create: (content: string, memoryType = "semantic", importance = 0.5, tags?: string[]) =>
       api.post("/memory/ltm", { content, memory_type: memoryType, importance, tags }),
-    update: (id: number, content: string, importance = 0.5, tags?: string[]) =>
-      api.put(`/memory/ltm/${id}`, { content, importance, tags }),
+    update: (id: number, content: string, importance: number, expectedVersion: number, tags?: string[]) =>
+      api.put(`/memory/ltm/${id}`, { content, importance, tags, expected_version: expectedVersion }),
     delete: (id: number) => api.delete(`/memory/ltm/${id}`),
     clear: (memoryType?: string) => api.delete("/memory/ltm", { params: { memory_type: memoryType } }),
     stats: () => api.get("/memory/ltm/stats"),
@@ -100,12 +101,16 @@ export const memoryApi = {
       api.post("/memory/conversations/clear", { scope_type: scopeType, scope_id: scopeId }),
   },
   entities: {
-    list: () => api.get("/memory/entities"),
-    save: (scopeType: string, scopeId: string, personality: string) =>
-      api.put("/memory/entities", { scope_type: scopeType, scope_id: scopeId, personality }),
-    delete: (scopeType: string, scopeId: string) =>
-      api.post("/memory/entities/delete", { scope_type: scopeType, scope_id: scopeId }),
-    aliases: () => api.get("/memory/entities/aliases"),
+    list: () => api.get<EntityProfile[]>("/memory/entities"),
+    save: (scopeType: string, scopeId: string, personality: string, revision: string) =>
+      api.put<ProfileWriteResult>("/memory/entities", { scope_type: scopeType, scope_id: scopeId, personality, revision }, { errorFeedback: "local" }),
+    delete: (scopeType: string, scopeId: string, revision: string) =>
+      api.post<ProfileWriteResult>("/memory/entities/delete", { scope_type: scopeType, scope_id: scopeId, revision }, { errorFeedback: "local" }),
+    timeline: (scopeType = "", scopeId = "", beforeId = 0) =>
+      api.get<OperationPage<ProfileOperation>>("/memory/entities/timeline", { params: { scope_type: scopeType, scope_id: scopeId, before_id: beforeId } }),
+    operation: (id: string) => api.get<ProfileOperationDetail>(`/memory/entities/operations/${encodeURIComponent(id)}`),
+    sync: (id: string) => api.post<ProfileWriteResult>(`/memory/entities/operations/${encodeURIComponent(id)}/sync`, null, { errorFeedback: "local" }),
+    aliases: () => api.get<EntityAlias[]>("/memory/entities/aliases"),
     link: (srcType: string, srcId: string, tgtType: string, tgtId: string) =>
       api.post("/memory/entities/link", {
         source_scope_type: srcType, source_scope_id: srcId,
@@ -114,6 +119,9 @@ export const memoryApi = {
     unlink: (scopeType: string, scopeId: string) =>
       api.post("/memory/entities/unlink", { scope_type: scopeType, scope_id: scopeId }),
   },
+  timeline: (memoryId = 0, beforeId = 0) => api.get<OperationPage<MemoryOperation>>("/memory/timeline", {
+    params: { memory_id: memoryId, before_id: beforeId },
+  }),
   notes: {
     read: () => api.get<{ content: string; path: string }>("/memory/notes"),
     write: (content: string) => api.put("/memory/notes", { content }),

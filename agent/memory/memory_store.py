@@ -15,8 +15,8 @@ import asyncio
 import json
 import math
 import time
-from contextlib import AbstractAsyncContextManager
-from typing import Any, Dict, Optional
+from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from typing import Any, AsyncIterator, Dict, Optional
 
 import aiosqlite
 
@@ -318,6 +318,17 @@ class MemoryStore(BaseEntity):
                     entry_projection_payload(entry, memory_id),
                 )
 
+    @asynccontextmanager
+    async def guard_version(self, memory_id: int, version: int) -> AsyncIterator[None]:
+        """短暂锁定晋升来源版本；锁内只允许提交主库，不可回写本记忆库。"""
+        db = await self._get_db()
+        async with self._tx(db):
+            cursor = await db.execute("SELECT version FROM memories WHERE id=?", (memory_id,))
+            row = await cursor.fetchone()
+            if row is None or int(row[0]) != version:
+                raise ValueError("反思来源已变化，不能提交过时的晋升决策")
+            yield
+
     async def update(
         self,
         entry: MemoryEntry,
@@ -346,7 +357,7 @@ class MemoryStore(BaseEntity):
         old_version = 0
         async with self._tx(db):
             old_cursor = await db.execute(
-                "SELECT content, version FROM memories WHERE id=?",
+                "SELECT content, version, importance, metadata_json, tags_json FROM memories WHERE id=?",
                 (entry.id,),
             )
             old_row = await old_cursor.fetchone()
@@ -357,6 +368,12 @@ class MemoryStore(BaseEntity):
                 return False
 
             content_changed = str(old_row["content"]) != entry.content
+            if (not content_changed and not clear_embedding and new_embedding is None
+                    and float(old_row["importance"]) == entry.importance
+                    and json.loads(old_row["metadata_json"] or "{}") == entry.metadata
+                    and json.loads(old_row["tags_json"] or "[]") == entry.tags):
+                entry.version = old_version
+                return True
             set_clause = "content=?, importance=?, metadata_json=?, tags_json=?, version=version+1"
             params: list[Any] = [
                 entry.content,
@@ -384,13 +401,23 @@ class MemoryStore(BaseEntity):
                 return False
             if embedding_touched:
                 await self._conn.vec_upsert_memory(db, entry.id, blob)
-            await self._conn.fts_upsert_memory(db, entry.id, entry.content)
+            if content_changed:
+                await self._conn.fts_upsert_memory(db, entry.id, entry.content)
             await self._record_audit(
                 db,
                 entry.id,
                 "update",
                 str(old_row["content"])[:120],
                 actor=actor,
+                data={
+                    "version": old_version + 1,
+                    "content_changed": content_changed,
+                    "status_before": json.loads(old_row["metadata_json"] or "{}").get("lifecycle", {}).get("status", ""),
+                    "status_after": entry.metadata.get("lifecycle", {}).get("status", ""),
+                    "reason": entry.metadata.get("lifecycle", {}).get("reason", ""),
+                    "error": entry.metadata.get("lifecycle", {}).get("error", ""),
+                    "operation_id": entry.metadata.get("lifecycle", {}).get("operation_id", ""),
+                },
             )
             await self._cognee.enqueue_sync(
                 db,
@@ -422,13 +449,15 @@ class MemoryStore(BaseEntity):
                 await self._cognee.enqueue_sync(db, memory_id, "delete")
         return (cursor.rowcount or 0) > 0
 
-    async def archive_memory(self, memory_id: int, reason: str = "manual_forget", *, actor: str = "") -> bool:
+    async def archive_memory(
+        self, memory_id: int, reason: str = "manual_forget", *, actor: str = "", expected_version: int | None = None,
+    ) -> bool:
         """软删除：将记忆移入归档表（不参与召回，可 restore_memory 恢复）。"""
-        entry = await self.get(memory_id)
-        if entry is None:
-            return False
         db = await self._get_db()
         async with self._tx(db):
+            entry = await self._fetch_entry(db, memory_id)
+            if entry is None or (expected_version is not None and entry.version != expected_version):
+                return False
             await self._archive_entry(db, entry, reason, actor=actor)
         return True
 
@@ -476,6 +505,7 @@ class MemoryStore(BaseEntity):
         detail: str = "",
         *,
         actor: str = "",
+        data: dict[str, Any] | None = None,
     ) -> None:
         """追加一条记忆审计事件（失败不影响主流程）。
 
@@ -485,8 +515,8 @@ class MemoryStore(BaseEntity):
         """
         try:
             await db.execute(
-                "INSERT INTO memory_audit(memory_id, action, detail, actor, ts_ns) VALUES(?,?,?,?,?)",
-                (memory_id, action, detail[:200], actor[:40], int(time.time() * 1e9)),
+                "INSERT INTO memory_audit(memory_id, action, detail, actor, ts_ns, data_json) VALUES(?,?,?,?,?,?)",
+                (memory_id, action, detail[:200], actor[:40], int(time.time() * 1e9), json.dumps(data or {}, ensure_ascii=False)),
             )
         except Exception as exc:
             log(f"记忆审计写入失败: {exc}", "DEBUG")
@@ -501,27 +531,23 @@ class MemoryStore(BaseEntity):
         )
         return {str(r["action"]): int(r["c"]) for r in await cursor.fetchall()}
 
-    async def list_audit(self, memory_id: int = 0, limit: int = 50) -> list[Dict[str, Any]]:
+    async def list_audit(self, memory_id: int = 0, limit: int = 50, *, before_id: int = 0) -> list[Dict[str, Any]]:
         """查询审计事件（memory_id=0 时返回全局最近事件）。"""
         db = await self._get_db()
-        if memory_id:
-            cursor = await db.execute(
-                "SELECT memory_id, action, detail, actor, ts_ns FROM memory_audit "
-                "WHERE memory_id=? ORDER BY id DESC LIMIT ?",
-                (memory_id, limit),
-            )
-        else:
-            cursor = await db.execute(
-                "SELECT memory_id, action, detail, actor, ts_ns FROM memory_audit ORDER BY id DESC LIMIT ?",
-                (limit,),
-            )
+        cursor = await db.execute(
+            "SELECT id, memory_id, action, detail, actor, ts_ns, data_json FROM memory_audit "
+            "WHERE (?=0 OR memory_id=?) AND (?=0 OR id<?) ORDER BY id DESC LIMIT ?",
+            (memory_id, memory_id, before_id, before_id, limit),
+        )
         return [
             {
+                "id": r["id"],
                 "memory_id": r["memory_id"],
                 "action": r["action"],
                 "detail": r["detail"],
                 "actor": r["actor"] if "actor" in r.keys() else "",
                 "timestamp": r["ts_ns"] / 1e9,
+                "data": json.loads(r["data_json"] or "{}"),
             }
             for r in await cursor.fetchall()
         ]
@@ -1480,6 +1506,12 @@ class MemoryStore(BaseEntity):
         """按标签交集筛选记忆（返回包含所有指定标签的记忆）。"""
         return await self._search.search_by_tags(tags, limit)
 
+    async def list_tag_page(
+        self, tag: str, *, before_id: int = 0, limit: int = 20,
+    ) -> tuple[list[MemoryEntry], int, int | None]:
+        """精确标签目录：ID 游标分页，返回条目、当前总数、续页游标。"""
+        return await self._search.list_tag_page(tag, before_id=before_id, limit=limit)
+
     async def search_associative(
         self,
         tags: list[str],
@@ -1577,7 +1609,7 @@ class MemoryStore(BaseEntity):
         limit: int = 200,
     ) -> list[Dict[str, Any]]:
         db = await self._get_db()
-        sql = "SELECT id, type, content, source, importance, ts_ns, metadata_json, tags_json, access_count, last_accessed_ns FROM memories WHERE 1=1"
+        sql = "SELECT id, type, content, source, importance, ts_ns, metadata_json, tags_json, access_count, last_accessed_ns, version FROM memories WHERE 1=1"
         params: list[Any] = []
         if memory_type:
             sql += " AND type=?"
@@ -1598,6 +1630,7 @@ class MemoryStore(BaseEntity):
                 "tags": json.loads(r["tags_json"]) if r["tags_json"] else [],
                 "access_count": r["access_count"],
                 "last_accessed_ns": r["last_accessed_ns"],
+                "version": r["version"],
             }
             for r in rows
         ]
@@ -1637,6 +1670,7 @@ class MemoryStore(BaseEntity):
                     "timestamp": entry.timestamp,
                     "tags": entry.tags,
                     "access_count": entry.access_count,
+                    "version": entry.version,
                 }
             )
 
@@ -1725,12 +1759,8 @@ class MemoryStore(BaseEntity):
         warn_threshold: int = _get_memory_config_value("memory_warn_threshold", 200)
         max_per_type: int = _get_memory_config_value("memory_max_per_type", 500)
 
-        warnings: list[str] = []
-        for mem_type, cnt in type_counts.items():
-            if cnt >= max_per_type:
-                warnings.append(f"{mem_type} 已达上限 ({cnt}/{max_per_type})，建议合并")
-            elif cnt >= warn_threshold:
-                warnings.append(f"{mem_type} 数量较多 ({cnt}/{warn_threshold})，建议整理")
+        from .health import memory_warnings
+        warnings = memory_warnings(type_counts)
 
         return {
             "total_memories": total,

@@ -8,7 +8,9 @@ import time
 import pytest
 
 from agent.memory import tools as mem_tools
+from agent.memory.memory_store import MemoryStore
 from agent.memory.memory_types import MemoryEntry, MemoryType
+from agent.memory.tag_gate import TagGateResult
 
 
 async def _seed(store, content: str, tags: list[str], times: int = 1) -> None:
@@ -90,6 +92,66 @@ class TestExemptionStore:
 
 
 class TestExemptTool:
+    async def test_tag_pages_survive_retagging_and_new_insertions(self, store: MemoryStore) -> None:
+        mem_tools.memory_tools_port.set(mem_tools.MemoryToolDeps(store, None))
+        try:
+            original_ids = set()
+            for i in range(23):
+                original_ids.add(await store.add(MemoryEntry(
+                    content=f"fact {i}", tags=["topic:old"], timestamp=1, memory_type=MemoryType.SEMANTIC,
+                )))
+            first = json.loads(await mem_tools.memory_index("topic:old"))
+            assert first["total"] == 23
+            assert first["count"] == 20
+            seen = {item["id"] for item in first["memories"]}
+            for item in first["memories"]:
+                result = json.loads(await mem_tools.update_memory(
+                    item["id"], tags="topic:new", expected_version=item["version"],
+                ))
+                assert result["ok"]
+            await _seed(store, "new arrival", ["topic:old"])
+            second = json.loads(await mem_tools.memory_index("topic:old", before_id=first["next_before_id"]))
+            assert second["total"] == 4
+            assert second["count"] == 3
+            assert second["next_before_id"] is None
+            assert not seen.intersection(item["id"] for item in second["memories"])
+            assert seen | {item["id"] for item in second["memories"]} == original_ids
+            assert json.loads(await mem_tools.memory_index("topic:old", before_id=-1))["cause"] == "param"
+        finally:
+            mem_tools.memory_tools_port.unbind()
+
+    async def test_update_rejects_stale_version_and_changes_during_tag_validation(
+        self, store: MemoryStore, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        mem_tools.memory_tools_port.set(mem_tools.MemoryToolDeps(store, None))
+        try:
+            mid = await store.add(MemoryEntry(content="original", tags=["topic:old"], memory_type=MemoryType.SEMANTIC))
+            entry = await store.get(mid)
+            assert entry is not None
+            old_version = entry.version
+            entry.content = "new fact"
+            assert await store.update(entry)
+            stale = json.loads(await mem_tools.update_memory(mid, tags="topic:new", expected_version=old_version))
+            assert stale["cause"] == "state"
+            original_gate = mem_tools.enforce_tag_gate
+
+            async def concurrent_gate(tags: list[str], *, store: MemoryStore, enforce: bool) -> TagGateResult:
+                latest = await store.get(mid)
+                assert latest is not None
+                latest.content = "concurrent fact"
+                assert await store.update(latest)
+                return await original_gate(tags, store=store, enforce=enforce)
+
+            monkeypatch.setattr(mem_tools, "enforce_tag_gate", concurrent_gate)
+            conflict = json.loads(await mem_tools.update_memory(mid, tags="topic:new"))
+            assert conflict["cause"] == "state"
+            latest = await store.get(mid)
+            assert latest is not None
+            assert latest.content == "concurrent fact"
+            assert latest.tags == ["topic:old"]
+        finally:
+            mem_tools.memory_tools_port.unbind()
+
     async def test_index_pages_allow_review_and_revocation(self, store) -> None:
         mem_tools.memory_tools_port.set(mem_tools.MemoryToolDeps(store, None))
         try:

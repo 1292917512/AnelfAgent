@@ -6,6 +6,7 @@ import { memoryApi } from "@/lib/api";
 import { Card } from "@/components/common/Card";
 import { cn } from "@/lib/utils";
 import { Trash2, Save, Plus, Pencil, X, Search, Merge, Check, ThumbsDown } from "lucide-react";
+import { MemoryTimeline } from "./MemoryTimeline";
 
 const LTM_PAGE_SIZE = 50;
 
@@ -19,6 +20,7 @@ export function LTMPanel() {
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editContent, setEditContent] = useState("");
   const [editImportance, setEditImportance] = useState(0.5);
+  const [editVersion, setEditVersion] = useState(0);
   const [showCreate, setShowCreate] = useState(false);
   const [newContent, setNewContent] = useState("");
   const [newType, setNewType] = useState("semantic");
@@ -41,23 +43,32 @@ export function LTMPanel() {
   const items: Record<string, unknown>[] = isSearching ? (searchResults || []) : (paginated?.items || []);
   const totalPages = paginated?.pages || 1;
 
-  const deleteMutation = useMutation({ mutationFn: (id: number) => memoryApi.ltm.delete(id), onSuccess: () => queryClient.invalidateQueries({ queryKey: ["ltmPaginated"] }) });
+  const refresh = () => {
+    for (const key of ["ltmPaginated", "ltmSearch", "memoryTimeline"]) {
+      queryClient.invalidateQueries({ queryKey: [key] });
+    }
+  };
+  const deleteMutation = useMutation({ mutationFn: (id: number) => memoryApi.ltm.delete(id), onSuccess: refresh });
   const updateMutation = useMutation({
-    mutationFn: ({ id, content, importance }: { id: number; content: string; importance: number }) => memoryApi.ltm.update(id, content, importance),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["ltmPaginated"] }); setEditingId(null); },
+    mutationFn: ({ id, content, importance }: { id: number; content: string; importance: number }) => memoryApi.ltm.update(id, content, importance, editVersion),
+    onSuccess: () => { refresh(); setEditingId(null); },
+  });
+  const readForEdit = useMutation({
+    mutationFn: (id: number) => memoryApi.ltm.get(id),
+    onSuccess: ({ data }) => { setEditingId(data.id); setEditContent(data.content); setEditImportance(data.importance); setEditVersion(data.version); },
   });
   const createMutation = useMutation({
     mutationFn: () => memoryApi.ltm.create(newContent, newType, newImportance),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["ltmPaginated"] }); setShowCreate(false); setNewContent(""); },
+    onSuccess: () => { refresh(); setShowCreate(false); setNewContent(""); },
   });
   const mergeMutation = useMutation({
     mutationFn: () => memoryApi.ltm.merge(Array.from(selectedIds), mergeContent),
-    onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["ltmPaginated"] }); setSelectedIds(new Set()); setShowMerge(false); setMergeContent(""); },
+    onSuccess: () => { refresh(); setSelectedIds(new Set()); setShowMerge(false); setMergeContent(""); },
   });
   const evidenceMutation = useMutation({
     mutationFn: ({ id, signal }: { id: number; signal: "confirm" | "dispute" }) =>
       memoryApi.ltm.evidence(id, signal).then((r) => r.data),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["ltmPaginated"] }),
+    onSuccess: refresh,
   });
 
   const toggleSelect = (id: number) => {
@@ -156,7 +167,7 @@ export function LTMPanel() {
                     {!!item.source && <span className="text-[10px] px-1.5 py-0.5 rounded bg-secondary text-muted">{String(item.source)}</span>}
                   </div>
                   <div className="flex gap-1">
-                    {String(item.type) === "reflection" && (
+                    {tags.includes("type:reflection") && (
                       <>
                         <button
                           onClick={() => evidenceMutation.mutate({ id, signal: "confirm" })}
@@ -172,9 +183,11 @@ export function LTMPanel() {
                         </button>
                       </>
                     )}
-                    <button onClick={() => { if (isEditing) { setEditingId(null); } else { setEditingId(id); setEditContent(String(item.content ?? "")); setEditImportance(Number(item.importance ?? 0.5)); } }}
+                    <button disabled={readForEdit.isPending || !Number.isInteger(id) || String(item.type) === "entity"}
+                      aria-label={t(isEditing ? "common:cancel" : "common:edit")}
+                      onClick={() => { if (isEditing) { setEditingId(null); } else { readForEdit.mutate(id); } }}
                       className="p-1 text-muted hover:text-accent transition-colors">{isEditing ? <X size={14} /> : <Pencil size={14} />}</button>
-                    <button onClick={() => deleteMutation.mutate(id)} className="p-1 text-muted hover:text-danger transition-colors"><Trash2 size={14} /></button>
+                    <button aria-label={t("common:delete")} onClick={() => deleteMutation.mutate(id)} className="p-1 text-muted hover:text-danger transition-colors"><Trash2 size={14} /></button>
                   </div>
                 </div>
                 {tags.length > 0 && (
@@ -184,7 +197,7 @@ export function LTMPanel() {
                 )}
                 {isEditing ? (
                   <div className="space-y-2 mt-2">
-                    <textarea value={editContent} onChange={(e) => setEditContent(e.target.value)} rows={3}
+                    <textarea aria-label={t("editMemoryContent")} value={editContent} onChange={(e) => setEditContent(e.target.value)} rows={3}
                       className="w-full bg-card border border-input rounded-md px-3 py-2 text-sm text-foreground outline-none focus:border-ring resize-y" />
                     <div className="flex items-center gap-2">
                       <span className="text-xs text-muted">{t("importanceLabel")}:</span>
@@ -195,7 +208,7 @@ export function LTMPanel() {
                     </div>
                   </div>
                 ) : (
-                  <p className="text-sm text-foreground">{String(item.content ?? item.snippet ?? "")}</p>
+                  <p className="text-sm text-foreground break-words">{String(item.content ?? item.snippet ?? "")}</p>
                 )}
               </div>
             );
@@ -213,6 +226,7 @@ export function LTMPanel() {
           </div>
         )}
       </Card>
+      <MemoryTimeline />
     </div>
   );
 }

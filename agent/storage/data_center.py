@@ -135,9 +135,6 @@ class EverythingData:
         personality = entity.personality.get("personality")
         if not personality:
             return
-        conv_num = int(entity.personality.get("conv_num", 0))
-        conv_update_num = int(entity.personality.get("conv_update_num", 0))
-
         scope_type, scope_id = entity.identity_parts
 
         # 画像写入 primary scope
@@ -145,8 +142,8 @@ class EverythingData:
         await self.router.upsert(
             StorageDomain.ENTITY_PROFILE,
             scope_type=p_type, scope_id=p_id, personality=personality,
-            conv_num=conv_num, conv_update_num=conv_update_num,
         )
+        await self.save_entity_counters(entity)
 
     async def save_entity_counters(self, entity: EntityData) -> None:
         """仅持久化对话计数（不覆盖画像内容）。"""

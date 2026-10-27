@@ -8,33 +8,12 @@ from agent.memory.self_profile import (
     SELF_SCOPE,
     load_self_profile,
     render_self_profile_block,
-    resolve_promotion_target,
 )
 from agent.mind.proactivity import (
     get_proactivity,
     idle_beats_factor,
     proactivity_guidance,
 )
-
-
-class TestPromotionTarget:
-    def test_self_when_no_owner_tag(self):
-        entry = MemoryEntry(memory_type=MemoryType.EPISODIC, content="x", tags=[])
-        assert resolve_promotion_target(entry) == SELF_SCOPE
-
-    def test_user_tag_routes_to_user(self):
-        entry = MemoryEntry(
-            memory_type=MemoryType.EPISODIC, content="x",
-            tags=["user:qq:123", "type:reflection"],
-        )
-        assert resolve_promotion_target(entry) == "user:qq:123"
-
-    def test_group_tag_routes_to_group(self):
-        entry = MemoryEntry(
-            memory_type=MemoryType.EPISODIC, content="x",
-            tags=["group:qq:456"],
-        )
-        assert resolve_promotion_target(entry) == "group:qq:456"
 
 
 class TestSelfProfileStore:

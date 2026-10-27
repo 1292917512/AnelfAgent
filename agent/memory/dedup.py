@@ -13,7 +13,7 @@
 memorize 工具与 auto_capture 自动提取管线共用本模块。
 
 Model Experience：候选携带完整正文、身份与主题标签及记录时间，跨身份交判断模型裁决。
-Token 影响：候选条数不变；完整正文增加内部判断输入，避免裁掉结尾的更正与条件。
+Token 影响：候选条数不变；完整正文避免裁掉限定条件；任务产出同次判断增加长期价值题。
 缓存影响：内部判断与合成不改主对话稳定前缀。
 """
 
@@ -225,8 +225,9 @@ async def judge_write(
     candidates: List[MemoryEntry],
     *,
     tags: Optional[List[str]] = None,
+    task_result: bool = False,
 ) -> Dict[str, Any]:
-    """对一条新记忆做写入裁决。无候选、判断失败或置信度不足时返回 store。
+    """对一条新记忆做写入裁决；任务产出需先确认长期价值，判断失败不自动入库。
 
     判断段经 agent/judgment 平台（Jev 原生或普通模型回退）；仅 update 再经
     light_llm 合成合并文本。去重永远不阻塞写入路径。候选不做身份预过滤
@@ -234,7 +235,7 @@ async def judge_write(
     多条互为片段的重复不做写入期合并（合并长文本稀释 embedding 语义），
     留给记忆整理任务按铁律 forget 收敛。
     """
-    if not candidates or not get_config_bool("memory_llm_dedup_enabled", True):
+    if not task_result and (not candidates or not get_config_bool("memory_llm_dedup_enabled", True)):
         return {"action": "store"}
 
     previews = _candidate_previews(candidates)
@@ -244,15 +245,31 @@ async def judge_write(
         "new_tags": list(tags or []),
         "candidates": previews,
     }
-    questions = _build_judgment_questions(previews)
+    questions = _build_judgment_questions(previews) if previews else {}
+    if task_result:
+        questions["retention"] = ChoiceQuestion(
+            instructions="任务完成与否不决定长期记忆价值。判断完整产出是否包含以后仍有用的新事实或认知。",
+            criteria={
+                "durable": "包含明确的新事实、长期偏好、约定、实质事件或有依据的行为教训，值得进入长期记忆",
+                "execution_only": "仅有执行状态、巡检无异常、跳过/等待、工具操作汇报或重复的自我要求，留在任务历史即可",
+            },
+        )
+    fallback = ({"action": "skip", "reason": "判断不可用；任务产出保留在执行历史摘要"}
+                if task_result else {"action": "store"})
     try:
         report = await get_judgment_engine().judge(state, questions)
     except JudgmentError as exc:
-        log(f"写入去重判断失败（{exc.cause.value}），直接写入: {exc}", "DEBUG", tag="记忆")
-        return {"action": "store"}
+        log(f"记忆判断失败（{exc.cause.value}），采取 {fallback['action']}: {exc}", "DEBUG", tag="记忆")
+        return fallback
     except Exception as exc:  # 判断引擎之外的意外同样不阻塞写入
-        log(f"写入去重判断异常，直接写入: {exc}", "DEBUG", tag="记忆")
-        return {"action": "store"}
+        log(f"记忆判断异常，采取 {fallback['action']}: {exc}", "DEBUG", tag="记忆")
+        return fallback
+
+    if task_result:
+        retention = report.answers.get("retention")
+        if (not isinstance(retention, ChoiceAnswer) or retention.choice != "durable"
+                or retention.confidence < get_config_float("memory_dedup_min_confidence", 0.25)):
+            return {"action": "skip", "reason": "任务执行记录不进入长期认知"}
 
     relation = report.answers.get("relation")
     if not isinstance(relation, ChoiceAnswer):

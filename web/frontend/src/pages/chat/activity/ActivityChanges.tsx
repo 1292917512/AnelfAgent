@@ -2,7 +2,7 @@ import { useState } from "react";
 import { ChevronDown, FileDiff, Search } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { ActivityFileChange } from "@/lib/types";
-import { DiffView } from "../DiffView";
+import { DiffView } from "@/components/common/DiffView";
 import { ActivitySourceLabel } from "./ActivityReferences";
 
 /** 本轮文件差异按需展开，沿用活动快照和共享浮层生命周期。 */

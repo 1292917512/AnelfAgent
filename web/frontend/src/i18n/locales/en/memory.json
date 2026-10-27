@@ -1,4 +1,37 @@
 {
+  "profileTimeline": "Profile operation timeline",
+  "profileTimelineHint": "Records operations after tracking was enabled. The first edit preserves the previous profile. AI revisions proceed autonomously.",
+  "memoryTimeline": "Memory operation timeline",
+  "memoryTimelineHint": "Uses the existing audit log, retained for {{days}} days. Older entries may contain only summaries, not full revisions.",
+  "timelineEmpty": "No recorded operations",
+  "timelineLoadFailed": "Could not load operations",
+  "operationDiff": "Changes",
+  "operationBefore": "Full text before",
+  "operationAfter": "Full text after",
+  "operationDetails": "View changes and full text",
+  "operationHide": "Hide details",
+  "operationSource": "Source reflection",
+  "operationSynced": "Synced",
+  "operationPending": "Committed, sync pending",
+  "operationMore": "Load earlier operations",
+  "profileSavedPending": "Profile saved; memory sync is pending. Recovery will continue automatically. No need to resubmit.",
+  "profileSaveFailed": "Could not save the profile. Your draft is preserved.",
+  "profileDraftStale": "Another operation updated this profile. Your draft is preserved. Copy any needed text, cancel editing, and revise the latest profile.",
+  "operationActions": {
+    "create": "Created",
+    "update": "Updated",
+    "delete": "Deleted",
+    "add": "Added",
+    "archive": "Archived",
+    "restore": "Restored",
+    "merge": "Merged"
+  },
+  "reflectionStates": {
+    "pending": "Pending",
+    "confirmed": "Confirmed",
+    "promoted": "Promoted",
+    "denied": "Not adopted"
+  },
   "title": "Memory Management",
   "tabs": {
     "overview": "Overview",
@@ -592,5 +625,8 @@
     "forgotten": "Forgotten layer (déjà vu)",
     "empty": "No results (empty store or no match)",
     "overview": "Overview"
-  }
+  },
+  "operationRetry": "Retry sync",
+  "operationRetryFailed": "Sync retry failed",
+  "editMemoryContent": "Memory content"
 }

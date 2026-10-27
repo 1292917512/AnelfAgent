@@ -9,7 +9,7 @@
 6. 归档：物理删除超过保留期的归档记忆（防归档表无限增长）
 7. 同步：cognee 队列积压检查与唤醒
 
-全部确定性操作（无 LLM 调用），报告写入心跳日志。
+容量与索引维护为确定性操作；反思达到证据阈值后委托晋升决策，报告写入心跳日志。
 """
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ from core.config import get_config_bool, get_config_float, get_config_int, regis
 from core.log import log
 
 from .memory_store import MemoryStore
+from .profiles import ProfileWriter
 
 
 @dataclass
@@ -96,8 +97,9 @@ class ConsolidationReport:
 class MemoryConsolidator:
     """记忆整理器：心跳维护时执行遗忘/上限/合并/清理/同步。"""
 
-    def __init__(self, store: MemoryStore) -> None:
+    def __init__(self, store: MemoryStore, profiles: ProfileWriter | None = None) -> None:
         self._store = store
+        self._profiles = profiles
 
     async def consolidate(self) -> ConsolidationReport:
         """执行一轮完整记忆整理（幂等，可安全重复调用）。"""
@@ -131,11 +133,11 @@ class MemoryConsolidator:
             log(f"记忆重要性松弛失败: {exc}", "WARNING", tag="记忆")
 
         # 2.5 反思生命周期推进：证据分评估 → pending→confirmed→晋升/否决/归档
-        # （晋升是人格生长的唯一通道；与遗忘并行——遗忘管"记不记得住"，
+        # （与遗忘并行——遗忘管"记不记得住"，
         # 证据分管"可不可信"）
         try:
             from .reflection_lifecycle import advance_reflections
-            lc_report = await advance_reflections(self._store)
+            lc_report = await advance_reflections(self._store, self._profiles)
             report.reflection_seeded = lc_report.seeded
             report.reflection_confirmed = lc_report.confirmed
             report.reflection_promoted = lc_report.promoted

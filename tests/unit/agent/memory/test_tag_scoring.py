@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from agent.memory.memory_store import MemoryStore
 from agent.memory.memory_types import MemoryEntry, MemoryType
 from agent.memory.store._shared import idf_tag_score
 from agent.memory.tag_query import TagQuery
@@ -121,6 +122,67 @@ async def test_hybrid_recalls_tag_only_match(store) -> None:
     # 有 query_tags：标签交集候选通道召回
     tagged = await store.search_hybrid("火锅 烧烤", query_tags=["goal:abc123"], limit=5, min_score=0.0)
     assert any(e.id == target_id for e, _ in tagged)
+
+
+async def test_soft_tags_recall_any_exact_match_without_changing_hard_intersection(store: MemoryStore) -> None:
+    ids = {}
+    for label, tags in {
+        "alpha": ["topic:alpha"], "beta": ["topic:beta"],
+        "both": ["topic:alpha", "topic:beta"], "substring": ["topic:alphabet"],
+    }.items():
+        ids[label] = await store.add(MemoryEntry(content=label, tags=tags, memory_type=MemoryType.SEMANTIC))
+    results = await store.search_hybrid("unmatchedneedlezz", query_tags=["topic:alpha", "topic:beta"], min_score=0)
+    assert {entry.id for entry, _ in results} == {ids["alpha"], ids["beta"], ids["both"]}
+    assert results[0][0].id == ids["both"]
+    assert [entry.id for entry in await store.search_by_tags(["topic:alpha", "topic:beta"])] == [ids["both"]]
+
+
+async def test_soft_tag_candidates_apply_hard_filters_before_limit(store: MemoryStore) -> None:
+    target = await store.add(MemoryEntry(
+        content="target", tags=["topic:rare", "scope:allowed"], timestamp=1,
+        importance=1, memory_type=MemoryType.SEMANTIC,
+    ))
+    for i in range(12):
+        for tags in (["topic:rare", "scope:denied"], ["scope:allowed"]):
+            await store.add(MemoryEntry(content=f"noise {i}", tags=tags, memory_type=MemoryType.SEMANTIC))
+    results = await store._search.search_hybrid(
+        "unmatchedneedlezz", query_tags=["topic:rare"], limit=1, min_score=0,
+        tag_query=TagQuery(all_of=("scope:allowed",), none_of=("scope:denied",)),
+    )
+    assert [entry.id for entry, _ in results] == [target]
+
+
+async def test_soft_tag_pool_keeps_old_specific_matches_among_recent_common_tags(store: MemoryStore) -> None:
+    both = await store.add(MemoryEntry(
+        content="specific", tags=["user:qq:1", "topic:rare"], timestamp=1, importance=1,
+        memory_type=MemoryType.SEMANTIC,
+    ))
+    rare = await store.add(MemoryEntry(
+        content="rare only", tags=["topic:rare"], timestamp=1, importance=1,
+        memory_type=MemoryType.SEMANTIC,
+    ))
+    for i in range(15):
+        await store.add(MemoryEntry(content=f"recent {i}", tags=["user:qq:1"], memory_type=MemoryType.SEMANTIC))
+    results = await store.search_hybrid(
+        "unmatchedneedlezz", query_tags=["user:qq:1", "topic:rare"], limit=2, min_score=0,
+    )
+    assert [entry.id for entry, _ in results] == [both, rare]
+
+
+async def test_associative_pool_keeps_old_rare_match_and_excludes_before_limit(store: MemoryStore) -> None:
+    target = await store.add(MemoryEntry(
+        content="old rare fact", tags=["topic:rare"], timestamp=1, importance=1,
+        memory_type=MemoryType.SEMANTIC,
+    ))
+    recent_ids = set()
+    for i in range(205):
+        recent_ids.add(await store.add(MemoryEntry(
+            content=f"common {i}", tags=["topic:common"], memory_type=MemoryType.SEMANTIC,
+        )))
+    tags = ["topic:common", "topic:rare"]
+    assert (await store.search_associative(tags, limit=1))[0][0].id == target
+    results = await store.search_associative(tags, exclude_ids=recent_ids, limit=1)
+    assert [entry.id for entry, _ in results] == [target]
 
 
 async def test_channel_wins_count_only_returned_results(store, monkeypatch) -> None:

@@ -12,7 +12,7 @@
   sub_zero 归档倒计时随之通电；
 - 晋升：confirmed 且 score 达标 → LLM 合并决策（promote/merge/reject，
   复用 dedup.light_llm 通道）→ 写入目标画像（自画像 agent:self 或用户画像）
-  或图谱关系——晋升是人格生长的唯一通道，AI 不能随手改自己；
+  ——自主晋升与 AI 显式画像修订共享写入契约；
 - 负向信号：score 低于阈值进入 sub_zero 每日倒计时，到期归档（走既有
   归档/墓碑通道，可恢复）。
 
@@ -20,10 +20,11 @@
 可见（含群聊中提到的参与者）；无实体标签的自认知全局可见——A 的
 反思绝不注入 B 的对话。
 
-幂等纪律：晋升决策按 reflection id 幂等（promoted/denied 为终态，重入安全）；
+幂等纪律：晋升决策先经版本校验保存在反思元数据，画像提交回执与正文同事务落盘；
+恢复先查回执，再补齐镜像与生命周期，不重复追加或重跑模型。
 LLM 失败不降级为直接晋升（防断电静默重复），退避后重试。
 
-Model Experience：反馈分类读取完整候选与本批真实用户发言，平台通知不作为确认。
+Model Experience：反馈分类读取完整候选与真实用户发言；晋升明确选择认知主体，标签不替代语义判断。
 Token：内部调用沿用候选池与消息批次上限，保留末尾限定条件。
 缓存：不改变主对话前缀或新增主模型调用。
 """
@@ -31,7 +32,6 @@ Token：内部调用沿用候选池与消息批次上限，保留末尾限定条
 from __future__ import annotations
 
 import json
-import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Set
@@ -43,6 +43,7 @@ from core.tags import etag_all
 from . import evidence
 from .memory_store import MemoryStore
 from .memory_types import MemoryEntry
+from .profiles import ProfileWriter
 
 _LOG_TAG = "记忆"
 
@@ -74,7 +75,7 @@ _LIFECYCLE_CONFIGS = {
             "default": 30, "unit": "分钟", "min": 5, "max": 1440, "advanced": True,
         },
         "memory_reflection_promotion_enabled": {
-            "description": "反思达标后是否晋升写入画像（晋升是人格生长的唯一通道）",
+            "description": "反思达标后是否自主晋升写入画像（不影响 AI 显式修订）",
             "default": True,
         },
         "memory_reflection_surface_enabled": {
@@ -152,6 +153,7 @@ def get_lifecycle(entry: MemoryEntry) -> Dict[str, Any]:
     """读取生命周期组（缺省 pending + 立即可评估 + 未呈现）。"""
     raw = (entry.metadata or {}).get(_LIFECYCLE_KEY) or {}
     return {
+        **raw,
         _F_STATUS: str(raw.get(_F_STATUS, _STATUS_PENDING)),
         _F_NEXT_ELIGIBLE: float(raw.get(_F_NEXT_ELIGIBLE, 0.0)),
         _F_PROMOTE_ATTEMPTS: int(raw.get(_F_PROMOTE_ATTEMPTS, 0)),
@@ -195,27 +197,7 @@ def seed_reflection(entry: MemoryEntry) -> bool:
 # 心跳推进（consolidator 同拍调用）
 # ----------------------------------------------------------------------
 
-_PROMOTE_PROMPT = """\
-你是人格晋升裁决器。一条反思已达证据标准，拟晋升为目标画像的正式条目。
-请判定如何处理（只输出 JSON）：
-
-- promote：作为新条目追加进画像（新认知，画像未覆盖）
-- merge：画像已有相近条目，应合并改写（给出合并后的完整画像文本）
-- reject：与画像冲突或不值得固化（给出理由）
-
-【目标画像（{target}）当前内容】
-{profile}
-
-【待晋升反思】
-{reflection}
-
-输出：{{"action": "promote"/"merge"/"reject", "content": "merge 时的完整画像文本（promote 时给条目文本）", "reason": "一句话理由"}}
-"""
-
-_JSON_OBJ_RE = re.compile(r"\{.*\}", re.DOTALL)
-
-
-async def advance_reflections(store: MemoryStore) -> LifecycleReport:
+async def advance_reflections(store: MemoryStore, profiles: ProfileWriter | None = None) -> LifecycleReport:
     """推进一轮全部活跃反思的生命周期（幂等，由 consolidator 调用）。"""
     report = LifecycleReport()
     now = time.time()
@@ -240,6 +222,25 @@ async def advance_reflections(store: MemoryStore) -> LifecycleReport:
         if lc[_F_STATUS] in _TERMINAL:
             continue
 
+        # 已提交操作必须收尾，不因证据衰减、冷却或关闭新晋升而悬空。
+        plan = lc.get("promotion")
+        if profiles is not None and isinstance(plan, dict):
+            operation = await profiles.operations.get_operation(str(plan.get("operation_id", "")))
+            if operation is not None:
+                from .promotion import promote_reflection
+                try:
+                    outcome = await promote_reflection(store, profiles, entry, lc)
+                    _put_lifecycle(entry, lc)
+                    if await store.update(entry, actor="reflection_lifecycle", expected_version=entry.version):
+                        report.promoted += outcome == "promoted"
+                        if "promotion" not in lc:
+                            await profiles.operations.settle(operation.operation_id)
+                    else:
+                        report.errors.append(f"#{entry.id} 晋升收尾冲突，等待重试")
+                except Exception as exc:
+                    report.errors.append(f"#{entry.id} 晋升收尾失败: {exc}")
+                continue
+
         # 历史反思补播种（老数据无证据组 → 以 importance 先验起步）
         if evidence.EVIDENCE_KEY not in (entry.metadata or {}):
             seed_reflection(entry)
@@ -252,15 +253,16 @@ async def advance_reflections(store: MemoryStore) -> LifecycleReport:
             if score <= archive_threshold:
                 evidence.tick_sub_zero(entry.metadata, today=today)
                 if evidence.get_evidence(entry.metadata)["sub_zero_days"] >= archive_days:
-                    await store.archive_memory(entry.id, "反思证据分长期为负", actor="reflection_lifecycle")
-                    report.archived += 1
+                    if await store.archive_memory(entry.id, "反思证据分长期为负", actor="reflection_lifecycle", expected_version=entry.version):
+                        report.archived += 1
                     continue
             else:
                 evidence.clear_sub_zero(entry.metadata)
 
             # 状态推进（冷却闸门内只落证据不动状态）
             if now < lc[_F_NEXT_ELIGIBLE]:
-                await store.update(entry, actor="reflection_lifecycle")
+                if not await store.update(entry, actor="reflection_lifecycle", expected_version=entry.version):
+                    report.errors.append(f"#{entry.id} 证据更新冲突，等待下一轮")
                 continue
             report.evaluated += 1
 
@@ -269,14 +271,27 @@ async def advance_reflections(store: MemoryStore) -> LifecycleReport:
                 lc[_F_NEXT_ELIGIBLE] = now + cooldown_s
                 report.confirmed += 1
             elif status == _STATUS_CONFIRMED and score >= promoted_threshold:
-                outcome = await _try_promote(store, entry, lc, now)
+                outcome = await _try_promote(store, entry, lc, now, profiles)
                 if outcome == "promoted":
                     report.promoted += 1
                 elif outcome == "denied":
                     report.denied += 1
                 # retry/blocked：lc 已由 _try_promote 推进
             _put_lifecycle(entry, lc)
-            await store.update(entry, actor="reflection_lifecycle")
+            plan = lc.get("promotion")
+            if isinstance(plan, dict) and plan.get("source_version") == entry.version:
+                # 仅推进本次决策自己的记账版本；外部修改仍使旧决策失效。
+                plan["source_version"] = entry.version + 1
+            if not await store.update(entry, actor="reflection_lifecycle", expected_version=entry.version):
+                report.errors.append(f"#{entry.id} 生命周期更新冲突，等待下一轮")
+                if lc[_F_STATUS] == _STATUS_PROMOTED:
+                    report.promoted -= 1
+                elif lc[_F_STATUS] == _STATUS_DENIED:
+                    report.denied -= 1
+                elif status == _STATUS_PENDING and lc[_F_STATUS] == _STATUS_CONFIRMED:
+                    report.confirmed -= 1
+            elif profiles is not None and lc.get("operation_id") and "promotion" not in lc:
+                await profiles.operations.settle(str(lc["operation_id"]))
         except Exception as exc:
             report.errors.append(f"#{entry.id} 推进失败: {exc}")
             log(f"反思 #{entry.id} 生命周期推进失败: {exc}", "WARNING", tag=_LOG_TAG)
@@ -285,88 +300,24 @@ async def advance_reflections(store: MemoryStore) -> LifecycleReport:
 
 
 async def _try_promote(
-    store: MemoryStore,
-    entry: MemoryEntry,
-    lc: Dict[str, Any],
-    now: float,
+    store: MemoryStore, entry: MemoryEntry, lc: Dict[str, Any], now: float,
+    profiles: ProfileWriter | None,
 ) -> str:
-    """晋升决策：LLM 合并裁决 → 写目标画像；失败退避，不静默晋升。
-
-    Returns: promoted / denied / retry / blocked
-    """
-    from core.config import get_config_bool
-    if not get_config_bool("memory_reflection_promotion_enabled", True):
-        return "retry"
-
+    """错误仅推迟执行，不把基础设施故障解释为认知被否决。"""
+    if not get_config_bool("memory_reflection_promotion_enabled", True) or profiles is None:
+        return "blocked"
     lc[_F_NEXT_ELIGIBLE] = now + _PROMOTE_RETRY_BACKOFF_MINUTES * 60
+    from .promotion import promote_reflection
 
-    from .self_profile import resolve_promotion_target, update_profile_content
-
-    target_scope = resolve_promotion_target(entry)
-    current_profile = await _load_profile_text(store, target_scope)
-
-    from .dedup import light_llm
-    prompt = (
-        _PROMOTE_PROMPT
-        .replace("{target}", target_scope)
-        .replace("{profile}", current_profile or "（空）")
-        .replace("{reflection}", entry.content[:800])
-    )
     try:
-        raw = await light_llm(prompt)
+        return await promote_reflection(store, profiles, entry, lc)
     except Exception as exc:
         lc[_F_PROMOTE_ATTEMPTS] += 1
+        lc["error"] = str(exc)
         if lc[_F_PROMOTE_ATTEMPTS] >= _PROMOTE_MAX_RETRIES:
-            lc[_F_STATUS] = _STATUS_DENIED  # 死信：晋升通道关闭，反思本体保留
-            log(f"反思 #{entry.id} 晋升死信: {exc}", "WARNING", tag=_LOG_TAG)
-            return "denied"
-        log(f"反思 #{entry.id} 晋升决策失败（退避重试）: {exc}", "DEBUG", tag=_LOG_TAG)
+            lc[_F_NEXT_ELIGIBLE] = now + 86400
+        log(f"反思 #{entry.id} 晋升等待重试: {exc}", "WARNING", tag=_LOG_TAG)
         return "retry"
-
-    m = _JSON_OBJ_RE.search(raw or "")
-    data: Dict[str, Any] = {}
-    if m:
-        try:
-            data = json.loads(m.group(0))
-        except json.JSONDecodeError:
-            data = {}
-    action = str(data.get("action", "")).strip().lower()
-    content = str(data.get("content", "")).strip()
-
-    if action == "reject":
-        lc[_F_STATUS] = _STATUS_DENIED
-        log(f"反思 #{entry.id} 晋升被拒: {data.get('reason', '')}", "DEBUG", tag=_LOG_TAG)
-        return "denied"
-    if action in ("promote", "merge") and content:
-        if action == "promote":
-            new_text = (current_profile.rstrip() + "\n- " + content).strip() if current_profile else content
-        else:
-            new_text = content
-        ok = await update_profile_content(store, target_scope, new_text)
-        if ok:
-            lc[_F_STATUS] = _STATUS_PROMOTED
-            lc[_F_ABSORBED_INTO] = f"profile:{target_scope}"
-            log(f"反思 #{entry.id} 已晋升到画像 {target_scope}", "INFO", tag=_LOG_TAG)
-            return "promoted"
-    # 解析失败/写画像失败：退避重试
-    lc[_F_PROMOTE_ATTEMPTS] += 1
-    if lc[_F_PROMOTE_ATTEMPTS] >= _PROMOTE_MAX_RETRIES:
-        lc[_F_STATUS] = _STATUS_DENIED
-        return "denied"
-    return "retry"
-
-
-async def _load_profile_text(store: MemoryStore, target_scope: str) -> str:
-    """读取目标画像文本（agent:self 或 user/group 实体，取最新一条画像记忆）。"""
-    from .self_profile import SELF_PROFILE_SOURCE, SELF_SCOPE
-    if target_scope == SELF_SCOPE:
-        source = SELF_PROFILE_SOURCE
-    else:
-        # 画像镜像的 source 约定为 entity_{频道:ID}（去掉 user:/group: 前缀）
-        entity_id = target_scope.split(":", 1)[1] if ":" in target_scope else target_scope
-        source = f"entity_{entity_id}"
-    entries = await store.list_recent(limit=1, memory_type=None, source=source)
-    return entries[0].content if entries else ""
 
 
 def _entity_tags(entry: MemoryEntry) -> List[str]:
@@ -458,7 +409,8 @@ async def load_verification_block(
         lc[_F_FEEDBACK] = ""
         _put_lifecycle(entry, lc)
         try:
-            await store.update(entry, actor="reflection_lifecycle")
+            if not await store.update(entry, actor="reflection_lifecycle", expected_version=entry.version):
+                continue
         except Exception as exc:
             log(f"待验证认知呈现登记失败 #{entry.id}: {exc}", "DEBUG", tag=_LOG_TAG)
             continue

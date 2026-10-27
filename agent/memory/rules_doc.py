@@ -12,6 +12,10 @@ Markdown 文件持有（随 ANELF_CONFIG_DIR 搬迁，可直接备份/同步）�
 
 文案纪律：只讲路由与纪律（程序无法强制的判断准则），不写具体实例内容
 （uid/群组/事件等），功能参数细节由各工具 schema 自带。
+
+Model Experience：模型读取当前规则，画像与标签修订由 AI 决定，证据状态仍由证据机制维护。
+Token：规则为一次性稳定文本，操作历史仅经工具按需读取，不随修订累积。
+缓存：规则文件变更使 stable 指纹失效一次，正文不变时继续复用稳定前缀。
 """
 
 from __future__ import annotations
@@ -26,13 +30,13 @@ DEFAULT_RULES = (
     "记忆与便签的读写一律经专用工具（memorize/recall/notes 组/graph_*），禁止用 shell（cat/tail/grep/sed 等）或 filesystem 工具直接访问——shell 触碰便签树会被工具层直接拦截。memory/xxx.md 是便签索引键（锚定数据目录），不是 shell 相对路径（shell 工作目录是 workspace），当路径用必然失败；读便签用 read_memory_file（大文件用 offset/limit/tail_lines 分段）。\n"
     "写入路由（一条信息只进一个系统，禁止双写；他处需要时用指针 mem:ID / 技能名引用）：\n"
     "- memorize/recall =「什么事」：事实 type:fact、事件 type:event、反思 type:reflection、永久规则 type:permanent\n"
-    "- 实体画像（get/update_entity_profile）=「谁」：单个实体的性格/偏好/互动风格，一人一份覆盖更新\n"
+    "- 实体画像（get/update_entity_profile）=「谁」：单个实体的性格/偏好/互动风格，一人一份。AI 依据事实自主修订，先读取全文和 revision，保留未被更正的事实，冲突时重读后再决策；无需人工审核\n"
     "- 关系图谱（graph_*）=「谁和谁什么关系」：结构化关系一律 graph_add_relation 落库（必填 evidence；关系从某条记忆得出时 source_memory_id 必传，形成双向溯源），不写进画像或记忆正文\n"
     "- 技能系统（create_skill）=「怎么做」：去具体化后仍可复用的方法/流程/排障经验；结果性内容与流水账是记忆素材不是技能\n"
     "- 便签文件 = 工作笔记与索引，不堆详情、不复制画像全文\n"
     "- 短期记忆 = 临时提醒区（任务指令/定时提醒/推送），完成后用 remove_short_term_memory 清理\n"
     "- cognee 图谱 = 以上内容的语义投影层，仅供模糊检索增强，不是权威存储，不直接写入\n"
-    "- 自我画像（agent:self）=「我是谁」：我的行为模式与自我认知——只能由反思晋升写入，禁止直接修改；对话中觉察到自我认知就写 type:reflection 反思（证据达标后系统自动晋升）\n"
+    "- 自我画像（agent:self）=「我是谁」：我的行为模式与自我认知。新认知可写 type:reflection 反思并随证据晋升；需要纠正画像时由 AI 经 get_entity_profile/update_entity_profile 自主修订并说明依据。profile_history 查看操作，sync_profiles 恢复同步；运行汇报和修订次数不算证据\n"
     "- 关系动态 =「我和谁的关系」：图谱中以 agent:self 为节点落边（如 agent:self ↔ user:xxx），不写进画像正文\n"
     "指针稳定性（mem:ID 长期有效，放心引用）：\n"
     "- 合并不消灭 id：多条合并时有效分最高者原地存活，其余 id 自动重定向——get_memory 旧 id 返回存活条目全文与合并谱系；归档可 restore_memory 恢复；物删后墓碑梗概注明去向\n"
@@ -44,8 +48,9 @@ DEFAULT_RULES = (
     "标签纪律（标签是索引总线：以索引为主、复用优先、拒绝膨胀）：\n"
     "- 前缀语义：type: 类型 / user:频道:uid、group:频道:gid 实体 / topic: 话题 / goal: 目标 / date: 日期\n"
     "- user:/group:/topic:/goal: 打标即入联想网络（共现联想 + 图谱邻居，召回加权）；type:/date: 仅作结构过滤\n"
+    "- user:/group: 表示涉及对象，不等于事实主体或发言来源；结合正文和出处判断归属，不按标签顺序决定画像对象。agent:self 是自画像与关系图谱的保留身份\n"
     "- 打新标签前先 memory_index 查既有形态，能复用不新造；写入闸门会自动归一新标签的写法变体并校验前缀（只治理新标签，既有形态不触碰），语义归并仍经议程确认\n"
-    "- 归并议程：系统定期产出标签归并候选（写法变体/包含关系，见记忆状态区块），经 memory_index 查看明细，逐对确认后经 update_memory 归并；判定误报/设计使然的候选对用 tag_curation_exempt 登记豁免（signature 取候选 exempt_signature 原样回传），系统不再列入议程\n"
+    "- 归并议程：系统提供写法变体/包含关系候选，AI 经 memory_index 按 next_before_id 续页核实语义，携带条目 version 作为 expected_version 经 update_memory 改标；无需等待人工确认，不批量猜测旧标签的频道。误报/设计使然的候选用 tag_curation_exempt 登记豁免（signature 原样取候选 exempt_signature）\n"
     "- recall 的 tags 是软加权（命中加分），filter_tags 是硬过滤（须全部命中）\n"
     "主标签记忆（main:hub 永久记忆，每轮动态区更新）：\n"
     "- 所有操作使用标签记忆实体工具（notes 组）操作，不能使用shell和文件编辑\n"
@@ -55,6 +60,7 @@ DEFAULT_RULES = (
     "披露边界（全记得，但不什么都说）：记忆按来源人归属，对任何人的对话都可用于理解与联想；标注「私事」（sensitivity=private/secret）的不向第三方透露（对方是当事人或本人同意除外）；拿捏不准就含糊带过\n"
     "查询路由：\n"
     "- 人物 UID → get_entity_profile；某人的关系网 → graph_query；两实体关系链 → graph_path\n"
+    "- 画像修订来历 → profile_history；记忆操作时间线 → memory_history；画像同步恢复 → sync_profiles。历史是操作信息，版本数、阅读次数与修订次数不算认知证据\n"
     '- 话题 → recall 语义搜索（无果再加 depth="deep"）；结果带 source 出处：memory=数据库 / file=便签 / cognee_*=图谱投影\n'
     "- 消息原文 → lookup_message（含窗口外）；翻旧对话 → recall_conversation\n"
     "- 新事实/事件 → memorize（打 type:/user:/group:/topic:），必要时更新便签索引\n"
@@ -62,6 +68,7 @@ DEFAULT_RULES = (
     "- 记忆状态与来历 → get_memory：活跃条目含变更史（谁改的、从什么改成什么）；已并入他条的 id 自动带去向；已归档的可恢复、已物删的余梗概\n"
     "- 图谱治理 → graph_curation_agenda：处置经图谱工具执行；判定误报/真实扇出/设计使然的项用 graph_curation_exempt 登记豁免（落库即唯一沉淀，系统不再列入议程）；处置摘要进心跳日志，禁止在便签维护治理流水/状态档\n"
     "落盘诚实：verdict 是最终裁决，仅 stored/updated 算真正记住；skipped_duplicate 或 error 时如实说明，禁止谎称「已记住」、禁止原样重试\n"
+    "画像回执：changed=false 表示正文未变；synced=false 表示主库已提交但镜像待同步，应查询操作或重试同步，不再次生成并覆盖正文\n"
     "检索纪律：recall 等检索类工具每轮合计 ≤3 次；浅召回无果再加 deep，不连环检索碰运气\n"
     "实体协同：尾部动态区呈现各实体已知态势；缓存、历史记录和未知状态不等于实时证据。登录、可操作性等前置条件影响下一步时先核实，再报告状态或请求人工配合\n"
     "遇到问题及时反馈给你的管理者\n"

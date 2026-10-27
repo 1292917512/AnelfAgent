@@ -8,6 +8,7 @@ Model Experience：召回和联想统一返回出处、时间语义与材料指�
 每条结果增加短出处字段，不新增模型调用；仅进入工具结果，不触碰稳定前缀。
 数据集目录工具读取最近确认的观测值及忙碌状态，增加几十 token，不调用模型、不改变前缀。
 标签治理建议及每页最多 20 条豁免按需进入工具结果，不新增调用、不改变稳定前缀。
+标签目录每页最多 20 条并附版本与续页游标；更新冲突通过工具错误要求重读，增量为几十 token。
 """
 
 from __future__ import annotations
@@ -797,18 +798,22 @@ async def _recall_associations_deep(
     source="mind.memory",
     description="浏览记忆索引。不传 tag 返回标签统计；传 tag 返回该标签下的记忆列表。",
 )
-async def memory_index(tag: str = "", exemptions_offset: int = 0) -> str:
+async def memory_index(tag: str = "", exemptions_offset: int = 0, before_id: int = 0) -> str:
     """浏览记忆索引（包含 memories 表和文件索引统计）。
 
     Args:
         tag: 可选，指定标签查看其下的记忆（如 user:qq:123）
         exemptions_offset: 未指定 tag 时的豁免分页偏移；续页使用返回的 tag_exemptions_next_offset
+        before_id: 指定 tag 时的续页游标，首屏传 0，续页使用 next_before_id；新写入从首屏查看
     """
     try:
         deps = _deps()
         if deps is None:
             return _store_not_ready()
         store = deps.store
+
+        if before_id < 0 or (before_id and not tag):
+            return tool_error("before_id 须为非负数，且仅用于指定 tag 的分页", cause=ErrorCause.PARAM, retryable=False)
 
         if not tag:
             if exemptions_offset < 0:
@@ -829,7 +834,8 @@ async def memory_index(tag: str = "", exemptions_offset: int = 0) -> str:
                         {
                             "tag_merge_candidates": merge_candidates,
                             "tag_merge_hint": "标签归并候选（事实归系统、决策归你）：逐对确认后"
-                            "经 update_memory 把 from 标签的记忆改挂 into 标签；判定误报/"
+                            "按 memory_index(tag=from) 的 next_before_id 续页，"
+                            "经 update_memory 携带条目 version 作为 expected_version 改挂 into 标签；判定误报/"
                             "设计使然的候选对用 tag_curation_exempt 登记豁免（signature 取候选的"
                             " exempt_signature 原样回传），系统不再列入议程",
                         }
@@ -840,17 +846,20 @@ async def memory_index(tag: str = "", exemptions_offset: int = 0) -> str:
                 ensure_ascii=False,
             )
 
-        entries = await store.search_by_tags([tag], limit=20)
+        entries, total, next_id = await store.list_tag_page(tag, before_id=before_id)
         items = [
             {
                 "id": e.id,
+                "version": e.version,
                 "summary": e.content[:80],
                 "tags": e.tags,
                 "importance": round(e.importance, 2),
             }
             for e in entries
         ]
-        return json.dumps({"tag": tag, "count": len(items), "memories": items}, ensure_ascii=False)
+        return json.dumps({
+            "tag": tag, "count": len(items), "total": total, "next_before_id": next_id, "memories": items,
+        }, ensure_ascii=False)
     except Exception as e:
         return error_from_exception(e, action="读取记忆索引")
 
@@ -1087,6 +1096,7 @@ async def update_memory(
     tags: str = "",
     importance: float = -1.0,
     sensitivity: str = "",
+    expected_version: int = 0,
 ) -> str:
     """原地更新一条记忆（保留 id 和创建时间戳）。
 
@@ -1096,16 +1106,29 @@ async def update_memory(
         tags: 新的标签，逗号分隔（留空则保持原标签不变）
         importance: 新的重要性 0-1（传 -1 则保持原值不变）
         sensitivity: 新的私密度 normal/private/secret（留空则保持原值不变）
+        expected_version: get_memory 或 memory_index 返回的 version；不符则拒绝覆盖，0 表示使用本次读取版本
     """
     try:
         deps = _deps()
         if deps is None:
             return _store_not_ready()
 
+        if expected_version < 0:
+            return tool_error("expected_version 不能为负数", cause=ErrorCause.PARAM, retryable=False)
         entry, err = await _resolve_active_for_mutation(deps.store, memory_id, "更新")
         if err:
             return err
         assert entry is not None
+
+        def conflict() -> str:
+            return tool_error(
+                "记忆已变更或不再存在，本次更新未写入", cause=ErrorCause.STATE, retryable=False,
+                hint="先用 get_memory 重读最新内容和 version，重新判断后携带 expected_version 更新",
+                id=memory_id,
+            )
+
+        if expected_version and expected_version != entry.version:
+            return conflict()
 
         changed: list[str] = []
         content_changed = False
@@ -1151,13 +1174,18 @@ async def update_memory(
 
             entry.metadata = merge_metadata(entry.metadata, note_origin(current_scope()))
 
-        ok = await deps.store.update(entry, clear_embedding=content_changed, actor="tool:update_memory")
+        ok = await deps.store.update(
+            entry, clear_embedding=content_changed, actor="tool:update_memory", expected_version=entry.version,
+        )
+        if not ok:
+            return conflict()
         if ok and content_changed:
             wake_embedding_worker()
         return json.dumps(
             {
                 "ok": ok,
                 "id": memory_id,
+                "version": entry.version,
                 "changed": changed,
                 "content_preview": entry.content[:100],
                 "tags": entry.tags,
@@ -1824,24 +1852,23 @@ async def get_entity_profile(scope_type: str, scope_id: str) -> str:
     """查看指定实体的完整画像内容。
 
     Args:
-        scope_type: 范围类型（user 或 group）
+        scope_type: 范围类型（user/group/agent）；自画像用 agent + self
         scope_id: 用户 ID 或群组 ID（格式 ``{频道}:{id}``，如 qq:123；传裸 id 时按当前会话频道解析）
     """
     try:
         sqlite = _get_sqlite()
-        scope_id = _normalize_scope_id(scope_id)
+        scope_id = scope_id if scope_type == "agent" else _normalize_scope_id(scope_id)
         primary = await sqlite.resolve_alias(scope_type, scope_id)
         p_type, p_id = primary if primary else (scope_type, scope_id)
 
-        data = await sqlite.get_entity_personality(scope_type=p_type, scope_id=p_id)
-        if not data:
-            return tool_error(f"{scope_type}:{scope_id} 暂无画像", cause=ErrorCause.NOT_FOUND, retryable=False)
+        from agent.storage.profile_store import profile_revision
 
+        data = await sqlite.get_entity_personality(scope_type=p_type, scope_id=p_id) or {}
+        content = str(data.get("personality") or "")
         result: dict = {
-            "scope": f"{p_type}:{p_id}",
-            "personality": data.get("personality", ""),
-            "conv_num": data.get("conv_num", 0),
-            "conv_update_num": data.get("conv_update_num", 0),
+            "scope": f"{p_type}:{p_id}", "personality": content,
+            "revision": profile_revision(p_type, p_id, content),
+            "conv_num": data.get("conv_num", 0), "conv_update_num": data.get("conv_update_num", 0),
         }
         if primary:
             result["queried_as"] = f"{scope_type}:{scope_id}"
@@ -1859,62 +1886,27 @@ async def get_entity_profile(scope_type: str, scope_id: str) -> str:
     source="mind.memory",
     description=(
         "删除指定实体的画像。用于清理无意义或不再需要的实体画像（如临时用户、测试数据等）。"
-        "删除前建议先用 get_entity_profile 确认内容。"
+        "删除前必须先用 get_entity_profile 读取内容和 revision。"
     ),
 )
-async def delete_entity_profile(scope_type: str, scope_id: str) -> str:
+async def delete_entity_profile(scope_type: str, scope_id: str, revision: str) -> str:
     """删除指定实体的画像。
 
     Args:
-        scope_type: 范围类型（user 或 group）
+        revision: get_entity_profile 返回的编辑基线
+        scope_type: 范围类型（user/group/agent）；自画像用 agent + self
         scope_id: 用户 ID 或群组 ID（格式 ``{频道}:{id}``，如 qq:123；传裸 id 时按当前会话频道解析）
     """
     try:
-        sqlite = _get_sqlite()
-        scope_id = _normalize_scope_id(scope_id)
-        # 与 update 路径一致：先解析别名到主身份，避免别名场景残留旧画像/记忆
-        primary = await sqlite.resolve_alias(scope_type, scope_id)
-        p_type, p_id = primary if primary else (scope_type, scope_id)
+        from agent.memory.profiles import ProfileWriter
+        from agent.runtime.singleton import require_runtime
 
-        existing = await sqlite.get_entity_personality(scope_type=p_type, scope_id=p_id)
-        if not existing:
-            return tool_error(f"{scope_type}:{scope_id} 不存在", cause=ErrorCause.NOT_FOUND, retryable=False)
-
-        await sqlite.delete_entity_profile(scope_type=p_type, scope_id=p_id)
-
-        # 清理内存缓存（primary + 所有 alias 的内存实体）
-        try:
-            from agent.runtime.singleton import require_runtime
-
-            rt = require_runtime()
-            entities = rt.data_center.everything_data.entities
-            entities.pop(f"{p_type}_{p_id}", None)
-            aliases = await sqlite.get_aliases_for_primary(p_type, p_id)
-            for a in aliases:
-                entities.pop(f"{a['scope_type']}_{a['scope_id']}", None)
-        except Exception:
-            log("delete_entity_profile 异常已忽略", "DEBUG")
-
-        # 清理 MemoryStore 中的 ENTITY 记忆
-        deps = _deps()
-        if deps is not None:
-            source = f"entity_{p_id}"
-            old_entries = await deps.store.list_recent(
-                limit=5,
-                memory_type=MemoryType.ENTITY,
-                source=source,
-            )
-            for entry in old_entries:
-                if entry.id:
-                    await deps.store.delete(entry.id, actor="tool:entity_profile")
-
-        return json.dumps(
-            {
-                "ok": True,
-                "message": f"已删除 {scope_type}:{scope_id} 的画像",
-            },
-            ensure_ascii=False,
-        )
+        rt = require_runtime()
+        writer = ProfileWriter(rt.data_center.everything_data, rt.memory_store)
+        result = await writer.write(scope_type, scope_id if scope_type == "agent" else _normalize_scope_id(scope_id), "",
+                                    expected_revision=revision, actor="tool:entity_profile", delete=True)
+        return json.dumps({"ok": True, "synced": result.synced,
+                           "operation_id": result.operation_id}, ensure_ascii=False)
     except Exception as e:
         return error_from_exception(e, action="删除实体画像")
 
@@ -1925,15 +1917,19 @@ async def delete_entity_profile(scope_type: str, scope_id: str) -> str:
     source="mind.memory",
     description=(
         "更新指定实体的画像内容（自动解析跨平台关联，写入主身份）。"
-        "建议先用 get_entity_profile 查看当前画像，在此基础上增量更新。"
-        "更新后 conv_update_num 归零，重新计算下次自动分析的触发。"
+        "必须先用 get_entity_profile 读取当前画像和 revision，在此基础上修订；冲突时重读。"
+        "支持 user/group 和自画像 agent:self；修订由 AI 决定，请提供事实依据，不把运行日志写成人格。"
     ),
 )
-async def update_entity_profile(scope_type: str, scope_id: str, personality: str) -> str:
+async def update_entity_profile(
+    scope_type: str, scope_id: str, personality: str, revision: str, reason: str = "",
+) -> str:
     """更新指定实体的画像内容。
 
     Args:
-        scope_type: 范围类型（user 或 group）
+        reason: 本次修订的依据和理由
+        revision: get_entity_profile 返回的编辑基线
+        scope_type: 范围类型（user/group/agent）；自画像用 agent + self
         scope_id: 用户 ID 或群组 ID（格式 ``{频道}:{id}``，如 qq:123；传裸 id 时按当前会话频道解析）
         personality: 新的画像内容（Markdown 格式的结构化描述）
     """
@@ -1941,80 +1937,16 @@ async def update_entity_profile(scope_type: str, scope_id: str, personality: str
         if not personality.strip():
             return tool_error("画像内容不能为空", cause=ErrorCause.PARAM, retryable=False)
 
-        sqlite = _get_sqlite()
-        scope_id = _normalize_scope_id(scope_id)
-        primary = await sqlite.resolve_alias(scope_type, scope_id)
-        p_type, p_id = primary if primary else (scope_type, scope_id)
+        from agent.memory.profiles import ProfileWriter
+        from agent.runtime.singleton import require_runtime
 
-        old = await sqlite.get_entity_personality(scope_type=p_type, scope_id=p_id)
-        conv_num = old.get("conv_num", 0) if old else 0
-
-        # 覆盖式更新前备份旧画像（防坏写不可恢复）
-        if old and old.get("personality"):
-            from .profile_backup import backup_entity_profile
-
-            backup_entity_profile(p_type, p_id, old["personality"])
-
-        await sqlite.set_entity_personality(
-            scope_type=p_type,
-            scope_id=p_id,
-            personality=personality.strip(),
-            conv_num=conv_num,
-            conv_update_num=0,
+        rt = require_runtime()
+        result = await ProfileWriter(rt.data_center.everything_data, rt.memory_store).write(
+            scope_type, scope_id if scope_type == "agent" else _normalize_scope_id(scope_id), personality, expected_revision=revision,
+            actor="tool:entity_profile", reason=reason,
         )
-
-        # 同步更新内存缓存（primary + 所有 alias 的内存实体）
-        try:
-            from agent.runtime.singleton import require_runtime
-
-            rt = require_runtime()
-            entities = rt.data_center.everything_data.entities
-            keys_to_update = [f"{p_type}_{p_id}"]
-            aliases = await sqlite.get_aliases_for_primary(p_type, p_id)
-            keys_to_update.extend(f"{a['scope_type']}_{a['scope_id']}" for a in aliases)
-            for key in keys_to_update:
-                entity = entities.get(key)
-                if entity:
-                    entity.set_personality(personality.strip())
-        except Exception:
-            log("update_entity_profile 异常已忽略", "DEBUG")
-
-        # 同步更新 MemoryStore 中的 ENTITY 记忆
-        deps = _deps()
-        if deps is not None:
-            from .self_profile import PROFILE_MEMORY_IMPORTANCE
-
-            source = f"entity_{p_id}"
-            scope_tag = f"{p_type}:{p_id}"
-            old_entries = await deps.store.list_recent(
-                limit=5,
-                memory_type=MemoryType.ENTITY,
-                source=source,
-            )
-            for old_entry in old_entries:
-                if old_entry.id:
-                    await deps.store.delete(old_entry.id, actor="tool:entity_profile")
-            entry = MemoryEntry(
-                memory_type=MemoryType.ENTITY,
-                content=personality.strip(),
-                source=source,
-                tags=[scope_tag],
-                importance=PROFILE_MEMORY_IMPORTANCE,
-            )
-            await deps.store.add(entry, actor="tool:entity_profile")
-            wake_embedding_worker()
-
-        target_desc = f"{p_type}:{p_id}"
-        if primary:
-            target_desc += f" (通过 {scope_type}:{scope_id})"
-        return json.dumps(
-            {
-                "ok": True,
-                "message": f"已更新 {target_desc} 的画像",
-                "preview": personality.strip()[:100],
-            },
-            ensure_ascii=False,
-        )
+        return json.dumps({"ok": True, "changed": result.changed, "synced": result.synced,
+                           "revision": result.revision, "operation_id": result.operation_id}, ensure_ascii=False)
     except Exception as e:
         return error_from_exception(e, action="更新实体画像")
 

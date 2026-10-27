@@ -15,6 +15,7 @@ from core.sqlite_utils import required_row
 from core.tags import etag_all, get_time_tag, tag_label
 
 from .conversation_search import ConversationSearch
+from .profile_store import ProfileStore, init_profile_operations, profile_revision
 
 # 连接健康检查节流间隔（秒）：避免每次 _get_db 都执行 SELECT 1
 _HEALTH_CHECK_INTERVAL = 30.0
@@ -102,6 +103,7 @@ class SqliteBackend:
         self._conversation_generation = 0
         self._last_health_check = 0.0
         self._search = ConversationSearch(self._get_db)
+        self.profiles = ProfileStore(self._get_db, self._write_tx)
         self._register_embedding_backlog()
 
     def _register_embedding_backlog(self) -> None:
@@ -200,6 +202,7 @@ class SqliteBackend:
         await db.execute("PRAGMA journal_mode=WAL;")
         await db.execute("PRAGMA synchronous=NORMAL;")
         await db.execute("PRAGMA busy_timeout=5000;")
+        await init_profile_operations(db)
 
         if not self._initialized:
             await db.execute(
@@ -973,24 +976,23 @@ class SqliteBackend:
         scope_type: str,
         scope_id: str,
         personality: str,
-        conv_num: int = 0,
-        conv_update_num: int = 0,
+        conv_num: int | None = None,
+        conv_update_num: int | None = None,
     ) -> None:
-        now = time.time_ns()
-        async with self._write_tx() as db:
-            await db.execute(
-                """
-                INSERT INTO entity_profile(scope_type, scope_id, personality, updated_ts_ns, conv_num, conv_update_num)
-                VALUES(?,?,?,?,?,?)
-                ON CONFLICT(scope_type, scope_id) DO UPDATE SET
-                  personality=excluded.personality,
-                  updated_ts_ns=excluded.updated_ts_ns,
-                  conv_num=excluded.conv_num,
-                  conv_update_num=excluded.conv_update_num
-                """,
-                (scope_type, scope_id, personality, int(now), conv_num, conv_update_num),
+        """存储导入入口；运行时画像决策使用 ProfileWriter 的显式基线与同步契约。"""
+        async with self.profiles.lock:
+            old = await self.get_entity_personality(scope_type=scope_type, scope_id=scope_id) or {}
+            await self.profiles.commit(
+                scope_type, scope_id, personality,
+                expected_revision=profile_revision(scope_type, scope_id, old.get("personality") or ""),
+                actor="storage", reason="画像导入或身份复制",
             )
-            await db.commit()
+            if conv_num is not None or conv_update_num is not None:
+                await self.save_entity_counters(
+                    scope_type=scope_type, scope_id=scope_id,
+                    conv_num=conv_num if conv_num is not None else old.get("conv_num", 0),
+                    conv_update_num=conv_update_num if conv_update_num is not None else old.get("conv_update_num", 0),
+                )
 
     async def save_entity_counters(
         self,
@@ -1765,13 +1767,13 @@ class SqliteBackend:
         ]
 
     async def delete_entity_profile(self, *, scope_type: str, scope_id: str) -> None:
-        """删除指定实体画像。"""
-        async with self._write_tx() as db:
-            await db.execute(
-                "DELETE FROM entity_profile WHERE scope_type=? AND scope_id=?",
-                (scope_type, scope_id),
+        """存储删除入口，保留正文回执供同步恢复。"""
+        async with self.profiles.lock:
+            old = await self.get_entity_personality(scope_type=scope_type, scope_id=scope_id) or {}
+            await self.profiles.commit(
+                scope_type, scope_id, "", delete=True, actor="storage",
+                expected_revision=profile_revision(scope_type, scope_id, old.get("personality") or ""),
             )
-            await db.commit()
 
     # ------------------------------------------------------------------
     # 实体别名（跨平台身份关联）
@@ -1802,7 +1804,7 @@ class SqliteBackend:
     ) -> None:
         """设置别名映射（source → primary）。"""
         now = time.time_ns()
-        async with self._write_tx() as db:
+        async with self.profiles.lock, self._write_tx() as db:
             await db.execute(
                 """
                 INSERT INTO entity_alias(scope_type, scope_id, primary_scope_type, primary_scope_id, created_ts_ns)
@@ -1818,7 +1820,7 @@ class SqliteBackend:
 
     async def remove_alias(self, *, scope_type: str, scope_id: str) -> bool:
         """移除别名，返回是否有记录被删除。"""
-        async with self._write_tx() as db:
+        async with self.profiles.lock, self._write_tx() as db:
             cursor = await db.execute(
                 "DELETE FROM entity_alias WHERE scope_type=? AND scope_id=?",
                 (scope_type, scope_id),

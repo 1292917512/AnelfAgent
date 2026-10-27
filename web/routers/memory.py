@@ -245,11 +245,16 @@ class UpdateLTMRequest(BaseModel):
     content: str
     importance: float = 0.5
     tags: Optional[list[str]] = None
+    expected_version: int
 
 
 @router.put("/ltm/{mem_id}")
 async def update_ltm(mem_id: int, req: UpdateLTMRequest) -> Dict[str, Any]:
-    ok = await _mem_svc.update_ltm(mem_id, req.content, req.importance, req.tags)
+    from services.memory import ProfileConflict
+    try:
+        ok = await _mem_svc.update_ltm(mem_id, req.content, req.importance, req.tags, expected_version=req.expected_version)
+    except ProfileConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
     return {"ok": ok}
 
 
@@ -263,8 +268,11 @@ async def apply_ltm_evidence(mem_id: int, req: EvidenceLTMRequest) -> Dict[str, 
     """对一条反思施加用户证据信号（确认/反驳）——反思反馈回路的人审入口。"""
     if req.signal not in ("confirm", "dispute"):
         raise HTTPException(422, "signal 仅支持 confirm / dispute")
+    from services.memory import ProfileConflict
     try:
         result = await _mem_svc.apply_ltm_evidence(mem_id, req.signal)
+    except ProfileConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     if result is None:
@@ -367,23 +375,65 @@ class SaveEntityRequest(BaseModel):
     scope_type: str
     scope_id: str
     personality: str
+    revision: str
 
 
 @router.put("/entities")
-async def save_entity(req: SaveEntityRequest) -> Dict[str, str]:
-    await _mem_svc.save_entity(req.scope_type, req.scope_id, req.personality)
-    return {"status": "ok"}
+async def save_entity(req: SaveEntityRequest) -> Dict[str, Any]:
+    from services.memory import ProfileConflict
+    try:
+        return await _mem_svc.save_entity(req.scope_type, req.scope_id, req.personality, req.revision)
+    except ProfileConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
 
 
 class DeleteEntityRequest(BaseModel):
     scope_type: str
     scope_id: str
+    revision: str
 
 
 @router.post("/entities/delete")
-async def delete_entity(req: DeleteEntityRequest) -> Dict[str, str]:
-    await _mem_svc.delete_entity(req.scope_type, req.scope_id)
-    return {"status": "ok"}
+async def delete_entity(req: DeleteEntityRequest) -> Dict[str, Any]:
+    from services.memory import ProfileConflict
+    try:
+        return await _mem_svc.delete_entity(req.scope_type, req.scope_id, req.revision)
+    except ProfileConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@router.get("/entities/timeline")
+async def profile_timeline(
+    scope_type: str = "", scope_id: str = "", before_id: int = Query(0, ge=0), limit: int = Query(30, ge=1, le=100),
+) -> Dict[str, Any]:
+    return await _mem_svc.profile_timeline(scope_type, scope_id, before_id, limit)
+
+
+@router.get("/entities/operations/{operation_id}")
+async def profile_operation(operation_id: str) -> Dict[str, Any]:
+    result = await _mem_svc.profile_operation(operation_id)
+    if result is None:
+        raise HTTPException(404, "画像操作不存在")
+    return result
+
+
+@router.post("/entities/operations/{operation_id}/sync")
+async def sync_profile(operation_id: str) -> Dict[str, Any]:
+    result = await _mem_svc.sync_profile(operation_id)
+    if result is None:
+        raise HTTPException(404, "画像操作不存在")
+    return result
+
+
+@router.get("/timeline")
+async def memory_timeline(
+    memory_id: int = Query(0, ge=0), before_id: int = Query(0, ge=0), limit: int = Query(30, ge=1, le=100),
+) -> Dict[str, Any]:
+    return await _mem_svc.memory_timeline(memory_id, before_id, limit)
 
 
 @router.get("/entities/aliases")

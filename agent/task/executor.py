@@ -8,7 +8,7 @@ Model Experience:
   追加在任务指令（最后一条消息）尾部；历次执行的时长/状态/产出摘要经
   执行历史落盘，由 list_tasks（概况）与 task_history（明细）只读查询
 - 模型看到的终态区分完成、未完成和未知；未确认的工具效果只报告回执，不推断完成。
-- token 影响：极小（数十 token）
+- token 影响：任务指令增量数十 token；结果入库复用去重判断增加一道长期价值判断，无候选时也判断。
 - KV Cache 影响：均位于最后一条消息内——执行时间一次运行内字节冻结、
   extra_note 纯尾部追加，任务稳定前缀（人设+工具+永久记忆）不受影响
 """
@@ -339,7 +339,7 @@ class TaskExecutor:
 
         第一级规则判重零成本拦截字面重复；命中第二级 LLM 语义裁决
         （store/skip/update/merge），事实演进合并进既有记忆而非新增矛盾记录。
-        LLM 裁决失败回退 store，去重不阻塞任务落库。
+        任务产出先由同次判断确认长期价值；判断失败时仅保留执行历史摘要，避免把运行汇报写成认知。
         """
         store = self.memory.memory_store
         if not store or not result.content.strip():
@@ -360,12 +360,12 @@ class TaskExecutor:
             return
 
         candidates = await gather_dedup_candidates(store, self.memory.embedder, content)
-        verdict = await judge_write(content, candidates, tags=result.tags)
+        verdict = await judge_write(content, candidates, tags=result.tags, task_result=True)
         action = verdict.get("action", "store")
         metrics.incr(f"write.dedup_llm_{action}")
 
         if action == "skip":
-            log(f"任务结果已有等价记忆，跳过存储: [{result.task_name}]", tag="任务")
+            log(f"任务结果不新增长期记忆: [{result.task_name}] {verdict.get('reason', '已有等价记忆')}", tag="任务")
             return
         if action == "update" and verdict.get("target_id"):
             updated = await apply_update(

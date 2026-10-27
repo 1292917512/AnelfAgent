@@ -1,4 +1,37 @@
 {
+  "profileTimeline": "画像操作时间线",
+  "profileTimelineHint": "记录启用后的真实操作；历史旧画像在首次修改时保留原文。AI 自主修订，无需逐条审核。",
+  "memoryTimeline": "记忆操作时间线",
+  "memoryTimelineHint": "沿用记忆审计记录，保留 {{days}} 天。旧记录可能只有摘要，不代表完整修订历史。",
+  "timelineEmpty": "暂无已记录的操作",
+  "timelineLoadFailed": "操作记录加载失败",
+  "operationDiff": "变化",
+  "operationBefore": "修改前全文",
+  "operationAfter": "修改后全文",
+  "operationDetails": "查看变化与全文",
+  "operationHide": "收起详情",
+  "operationSource": "来源反思",
+  "operationSynced": "已同步",
+  "operationPending": "已提交，等待同步",
+  "operationMore": "加载更早记录",
+  "profileSavedPending": "画像已保存，记忆镜像等待同步；系统会继续恢复，无需重复提交。",
+  "profileSaveFailed": "画像保存失败，草稿已保留",
+  "profileDraftStale": "画像已被其他操作更新，草稿已保留。请先复制需要的内容，取消编辑后读取最新画像再修订。",
+  "operationActions": {
+    "create": "创建",
+    "update": "更新",
+    "delete": "删除",
+    "add": "写入",
+    "archive": "归档",
+    "restore": "恢复",
+    "merge": "合并"
+  },
+  "reflectionStates": {
+    "pending": "待验证",
+    "confirmed": "已确认",
+    "promoted": "已晋升",
+    "denied": "未采纳"
+  },
   "title": "记忆管理",
   "tabs": {
     "overview": "总览",
@@ -592,5 +625,8 @@
     "forgotten": "遗忘层（似曾相识）",
     "empty": "无召回结果（库为空或查询无命中）",
     "overview": "摘要综合"
-  }
+  },
+  "operationRetry": "重试同步",
+  "operationRetryFailed": "同步重试失败",
+  "editMemoryContent": "记忆正文"
 }

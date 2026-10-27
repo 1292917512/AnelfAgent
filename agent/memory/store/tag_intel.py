@@ -1,6 +1,6 @@
 """标签智能：共现图谱与查询提及识别（记忆联想的驱动层）。
 
-单趟扫描 tags_json + graph_nodes 构建三份派生数据，TTL 缓存：
+单趟扫描 tags_json + graph_nodes 构建三份派生数据，TTL 到期按标签修订号复核：
 - df（标签文档频率，IDF 评分与提及词表共用）
 - 共现对（同一条记忆中关联前缀标签两两共现计数）
 - 提及词表（高频 topic 名 + 图谱节点 label → 标签的映射）
@@ -97,7 +97,7 @@ class TagIntelligence:
         return df, cooc, vocab
 
     async def _ensure_fresh(self, *, fresh: bool = False) -> None:
-        """召回复用 TTL；写入治理按权威修订号复核，读不到未提交的标签。"""
+        """召回复用 TTL；写入治理按标签修订号复核，读不到未提交的标签。"""
         # 空表也记录构建时间：无记忆时不至于每次调用都全表重建
         if not fresh and time.monotonic() - self._built_at < _TTL_SECONDS:
             return
@@ -108,10 +108,11 @@ class TagIntelligence:
                 return
             db = await self._conn.get_db()
             async with self._conn.write_lock:
-                cursor = await db.execute("SELECT value FROM schema_meta WHERE key='projection_revision'")
+                cursor = await db.execute("SELECT value FROM schema_meta WHERE key='tag_revision'")
                 row = await cursor.fetchone()
                 revision = int(row["value"]) if row else -1
-                if revision >= 0 and revision == self._revision and now - self._built_at < _TTL_SECONDS:
+                if revision >= 0 and revision == self._revision:
+                    self._built_at = now
                     return
                 cursor = await db.execute("SELECT tags_json FROM memories WHERE importance > 0")
                 tag_rows = [str(r["tags_json"]) for r in await cursor.fetchall()]

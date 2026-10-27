@@ -5,7 +5,7 @@ import type { ActivityEntry } from "@/lib/types/activity";
 import { formatElapsedCompact } from "@/lib/format";
 import { useNow } from "@/hooks/useNow";
 import { Markdown } from "../render/Markdown";
-import { DiffView } from "../DiffView";
+import { DiffView } from "@/components/common/DiffView";
 import { cn } from "@/lib/utils";
 import { ActivityTargets, TaggedText, renderTaggedText } from "./ActivityReferences";
 import { ActivityPlan } from "./ActivityPlan";

@@ -52,6 +52,34 @@ class MemoryConnectionManager:
         self.vec_dims: Optional[int] = None
 
     @staticmethod
+    async def _init_tag_revision(db: aiosqlite.Connection) -> None:
+        """事务内跟踪标签派生视图的输入，投影队列与正文变化不使词表失效。"""
+        await db.execute("INSERT OR IGNORE INTO schema_meta(key,value) VALUES('tag_revision','0')")
+        sources = (
+            ("memories", "importance>0", "tags_json,importance", "OLD.tags_json IS NOT NEW.tags_json"),
+            (
+                "graph_nodes", "archived=0", "node_key,label,archived",
+                "OLD.node_key IS NOT NEW.node_key OR OLD.label IS NOT NEW.label",
+            ),
+        )
+        for table, active, columns, changed in sources:
+            old_active, new_active = f"OLD.{active}", f"NEW.{active}"
+            events = (
+                ("insert", "INSERT", new_active),
+                ("delete", "DELETE", old_active),
+                (
+                    "update", f"UPDATE OF {columns}",
+                    f"({old_active}) != ({new_active}) OR (({old_active}) AND ({new_active}) AND ({changed}))",
+                ),
+            )
+            for name, event, condition in events:
+                await db.execute(
+                    f"CREATE TRIGGER IF NOT EXISTS tag_revision_{table}_{name} "
+                    f"AFTER {event} ON {table} WHEN {condition} BEGIN "
+                    "UPDATE schema_meta SET value=CAST(value AS INTEGER)+1 WHERE key='tag_revision'; END"
+                )
+
+    @staticmethod
     async def _ensure_column(
         db: aiosqlite.Connection,
         table: str,
@@ -525,6 +553,8 @@ class MemoryConnectionManager:
                     "UPDATE schema_meta SET value=CAST(value AS INTEGER)+1 WHERE key='projection_revision'; END"
                 )
 
+        await self._ensure_column(db, "memory_audit", "data_json", "TEXT NOT NULL DEFAULT '{}'")
+        await self._init_tag_revision(db)
         await self._init_vec_index(db)
 
         await db.commit()

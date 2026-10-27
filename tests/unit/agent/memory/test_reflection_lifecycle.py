@@ -9,6 +9,7 @@ import pytest
 
 from agent.memory import evidence
 from agent.memory.memory_types import MemoryEntry, MemoryType
+from agent.memory.profiles import ProfileWriter
 from agent.memory.reflection_lifecycle import (
     advance_reflections,
     get_lifecycle,
@@ -16,6 +17,9 @@ from agent.memory.reflection_lifecycle import (
     scope_tags_from_entity_scopes,
     seed_reflection,
 )
+from agent.storage.data_center import EverythingData
+from agent.storage.sqlite_backend import SqliteBackend
+from agent.storage.storage_router import StorageRouter
 
 
 def _reflection(content: str = "我发现主人最近睡眠变晚了", importance: float = 0.7) -> MemoryEntry:
@@ -26,6 +30,14 @@ def _reflection(content: str = "我发现主人最近睡眠变晚了", importanc
         importance=importance,
         source="self_reflection",
     )
+
+
+@pytest.fixture
+async def profiles(store, tmp_path):
+    sqlite = SqliteBackend(str(tmp_path / "profiles.sqlite3"))
+    writer = ProfileWriter(EverythingData(StorageRouter(sqlite)), store)
+    yield writer
+    await sqlite.close()
 
 
 class TestSeed:
@@ -83,13 +95,14 @@ class TestAdvance:
         report = await advance_reflections(store)
         assert report.evaluated == 0
 
-    async def test_promotion_writes_profile(self, store, monkeypatch):
+    async def test_promotion_writes_profile(self, store, monkeypatch, profiles):
         """confirmed 且 score 达标 → LLM 裁决 promote → 写入目标画像。"""
         monkeypatch.setattr(
             "agent.memory.reflection_lifecycle.get_config_int",
             lambda k, d: 0 if "cooldown" in k else d,
         )
         entry = _reflection(importance=0.9)
+        entry.tags += ["group:qq:999", "user:qq:123"]
         seed_reflection(entry)
         for _ in range(2):
             evidence.apply_reinforcement(entry.metadata, 1.0, user_originated=True)
@@ -103,28 +116,21 @@ class TestAdvance:
         evidence.apply_reinforcement(saved.metadata, 1.0, user_originated=True)
         await store.update(saved)
 
-        promoted_to: list = []
-
-        async def _fake_llm(prompt: str, **kw):
-            return '{"action": "promote", "content": "主人最近睡眠变晚", "reason": "新认知"}'
-
-        async def _fake_update(store_, scope, content):
-            promoted_to.append((scope, content))
-            return True
-
-        monkeypatch.setattr("agent.memory.dedup.light_llm", _fake_llm)
-        monkeypatch.setattr(
-            "agent.memory.self_profile.update_profile_content", _fake_update,
-        )
-        report = await advance_reflections(store)
+        model = AsyncMock(side_effect=[
+            '{"target":"user:qq:123","reason":"认知关于用户而非群或 AI"}',
+            '{"action":"promote","content":"主人最近睡眠变晚","reason":"用户已确认"}',
+        ])
+        monkeypatch.setattr("agent.memory.dedup.light_llm", model)
+        report = await advance_reflections(store, profiles)
         assert report.promoted == 1
         saved = await store.get(entry.id)
         assert reflection_status(saved) == "promoted"
         assert get_lifecycle(saved)["absorbed_into"].startswith("profile:")
-        # 无归属标签的反思晋升到自画像
-        assert promoted_to[0][0] == "agent:self"
+        assert (await profiles.read("user", "qq:123"))["personality"] == "主人最近睡眠变晚"
+        assert (await profiles.read("agent", "self"))["personality"] == ""
+        assert get_lifecycle(saved)["reason"] == "用户已确认"
 
-    async def test_llm_reject_marks_denied(self, store, monkeypatch):
+    async def test_llm_reject_marks_denied(self, store, monkeypatch, profiles):
         monkeypatch.setattr(
             "agent.memory.reflection_lifecycle.get_config_int",
             lambda k, d: 0 if "cooldown" in k else d,
@@ -141,14 +147,14 @@ class TestAdvance:
         await store.update(saved)
 
         async def _reject(prompt: str, **kw):
-            return '{"action": "reject", "reason": "一次性观察不值得固化"}'
+            return '{"target": "none", "reason": "一次性观察不值得固化"}'
 
         monkeypatch.setattr("agent.memory.dedup.light_llm", _reject)
-        report = await advance_reflections(store)
+        report = await advance_reflections(store, profiles)
         assert report.denied == 1
         assert reflection_status(await store.get(entry.id)) == "denied"
 
-    async def test_llm_failure_never_silently_promotes(self, store, monkeypatch):
+    async def test_llm_failure_never_silently_promotes(self, store, monkeypatch, profiles):
         """LLM 失败只退避重试，绝不静默晋升（防断电重复）。"""
         monkeypatch.setattr(
             "agent.memory.reflection_lifecycle.get_config_int",
@@ -168,7 +174,7 @@ class TestAdvance:
             raise RuntimeError("LLM down")
 
         monkeypatch.setattr("agent.memory.dedup.light_llm", _boom)
-        report = await advance_reflections(store)
+        report = await advance_reflections(store, profiles)
         assert report.promoted == 0
         saved = await store.get(entry.id)
         assert reflection_status(saved) == "confirmed"  # 未被晋升

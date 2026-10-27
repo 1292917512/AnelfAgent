@@ -395,8 +395,19 @@ export interface GoalData {
 export interface EntityProfile {
   scope_type: string;
   scope_id: string;
-  personality?: string;
-  [key: string]: unknown;
+  personality: string;
+  revision: string;
+  conv_num: number;
+  conv_update_num: number;
+}
+
+export interface MemoryRecord {
+  id: number;
+  content: string;
+  memory_type: string;
+  importance: number;
+  tags: string[];
+  version: number;
 }
 
 export interface ConvMessage {
@@ -435,4 +446,54 @@ export interface UnifiedTag {
   tool_count: number;
   tools: string[];
   message_key: boolean;
+}
+export interface EntityAlias {
+  scope_type: string;
+  scope_id: string;
+  primary_scope_type: string;
+  primary_scope_id: string;
+}
+
+export interface ProfileWriteResult {
+  revision: string;
+  changed: boolean;
+  synced: boolean;
+  operation_id: string;
+}
+
+export interface ProfileOperation {
+  id: number;
+  operation_id: string;
+  scope_type: string;
+  scope_id: string;
+  action: string;
+  actor: string;
+  reason: string;
+  source_memory_id: number | null;
+  created_at: number;
+  synced: boolean;
+  error: string;
+}
+
+export interface ProfileOperationDetail extends ProfileOperation {
+  before_content: string;
+  after_content: string;
+  diff: string;
+}
+
+export interface MemoryOperation {
+  id: number;
+  memory_id: number;
+  action: string;
+  actor: string;
+  detail: string;
+  timestamp: number;
+  data: { version?: number; content_changed?: boolean; status_before?: string; status_after?: string;
+    reason?: string; error?: string; operation_id?: string };
+}
+
+export interface OperationPage<T> {
+  items: T[];
+  next_cursor: number | null;
+  retention_days?: number;
 }

@@ -66,6 +66,22 @@ class TestGetMeta:
 
 
 class TestSaveMeta:
+    def test_profile_history_is_shared_with_ai_config_tools(self, client) -> None:
+        import json
+
+        from agent.memory import profiles
+        from entities.entity_query.tools import get_entity_config, update_entity_config
+
+        assert profiles.ProfileWriter is not None
+        response = client.put("/api/config/meta/profile_history_days", json={"value": 14})
+        assert response.status_code == 200
+        ai_items = json.loads(get_entity_config("memory/profile_history"))["config_items"]
+        assert next(item for item in ai_items if item["key"] == "profile_history_days")["value"] == 14
+        assert json.loads(update_entity_config("profile_history_days", "30"))["success"]
+        group = next(group for group in client.get("/api/config/meta").json()["groups"] if group["group"] == "memory/profile_history")
+        item = next(item for item in group["items"] if item["key"] == "profile_history_days")
+        assert item["value"] == item["default"] == 30 and item["min"] == 1
+
     def test_save_boolean(self, client, demo_config) -> None:
         r = client.put(f"/api/config/meta/{demo_config}", json={"value": False})
         assert r.status_code == 200

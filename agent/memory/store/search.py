@@ -5,8 +5,8 @@
 FTS 不可用或异常时回退 LIKE（ESCAPE 转义）。chunks 侧检索委托 FileIndexStore。
 连接由 MemoryConnectionManager 提供，本模块不自建连接。
 
-模型可见：保留语义与关键词两路证据、精确标签范围和原有评分。
-Token 影响：不增加调用或结果预算。
+模型可见：软标签任一命中可参与评分，硬过滤限定范围；标签目录可按 ID 续页。
+Token 影响：不增加调用或召回结果预算，目录分页附短游标与总数。
 缓存影响：只影响动态召回，不改稳定前缀。
 """
 
@@ -39,7 +39,7 @@ from ._shared import (
     temporal_weight,
     time_decay,
 )
-from .connection import MemoryConnectionManager
+from .connection import MemoryConnectionManager, fetch_count
 from .file_index import FileIndexStore
 from .tag_intel import TagIntelligence
 
@@ -154,6 +154,60 @@ class SearchEngine:
         rows = await cursor.fetchall()
         return [row_to_entry(r) for r in rows]
 
+    async def list_tag_page(
+        self, tag: str, *, before_id: int = 0, limit: int = 20,
+    ) -> tuple[list[MemoryEntry], int, int | None]:
+        """按 ID 倒序浏览精确标签，返回条目、当前总数与续页游标。
+
+        游标不依赖页前条目是否仍带原标签，适合边浏览边改标；新写入从首页查看。
+        总数和页面在写锁内读取，不观察同连接事务的中间状态。
+        """
+        if before_id < 0 or not 1 <= limit <= 200:
+            raise ValueError("标签分页游标不能为负数，页大小须在 1-200 之间")
+        db = await self._conn.get_db()
+        predicate = "importance>0 AND EXISTS (SELECT 1 FROM json_each(memories.tags_json) WHERE value=?)"
+        cursor_sql = " AND id<?" if before_id else ""
+        params: list[Any] = [tag, before_id] if before_id else [tag]
+        async with self._conn.write_lock:
+            total = await fetch_count(db, f"SELECT COUNT(*) FROM memories WHERE {predicate}", (tag,))
+            rows = list(await (await db.execute(
+                f"SELECT {MEM_COLUMNS_NO_EMB} FROM memories WHERE {predicate}{cursor_sql} ORDER BY id DESC LIMIT ?",
+                (*params, limit + 1),
+            )).fetchall())
+        entries = [row_to_entry(row, with_embedding=False) for row in rows[:limit]]
+        next_id = entries[-1].id if len(rows) > limit else None
+        return entries, total, next_id
+
+    async def _soft_tag_candidates(
+        self, tags: list[str], *, limit: int, tag_query: TagQuery, exclude_ids: set[int] | None = None,
+    ) -> list[MemoryEntry]:
+        """精确软标签任一命中入池，按 IDF 匹配强度限量；硬过滤先行。"""
+        if not tags or limit <= 0:
+            return []
+        tags = list(dict.fromkeys(tags))
+        db = await self._conn.get_db()
+        placeholders = ",".join("?" for _ in tags)
+        hard_sql, hard_params = tag_query.sql()
+        excluded = sorted(exclude_ids or ())
+        exclude_sql = " AND id NOT IN (" + ",".join("?" for _ in excluded) + ")" if excluded else ""
+        rank_sql = ""
+        rank_params: list[Any] = []
+        if len(tags) > 1:
+            tag_df, total_docs = await self.get_tag_df()
+            terms = []
+            for tag in tags:
+                terms.append("CASE WHEN EXISTS (SELECT 1 FROM json_each(memories.tags_json) WHERE value=?) THEN ? ELSE 0 END")
+                rank_params.extend((tag, idf_tag_score(tags, [tag], tag_df, total_docs)))
+            rank_sql = "(" + " + ".join(terms) + ") DESC, "
+        rows = await (await db.execute(
+            f"SELECT {MEM_COLUMNS_NO_EMB} FROM memories WHERE importance>0 AND ({hard_sql}) "
+            f"AND EXISTS (SELECT 1 FROM json_each(memories.tags_json) WHERE value IN ({placeholders})) "
+            f"{exclude_sql} "
+            f"ORDER BY {rank_sql}ts_ns DESC, id DESC LIMIT ?",
+            (*hard_params, *tags, *excluded, *rank_params, limit),
+        )).fetchall()
+        return [row_to_entry(row, with_embedding=False) for row in rows]
+
     async def search_associative(
         self,
         tags: list[str],
@@ -168,22 +222,16 @@ class SearchEngine:
         强度显著高于全局高频标签（如当前用户 user: 标签）。
         Returns: [(entry, score)] 按分数降序。
         """
-        if not tags:
+        if not tags or limit <= 0:
             return []
-        db = await self._conn.get_db()
-        conditions = " OR ".join("EXISTS (SELECT 1 FROM json_each(memories.tags_json) WHERE value = ?)" for _ in tags)
-        cursor = await db.execute(
-            f"SELECT {MEM_COLUMNS} FROM memories WHERE importance > 0 AND ({conditions}) ORDER BY ts_ns DESC LIMIT 200",
-            list(tags),
+        entries = await self._soft_tag_candidates(
+            tags, limit=200, tag_query=TagQuery(), exclude_ids=exclude_ids,
         )
-        rows = await cursor.fetchall()
         tag_df, total_docs = await self.get_tag_df()
         now = time.time()
-        exclude = exclude_ids or set()
         scored: list[tuple[MemoryEntry, float]] = []
-        for row in rows:
-            entry = row_to_entry(row)
-            if entry.id is None or entry.id in exclude:
+        for entry in entries:
+            if entry.id is None:
                 continue
             tag_score = idf_tag_score(tags, entry.tags, tag_df, total_docs)
             if tag_score == 0:
@@ -445,10 +493,10 @@ class SearchEngine:
                 candidates[eid] = (entry, vec_score, 0.0, 0.0)
 
         q_tags = query_tags or []
-        # 标签候选通道：query_tags 非空时把标签交集命中的记忆并入候选池，
+        # 标签候选通道：query_tags 非空时把任一软标签命中的记忆并入候选池，
         # 纯标签意图（文本/向量不命中）不再丢失结果
         if q_tags:
-            tag_entries = await self.search_by_tags(q_tags, limit=pool_size)
+            tag_entries = await self._soft_tag_candidates(q_tags, limit=pool_size, tag_query=tag_query)
             if tag_entries:
                 try:
                     from .. import metrics

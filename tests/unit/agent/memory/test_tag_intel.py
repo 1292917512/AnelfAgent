@@ -88,6 +88,70 @@ async def test_fresh_statistics_wait_for_rollback(store) -> None:
     assert await asyncio.wait_for(reader, timeout=5) == {"topic:kept": 1}
 
 
+async def test_tag_cache_ignores_content_and_projection_changes_even_after_ttl(
+    store: MemoryStore, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mid = await store.add(MemoryEntry(content="original", tags=["topic:kept"], memory_type=MemoryType.SEMANTIC))
+    assert await store.list_tags(fresh=True) == {"topic:kept": 1}
+    intel = store._search._tag_intel
+    original = intel._compute
+    calls = 0
+
+    def counted(
+        tag_rows: list[str], node_rows: list[tuple[str, str]],
+    ) -> tuple[dict[str, int], dict[tuple[str, str], int], dict[str, str]]:
+        nonlocal calls
+        calls += 1
+        return original(tag_rows, node_rows)
+
+    monkeypatch.setattr(intel, "_compute", counted)
+    for i in range(3):
+        entry = await store.get(mid)
+        assert entry is not None
+        entry.content = f"revision {i}"
+        entry.importance = 0.8
+        assert await store.update(entry)
+        intel._built_at = 0
+        assert await store.list_tags(fresh=True) == {"topic:kept": 1}
+    assert calls == 0
+    await store.graph.add_relation("topic:kept", "related", "topic:other", subject_label="Known label")
+    await store.list_tags(fresh=True)
+    assert calls == 1
+    assert await store.extract_query_mentions("Known label") == ["topic:kept"]
+
+
+async def test_tag_revision_migrates_existing_database_and_tracks_active_sources(store: MemoryStore) -> None:
+    mid = await store.add(MemoryEntry(content="fact", tags=["topic:kept"], memory_type=MemoryType.SEMANTIC))
+    db = await store._conn.get_db()
+    async with store._conn.tx(db):
+        for table in ("memories", "graph_nodes"):
+            for operation in ("insert", "update", "delete"):
+                await db.execute(f"DROP TRIGGER tag_revision_{table}_{operation}")
+        await db.execute("DELETE FROM schema_meta WHERE key='tag_revision'")
+    await store.close()
+    assert await store.list_tags(fresh=True) == {"topic:kept": 1}
+    await store.update_importance(mid, 0)
+    assert await store.list_tags(fresh=True) == {}
+    await store.update_importance(mid, 0.5)
+    assert await store.list_tags(fresh=True) == {"topic:kept": 1}
+    await store.delete(mid)
+    assert await store.list_tags(fresh=True) == {}
+
+    await store.graph.upsert_node("topic:server", label="Old label")
+    await store.list_tags(fresh=True)
+    assert await store.extract_query_mentions("Old label") == ["topic:server"]
+    await store.graph.upsert_node("topic:server", label="New label")
+    await store.list_tags(fresh=True)
+    assert await store.extract_query_mentions("Old label") == []
+    assert await store.extract_query_mentions("New label") == ["topic:server"]
+    await store.graph.set_node_archived("topic:server", True)
+    await store.list_tags(fresh=True)
+    assert await store.extract_query_mentions("New label") == []
+    await store.graph.set_node_archived("topic:server", False)
+    await store.list_tags(fresh=True)
+    assert await store.extract_query_mentions("New label") == ["topic:server"]
+
+
 async def _seed(store: MemoryStore) -> None:
     """构造共现场景：火锅×聚餐 高频共现；主人—苗苗 图谱边。"""
     for i in range(3):

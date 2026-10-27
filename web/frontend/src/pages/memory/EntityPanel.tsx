@@ -4,7 +4,9 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { memoryApi } from "@/lib/api";
 import { Card } from "@/components/common/Card";
 import { cn } from "@/lib/utils";
-import { Trash2, Save, Pencil, X, Link2, Unlink } from "lucide-react";
+import { X, Link2, Unlink } from "lucide-react";
+import { ProfileEditor } from "./ProfileEditor";
+import { ProfileTimeline } from "./ProfileTimeline";
 
 function extractEntitySummary(personality: string | undefined): string {
   if (!personality) return "";
@@ -33,8 +35,6 @@ export function EntityPanel() {
     queryFn: () => memoryApi.entities.aliases().then((r) => r.data),
   });
   const [selected, setSelected] = useState<{ type: string; id: string } | null>(null);
-  const [editText, setEditText] = useState("");
-  const [isEditing, setIsEditing] = useState(false);
   const [linkInput, setLinkInput] = useState("");
 
   const invalidateAll = () => {
@@ -42,15 +42,6 @@ export function EntityPanel() {
     queryClient.invalidateQueries({ queryKey: ["entityAliases"] });
   };
 
-  const deleteMutation = useMutation({
-    mutationFn: ({ type, id }: { type: string; id: string }) => memoryApi.entities.delete(type, id),
-    onSuccess: () => { invalidateAll(); setSelected(null); setIsEditing(false); },
-  });
-  const saveMutation = useMutation({
-    mutationFn: ({ type, id, personality }: { type: string; id: string; personality: string }) =>
-      memoryApi.entities.save(type, id, personality),
-    onSuccess: () => { invalidateAll(); setIsEditing(false); },
-  });
   const linkMutation = useMutation({
     mutationFn: ({ srcType, srcId, tgtType, tgtId }: { srcType: string; srcId: string; tgtType: string; tgtId: string }) =>
       memoryApi.entities.link(srcType, srcId, tgtType, tgtId),
@@ -63,7 +54,7 @@ export function EntityPanel() {
 
   const aliasMap = new Map<string, string>();
   const primaryAliasMap = new Map<string, string[]>();
-  for (const a of aliases as Array<Record<string, string>>) {
+  for (const a of aliases) {
     const src = `${a.scope_type}:${a.scope_id}`;
     const dst = `${a.primary_scope_type}:${a.primary_scope_id}`;
     aliasMap.set(src, dst);
@@ -71,7 +62,7 @@ export function EntityPanel() {
   }
 
   const selectedEntity = selected
-    ? (entities as Array<Record<string, unknown>>).find(
+    ? entities.find(
         (e) => e.scope_type === selected.type && e.scope_id === selected.id,
       )
     : null;
@@ -81,11 +72,6 @@ export function EntityPanel() {
 
   const handleSelect = (type: string, id: string) => {
     setSelected({ type, id });
-    setIsEditing(false);
-    const entity = (entities as Array<Record<string, unknown>>).find(
-      (e) => e.scope_type === type && e.scope_id === id,
-    );
-    setEditText((entity?.personality as string) ?? "");
   };
 
   const handleLink = () => {
@@ -98,15 +84,15 @@ export function EntityPanel() {
 
   return (
     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-      <Card title={t("entityList")} subtitle={t("nEntities", { count: (entities as unknown[]).length })}>
+      <Card className="min-w-0" title={t("entityList")} subtitle={t("nEntities", { count: entities.length })}>
         <div className="space-y-1 max-h-[28rem] overflow-y-auto">
-          {(entities as unknown[]).length === 0 && (
+          {entities.length === 0 && (
             <p className="text-sm text-muted">{t("noEntityProfile")}</p>
           )}
-          {(entities as Array<Record<string, unknown>>).map((e) => {
+          {entities.map((e) => {
             const key = `${e.scope_type}:${e.scope_id}`;
             const isActive = selected?.type === e.scope_type && selected?.id === e.scope_id;
-            const summary = extractEntitySummary(e.personality as string);
+            const summary = extractEntitySummary(e.personality);
             const hasAlias = aliasMap.has(key) || primaryAliasMap.has(key);
             return (
               <button
@@ -135,27 +121,7 @@ export function EntityPanel() {
 
       <Card
         title={selectedEntity ? `${selectedEntity.scope_type}:${selectedEntity.scope_id}` : t("entityProfile")}
-        className="md:col-span-2"
-        actions={
-          selectedEntity ? (
-            <div className="flex gap-1">
-              <button
-                onClick={() => {
-                  if (isEditing) { setIsEditing(false); } else { setIsEditing(true); setEditText((selectedEntity.personality as string) ?? ""); }
-                }}
-                className="p-1.5 text-muted hover:text-accent transition-colors"
-              >
-                {isEditing ? <X size={14} /> : <Pencil size={14} />}
-              </button>
-              <button
-                onClick={() => deleteMutation.mutate({ type: String(selectedEntity.scope_type), id: String(selectedEntity.scope_id) })}
-                className="p-1.5 text-muted hover:text-danger transition-colors"
-              >
-                <Trash2 size={14} />
-              </button>
-            </div>
-          ) : undefined
-        }
+        className="min-w-0 break-words md:col-span-2"
       >
         {!selectedEntity ? (
           <p className="text-sm text-muted">{t("selectEntity")}</p>
@@ -216,7 +182,7 @@ export function EntityPanel() {
                   value={linkInput}
                   onChange={(ev) => setLinkInput(ev.target.value)}
                   placeholder={t("linkPlaceholder")}
-                  className="flex-1 bg-card border border-input rounded-md px-3 py-1.5 text-sm text-foreground outline-none focus:border-ring"
+                  className="min-w-0 flex-1 bg-card border border-input rounded-md px-3 py-1.5 text-sm text-foreground outline-none focus:border-ring"
                   onKeyDown={(ev) => { if (ev.key === "Enter") handleLink(); }}
                 />
                 <button
@@ -229,39 +195,13 @@ export function EntityPanel() {
               </div>
             )}
 
-            {isEditing ? (
-              <div className="space-y-2">
-                <textarea
-                  value={editText}
-                  onChange={(ev) => setEditText(ev.target.value)}
-                  rows={14}
-                  className="w-full bg-card border border-input rounded-md px-3 py-2 text-sm text-foreground outline-none focus:border-ring resize-y font-mono"
-                />
-                <div className="flex justify-end">
-                  <button
-                    onClick={() =>
-                      saveMutation.mutate({
-                        type: String(selectedEntity.scope_type),
-                        id: String(selectedEntity.scope_id),
-                        personality: editText,
-                      })
-                    }
-                    className="flex items-center gap-1 px-3 py-1.5 text-xs font-medium rounded-md bg-accent text-primary-foreground"
-                  >
-                    <Save size={12} /> {t("common:save")}
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div className="max-h-[24rem] overflow-y-auto">
-                <pre className="text-sm text-foreground whitespace-pre-wrap break-words font-sans leading-relaxed">
-                  {(selectedEntity.personality as string) || t("noEntityProfile")}
-                </pre>
-              </div>
-            )}
+            <ProfileEditor key={selectedKey} entity={selectedEntity} onDeleted={() => setSelected(null)} />
           </div>
         )}
       </Card>
+      <div className="min-w-0 md:col-span-3">
+        <ProfileTimeline scopeType={selected?.type} scopeId={selected?.id} />
+      </div>
     </div>
   );
 }

@@ -50,6 +50,14 @@ async def run_maintenance(
 
     await boundary()
 
+    from agent.memory.profiles import ProfileWriter
+
+    profiles = ProfileWriter(engine.everything_data, engine.memory.memory_store)
+    try:
+        await profiles.recover()
+    except Exception as exc:
+        log(f"画像同步恢复失败: {exc}", "WARNING", tag="心跳")
+
     # 类型计数在同 tick 内被健康检查与状态区块复用，只查一次；
     # 整理 tick 计数可能变化，状态区块到时重查（见 _write_memory_status）
     type_counts: Optional[Dict[str, int]] = None
@@ -74,7 +82,7 @@ async def run_maintenance(
         if engine.memory.memory_store and engine._total_ticks % consolidate_every == 0:
             from agent.memory.consolidator import MemoryConsolidator
 
-            consolidate_report = await MemoryConsolidator(engine.memory.memory_store).consolidate()
+            consolidate_report = await MemoryConsolidator(engine.memory.memory_store, profiles).consolidate()
             for line in consolidate_report.to_log_lines():
                 hb_log.append_entry(f"[记忆整理] {line}")
     except Exception as e:

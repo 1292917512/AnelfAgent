@@ -1,5 +1,5 @@
 /**
- * DiffView — unified diff 渲染（行号槽深半档 + ⋮ hunk 分隔 + 符号对齐）。
+ * DiffView — 共享 unified diff 渲染（行号槽 + hunk 分隔 + 符号对齐）。
  *
  * 排版规则移植自 Codex diff_render：
  * - 行号槽（gutter）底色比行底色深半档，保证行号在 pastel 底色上可读；

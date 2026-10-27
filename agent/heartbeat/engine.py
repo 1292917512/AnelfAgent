@@ -778,34 +778,14 @@ class HeartbeatEngine:
         """记忆健康检查：纯逻辑检查阈值（与 memory_stats 共用同一配置口径）。"""
         if not self.memory.memory_store:
             return []
-        from core.config import get_config_int
+        from agent.memory.health import memory_warnings
 
-        warn_threshold = get_config_int("memory_warn_threshold", 200)
-        warnings: List[str] = []
         try:
-            if type_counts is None:
-                type_counts = await self.memory.memory_store.get_type_counts()
-            entity_count = type_counts.get("entity", 0)
-            if entity_count > 5:
-                warnings.append(
-                    f"实体记忆有 {entity_count} 条（阈值 5），建议使用 memory_deep_search 查看并用 merge_memories 合并"
-                )
-            reflection_count = type_counts.get("reflection", 0)
-            if reflection_count > 10:
-                warnings.append(
-                    f"反思记忆有 {reflection_count} 条（阈值 10），"
-                    "建议使用 memory_deep_search 查看并用 merge_memories 合并"
-                )
-            for mem_type, count in type_counts.items():
-                if mem_type in ("entity", "reflection"):
-                    continue
-                if count > warn_threshold:
-                    warnings.append(f"{mem_type} 记忆有 {count} 条（阈值 {warn_threshold}），建议整理")
+            counts = type_counts if type_counts is not None else await self.memory.memory_store.get_type_counts()
+            return memory_warnings(counts)
         except Exception as exc:
             log(f"记忆阈值检查异常: {exc}", "WARNING", tag="心跳")
-        if warnings:
-            log(f"记忆阈值预警: {len(warnings)} 条", tag="心跳")
-        return warnings
+            return []
 
     # 便签容量红线（行数, 字节）：宽于主便签指南的软目标，触发即明确超标。
     # 行数防条目膨胀；字节防「单行巨长化」规避行数口径（速查条行内堆案例）。
@@ -1167,10 +1147,15 @@ class HeartbeatEngine:
             combined,
             lean=get_config_bool("task_lean_context", True),
         )
-        personality_desc = entity.get_personality_desc()
+        from agent.memory.profiles import ProfileWriter
+
+        writer = ProfileWriter(self.everything_data, self.memory.memory_store)
+        scope_type, scope_id = entity.identity_parts
+        baseline = await writer.read(scope_type, scope_id)
+        analyzed_count = entity.personality.get("conv_update_num", 0)
         analysis_messages = list(base_messages)
-        if personality_desc:
-            analysis_messages.append(personality_desc)
+        if baseline["personality"]:
+            analysis_messages.append({"role": "user", "content": baseline["personality"]})
         analysis_messages.append(
             {
                 "role": "user",
@@ -1186,51 +1171,22 @@ class HeartbeatEngine:
         if not content:
             return None
 
-        # 覆盖式更新前备份旧画像（防坏写不可恢复）
+        from agent.storage.profile_store import ProfileConflict
+
         try:
-            scope_type0, scope_id0 = entity.identity_parts
-            sqlite0 = self.everything_data.router.sqlite
-            old_profile = await sqlite0.get_entity_personality(
-                scope_type=scope_type0,
-                scope_id=scope_id0,
+            result = await writer.write(
+                scope_type, scope_id, content, expected_revision=baseline["revision"],
+                actor="heartbeat_profile", reason="根据会话材料更新实体画像",
             )
-            if old_profile and old_profile.get("personality"):
-                from agent.memory.profile_backup import backup_entity_profile
-
-                backup_entity_profile(scope_type0, scope_id0, old_profile["personality"])
-        except Exception as exc:
-            log(f"画像备份失败: {exc}", "DEBUG", tag="心跳")
-
-        entity.set_personality(content)
-        await self.everything_data.save_entity_personality(entity)
-        log(f"实体画像更新: {desc} -> {content[:80]}", tag="心跳")
-
-        # 画像记忆以含 adapter 的身份 scope_id 为标识，跨频道同号实体互不串档
-        identity_type, identity_id = entity.identity_parts
-        source = f"entity_{identity_id}"
-        scope_tag = f"{identity_type}:{identity_id}"
-
-        if self.memory.memory_store:
-            old_entries = await self.memory.memory_store.list_recent(
-                limit=5,
-                memory_type=MemoryType.ENTITY,
-                source=source,
-            )
-            for old in old_entries:
-                if old.id:
-                    await self.memory.memory_store.delete(old.id, actor="heartbeat_profile")
-
-            entry = MemoryEntry(
-                memory_type=MemoryType.ENTITY,
-                content=content,
-                source=source,
-                tags=[scope_tag],
-                importance=PROFILE_MEMORY_IMPORTANCE,
-            )
-            await self.memory.memory_store.add(entry, actor="heartbeat_profile")
-            from agent.memory.embedding import wake_embedding_worker
-
-            wake_embedding_worker()
+        except ProfileConflict:
+            log(f"画像分析基线已变化，等待重新分析: {desc}", "DEBUG", tag="心跳")
+            return None
+        if not result.synced:
+            log(f"画像已提交，镜像等待恢复: {desc}", "WARNING", tag="心跳")
+        entity.personality["conv_update_num"] = max(0, entity.personality.get("conv_update_num", 0) - analyzed_count)
+        await self.everything_data.save_entity_counters(entity)
+        source = f"entity_{baseline['scope_id']}"
+        scope_tag = f"{baseline['scope_type']}:{baseline['scope_id']}"
 
         # 关系抽取：复用同一份对话材料提炼结构化关系事实（失败不影响画像产出）
         if self.memory.memory_store:

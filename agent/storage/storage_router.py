@@ -98,8 +98,8 @@ class StorageRouter:
     # ------------------------------------------------------------------
 
     async def _upsert_entity_profile(self, *, scope_type: str, scope_id: str, personality: str, **_kw: Any) -> None:
-        conv_num = _kw.get("conv_num", 0)
-        conv_update_num = _kw.get("conv_update_num", 0)
+        conv_num = _kw.get("conv_num")
+        conv_update_num = _kw.get("conv_update_num")
         await self.sqlite.set_entity_personality(
             scope_type=scope_type, scope_id=scope_id, personality=personality,
             conv_num=conv_num, conv_update_num=conv_update_num,
