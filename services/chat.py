@@ -328,16 +328,8 @@ class ChatService:
         if rt is None:
             return {"status": "error", "error": "runtime 未就绪"}
         scope = self.scope_for_chat(chat_id)
-        interrupted = rt.mind.interrupt(scope, reason="用户点击停止生成")
-        cancelled = 0
-        dm = rt.delegation_manager
-        if dm is not None:
-            cancelled = dm.cancel_scope(scope)
-        background = await rt.mind.background_tasks.cancel_scope(scope)
-        if not interrupted and cancelled == 0 and not background:
-            return {"status": "idle"}
-        return {"status": "ok", "interrupted": interrupted, "cancelled_delegations": cancelled,
-                "background": background}
+        from agent.execution_control import stop_execution
+        return await stop_execution(rt.mind, rt.delegation_manager, scope=scope, reason="用户点击停止生成")
 
     # ------------------------------------------------------------------
     # 换向折叠（web 域会话分支：弃置路径折叠出上下文，DB 保留可恢复）

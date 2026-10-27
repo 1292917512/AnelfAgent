@@ -7,6 +7,19 @@
       "entity/operation": "操作"
     }
   },
+  "control": {
+    "title": "桌面控制与执行回执",
+    "subtitle": "AI 与 Web 共用控制权；停止确认后才能开始新动作",
+    "stop": "停止操作", "takeover": "接管桌面", "release": "交回 AI",
+    "failed": "桌面控制失败", "result": "执行状态", "progress": "已发出输入步骤",
+    "process": "工作进程已退出", "released": "本动作按键已释放", "verification": "后续画面",
+    "confirmed": "已确认", "unknown": "未确认",
+    "automatic": "已启用 Windows 物理输入接管：检测到用户操作后停止。",
+    "manual": "当前使用显式接管；需要操作桌面时先点击接管。",
+    "evidence": "输入步骤和截图都是执行证据，不代表应用目标已完成。交回 AI 不会自动重放旧动作。",
+    "states": {"idle": "空闲", "human": "用户已接管", "starting": "正在启动", "running": "AI 正在操作", "verifying": "正在获取画面", "stopping": "正在停止并释放输入", "completed": "输入已发出", "cancelled": "已停止", "failed": "执行失败", "unknown": "结果未确认", "not_started": "未开始"},
+    "verify": {"captured": "已取得画面，待 AI 判断", "skipped": "未请求", "cancelled": "回看已取消", "unavailable": "画面不可用"}
+  },
   "title": "操作",
   "subtitle": "桌面操控与 MCP 操作关联：状态、注释、启停与测试",
   "tabs": {
@@ -36,8 +49,8 @@
   "guideTitle": "操作纪律（AI 遵循）",
   "guideSubtitle": "操作活跃时注入上下文的执行规范，人机同一套",
   "guideLook": "先看后动：vision_look 定位坐标 → 执行 → 自动看屏验证，小步推进",
-  "guideAct": "不可逆动作（删除/支付/发送）先向用户确认",
-  "guideStop": "急停：鼠标猛移屏幕左上角即中止执行",
+  "guideAct": "动作遵循现有权限与审批规则，AI 根据回执和画面决定后续操作",
+  "guideStop": "停止等待进程退出；接管会保留用户控制权。也可将鼠标移至屏幕左上角急停",
   "linkedTitle": "已关联操作",
   "linkedSubtitle": "关联 = 语义索引（注入操作态势）；AI 执行走 mcp:<server> 工具组，测试执行仅供人工验证",
   "noLinked": "暂无关联操作",

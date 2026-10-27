@@ -5,6 +5,10 @@
 工具组（activate_tool_group 激活），不设第二执行通道。桌面动作为统一
 入口 desktop_act（动作枚举 + 可选参数），执行后默认自动看屏验证
 （联动视觉 screen 源，verify 参数可逐次覆盖）。
+
+模型可见：结构化部分回执与看屏状态；AI 可查询并停止/接管/释放桌面。
+Token：动作回执约增加 100–200 token；看屏沿用现有图像预算。
+缓存：仅工具结果与动态态势，不改稳定前缀。
 """
 
 from __future__ import annotations
@@ -14,7 +18,7 @@ import json
 from core.log import log
 from entities._sdk import ErrorCause, tool, tool_error, vision_look
 
-from . import executor, framework
+from . import desktop, executor, framework
 
 _LOG_TAG = "操作"
 
@@ -81,9 +85,7 @@ async def desktop_act(
     outcome = await executor.execute(f"desktop.{action}", {
         "x": x, "y": y, "x2": x2, "y2": y2, "text": text, "keys": keys,
         "amount": amount, "button": button, "duration": duration, "interval": interval,
-    })
-    if outcome.get("ok") and _should_verify(verify):
-        return await _with_screen_verify(outcome)
+    }, observer=_with_screen_verify if _should_verify(verify) else None)
     return json.dumps(outcome, ensure_ascii=False)
 
 
@@ -98,24 +100,32 @@ def _should_verify(verify: str) -> bool:
     return get_config_bool("operation_desktop_verify", True)
 
 
-async def _with_screen_verify(outcome: dict) -> str:
+async def _with_screen_verify(outcome: dict) -> dict:
     """动作结果附最新屏幕帧（多模态工具结果契约：顶层 _multimodal+images）。
 
-    视觉源不可用/捕获失败时静默回退纯文本结果——验证是增强不是依赖。
+    捕获失败显式标记；取得截图不表示目标动作已验证成功。
     """
     try:
         frame_raw = await vision_look(source="screen")
         frame = json.loads(frame_raw)
         if isinstance(frame, dict) and frame.get("_multimodal"):
-            frame["action_result"] = outcome
-            frame["text"] = (
-                f"动作已执行：{outcome.get('result', '')}。"
-                "以下是执行后的屏幕画面，请核对是否达到预期。"
-            )
-            return json.dumps(frame, ensure_ascii=False)
+            return {**outcome, "verification": "captured", "_multimodal": True,
+                    "images": frame.get("images", []),
+                    "text": "输入已发出，以下是后续画面。请核对实际结果，不要仅凭输入回执认定目标完成。"}
     except Exception as exc:
         log(f"看屏验证失败（回退纯结果）: {exc}", "DEBUG", tag=_LOG_TAG)
-    return json.dumps(outcome, ensure_ascii=False)
+    return {**outcome, "verification": "unavailable"}
+
+
+@tool(group="operation", tags=["always"], description="控制桌面执行：stop 停止，takeover 接管，release 交回。"
+      "先 operation_status 取得 desktop.control.revision；释放不会重放旧动作，继续前先看屏。")
+async def desktop_control(action: str, revision: int) -> str:
+    """AI 与 Web 共用桌面控制；revision 防止过期请求控制新的动作。"""
+    try:
+        return json.dumps(await desktop.get_controller().control(action, revision), ensure_ascii=False)
+    except Exception as exc:
+        from entities._sdk import error_from_exception
+        return error_from_exception(exc, action="桌面控制")
 
 
 @tool(

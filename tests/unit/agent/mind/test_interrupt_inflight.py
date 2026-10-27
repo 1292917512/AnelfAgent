@@ -193,11 +193,13 @@ class TestRegistryEvent:
         # cutoff 早于请求时间 → 回复启动窗口内的新中断，保留（连同事件）
         reg.clear_before("s", cutoff=req.requested_at - 10)
         assert reg.is_requested("s")
-        assert "s" in reg._events
+        retained = reg.event("s")
+        assert retained.is_set()
         # cutoff 晚于请求时间 → 历史旧信号清理（事件一并移除）
         reg.clear_before("s", cutoff=req.requested_at + 10)
         assert not reg.is_requested("s")
-        assert "s" not in reg._events
+        assert reg.event("s") is not retained
+        assert not reg.event("s").is_set()
 
 
 class _ClientBase:

@@ -7,6 +7,19 @@
       "entity/operation": "Operations"
     }
   },
+  "control": {
+    "title": "Desktop control and receipts",
+    "subtitle": "AI and Web share ownership; a new action waits for confirmed cleanup",
+    "stop": "Stop action", "takeover": "Take over", "release": "Return to AI",
+    "failed": "Desktop control failed", "result": "Execution state", "progress": "Input steps dispatched",
+    "process": "Worker exited", "released": "Owned inputs released", "verification": "Follow-up screen",
+    "confirmed": "Confirmed", "unknown": "Unconfirmed",
+    "automatic": "Windows physical input takeover is enabled; user input stops the action.",
+    "manual": "Explicit takeover is available; take over before using the desktop.",
+    "evidence": "Dispatched inputs and screenshots do not prove the application goal succeeded. Returning control does not replay actions.",
+    "states": {"idle": "Idle", "human": "User in control", "starting": "Starting", "running": "AI operating", "verifying": "Capturing screen", "stopping": "Stopping and releasing inputs", "completed": "Inputs dispatched", "cancelled": "Stopped", "failed": "Failed", "unknown": "Outcome unknown", "not_started": "Not started"},
+    "verify": {"captured": "Screen captured; AI must assess", "skipped": "Not requested", "cancelled": "Capture cancelled", "unavailable": "Screen unavailable"}
+  },
   "title": "Operations",
   "subtitle": "Desktop control & MCP operation links: status, annotations, toggles and testing",
   "tabs": {
@@ -36,8 +49,8 @@
   "guideTitle": "Operation Discipline (AI follows)",
   "guideSubtitle": "Execution norms injected while operations are active — same rules for human and AI",
   "guideLook": "Look before acting: vision_look to locate → act → auto screen verify, small steps",
-  "guideAct": "Irreversible actions (delete/pay/send) require user confirmation first",
-  "guideStop": "Emergency stop: slam the mouse to the top-left corner to abort",
+  "guideAct": "Actions follow the existing permission and approval rules; AI chooses the next step from receipts and screen evidence",
+  "guideStop": "Stop waits for worker exit; takeover retains user control. The top-left mouse fail-safe also remains available",
   "linkedTitle": "Linked Operations",
   "linkedSubtitle": "Link = semantic index (injected into operation context); AI executes via mcp:<server> tool groups, test-run is for manual verification",
   "noLinked": "No linked operations",

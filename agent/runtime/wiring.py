@@ -64,6 +64,8 @@ def wire_runtime(
 
     # 思维工具组（scheduler / session_tools / short_term_tools 共用）
     mind_port.set(mind)
+    from agent.execution_control import execution_control_port, execution_stop_handler
+    execution_control_port.set(execution_stop_handler(mind, delegation_manager))
 
     # agent → entities 跨层桥（消费方 agent 侧声明端口，此处以 entities 实现施绑）
     from agent.mind.execution.compression import file_state_cache_port

@@ -31,7 +31,7 @@ export function ChatInput() {
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const pendingFiles = useChatStore((s) => s.buckets[s.activeChatId]?.pendingFiles ?? []);
-  const { busy, canStop } = useChatActivity();
+  const { busy, canStop, stopping } = useChatActivity();
   const addFiles = useChatStore((s) => s.addFiles);
   const removeFile = useChatStore((s) => s.removeFile);
   const send = useChatStore((s) => s.send);
@@ -203,8 +203,8 @@ export function ChatInput() {
             <ModelSelect modelType="chat" compact className="composer-model" />
           </div>
           <div className="flex items-center gap-2">
-            {canStop && <Button variant="danger" size="sm" onClick={() => void interrupt()} title={t("stopTitle")}>
-              <Square size={13} />{t("stop")}
+            {canStop && <Button variant="danger" size="sm" disabled={stopping} onClick={() => void interrupt()} title={t("stopTitle")}>
+              <Square size={13} />{stopping ? t("workbench:activity.control.stopping") : t("stop")}
             </Button>}
             <Button variant="primary" size="sm" onClick={() => void handleSend()} loading={submitting}
               disabled={(!input.trim() && !pendingFiles.some((file) => file.path)) || pendingFiles.some((file) => file.uploading)}>

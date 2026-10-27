@@ -45,6 +45,11 @@ def _server_tool_details(name: str) -> List[Dict[str, Any]]:
 
 
 class OperationService:
+    async def control(self, action: str, revision: int) -> Dict[str, Any]:
+        """Web 与 AI 共用独占控制器；不会提供绕过门控的坐标执行入口。"""
+        from .desktop import get_controller
+        return await get_controller().control(action, revision)
+
     """操作目录/执行/MCP 注册的服务面（路由唯一交互对象）。"""
 
     def operations(self) -> List[Dict[str, Any]]:

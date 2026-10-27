@@ -89,6 +89,7 @@ export interface ChatStreamingDiff {
 }
 
 export interface ChatBucket {
+  interruptPending?: boolean;
   contextUsage?: ContextUsage;
   workspaceContextEnabled: boolean;
   inputDraft: string;

@@ -294,6 +294,36 @@ class TestInterruptedBatch:
         )
         assert partial is False
 
+    async def test_cancelled_writer_preserves_partial_receipt_in_chain(self, mock_mind, monkeypatch):
+        from core.cancellation import ToolCancelled
+        from core.tool_errors import ErrorCause, tool_error
+
+        mind, result, _ = mock_mind
+        started, abort = asyncio.Event(), asyncio.Event()
+        receipt = tool_error("已停止", cause=ErrorCause.USER_CANCEL, retryable=False,
+                             completed=2, total=10, process_stopped=True)
+
+        async def execute(*args, **kwargs):
+            started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                raise ToolCancelled(receipt) from None
+
+        monkeypatch.setattr(tl, "execute_one_tool", execute)
+        chain = []
+        task = asyncio.create_task(tl.execute_tool_calls(
+            mind, chain, result, [_tc("write_file", "partial"), _tc("write_file", "unstarted")],
+            1, abort_event=abort,
+        ))
+        await started.wait()
+        abort.set()
+        assert await task
+        messages = [message for message in chain if message["role"] == "tool"]
+        assert json.loads(messages[0]["content"])["completed"] == 2
+        assert json.loads(messages[0]["content"])["process_stopped"]
+        assert "未执行" in messages[1]["content"]
+
 
 class TestEarlyToolRunner:
     """流中早执行：只读资格、按 id 回收复用、参数漂移弃用。"""

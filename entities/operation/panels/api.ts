@@ -4,6 +4,8 @@ import { api } from "@/lib/api";
 export const operationApi = {
   list: () => api.get("/entity/operation/list"),
   status: () => api.get("/entity/operation/status"),
+  control: (action: "stop" | "takeover" | "release", revision: number) =>
+    api.post("/entity/operation/control", { action, revision }),
   mcpTools: (server?: string) =>
     api.get("/entity/operation/mcp-tools", { params: { server: server || "" } }),
   registerMcp: (server: string, tool: string, note: string) =>

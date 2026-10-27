@@ -85,6 +85,9 @@ async def reply_loop(
     channel_policy = get_reply_policy(adapter_key)
     turn_id = uuid.uuid4().hex[:8]
     interrupts = getattr(mind, "interrupts", None)
+    # 绑定本轮信号前清理旧请求，保留回复启动窗口内收到的停止。
+    if scope and interrupts is not None:
+        interrupts.clear_before(scope, getattr(mind, "_reply_activated_at", {}).get(scope, 0))
     with think_session(mind.tool_assembly, scope), tool_request(
         scope, str(getattr(anything, "uid", "") or ""),
         message_id=str(getattr(anything, "_trace_message_id", "") or getattr(anything, "adapter_message_id", "") or ""),
@@ -98,13 +101,7 @@ async def reply_loop(
                 recall_turn(scope, anything.recall_policy, default_policy=channel_policy.recall_policy):
             if completion is not None:
                 completion["turn_id"] = activity.turn_id
-            # 会话开始清理历史中断信号，避免上一轮遗留请求误杀新会话；
-            # 只清激活时刻之前的，启动窗口内经控制接口发起的中断仍须保留。
             _interrupts = getattr(mind, "interrupts", None)
-            if scope and _interrupts is not None:
-                _interrupts.clear_before(
-                    scope, getattr(mind, "_reply_activated_at", {}).get(scope, 0),
-                )
             # 推送水位必须在 base 快照之前读取：快照与水位读取之间的到达窗口内，
             # 推送既未进入 base、又被 drain_inflight 按 seq≤水位丢弃，导致吞推送。
             push_watermark = 0

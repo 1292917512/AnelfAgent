@@ -22,6 +22,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Dict, Iterator, List, Optional
 
+from core.cancellation import ExecutionSignal, execution_signal
 from core.log import log
 
 
@@ -38,7 +39,7 @@ class InterruptRegistry:
 
     def __init__(self) -> None:
         self._requests: Dict[str, InterruptRequest] = {}
-        self._events: Dict[str, asyncio.Event] = {}
+        self._signals: dict[str, ExecutionSignal] = {}
         self._executions: dict[str, str] = {}
 
     @contextmanager
@@ -47,8 +48,11 @@ class InterruptRegistry:
         if run_id in self._executions or scope in self._executions.values():
             raise ValueError("执行标识或 scope 已在运行")
         self._executions[run_id] = scope
+        signal = self.signal(scope)
+        signal.run_id = run_id
         try:
-            yield
+            with execution_signal(signal):
+                yield
         finally:
             self._executions.pop(run_id, None)
             self.clear(scope)
@@ -68,7 +72,7 @@ class InterruptRegistry:
         self._requests[scope] = InterruptRequest(reason=reason, requested_at=time.time())
         # 事件登记与请求同生命周期：等待方经 event() 拿到的实例在请求被
         # 消费前保持可唤醒；重复请求只更新时间不重置事件
-        self.event(scope).set()
+        self.signal(scope).request(reason)
         log(f"中断请求已登记: scope={scope} reason={reason or '未说明'}", tag="中断")
 
     def event(self, scope: str) -> asyncio.Event:
@@ -77,11 +81,13 @@ class InterruptRegistry:
         无未消费请求时返回未置位的新事件——等待方随后等待的是
         "下一次中断"，与请求语义一致。
         """
-        evt = self._events.get(scope)
-        if evt is None:
-            evt = asyncio.Event()
-            self._events[scope] = evt
-        return evt
+        return self.signal(scope).event
+
+    def signal(self, scope: str) -> ExecutionSignal:
+        """SDK 与思维循环共享同一信号，不另建取消通道。"""
+        if scope not in self._signals:
+            self._signals[scope] = ExecutionSignal(scope)
+        return self._signals[scope]
 
     def is_requested(self, scope: str) -> bool:
         """该 scope 是否存在未消费的中断请求。"""
@@ -93,14 +99,14 @@ class InterruptRegistry:
         事件随之移除：下一次 event() 返回全新未置位实例，残留的置位
         状态不会误杀下一轮回复的在途等待。
         """
-        self._events.pop(scope, None)
+        self._signals.pop(scope, None)
         req = self._requests.pop(scope, None)
         return req.reason if req else None
 
     def clear(self, scope: str) -> None:
         """会话开始时清理历史请求，避免旧信号误杀新会话。"""
         self._requests.pop(scope, None)
-        self._events.pop(scope, None)
+        self._signals.pop(scope, None)
 
     def clear_before(self, scope: str, cutoff: float) -> None:
         """只清理 cutoff 之前的历史请求（保留回复启动窗口内的新中断）。
@@ -112,7 +118,7 @@ class InterruptRegistry:
         req = self._requests.get(scope)
         if req is not None and req.requested_at < cutoff:
             self._requests.pop(scope, None)
-            self._events.pop(scope, None)
+            self._signals.pop(scope, None)
 
     def pending_scopes(self) -> List[str]:
         """当前存在未消费请求的 scope 列表（可观测性用）。"""

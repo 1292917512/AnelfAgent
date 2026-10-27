@@ -4,6 +4,7 @@
 AI 通过两级发现机制按需使用频道功能。
 """
 
+from agent.execution_control import request_execution_stop
 from agent.llm.model_api import (
     ChatResult,
     ChoiceQuestion,
@@ -24,6 +25,7 @@ from agent.llm.model_api import (
     VideoContent,
     get_model_api,
 )
+from core.cancellation import ExecutionSignal, ToolCancelled, get_execution_signal
 from core.network import (
     AsyncNetworkTransport,
     NetworkProbeRequest,
@@ -72,6 +74,7 @@ from .schemas import (
 from .tool_bridge import channel_tool
 
 __all__ = [
+    "request_execution_stop", "get_execution_signal", "ExecutionSignal", "ToolCancelled",
     "CredentialField", "register_provider_key", "get_provider_key", "list_provider_keys",
     "set_provider_key", "set_provider_fields",
     "get_model_api", "ModelAPI", "ModelType", "ModelResult", "ModelCallError", "LLMNotConfiguredError",

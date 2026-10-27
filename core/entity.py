@@ -26,6 +26,7 @@ from typing import Any, Callable, Dict, List, Optional, Type
 
 from pydantic import TypeAdapter, ValidationError
 
+from core.cancellation import ToolCancelled
 from core.event_bus import EVENT_TRACE_CALL_END, EVENT_TRACE_CALL_START, event_bus
 from core.exceptions import catch_exceptions
 from core.log import log
@@ -1139,10 +1140,13 @@ class EntityRegistry:
         log(f"▶ 执行工具 {labels}", "DEBUG", tag="实体")
         try:
             result = await cls._invoke_tool(name, arguments, timeout=timeout)
-        except asyncio.CancelledError:
+        except asyncio.CancelledError as exc:
+            receipt = sanitize_text(exc.result) if isinstance(exc, ToolCancelled) else ""
             await event_bus.emit(EVENT_TRACE_CALL_END, {
                 **identity, "duration_ms": round(observation.elapsed_ms),
-                "success": False, "error": "工具调用已取消，执行结果未确认", "cancelled": True,
+                "success": False, "error": extract_error_text(receipt) if receipt else "工具调用已取消，执行结果未确认",
+                "cancelled": True,
+                "result_preview": receipt[:_EVENT_PREVIEW_LEN],
             })
             raise
         except Exception as exc:
@@ -1269,12 +1273,22 @@ class EntityRegistry:
         if inner_timeout > 0:
             tool_timeout = max(tool_timeout, inner_timeout + _INNER_TIMEOUT_MARGIN)
 
+        deadline = asyncio.timeout(tool_timeout)
         try:
             if entity.is_async:
                 coro = entity.func(**kwargs)
             else:
                 coro = asyncio.to_thread(entity.func, **kwargs)
-            return _serialize_result(await asyncio.wait_for(coro, timeout=tool_timeout))
+            async with deadline:
+                return _serialize_result(await coro)
+        except asyncio.CancelledError as exc:
+            if deadline.expired() and isinstance(exc, ToolCancelled):
+                receipt = parse_tool_result_json(exc.result)
+                if isinstance(receipt, dict):
+                    receipt.update(cause=ErrorCause.TIMEOUT, retryable=False, timeout_seconds=tool_timeout,
+                                   error=f"工具执行超时 ({tool_timeout}s)，资源已收束；请核对部分完成回执")
+                    return json.dumps(receipt, ensure_ascii=False)
+            raise
         except asyncio.TimeoutError:
             return tool_error(
                 f"工具执行超时 ({tool_timeout}s): {name}", cause=ErrorCause.TIMEOUT,

@@ -11,15 +11,17 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any, TypeVar
 
+from core.windows_process import WindowsProcessJob
+
 T = TypeVar("T")
 
 
-async def terminate_process_tree(proc: asyncio.subprocess.Process) -> None:
+async def terminate_process_tree(proc: asyncio.subprocess.Process, job: WindowsProcessJob | None = None) -> None:
     """回收由独立进程组创建的子进程，等待退出后再释放流和产物。"""
     try:
-        if proc.returncode is not None:
-            pass
-        elif sys.platform == "win32":
+        if job is not None:
+            job.close()
+        elif sys.platform == "win32" and proc.returncode is None:
             killer = await asyncio.create_subprocess_exec(
                 "taskkill", "/F", "/T", "/PID", str(proc.pid),
                 stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
@@ -32,7 +34,7 @@ async def terminate_process_tree(proc: asyncio.subprocess.Process) -> None:
                 await killer.wait()
             if proc.returncode is None:
                 proc.kill()
-        else:
+        elif sys.platform != "win32":
             os.killpg(proc.pid, signal.SIGKILL)
     except (ProcessLookupError, PermissionError, OSError):
         if proc.returncode is None:
@@ -65,22 +67,30 @@ async def managed_process(*command: str, shell: bool = False, **kwargs: Any) -> 
     kwargs["start_new_session"] = os.name != "nt"
     if os.name == "nt":
         kwargs["creationflags"] = kwargs.get("creationflags", 0) | getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    if shell:
-        if len(command) != 1:
-            raise ValueError("Shell 执行需要一条完整命令")
-        creation = asyncio.create_task(asyncio.create_subprocess_shell(command[0], **kwargs))
-    else:
-        creation = asyncio.create_task(asyncio.create_subprocess_exec(*command, **kwargs))
+    if shell and len(command) != 1:
+        raise ValueError("Shell 执行需要一条完整命令")
+
+    async def create() -> tuple[asyncio.subprocess.Process, WindowsProcessJob | None]:
+        proc = (await asyncio.create_subprocess_shell(command[0], **kwargs) if shell
+                else await asyncio.create_subprocess_exec(*command, **kwargs))
+        try:
+            job = WindowsProcessJob(proc.pid) if os.name == "nt" and proc.returncode is None else None
+        except OSError:
+            await terminate_process_tree(proc)
+            raise
+        return proc, job
+
+    creation = asyncio.create_task(create())
     try:
-        proc = await asyncio.shield(creation)
+        proc, job = await asyncio.shield(creation)
     except asyncio.CancelledError:
         async def reclaim_creation() -> None:
-            child = await creation
-            await terminate_process_tree(child)
+            child, child_job = await creation
+            await terminate_process_tree(child, child_job)
 
         await _finish_owned(asyncio.create_task(reclaim_creation()))
         raise
     try:
         yield proc
     finally:
-        await _finish_owned(asyncio.create_task(terminate_process_tree(proc)))
+        await _finish_owned(asyncio.create_task(terminate_process_tree(proc, job)))

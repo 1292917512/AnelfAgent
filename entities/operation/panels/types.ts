@@ -37,6 +37,7 @@ export interface McpServerStatus {
 }
 
 export interface HistoryEntry {
+  receipt?: DesktopReceipt;
   op: string;
   kind: string;
   args: string;
@@ -45,8 +46,27 @@ export interface HistoryEntry {
   ts: number;
 }
 
+export interface DesktopReceipt {
+  status?: string;
+  operation_id?: string;
+  completed?: number;
+  total?: number;
+  process_stopped?: boolean;
+  input_released?: boolean;
+  input_outcome?: string;
+  verification?: string;
+}
+
+export interface DesktopControl {
+  state: string;
+  human: boolean;
+  revision: number;
+  automatic_takeover: boolean;
+  active: { operation_id: string; scope: string; run_id: string; completed: number; total: number } | null;
+}
+
 export interface OperationStatus {
-  desktop: { available: boolean; screen: number[] | null; verify: boolean; hint: string };
+  desktop: { available: boolean; screen: number[] | null; verify: boolean; hint: string; control?: DesktopControl };
   active: {
     window_seconds: number;
     seconds_since_activity: number | null;

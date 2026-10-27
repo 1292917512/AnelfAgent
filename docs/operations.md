@@ -73,14 +73,29 @@ DuerOS 控制台（dueros.baidu.com/dbp/mcp/console）重新授权并同步更�
 - **关联 ≠ 执行通道**：MCP 关联是**语义索引**——把常用工具提升为带注释的一等操作注入操作态势，
   让 AI 在操作语境直接知道「有哪些语义化能力」；**实际执行仍走 mcp:<server> 工具组**
   （activate_tool_group 激活）——不设第二执行通道
-- **桌面执行器**（`desktop.py` + pyautogui 声明依赖）：全部动作 to_thread + 30s 超时；FAILSAFE
-  开启（鼠标猛移屏幕左上角物理中止）；type 仅 ASCII（中文提示剪贴板+hotkey 粘贴）
+- **桌面执行边界**：`desktop.py` 管理独占控制与接管，`desktop_process.py` 管理协议，
+  `desktop_worker.py` / `desktop_actions.py` 在独立进程中执行分步输入。输入与后续回看共用控制权，
+  跨会话争用直接返回未开始，不排队。`core.process.managed_process` 回收进程树；Windows 使用
+  Job Object，POSIX 使用进程组。控制器经 Lifecycle 注册，关停先禁止新动作，再等待输入释放。
+- **停止与接管**：实体 SDK 和频道 SDK 均提供 `get_execution_signal()` 与
+  `request_execution_stop(scope=..., run_id=..., reason=...)`，共用 InterruptRegistry。
+  run_id 只匹配仍在执行的轮次；省略目标时只使用当前上下文。受理停止请求不代表资源已释放。
+  `desktop_control(action, revision)` 与 Web `/api/entity/operation/control` 共用控制器；
+  stop 停止当前操作，takeover 停止并保留用户控制权，release 交回 AI，不自动重放。
+  revision 取自 `operation_status` 的 `desktop.control`，过期请求拒绝执行。
+- **物理输入**：`desktop_takeover.py` 在 Windows 区分物理输入和注入输入，检测到用户操作即停止；
+  不保存键值，也不阻止用户输入。其他系统提供显式接管和 pyautogui FAILSAFE。
+  `operation_user_takeover` 控制自动接管，`operation_action_timeout_seconds` 为动作及回看总预算
+  （默认 30 秒）。两项均由模块配置注册，Web 与 AI 共用配置入口。
+- **执行回执**：记录已发出的输入步骤、工作进程退出、输入释放与后续画面状态。取消或异常保留
+  部分完成信息，输入完成不代表目标应用达到预期。释放未确认时保留用户控制权；先核对桌面，
+  再决定后续动作。历史仍为进程内最多 50 条，不新增持久化版本或迁移旧数据。
 - **看屏验证联动**：desktop_act(verify=auto/on/off) → `_sdk.vision_look("screen")` 视觉桥——动作
-  成功后自动截屏，结果按多模态契约附最新画面帧（AI 直接「看到」操作后果）；视觉源不可用静默回退
+  成功后按多模态契约附最新画面帧；captured 仅表示取得截图，unavailable 表示未取得，业务结果由 AI 判断。
 - **按需态势注入**（provider：operation，priority 36）：仅操作活跃窗口内有执行才注入
   （operation_context_window_seconds 默认 600s 滑动续期），静默期零注入；分段预算 + skip-not-stop；
   未关联 server 的工具清单不进注入
-- **AI 工具面**：desktop_act / list_operations / register_mcp_operation / remove / update /
+- **AI 工具面**：desktop_act / desktop_control / list_operations / register_mcp_operation / remove / update /
   operation_status（operation 组）
 
 ## 实体操作态势注入（entities/_ops.py + 文件/SSH 追踪）

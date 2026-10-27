@@ -16,6 +16,7 @@ import time
 from collections import deque
 from typing import Any, Awaitable, Callable, Dict, List, NamedTuple, Optional
 
+from core.cancellation import ToolCancelled
 from core.log import log
 from core.tool_results import extract_error_text, parse_tool_result_json
 
@@ -77,10 +78,15 @@ def _record(op_id: str, kind: str, args: Dict[str, Any], outcome: Dict[str, Any]
         "ok": bool(outcome.get("ok")),
         "detail": str(outcome.get("result") or outcome.get("error") or "")[:300],
         "ts": time.time(),
+        "receipt": {key: outcome[key] for key in (
+            "operation_id", "status", "completed", "total", "process_stopped", "input_released",
+            "input_outcome", "verification",
+        ) if key in outcome},
     })
 
 
-async def execute(op_id: str, args: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+async def execute(op_id: str, args: Optional[Dict[str, Any]] = None, *,
+                  observer: desktop.Observer | None = None) -> Dict[str, Any]:
     """按目录执行一个操作（停用/缺运行时/网关未就绪均返回结构化失败）。"""
     args = args or {}
     spec = framework.get_operation(op_id)
@@ -90,7 +96,12 @@ async def execute(op_id: str, args: Optional[Dict[str, Any]] = None) -> Dict[str
         return {"ok": False, "error": f"操作已停用: {op_id}"}
 
     if spec.kind == framework.KIND_DESKTOP:
-        outcome = await desktop.run_action(spec.id.split(".", 1)[1], args)
+        touch_activity()
+        try:
+            outcome = await desktop.run_action(spec.id.split(".", 1)[1], args, observer)
+        except ToolCancelled as exc:
+            _record(op_id, spec.kind, args, json.loads(exc.result))
+            raise
     else:
         gateway = mcp_gateway()
         if gateway is None:
@@ -127,7 +138,7 @@ async def status() -> Dict[str, Any]:
     from core.config import get_config_bool, get_config_int
 
     specs = framework.list_operations()
-    desktop_ready = desktop.runtime_ready()
+    desktop_status = await desktop.get_controller().probe()
     gateway = mcp_gateway()
     servers: List[Dict[str, Any]] = []
     if gateway is not None:
@@ -139,10 +150,9 @@ async def status() -> Dict[str, Any]:
     since = seconds_since_activity()
     return {
         "desktop": {
-            "available": desktop_ready,
-            "screen": list(desktop.screen_size()) if desktop_ready else None,
+            **desktop_status,
             "verify": get_config_bool("operation_desktop_verify", True),
-            "hint": "" if desktop_ready else desktop.install_hint(),
+            "control": desktop.get_controller().state(),
         },
         "active": {
             "window_seconds": window,

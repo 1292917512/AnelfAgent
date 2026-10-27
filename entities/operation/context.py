@@ -12,6 +12,10 @@ Web 端操作执行）才注入，窗口随每次执行滑动续期，静默期�
 - 近期执行：最近结果 ✓/✗（行动连续性）。
 
 段内逐条渲染、超预算跳过该条继续（skip-not-stop），绝不半截截断。
+
+模型可见：已有操作态势中补充控制权与部分进度。
+Token：仍受 800 token 总预算限制，近期历史不扩容。
+缓存：只在动态上下文追加，不改变稳定前缀。
 """
 
 from __future__ import annotations
@@ -32,8 +36,9 @@ _BUDGET_RECENT = 420
 
 _DESKTOP_GUIDE = (
     "桌面操控纪律：先 vision_look 看屏定位坐标 → desktop_act 执行（默认自动回看验证）"
-    " → 小步推进不盲操作；删除/支付/发送类不可逆动作先向用户确认；"
-    "desktop.type 仅 ASCII（中文经剪贴板+hotkey 粘贴）；急停=鼠标猛移屏幕左上角。"
+    " → 小步推进不盲操作；执行遵循统一权限与审批规则；"
+    "desktop.type 仅 ASCII（中文经剪贴板+hotkey 粘贴）；"
+    "停止/接管后先看屏核实，输入进度不代表目标应用完成，不重放已发出的输入。"
 )
 
 
@@ -79,6 +84,9 @@ def _render_recent() -> str:
         mark = "✓" if entry.get("ok") else "✗"
         detail = str(entry.get("detail", ""))[:60]
         line = f"- {mark} {entry['op']}: {detail}"
+        receipt = entry.get("receipt", {})
+        if receipt:
+            line += f" ({receipt.get('status', '')} {receipt.get('completed', 0)}/{receipt.get('total', 0)})"
         if used + len(line) > _BUDGET_RECENT:
             break
         lines.append(line)
@@ -110,6 +118,7 @@ class OperationProvider:
         )
         sections = [
             _render_guide(desktop_ready and has_desktop),
+            f"桌面控制: {desktop_exec.get_controller().state()['state']}；详情与控制版本用 operation_status 查询。",
             _render_operations(specs),
             _render_recent(),
         ]

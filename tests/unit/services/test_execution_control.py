@@ -44,6 +44,23 @@ async def start(projection, scope, run_id="run"):
     await projection._start({"turn_id": run_id, "scope": scope, "kind": "conversation"})
 
 
+async def test_sdk_and_channel_share_scoped_control_and_reject_old_run(execution, monkeypatch):
+    from agent.channel import get_execution_signal, request_execution_stop
+    from agent.execution_control import execution_control_port, execution_stop_handler
+    from entities import _sdk
+
+    _, mind, scope, _ = execution
+    assert _sdk.request_execution_stop is request_execution_stop
+    assert _sdk.get_execution_signal is get_execution_signal
+    runtime = control.get_runtime()
+    monkeypatch.setattr(execution_control_port, "_box", [execution_stop_handler(mind, runtime.delegation_manager)])
+    with mind.interrupts.execution("new", scope):
+        assert await request_execution_stop(run_id="old") == {"status": "idle"}
+        assert not get_execution_signal().cancelled
+        assert (await request_execution_stop(reason="频道停止"))["interrupted"]
+        assert get_execution_signal().reason == "频道停止"
+
+
 async def test_stop_is_scoped_and_does_not_report_completion_early(execution):
     projection, mind, scope, send = execution
     await start(projection, scope)

@@ -42,8 +42,9 @@ async def control_execution(run_id: str, action: Literal["stop", "resume"]) -> d
             if kind == "user" and channel == "webui" and user == "web_user":
                 result = await ChatService().interrupt_chat(session or "default")
             else:
-                interrupted = runtime.mind.interrupt(scope, reason="用户停止执行")
-                result = {"status": "ok" if interrupted else "idle", "interrupted": interrupted}
+                from agent.execution_control import stop_execution
+                result = await stop_execution(runtime.mind, runtime.delegation_manager,
+                                              run_id=run_id, reason="用户停止执行")
         except BaseException:
             workspace_activity.set_control(run_id, "")
             raise

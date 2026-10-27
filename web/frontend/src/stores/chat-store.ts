@@ -11,7 +11,7 @@
  */
 import { create } from "zustand";
 import axios from "axios";
-import { submissionFinished } from "@/lib/chat-activity";
+import { activeChatRun, submissionFinished } from "@/lib/chat-activity";
 import { EventStream } from "@/lib/event-stream";
 import { useActivityStore } from "./activity-store";
 import { captureWorkspaceContext } from "@/lib/workspace-context";
@@ -333,8 +333,12 @@ export const useChatStore = create<ChatState>((set, get) => {
 
     interrupt: async () => {
       const chatId = get().activeChatId;
+      const run = activeChatRun(useActivityStore.getState().runs, chatId);
+      if (get().buckets[chatId]?.interruptPending || run?.control === "stopping") return;
+      updateBucket(chatId, () => ({ interruptPending: true }));
       try {
-        const r = await chatApi.interrupt(chatId === DEFAULT_CHAT_ID ? undefined : chatId);
+        const r = run ? await workspaceApi.controlActivity(run.id, "stop")
+          : await chatApi.interrupt(chatId === DEFAULT_CHAT_ID ? undefined : chatId);
         if (r.data.status === "error") throw new Error(r.data.error || i18n.t("activity.control.failed", { ns: "workbench" }));
         const failed = r.data.background?.filter((task) => !task.ok).length ?? 0;
         if (failed) toast.error(i18n.t("activity.control.backgroundPending", { ns: "workbench", count: failed }));
@@ -344,6 +348,10 @@ export const useChatStore = create<ChatState>((set, get) => {
           updateBucket(chatId, () => ({ sending: false, sendingSince: null }));
         }
       } catch (error) { toast.error(apiErrorMessage(error, i18n.t("activity.control.failed", { ns: "workbench" }))); }
+      finally {
+        await useActivityStore.getState().load();
+        updateBucket(chatId, () => ({ interruptPending: false }));
+      }
     },
 
     loadFolds: async (chatId) => {

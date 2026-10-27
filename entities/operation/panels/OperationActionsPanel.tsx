@@ -8,6 +8,7 @@ import { StatCard } from "@/components/common/StatCard";
 import { StatusDot } from "@/components/common/StatusDot";
 import { Badge, Button, EmptyState, Input, LoadingBlock, Switch, toast } from "@/components/ui";
 import type { OperationEntry, OperationStatus } from "./types";
+import { DesktopControlPanel } from "./DesktopControlPanel";
 
 /** 操作目录：桌面动作与注册 MCP 操作的注释 / 启停 / 移除。 */
 export function OperationActionsPanel() {
@@ -23,7 +24,7 @@ export function OperationActionsPanel() {
   const { data: status } = useQuery({
     queryKey: ["operationStatus"],
     queryFn: () => operationApi.status().then((r) => r.data as OperationStatus),
-    refetchInterval: 8000,
+    refetchInterval: (query) => query.state.data?.desktop.control?.active ? 1000 : 8000,
   });
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: ["operationList"] });
@@ -91,6 +92,7 @@ export function OperationActionsPanel() {
         <p className="text-xs text-warn">{status.desktop.hint}</p>
       )}
 
+      <DesktopControlPanel control={status?.desktop.control} history={status?.history ?? []} />
       <Card title={t("actionsTitle")} subtitle={t("actionsSubtitle")}>
         {ops.length === 0 ? (
           <EmptyState icon={MousePointerClick} title={t("noOperations")} />

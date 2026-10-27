@@ -3,7 +3,7 @@
 模块划分：
 - framework.py：操作注册表（内置桌面动作 + MCP 注册操作）与注释/启停
   持久化（实体目录 operations.json）；
-- desktop.py：pyautogui 执行器（可选依赖探测、to_thread 执行、FAILSAFE）；
+- desktop.py：桌面独占与接管；desktop_process/worker/actions：受管子进程与可中断输入；
 - executor.py：统一执行入口、执行历史、MCP 网关（entities.mcp 桥直连）；
 - context.py：操作态势上下文提供者（可用操作 + 注释 + MCP 概览注入）；
 - tools.py：AI 工具面（operation 组）；
@@ -46,7 +46,26 @@ register_configs_safe({
                            "画面帧；AI 可用 desktop_act 的 verify 参数逐次覆盖）",
             "default": True,
         },
+        "operation_action_timeout_seconds": {
+            "description": "桌面动作及回看总预算；超时先请求释放输入，再回收工作进程",
+            "default": 30, "min": 5, "max": 120, "unit": "秒", "advanced": True,
+        },
+        "operation_user_takeover": {
+            "description": "在支持的平台检测用户物理输入并停止桌面动作（当前支持 Windows）；"
+                           "其他平台仍可在桌面操作页显式接管",
+            "default": True,
+        },
     },
 })
+
+
+def register_lifecycle() -> None:
+    """关停先封闭桌面入口，待拥有的输入进程释放后结束。"""
+    from core.lifecycle import Lifecycle
+
+    from .desktop import get_controller
+    controller = get_controller()
+    Lifecycle.register("desktop_controller", controller, cleanup=controller.close,
+                       on_quiesce=controller.quiesce, critical_cleanup=True)
 
 from . import context, tools  # noqa: F401, E402  # 注册上下文提供者 + 触发 @tool 注册

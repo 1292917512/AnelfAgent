@@ -28,6 +28,10 @@ def build_router() -> APIRouter:
     async def operation_status() -> Dict[str, Any]:
         return await svc.status()
 
+    @router.post("/control")
+    async def control_desktop(req: DesktopControlRequest) -> Dict[str, Any]:
+        return await svc.control(req.action, req.revision)
+
     @router.get("/mcp-tools")
     async def mcp_tools(server: str = Query(default="")) -> Dict[str, Any]:
         """已连接 server 的工具详情（注册面板选择用）。"""
@@ -56,6 +60,11 @@ class RegisterMcpRequest(BaseModel):
     server: str
     tool: str
     note: str = ""
+
+
+class DesktopControlRequest(BaseModel):
+    action: str
+    revision: int
 
 
 class UpdateOperationRequest(BaseModel):

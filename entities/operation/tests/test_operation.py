@@ -75,7 +75,7 @@ class TestExecutor:
     @pytest.mark.skipif(desktop.runtime_ready(), reason="本机装有 pyautogui")
     async def test_desktop_missing_runtime_hint(self, operations_file):
         outcome = await executor.execute("desktop.click", {"x": 1, "y": 2})
-        assert outcome["ok"] is False and "install_python_packages" in outcome["error"]
+        assert outcome["ok"] is False and "uv sync" in outcome["error"]
 
     async def test_mcp_via_gateway_and_history(self, operations_file, monkeypatch):
         framework.register_mcp_operation(

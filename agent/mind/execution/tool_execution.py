@@ -13,6 +13,7 @@ from agent.mind.execution.responses import _strip_think_blocks
 from agent.mind.execution.result_pipeline import ToolResultPipeline
 from agent.mind.execution.vision import _append_multimodal_result, split_multimodal_result
 from agent.mind.tools.core import END_REPLY_TOOL_NAME
+from core.cancellation import ToolCancelled
 from core.entity import EntityRegistry
 from core.event_bus import (
     EVENT_THINKING_TOOL_END,
@@ -324,13 +325,17 @@ async def execute_tool_calls(
     semaphore = asyncio.Semaphore(_MAX_TOOL_CONCURRENCY)
     started: Set[str] = set()
     finished: Dict[str, Any] = {}
+    cancelled_calls: set[str] = set()
 
     async def _run_guarded(tc: ToolCall):
         async with semaphore:
             started.add(tc.id)
             try:
                 output = await _run_one(tc)
-            except asyncio.CancelledError:
+            except asyncio.CancelledError as exc:
+                if isinstance(exc, ToolCancelled):
+                    finished[tc.id] = exc.result
+                    cancelled_calls.add(tc.id)
                 raise
             except BaseException as e:
                 finished[tc.id] = e
@@ -434,10 +439,13 @@ async def execute_tool_calls(
                 output, hit = await _await_with_abort(_run_guarded(tc), abort_event)
                 if hit:
                     aborted = True
-                    batch_msgs.append({
-                        "role": "tool", "tool_call_id": tc.id,
-                        "content": _aborted_tool_result(tc, started),
-                    })
+                    if tc.id in finished:
+                        await _emit(tc, finished[tc.id])
+                    else:
+                        batch_msgs.append({
+                            "role": "tool", "tool_call_id": tc.id,
+                            "content": _aborted_tool_result(tc, started),
+                        })
                     continue
                 await _emit(tc, output)
 
@@ -451,7 +459,7 @@ async def execute_tool_calls(
     log_tool_round(iteration, tool_calls)
     # 存在"已启动但未完成"的调用 = 中断中止了在途执行（可能部分执行）
     return aborted and any(
-        tc.id in started and tc.id not in finished for tc in tool_calls
+        tc.id in cancelled_calls or (tc.id in started and tc.id not in finished) for tc in tool_calls
     )
 
 
@@ -539,6 +547,8 @@ async def execute_one_tool(
         result = error_from_exception(exc, action=f"工具 {tc.name} 执行")
     finally:
         error = observation.error
+        if isinstance(error, ToolCancelled):
+            result = error.result
         observed_result = redact_tool_result(result, sensitive_result=sensitive_result)
         details = ({"error": str(error), "result": observed_result, "success": False} if error is not None else {
             "result_preview": observed_result[:300], "result": observed_result[:ACTIVITY_TEXT_LIMIT],
@@ -548,6 +558,8 @@ async def execute_one_tool(
         if observation.cancelled:
             details.update(cancelled=True, error=("工具调用已取消，执行结果未确认" if permission_checked
                                                   else "权限评审已取消，工具未执行"))
+            if isinstance(error, ToolCancelled):
+                details.update(error=extract_error_text(observed_result), result=observed_result[:ACTIVITY_TEXT_LIMIT])
         await event_bus.emit(EVENT_THINKING_TOOL_END, {
             **identity, "duration_ms": round(observation.elapsed_ms), **details,
         })

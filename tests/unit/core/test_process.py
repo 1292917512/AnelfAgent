@@ -65,7 +65,8 @@ async def test_process_exception_reaps_child():
     assert children[0].returncode is not None
 
 
-async def test_cancellation_reaps_spawned_grandchild():
+@pytest.mark.parametrize("parent_exits", [False, True])
+async def test_cancellation_reaps_spawned_grandchild(parent_exits):
     import psutil
 
     ready = asyncio.Event()
@@ -74,11 +75,15 @@ async def test_cancellation_reaps_spawned_grandchild():
     async def run():
         command = ("import subprocess,sys,time;"
                    "p=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)']);"
-                   "print(p.pid,flush=True);time.sleep(30)")
+                   "print(p.pid,flush=True);" + ("" if parent_exits else "time.sleep(30)"))
         async with managed_process(sys.executable, "-c", command, stdout=asyncio.subprocess.PIPE) as proc:
             descendants.append(psutil.Process(int(await proc.stdout.readline())))
+            if parent_exits:
+                async with asyncio.timeout(5):
+                    while proc.returncode is None:
+                        await asyncio.sleep(.01)
             ready.set()
-            await proc.wait()
+            await asyncio.Event().wait()
 
     task = asyncio.create_task(run())
     await asyncio.wait_for(ready.wait(), 5)
