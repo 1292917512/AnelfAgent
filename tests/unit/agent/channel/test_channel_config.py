@@ -54,14 +54,20 @@ def isolated_channels(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 class TestRegisterChannelSchemas:
-    def test_registers_declared_fields_only(self, isolated_channels: Path) -> None:
+    def test_registers_declared_fields_only(self, isolated_channels: Path, monkeypatch) -> None:
+        from unittest.mock import Mock
+        log = Mock()
+        monkeypatch.setattr(channel_config_mod, "log", log)
         _make_channel_dir(isolated_channels, "ctest")
+        (isolated_channels / "node_modules").mkdir()
+        (isolated_channels / "nonebot_bridge").mkdir()
         assert register_channel_schemas() == ["ctest"]
         assert ConfigRegistry.get_item("ctest_enabled") is not None
         assert ConfigRegistry.get_item("ctest_token") is not None
         # ChannelConfig 基类通用字段不进配置面
         assert ConfigRegistry.get_item("ctest_command_prefix") is None
         assert ConfigManager.get("ctest_enabled") is False
+        log.assert_not_called()
 
     def test_dir_without_config_py_skipped(self, isolated_channels: Path) -> None:
         d = isolated_channels / "bare"

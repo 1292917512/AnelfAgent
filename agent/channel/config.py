@@ -253,6 +253,8 @@ def register_channel_schemas() -> List[str]:
     for item in sorted(root.iterdir()):
         if not item.is_dir() or item.name.startswith("_"):
             continue
+        if not (item / "adapter.py").is_file():
+            continue
         if register_channel_schema(item.name):
             registered.append(item.name)
     return registered
