@@ -303,7 +303,8 @@ jobs:
 
       - name: Browser regression
         if: runner.os == 'Linux'
-        timeout-minutes: 7
+        # 桌面与移动端整套回归共用两个 worker，给完整套件留出运行余量；单例超时由 Playwright 保持。
+        timeout-minutes: 10
         run: npm run test:e2e
 
       - name: Upload browser diagnostics
