@@ -26,6 +26,10 @@ class MessageDedup:
         self._seen[key] = now
         return False
 
+    def discard(self, key: str) -> None:
+        """撤回尚未成功受理的消息，允许调用方修正或重试。"""
+        self._seen.pop(key, None)
+
     def _evict(self, now: float) -> None:
         if self._ttl_seconds is not None:
             expired = [k for k, ts in self._seen.items() if now - ts > self._ttl_seconds]

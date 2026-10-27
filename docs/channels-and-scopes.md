@@ -52,7 +52,7 @@ GitHub push 只合并同分支、同一已知发起者的事件，避免将不�
 非聊天事件保留原有入队与唤醒策略，但不计入用户发言次数、群发言者列表或首次用户画像任务。
 内部后台通知的待处理信号标为 `system`，保留此前用户请求的时间水位，避免掩盖未处理对话。
 
-http_api 频道是外部系统的双向 HTTP 门户（默认 127.0.0.1:8091，停用）：入站 /api/chat
+http_api 频道是外部系统的 HTTP/HTTPS 门户（默认 127.0.0.1:8091，停用）：入站 /api/chat
 （文本 + images + media base64 落盘为媒体段）、/api/vision/push 与 WS /api/vision/stream
 （视觉单帧/持续推流，与 web 端共用 `push_external_frame`，判变注入由系统内部完成）、
 /api/chat/stream（SSE 帧）；出站按 同步响应 → SSE 订阅 → webhook 回调（请求级 callback_url
@@ -60,6 +60,14 @@ http_api 频道是外部系统的双向 HTTP 门户（默认 127.0.0.1:8091，�
 （≤20MB 内联 base64）；没有实际接收端时出站返回失败。
 报文契约见 channels/http_api/README.md；频道内会话规则经 reply_policy 注入，完整接入契约
 由 `http_api_portal_help` 频道工具按生效配置实时生成供 AI 自取。
+`GET /api/sdk` 与 `/openapi.json` 供外部应用发现真实契约；模型方法按 `ModelAPI` 签名派生，
+工具目录读取已启用的实体注册表，执行复用权限、hook 与统一工具入口。会话控制
+`POST /api/sessions/control` 的 stop 复用 SDK 协作式停止，resume 向原会话提交新输入；
+`GET /api/sessions/history` 支持按 ID 补取持久化消息。收发键统一使用完整 scope，群/私聊同号
+和子会话分别隔离；SSE 支持群聊及子会话精确订阅，有界队列溢出断开。请求体累计计量，
+无 Content-Length 的分块上传同样受限。TLS 证书/私钥通过配置声明，`public_base_url` 用于
+反向代理的外部地址公告；不代表已配置公网证书。去重和回调登记为有界内存态，不承诺跨重启
+exactly-once 或持久化 webhook 重试；完整接入步骤与交付边界见频道 README。
 
 ## 频道回复策略（agent/channel/reply_policy.py）
 

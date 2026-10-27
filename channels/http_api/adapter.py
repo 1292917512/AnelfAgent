@@ -11,7 +11,7 @@ AI 自助：portal_help 工具返回按生效配置实时生成的完整接入�
 Model Experience:
     模型看到什么 —— 门户语义与收发纪律经 reply_policy 注入（channel_policy 层），
         完整契约经 http_api_portal_help 工具按需自取；
-    token 影响 —— 仅 http_api 会话每轮约三百 token，契约详文按需加载；
+    token 影响 —— 仅 http_api 会话每轮数百 token，契约详文按需加载；
     缓存影响 —— channel_policy 尾部层，不触碰 stable 前缀。
 """
 
@@ -24,19 +24,15 @@ import os
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
-from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel, Field
+from fastapi import FastAPI, Request, WebSocket
 
 from agent.channel.base import BaseChannel, ChannelMetadata
 from agent.channel.channel_types import ChannelCapability, ChannelStatus, _err, _ok
 from agent.channel.dedup import MessageDedup
 from agent.channel.reply_policy import ReplyPolicy
 from agent.channel.schemas import (
-    AdapterChannel,
-    AdapterMessage,
-    AdapterUser,
     ChannelInfo,
     ChannelType,
     ChannelUser,
@@ -48,79 +44,49 @@ from agent.channel.schemas import (
     SendRequest,
     SendResponse,
     SendSegment,
-    notification_channel,
-    notification_sender,
 )
 from agent.channel.tool_bridge import channel_tool
 from agent.messages import build_entity_scope
 from core.log import log
 
 from .config import HttpApiConfig
+from .help import HelpTopic
+from .schemas import ChatRequest
+from .schemas import ImageItem as ImageItem
+from .schemas import MediaItem as MediaItem
 
 # ------------------------------------------------------------------
 # Request / Response
 # ------------------------------------------------------------------
 
-class ImageItem(BaseModel):
-    url: str = Field(default="", max_length=2048)
-    base64: str = ""
-    mime_type: str = Field(default="image/jpeg", max_length=100)
-
-
-class MediaItem(BaseModel):
-    """非图片媒体入站项（音频/视频/文件；二进制经 base64 上传落盘）。"""
-
-    kind: str = Field(default="file", max_length=16)  # audio / video / file
-    base64: str = ""
-    mime_type: str = Field(default="", max_length=100)
-    file_name: str = Field(default="", max_length=255)
-
-
-class ChatRequest(BaseModel):
-    message: str = Field(default="", max_length=256_000)
-    user_id: str = Field(default="api_user", max_length=128)
-    user_name: str = Field(default="", max_length=128)
-    group_id: str = Field(default="", max_length=128)
-    session_id: str = Field(default="", max_length=128)
-    message_id: str = Field(default="", max_length=128)
-    reply_to_id: str = Field(default="", max_length=128)
-    reply_content: str = Field(default="", max_length=2000)
-    to_me: bool = True
-    # 消息类别：chat（默认）/ notification / event / system，对应历史 [kind:xxx] 标签
-    kind: str = "chat"
-    images: List[ImageItem] = Field(default_factory=list)
-    media: List[MediaItem] = Field(default_factory=list)
-    # 会话级出站回调：携带即注册，后续回复与主动消息推送到该 webhook
-    callback_url: str = Field(default="", max_length=2048)
-    request_id: str = Field(default_factory=lambda: uuid.uuid4().hex[:12], max_length=128)
-    # 立即返回不等待回复（回复经 /api/chat/stream 或 callback_url 投递）
-    async_mode: bool = False
-
-
-class ChatResponse(BaseModel):
-    request_id: str
-    status: str = "ok"
-    reply: str = ""
-    error: str = ""
-
-
-class VisionPushRequest(BaseModel):
-    """外部视觉源推送一帧（缓冲中记为 external:<source>）。"""
-
-    source: str = Field(min_length=1, max_length=64)
-    image_base64: str
-    mime_type: str = Field(default="image/png", max_length=100)
-    captured_at: Optional[float] = None
-
-
 class _StreamSub:
-    """单个 SSE 订阅者（scope 前缀过滤 + 帧队列）。"""
+    """有界 SSE 订阅；子会话精确匹配，慢客户端溢出后关闭。"""
 
-    __slots__ = ("prefix", "queue")
+    __slots__ = ("prefix", "queue", "include_children", "closed")
 
-    def __init__(self, prefix: str) -> None:
+    def __init__(self, prefix: str, *, include_children: bool = True, maxsize: int = 256) -> None:
         self.prefix = prefix
-        self.queue: asyncio.Queue[str] = asyncio.Queue()
+        self.include_children = include_children
+        self.closed = False
+        self.queue: asyncio.Queue[str] = asyncio.Queue(maxsize=maxsize)
+
+    def matches(self, scope: str) -> bool:
+        return scope == self.prefix or (self.include_children and scope.startswith(self.prefix + "#"))
+
+    def push(self, data: str) -> bool:
+        if self.closed:
+            return False
+        if self.queue.full():
+            self.close()
+            return False
+        self.queue.put_nowait(data)
+        return True
+
+    def close(self) -> None:
+        self.closed = True
+        while not self.queue.empty():
+            self.queue.get_nowait()
+        self.queue.put_nowait("")
 
 
 # 入站媒体段类型映射（图片经 IMAGE 段走图片通道，不在此列）
@@ -164,18 +130,19 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
     metadata = ChannelMetadata(
         name="HTTP API",
         description="内嵌 uvicorn 的通用 HTTP 双向通信门户",
-        version="1.1.0",
+        version="1.2.0",
         author="AnelfAgent",
     )
     _Configs = HttpApiConfig
 
     def __init__(self) -> None:
-        self._pending_replies: Dict[tuple[str, str], asyncio.Future[str]] = {}
+        self._pending_replies: Dict[str, asyncio.Future[str]] = {}
         self._server: Optional[Any] = None
         self._server_task: Optional[asyncio.Task[None]] = None
+        self._bound_base_url = ""
+        self._requires_token = False
         self._stream_subs: List[_StreamSub] = []
-        # (chat_id, session_id) → 会话级出站回调
-        self._callbacks: Dict[tuple[str, str], str] = {}
+        self._callbacks: Dict[str, str] = {}
         # message_id 去重：客户端重试/网络重发不重复入管道（全频道共用去重器）
         self._dedup = MessageDedup()
         super().__init__()
@@ -199,85 +166,50 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
     def reply_policy(self) -> ReplyPolicy:
         """HTTP 门户的收发规则（按生效配置生成地址与等待窗口）。"""
         from .reply_policy import http_api_policy
-        return http_api_policy(self.config)
+        return http_api_policy(self.portal_config)
+
+    @property
+    def portal_config(self) -> HttpApiConfig:
+        """帮助保留真实监听地址，避免待重启的配置提前变成外部接入地址。"""
+        if self._bound_base_url:
+            return self.config.model_copy(update={"public_base_url": self._bound_base_url})
+        return self.config
 
     # ------------------------------------------------------------------
     # AI 自助：门户规范 help 工具
     # ------------------------------------------------------------------
 
     def portal_spec(self) -> Dict[str, Any]:
-        """门户接入契约（按生效配置实时生成；永不含令牌值）。"""
-        cfg = self.config
-        base = f"http://{cfg.host}:{cfg.port}"
-        return {
-            "channel": self.channel_id,
-            "purpose": "外部系统与 Agent 的双向 HTTP 门户：文本/图片/音频/视频/文件/视觉画面全部可经 HTTP 传入",
-            "base_url": base,
-            "auth": {
-                "required": bool(cfg.api_token),
-                "how": "请求头 x-api-token 或 Authorization: Bearer；SSE/WS 可用 ?token=" if cfg.api_token
-                       else "未配置令牌（仅回环监听可用）",
-            },
-            "inbound": {
-                "chat": {
-                    "method": "POST", "path": f"{base}/api/chat",
-                    "fields": {
-                        "message": "消息文本（≤256K 字符，与附件至少其一）",
-                        "user_id / group_id / session_id": "身份与会话归属（历史/记忆按它隔离延续）",
-                        "kind": "chat（默认）/ event / system → 历史 [kind:xxx] 标签；"
-                                "notification → 聚合进通知中心会话（强制异步受理，无同步回复）",
-                        "images": "图片 [{url|base64, mime_type}]，落盘后进视觉通道",
-                        "media": "非图片媒体 [{kind: audio|video|file, base64, mime_type, file_name}]，≤50MB 落盘为媒体段",
-                        "reply_to_id / reply_content": "引用回复（可选）",
-                        "async_mode": "false 同步阻塞等回复（≤reply_timeout 秒）；true 立即返回 accepted",
-                        "callback_url": "携带即注册本会话出站回调（http/https）",
-                        "message_id": "幂等键：重复 id 返回 duplicate 不重复入管道",
-                    },
-                    "status": "ok / accepted / timeout / duplicate / error",
-                },
-                "vision_push": {
-                    "method": "POST", "path": f"{base}/api/vision/push",
-                    "fields": {"source": "源名", "image_base64": "png/jpeg/webp ≤20MB", "captured_at": "可选时间戳"},
-                    "note": "单帧推送，缓冲记 external:<source>，与本地捕获同判变同注入",
-                },
-                "vision_stream": {
-                    "method": "WS", "path": f"{base}/api/vision/stream",
-                    "fields": "每帧一条 JSON 文本（同 vision_push 字段）",
-                    "note": "持续推流入口：实时画面帧逐帧上行，系统内部完成判变/缓冲/注入；每帧回 ack",
-                },
-                "sse": {
-                    "method": "GET", "path": f"{base}/api/chat/stream?user_id=<id>",
-                    "note": "订阅该身份全部会话的 delta/tool_call/reply/turn_end 帧",
-                },
-                "health": {"method": "GET", "path": f"{base}/health"},
-            },
-            "outbound": {
-                "cascade": ["同步响应（pending 请求）", "SSE 订阅 reply 帧", "webhook 回调 POST"],
-                "callback_url": cfg.callback_url or "未配置默认回调（请求可带 callback_url 按会话注册）",
-                "payload": "{event, chat_id, message_id, segments, ts, session_id?}；媒体段 ≤20MB 内联 base64，否则仅 path",
-                "delivery": "含媒体消息整体经回调；无订阅者或可用回调时返回投递失败",
-            },
-            "limits": {
-                "reply_timeout_s": cfg.reply_timeout,
-                "media_max_mb": 50, "vision_frame_max_mb": 20, "callback_inline_max_mb": 20,
-                "attachments_max": 9, "message_max_chars": 256_000, "body_max_mb": 80,
-            },
-        }
+        """按生效配置生成机器可读接入契约，不含令牌值。"""
+        from .help import build_portal_spec
+        return build_portal_spec(self.portal_config)
 
-    @channel_tool(description="获取 HTTP API 门户的完整接入规范（端点/字段/认证/收发级联），外部系统对接前先读")
-    def portal_help(self) -> str:
-        """返回本频道的双向接入契约（按生效配置实时生成）。"""
-        return json.dumps(self.portal_spec(), ensure_ascii=False, indent=2)
+    @channel_tool(description="HTTP 频道接入帮助：默认 overview；按需 topic=chat/sessions/sdk/https，开发外部应用前先读")
+    def portal_help(self, topic: HelpTopic = "overview") -> str:
+        """获取接入帮助；默认概览，可选 chat/sessions/sdk/https 主题。"""
+        from core.tool_errors import error_from_exception
+
+        from .help import build_portal_help
+        try:
+            payload = build_portal_help(self.portal_config, topic)
+            payload["status"] = self.status.value
+            return json.dumps(payload, ensure_ascii=False, indent=2)
+        except Exception as exc:
+            return error_from_exception(exc, action="获取 HTTP 频道帮助")
 
     async def start(self) -> None:
         import uvicorn
 
-        host: str = self.config.host
-        port: int = int(self.config.port)
+        if self._server_task is not None and not self._server_task.done():
+            return
+        settings = self.config
+        host: str = settings.host
+        port: int = int(settings.port)
+        bound_base_url = settings.base_url
 
-        if not self._is_loopback(host) and not self.config.api_token:
+        if (not self._is_loopback(host) or settings.public_base_url) and not settings.api_token:
             raise RuntimeError(
-                f"HTTP API 频道监听非回环地址 {host} 但未配置 api_token，"
+                f"HTTP API 频道声明公开接入（监听 {host}）但未配置 api_token，"
                 "拒绝启动（外部请求将无法被认证）。请配置 api_token 或将 host 改为 127.0.0.1"
             )
 
@@ -286,15 +218,49 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
         config = uvicorn.Config(
             app, host=host, port=port, log_level="warning",
             ws_max_size=32 * 1024 * 1024,
+            ssl_certfile=settings.ssl_certfile or None,
+            ssl_keyfile=settings.ssl_keyfile or None,
+            ssl_keyfile_password=settings.ssl_keyfile_password or None,
+            timeout_graceful_shutdown=3,
+            limit_concurrency=settings.max_connections,
         )
+        config.load()
         self._server = uvicorn.Server(config)
-        self._server_task = asyncio.create_task(self._server.serve())
+        self._server_task = asyncio.create_task(self._serve())
+        try:
+            async with asyncio.timeout(10):
+                while not self._server.started:
+                    if self._server_task.done():
+                        await self._server_task
+                        raise RuntimeError("HTTP API 服务器未完成启动")
+                    await asyncio.sleep(0.01)
+        except BaseException:
+            await self.stop()
+            raise
         self._subscribe_stream_events()
+        self._bound_base_url = bound_base_url
         self._status = ChannelStatus.RUNNING
         outbound = f"，出站回调: {self.config.callback_url}" if self.config.callback_url else ""
-        log(f"HTTP API 频道已启动: http://{host}:{port}（认证: {'token' if self.config.api_token else '仅回环'}）{outbound}")
+        log(f"HTTP API 频道已启动: {bound_base_url}（认证: {'token' if self.config.api_token else '仅回环'}）{outbound}")
+
+    async def _serve(self) -> None:
+        """内嵌服务器的绑定失败作为频道异常传播，避免 SystemExit 退出整个宿主。"""
+        server = self._server
+        if server is None:
+            raise RuntimeError("HTTP API 服务器尚未创建")
+        try:
+            await server.serve()
+        except SystemExit as exc:
+            raise RuntimeError(f"HTTP API 监听失败: {self.config.host}:{self.config.port}") from exc
 
     async def stop(self) -> None:
+        for sub in self._stream_subs:
+            sub.close()
+        self._stream_subs.clear()
+        for fut in self._pending_replies.values():
+            if not fut.done():
+                fut.set_exception(RuntimeError("HTTP API 频道已停止"))
+        self._pending_replies.clear()
         if self._server:
             self._server.should_exit = True
         if self._server_task:
@@ -302,16 +268,14 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
                 await asyncio.wait_for(self._server_task, timeout=5.0)
             except (asyncio.TimeoutError, asyncio.CancelledError, KeyboardInterrupt):
                 log("stop 异常已忽略", "DEBUG")
+            except Exception as exc:
+                log(f"HTTP API 服务收尾: {type(exc).__name__}", "DEBUG")
             self._server_task = None
+        self._server = None
+        self._bound_base_url = ""
+        self._requires_token = False
         from core.event_bus import event_bus
         event_bus.off_by_owner("channel:http_api")
-        for sub in self._stream_subs:
-            sub.queue.put_nowait("")  # 唤醒流生成器退出
-        self._stream_subs.clear()
-        for fut in self._pending_replies.values():
-            if not fut.done():
-                fut.cancel()
-        self._pending_replies.clear()
         self._callbacks.clear()
         self._status = ChannelStatus.STOPPED
         log("HTTP API 频道已停止")
@@ -340,8 +304,8 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
             return
         data = json.dumps(frame, ensure_ascii=False)
         for sub in self._stream_subs:
-            if scope == sub.prefix or scope.startswith(sub.prefix + "#"):
-                sub.queue.put_nowait(data)
+            if sub.matches(scope):
+                sub.push(data)
 
     async def _on_assistant_delta(self, payload: dict) -> None:
         self._push_frame({
@@ -374,16 +338,25 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
         }, str(payload.get("scope", "")))
 
     async def _on_after_reply(self, payload: dict) -> None:
+        scope = str(payload.get("scope", ""))
+        reason = str(payload.get("reason", "completed"))
+        if reason in {"interrupted", "failed"}:
+            fut = self._pending_replies.pop(scope, None)
+            if fut is not None and not fut.done():
+                fut.set_exception(RuntimeError("执行已中止" if reason == "interrupted" else "执行失败"))
         self._push_frame({
             "type": "turn_end",
-            "scope": str(payload.get("scope", "")),
+            "scope": scope,
+            "turn_id": str(payload.get("turn_id", "")),
+            "reason": reason,
             "error": bool(payload.get("error")),
-        }, str(payload.get("scope", "")))
+        }, scope)
 
     async def send_text(self, chat_id: str, text: str, **kwargs: Any) -> str:
         """回复 HTTP API 调用方（pending future → SSE 订阅者 → webhook 回调级联）。"""
         session_id = str(kwargs.get("session_id") or "")
-        fut = self._pending_replies.pop(self._delivery_key(chat_id, session_id), None)
+        channel_type = str(kwargs.get("channel_type") or "private")
+        fut = self._pending_replies.pop(self._delivery_key(chat_id, session_id, channel_type), None)
         if fut and not fut.done():
             fut.set_result(text)
             return _ok({"chat_id": chat_id})
@@ -391,31 +364,26 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
         payload: Dict[str, Any] = {"type": "reply", "content": text}
         if session_id and session_id != chat_id:
             payload["session_id"] = session_id
-        if self._deliver_to_subscribers(chat_id, payload):
+        if self._deliver_to_subscribers(chat_id, payload, session_id=session_id, channel_type=channel_type):
             return _ok({"chat_id": chat_id, "delivery": "stream"})
         segments = [SendSegment(type=SegmentType.TEXT, content=text)]
         try:
-            if await self._deliver_callback(chat_id, segments, session_id=session_id):
+            if await self._deliver_callback(chat_id, segments, session_id=session_id, channel_type=channel_type):
                 return _ok({"chat_id": chat_id, "delivery": "callback"})
         except Exception as exc:
             return _err(f"回调投递失败: chat_id={chat_id}: {exc}")
         return _err(f"无待回复请求: chat_id={chat_id}")
 
-    def _deliver_to_subscribers(self, chat_id: str, payload: Dict[str, Any]) -> bool:
+    def _deliver_to_subscribers(
+        self, chat_id: str, payload: Dict[str, Any], *, session_id: str = "", channel_type: str = "private",
+    ) -> bool:
         """向匹配该 chat 的 SSE 订阅者推送一帧，返回是否有订阅者送达。"""
-        candidates = (
-            build_entity_scope("user", self.channel_id, chat_id),
-            build_entity_scope("group", self.channel_id, chat_id),
-        )
+        scope = self._delivery_key(chat_id, session_id, channel_type)
         data = json.dumps(payload, ensure_ascii=False)
         delivered = False
         for sub in list(self._stream_subs):
-            if any(
-                p == sub.prefix or p.startswith(sub.prefix + "#") or sub.prefix.startswith(p + "#")
-                for p in candidates
-            ):
-                sub.queue.put_nowait(data)
-                delivered = True
+            if sub.matches(scope):
+                delivered = sub.push(data) or delivered
         return delivered
 
     # ------------------------------------------------------------------
@@ -423,21 +391,21 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _delivery_key(chat_id: str, session_id: str = "") -> tuple[str, str]:
+    def _delivery_key(chat_id: str, session_id: str = "", channel_type: str = "private") -> str:
         """统一归一化 HTTP 身份与子会话投递键。"""
-        return chat_id, session_id or chat_id
+        return build_entity_scope("group" if channel_type == "group" else "user", "http_api", chat_id, session_id)
 
-    def _resolve_callback(self, chat_id: str, session_id: str = "") -> str:
+    def _resolve_callback(self, chat_id: str, session_id: str = "", channel_type: str = "private") -> str:
         """会话级回调优先，频道默认回调兜底。"""
         return (
-            self._callbacks.get(self._delivery_key(chat_id, session_id))
-            or self._callbacks.get(self._delivery_key(chat_id))
+            self._callbacks.get(self._delivery_key(chat_id, session_id, channel_type))
+            or self._callbacks.get(self._delivery_key(chat_id, channel_type=channel_type))
             or self.config.callback_url
         )
 
-    def _register_callback(self, chat_id: str, url: str, session_id: str = "") -> None:
+    def _register_callback(self, chat_id: str, url: str, session_id: str = "", channel_type: str = "private") -> None:
         """登记会话级回调；表满时淘汰最旧条目（dict 保插入序）。"""
-        key = self._delivery_key(chat_id, session_id)
+        key = self._delivery_key(chat_id, session_id, channel_type)
         self._callbacks.pop(key, None)
         while len(self._callbacks) >= _MAX_CALLBACKS:
             self._callbacks.pop(next(iter(self._callbacks)))
@@ -445,15 +413,17 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
 
     async def _deliver_callback(
         self, chat_id: str, segments: List[SendSegment], *,
-        message_id: str | None = None, session_id: str = "",
+        message_id: str | None = None, session_id: str = "", channel_type: str = "private",
     ) -> bool:
         """把消息段 POST 到 webhook 回调；未配置回调返回 False，投递失败抛错由调用方归因。"""
-        url = self._resolve_callback(chat_id, session_id)
+        url = self._resolve_callback(chat_id, session_id, channel_type)
         if not url:
             return False
         payload: Dict[str, Any] = {
             "event": "message",
             "chat_id": chat_id,
+            "channel_type": channel_type,
+            "scope": self._delivery_key(chat_id, session_id, channel_type),
             "message_id": message_id or f"http-{uuid.uuid4().hex}",
             "segments": [await self._serialize_segment(seg) for seg in segments],
             "ts": time.time(),
@@ -544,6 +514,8 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
         """把请求的 images/media 组装为标准消息段（图片文件化，媒体落盘）。"""
         segments: List[MessageSegment] = []
         for img in req.images:
+            if bool(img.url) == bool(img.base64):
+                raise ValueError("图片必须提供 url 或 base64，且只能提供其中一个")
             if img.url:
                 if not img.url.lower().startswith(("http://", "https://")):
                     raise ValueError(f"图片 url 仅支持 http/https: {img.url}")
@@ -600,32 +572,32 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
         """
         token = self.config.api_token
         if not token:
-            return True
+            return not self._requires_token and self._is_loopback(self.config.host) and not self.config.public_base_url
         provided = request.query_params.get("token", "")
         if not provided:
             provided = request.headers.get("x-api-token", "")
             auth = request.headers.get("authorization", "")
             if auth.lower().startswith("bearer "):
                 provided = auth[7:].strip()
-        return bool(provided) and hmac.compare_digest(provided, token)
+        return bool(provided) and hmac.compare_digest(provided.encode(), token.encode())
 
     def _check_ws_auth(self, websocket: WebSocket) -> bool:
         """WS 鉴权：token 走 ?token= 查询参数或请求头（与主 WS 同一约定）。"""
         token = self.config.api_token
         if not token:
-            return True
+            return not self._requires_token and self._is_loopback(self.config.host) and not self.config.public_base_url
         provided = websocket.query_params.get("token", "")
         if not provided:
             provided = websocket.headers.get("x-api-token", "")
             auth = websocket.headers.get("authorization", "")
             if auth.lower().startswith("bearer "):
                 provided = auth[7:].strip()
-        return bool(provided) and hmac.compare_digest(provided, token)
+        return bool(provided) and hmac.compare_digest(provided.encode(), token.encode())
 
-    def _expect_reply(self, chat_id: str, session_id: str = "") -> asyncio.Future[str]:
+    def _expect_reply(self, chat_id: str, session_id: str = "", channel_type: str = "private") -> asyncio.Future[str]:
         loop = asyncio.get_running_loop()
         fut: asyncio.Future[str] = loop.create_future()
-        reply_key = self._delivery_key(chat_id, session_id)
+        reply_key = self._delivery_key(chat_id, session_id, channel_type)
         # 同 key 已有挂起请求（同用户并发调用）：立即失败旧 future——
         # 否则旧请求干等超时，且 Agent 回复会错配给新请求
         old = self._pending_replies.get(reply_key)
@@ -635,215 +607,59 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
         return fut
 
     def _create_app(self) -> FastAPI:
-        timeout: int = int(self.config.reply_timeout)
+        from urllib.parse import urlsplit
 
-        fastapi_app = FastAPI(title="AnelfAgent HTTP API", version="1.0.0")
-        adapter = self
+        from fastapi.exceptions import RequestValidationError
+        from fastapi.responses import JSONResponse
+        from starlette.exceptions import HTTPException as StarletteHTTPException
 
-        @fastapi_app.middleware("http")
-        async def _body_limit(request: Request, call_next: Callable[..., Any]) -> Any:
-            """请求体硬上限：按 Content-Length 前置拒绝（chunked 由字段级大小门兜底）。"""
-            from fastapi.responses import JSONResponse
-            length = request.headers.get("content-length", "")
-            if length.isdigit() and int(length) > _MAX_BODY_BYTES:
-                return JSONResponse(
-                    {"status": "error",
-                     "error": f"请求体超过 {_MAX_BODY_BYTES // (1024 * 1024)}MB 上限"},
-                    status_code=413,
-                )
-            return await call_next(request)
+        from agent.llm.model_api import JudgmentError, LLMNotConfiguredError, ModelCallError
+        from core.tool_errors import error_from_exception
 
-        @fastapi_app.post("/api/chat", response_model=ChatResponse)
-        async def chat(req: ChatRequest, request: Request) -> ChatResponse:
-            if not adapter._check_auth(request):
-                return ChatResponse(
-                    request_id=req.request_id,
-                    status="error",
-                    error="未认证：缺少或错误的 API Token",
-                )
-            error = adapter._validate_chat_request(req)
-            if error:
-                return ChatResponse(request_id=req.request_id, status="error", error=error)
-            reply_key = req.group_id if req.group_id else req.user_id
-            delivery_key = adapter._delivery_key(reply_key, req.session_id)
-            message_id = req.message_id or req.request_id
-            kind = MessageKind(req.kind)
-            is_notification = kind == MessageKind.NOTIFICATION
-            # 去重登记在落盘之前：重试风暴不重复入管道；校验失败的请求不消耗 id。
-            # 键按会话命名空间隔离，不同调用方的同号 id 互不误伤
-            if adapter._dedup.is_duplicate(json.dumps([*delivery_key, message_id])):
-                return ChatResponse(
-                    request_id=req.request_id, status="duplicate",
-                    error="消息已受理（重复 message_id），不重复投递",
-                )
-            if req.callback_url and not is_notification:
-                adapter._register_callback(reply_key, req.callback_url, req.session_id)
-            # 通知不产生对调用方的同步回复（通知中心语义），强制异步受理
-            fut = None if (req.async_mode or is_notification) else adapter._expect_reply(
-                reply_key, req.session_id,
+        from .routes import build_router
+        from .sdk_routes import build_sdk_router
+        from .transport import HttpBoundary
+
+        self._requires_token = (self._requires_token or not self._is_loopback(self.config.host)
+                                or bool(self.config.public_base_url))
+        app = FastAPI(title="AnelfAgent HTTP Portal", version="1.2.0",
+                      root_path=urlsplit(self.config.public_base_url).path.rstrip("/"))
+        app.add_middleware(HttpBoundary, authenticate=self._check_auth, max_body=_MAX_BODY_BYTES)
+        if self.config.cors_origins:
+            from fastapi.middleware.cors import CORSMiddleware
+            app.add_middleware(
+                CORSMiddleware, allow_origins=self.config.cors_origins, allow_methods=["GET", "POST"],
+                allow_headers=["Authorization", "X-API-Token", "Content-Type"],
+                expose_headers=["X-Request-ID"],
             )
-            try:
-                segments = await adapter._build_inbound_segments(req)
-            except (ValueError, OverflowError) as exc:
-                if fut is not None and adapter._pending_replies.get(delivery_key) is fut:
-                    adapter._pending_replies.pop(delivery_key, None)
-                if fut is not None and not fut.done():
-                    fut.cancel()
-                return ChatResponse(request_id=req.request_id, status="error", error=str(exc))
 
-            # 标准入站信封：与 QQ/TG 等频道同一路径（dispatch_inbound 归一化
-            # 标签前缀、图片/媒体提取、回复路由登记与群聊判定）；
-            # 通知类消息聚合进通知中心会话，真实来源在正文标注
-            if is_notification:
-                sender = notification_sender(adapter.channel_id, "HTTP API")
-                target = notification_channel("HTTP API")
-                origin = req.user_name or req.user_id
-                content = f"来自 {origin}({req.user_id}) 的通知：\n{req.message}"
-            else:
-                sender = AdapterUser(
-                    platform=adapter.channel_id,
-                    user_id=req.user_id,
-                    user_name=req.user_name or req.user_id,
-                )
-                target = AdapterChannel(
-                    channel_id=req.group_id if req.group_id else req.user_id,
-                    channel_type=ChannelType.GROUP if req.group_id else ChannelType.PRIVATE,
-                )
-                content = req.message
-            inbound = AdapterMessage(
-                message_id=message_id,
-                sender=sender,
-                channel=target,
-                content=content,
-                segments=segments,
-                kind=kind,
-                is_to_me=req.to_me,
-                reply_to_id=req.reply_to_id,
-                reply_content=req.reply_content,
-                session_id="" if is_notification else req.session_id,
-            )
-            from agent.channel.manager import get_channel_manager
-            await get_channel_manager().dispatch_inbound(adapter, inbound)
+        @app.exception_handler(StarletteHTTPException)
+        async def http_error(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+            return JSONResponse({"status": "error", "error": str(exc.detail)},
+                                status_code=exc.status_code, headers=exc.headers)
 
-            # async 模式：投递完成即返回，最终回复经 /api/chat/stream 的
-            # reply / turn_end 帧或 callback_url 投递（长任务不受 reply_timeout 约束）
-            if fut is None:
-                return ChatResponse(request_id=req.request_id, status="accepted")
+        @app.exception_handler(RequestValidationError)
+        async def validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+            details = [{key: item[key] for key in ("loc", "msg", "type")} for item in exc.errors()]
+            return JSONResponse({"status": "error", "error": "请求参数无效", "details": details}, status_code=422)
 
-            try:
-                reply = await asyncio.wait_for(fut, timeout=timeout)
-            except asyncio.TimeoutError:
-                if adapter._pending_replies.get(delivery_key) is fut:
-                    adapter._pending_replies.pop(delivery_key, None)
-                return ChatResponse(
-                    request_id=req.request_id,
-                    status="timeout",
-                    error=f"Agent 回复超时（{timeout}s）",
-                )
-            except RuntimeError as exc:
-                return ChatResponse(request_id=req.request_id, status="error", error=str(exc))
+        async def sdk_error(request: Request, exc: Exception) -> JSONResponse:
+            status_code = (503 if isinstance(exc, LLMNotConfiguredError) else
+                           502 if isinstance(exc, ModelCallError) else 422 if isinstance(exc, ValueError) else 500)
+            return JSONResponse({"status": "error", **json.loads(error_from_exception(exc))}, status_code=status_code,
+                                headers={"X-Request-ID": getattr(request.state, "request_id", "")})
 
-            return ChatResponse(request_id=req.request_id, reply=reply)
+        for error_type in (LLMNotConfiguredError, ModelCallError, JudgmentError, ValueError):
+            app.add_exception_handler(error_type, sdk_error)
+        app.add_exception_handler(Exception, sdk_error)
 
-        @fastapi_app.get("/api/chat/stream")
-        async def chat_stream(user_id: str, request: Request):
-            """SSE 流端点：推送该 user 的 delta / tool_call / reply / turn_end 帧。"""
-            from fastapi.responses import JSONResponse
-            if not adapter._check_auth(request):
-                return JSONResponse(
-                    {"status": "error", "error": "未认证：缺少或错误的 API Token"},
-                    status_code=401,
-                )
-            from sse_starlette.sse import EventSourceResponse
-
-            sub = _StreamSub(build_entity_scope("user", adapter.channel_id, user_id))
-            adapter._stream_subs.append(sub)
-
-            async def event_generator():
-                try:
-                    while True:
-                        if await request.is_disconnected():
-                            break
-                        try:
-                            data = await asyncio.wait_for(sub.queue.get(), timeout=30.0)
-                        except asyncio.TimeoutError:
-                            yield {"event": "ping", "data": ""}
-                            continue
-                        if not data:  # 频道关停唤醒信号
-                            break
-                        yield {"event": "message", "data": data}
-                finally:
-                    if sub in adapter._stream_subs:
-                        adapter._stream_subs.remove(sub)
-
-            return EventSourceResponse(event_generator())
-
-        @fastapi_app.post("/api/vision/push")
-        async def vision_push(req: VisionPushRequest, request: Request) -> Dict[str, Any]:
-            """外部视觉源推送一帧（与主 web 端 /api/vision/push 同一缓冲入口）。"""
-            if not adapter._check_auth(request):
-                return {"status": "error", "error": "未认证：缺少或错误的 API Token"}
-            from agent.vision.framework import push_external_frame
-            try:
-                result = await push_external_frame(
-                    req.source, req.image_base64, req.mime_type, req.captured_at)
-            except (ValueError, OverflowError) as exc:
-                return {"status": "error", "error": str(exc)}
-            return {"status": "ok", **result}
-
-        @fastapi_app.websocket("/api/vision/stream")
-        async def vision_stream(websocket: WebSocket) -> None:
-            """外部视觉源持续推流：每帧一条 JSON 文本，逐帧汇入统一缓冲并回 ack。
-
-            帧格式同 POST /api/vision/push 的字段；坏帧只回错误帧不断连。
-            实时画面的判变、缓冲与上下文注入由系统内部完成，推流方只负责采帧上行。
-            """
-            if not adapter._check_ws_auth(websocket):
-                await websocket.close(code=4401)
-                return
-            await websocket.accept()
-            from agent.vision.framework import push_external_frame
-            try:
-                while True:
-                    message = await websocket.receive()
-                    if message.get("type") == "websocket.disconnect":
-                        break
-                    raw = message.get("text")
-                    if raw is None:
-                        # 二进制帧不支持：推流契约是 JSON 文本帧
-                        await websocket.send_text(json.dumps(
-                            {"status": "error", "error": "仅接受 JSON 文本帧"},
-                            ensure_ascii=False))
-                        continue
-                    try:
-                        frame = json.loads(raw)
-                        captured_at = frame.get("captured_at")
-                        if not isinstance(captured_at, (int, float)):
-                            captured_at = None
-                        result = await push_external_frame(
-                            str(frame.get("source", "")),
-                            str(frame.get("image_base64", "")),
-                            str(frame.get("mime_type", "image/png")),
-                            captured_at,
-                        )
-                        ack: Dict[str, Any] = {
-                            "status": "ok", "changed": result["changed"],
-                            "source": result["source"],
-                        }
-                    except (ValueError, OverflowError) as exc:
-                        ack = {"status": "error", "error": str(exc)}
-                    except (json.JSONDecodeError, TypeError, AttributeError):
-                        ack = {"status": "error", "error": "帧必须是 JSON 文本"}
-                    await websocket.send_text(json.dumps(ack, ensure_ascii=False))
-            except WebSocketDisconnect:
-                pass
-
-        @fastapi_app.get("/health")
-        async def health() -> Dict[str, str]:
+        @app.get("/health")
+        async def health() -> dict[str, str]:
             return {"status": "ok", "adapter": "http_api"}
 
-        return fastapi_app
-
+        app.include_router(build_router(self))
+        app.include_router(build_sdk_router(self))
+        return app
 
     # ------------------------------------------------------------------
     # BaseChannel 协议方法
@@ -857,6 +673,7 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
         """
         try:
             chat_id = request.channel.channel_id
+            channel_type = request.channel.channel_type.value
             session_id = str(request.extra.get("session_id") or "")
             media_types = {
                 SegmentType.IMAGE, SegmentType.VIDEO, SegmentType.AUDIO,
@@ -880,6 +697,7 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
                 try:
                     delivered = await self._deliver_callback(
                         chat_id, request.segments, message_id=message_id, session_id=session_id,
+                        channel_type=channel_type,
                     )
                 except Exception as exc:
                     return SendResponse(success=False, error=f"回调投递失败: {exc}")
@@ -889,10 +707,11 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
                 payload: Dict[str, Any] = {"type": "reply", "content": full_text}
                 if session_id and session_id != chat_id:
                     payload["session_id"] = session_id
-                if not self._deliver_to_subscribers(chat_id, payload):
+                if not self._deliver_to_subscribers(chat_id, payload, session_id=session_id, channel_type=channel_type):
                     try:
                         delivered = await self._deliver_callback(
                             chat_id, request.segments, message_id=message_id, session_id=session_id,
+                            channel_type=channel_type,
                         )
                     except Exception as exc:
                         return SendResponse(success=False, error=f"回调投递失败: {exc}")
@@ -935,7 +754,7 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
             )
         return HealthStatus(
             healthy=True,
-            detail=f"HTTP API listening on {self.config.host}:{self.config.port}",
+            detail=f"HTTP API listening on {self._bound_base_url or self.config.base_url}",
             last_success_at=time.time(),
         )
 
@@ -944,7 +763,7 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
         info = super().get_status_info()
         if self._server is not None:
             info.update({
-                "listen": f"{self.config.host}:{self.config.port}",
+                "listen": self._bound_base_url or self.config.base_url,
                 "auth": "token" if self.config.api_token else "loopback",
                 "sse_subscribers": len(self._stream_subs),
                 "session_callbacks": len(self._callbacks),

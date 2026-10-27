@@ -19,6 +19,7 @@ import agent.vision.buffer as buffer_mod
 import agent.vision.framework as framework_mod
 from agent.vision import get_vision_buffer
 from channels.http_api.adapter import ChatRequest, HttpApiChannel, ImageItem, MediaItem
+from channels.http_api.config import HttpApiConfig
 from core.config import ConfigManager
 
 
@@ -28,7 +29,7 @@ def clean_state():
     framework_mod._SOURCES.clear()
     get_vision_buffer().reset()
     saved_cfg = {
-        key: ConfigManager.get(f"http_api_{key}", "")
+        key: ConfigManager.get(f"http_api_{key}", getattr(HttpApiConfig(), key))
         for key in ("api_token", "callback_url", "callback_token", "callback_timeout")
     }
     yield
@@ -410,6 +411,46 @@ class TestChatValidation:
 
 
 class TestChatEndpoint:
+    def test_group_and_private_same_id_have_independent_dedup_and_callbacks(self, fake_agent_app) -> None:
+        channel = HttpApiChannel()
+        client = _client(channel)
+        for group_id, callback in (("", "https://private.local/"), ("42", "https://group.local/")):
+            result = client.post("/api/chat", json={
+                "user_id": "42", "group_id": group_id, "message": "hello",
+                "message_id": "same", "async_mode": True, "callback_url": callback,
+            })
+            assert result.json()["status"] == "accepted"
+        assert len(fake_agent_app) == 2
+        assert channel._resolve_callback("42") == "https://private.local/"
+        assert channel._resolve_callback("42", channel_type="group") == "https://group.local/"
+
+    def test_failed_media_can_retry_same_id_without_registering_callback(self, fake_agent_app) -> None:
+        channel = HttpApiChannel()
+        client = _client(channel)
+        body = {"user_id": "retry", "message_id": "m1", "async_mode": True,
+                "callback_url": "https://retry.local/", "media": [{"kind": "audio", "base64": "!!!"}]}
+        assert client.post("/api/chat", json=body).json()["status"] == "error"
+        assert not channel._callbacks and not channel._pending_replies
+        body.update(message="corrected", media=[])
+        assert client.post("/api/chat", json=body).json()["status"] == "accepted"
+        assert len(fake_agent_app) == 1
+
+    def test_dispatch_failure_cleans_waiter_callback_and_dedup(self, monkeypatch) -> None:
+        from unittest.mock import AsyncMock
+
+        channel = HttpApiChannel()
+        dispatch = AsyncMock(side_effect=RuntimeError("not ready"))
+        monkeypatch.setattr("agent.channel.manager.get_channel_manager",
+                            lambda: SimpleNamespace(dispatch_inbound=dispatch))
+        client = _client(channel)
+        body = {"message": "hello", "user_id": "u1", "message_id": "retry",
+                "callback_url": "https://callback.local/"}
+        assert client.post("/api/chat", json=body).json()["status"] == "error"
+        assert not channel._callbacks and not channel._pending_replies
+        dispatch.side_effect = None
+        body["async_mode"] = True
+        assert client.post("/api/chat", json=body).json()["status"] == "accepted"
+
     def test_media_and_callback_registered(self, fake_agent_app, tmp_path, monkeypatch) -> None:
         monkeypatch.setattr("core.path.ConfigPaths.UPLOAD_DIR", str(tmp_path), raising=False)
         channel = HttpApiChannel()
@@ -426,7 +467,7 @@ class TestChatEndpoint:
             }],
         })
         assert resp.status_code == 200 and resp.json()["status"] == "accepted"
-        assert channel._callbacks.get(("hub", "hub")) == "http://hub.local/cb"
+        assert channel._resolve_callback("hub") == "http://hub.local/cb"
         call = fake_agent_app[0]
         assert call["media_segments"] and call["media_segments"][0].type.value == "audio"
         assert call["adapter_key"] == "http_api"
@@ -609,6 +650,21 @@ class TestVisionStreamWs:
 
 
 class TestPortalHelpTool:
+    @pytest.mark.parametrize("topic,required", [
+        ("overview", "steps"), ("chat", "example"), ("sessions", "stop"),
+        ("sdk", "model_operations"), ("https", "native"),
+    ])
+    def test_ai_help_is_available_by_topic_without_credentials(self, topic, required) -> None:
+        channel = HttpApiChannel()
+        channel._config = HttpApiConfig(api_token="hidden-token", public_base_url="https://agent.example.com")
+        help_text = channel.portal_help(topic=topic)
+        payload = json.loads(help_text)
+        assert payload["base_url"] == "https://agent.example.com"
+        assert required in payload
+        assert "hidden-token" not in help_text
+        if topic == "overview":
+            assert len(help_text) < 2500
+
     def test_tool_marked_and_spec_live(self) -> None:
         ConfigManager.set("http_api_api_token", "secret")
         ConfigManager.set("http_api_callback_url", "http://hook.local/")
@@ -639,5 +695,318 @@ class TestPortalHelpTool:
             payload = json.loads(_aio.run(entity.func()))
             assert payload["channel_id"] == "http_api"
             assert "base_url" in payload and "inbound" in payload
+            session_help = json.loads(_aio.run(EntityRegistry.execute_tool(
+                "http_api_portal_help", json.dumps({"topic": "sessions"}),
+            )))
+            assert session_help["control"]["path"].endswith("/api/sessions/control")
+            assert session_help["stop"]["action"] == "stop"
         finally:
             unregister_channel_tools("http_api")
+
+
+class TestSdkPortal:
+    async def test_sdk_capacity_rejects_overload_and_releases_slot(self, monkeypatch) -> None:
+        import httpx
+
+        from agent.llm.types import ChatResult
+
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def chat(**kwargs: Any) -> ChatResult:
+            entered.set()
+            await release.wait()
+            return ChatResult(content="done")
+
+        monkeypatch.setattr("channels.http_api.sdk_routes.get_model_api", lambda: SimpleNamespace(chat=chat))
+        channel = HttpApiChannel()
+        channel._config = HttpApiConfig(sdk_concurrency=1)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=channel._create_app()),
+                                     base_url="http://test") as client:
+            body = {"messages": [{"role": "user", "content": "hello"}]}
+            first = asyncio.create_task(client.post("/api/sdk/models/chat", json=body))
+            try:
+                await asyncio.wait_for(entered.wait(), timeout=2)
+                assert (await client.post("/api/sdk/models/chat", json=body)).status_code == 503
+                assert (await client.get("/api/sdk")).status_code == 200
+            finally:
+                release.set()
+                assert (await first).status_code == 200
+            assert (await client.post("/api/sdk/models/chat", json=body)).status_code == 200
+
+    async def test_busy_listen_port_never_reports_running(self) -> None:
+        import socket
+
+        from agent.channel.channel_types import ChannelStatus
+
+        channel = HttpApiChannel()
+        with socket.socket() as listener:
+            listener.bind(("127.0.0.1", 0))
+            listener.listen()
+            channel._config = HttpApiConfig(port=listener.getsockname()[1])
+            with pytest.raises(RuntimeError, match="监听失败"):
+                await channel.start()
+        assert channel.status is ChannelStatus.STOPPED
+        assert not (await channel.health_check()).healthy
+
+    def test_cors_preflight_does_not_bypass_api_auth(self) -> None:
+        channel = HttpApiChannel()
+        channel._config = HttpApiConfig(api_token="secret", cors_origins=["https://app.example.com"])
+        client = _client(channel)
+        response = client.options("/api/sdk", headers={"origin": "https://app.example.com",
+                                  "access-control-request-method": "GET"})
+        assert response.status_code == 200
+        assert response.headers["access-control-allow-origin"] == "https://app.example.com"
+        assert client.get("/api/sdk", headers={"origin": "https://app.example.com"}).status_code == 401
+
+    def test_unconfigured_model_is_a_structured_service_error(self, monkeypatch) -> None:
+        from agent.llm.model_api import LLMNotConfiguredError
+
+        def unavailable() -> None:
+            raise LLMNotConfiguredError("no configured model")
+
+        monkeypatch.setattr("channels.http_api.sdk_routes.get_model_api", unavailable)
+        response = _client(HttpApiChannel()).get("/api/sdk/models")
+        assert response.status_code == 503 and response.json()["status"] == "error"
+        assert response.headers["x-request-id"]
+    def test_discovery_and_openapi_describe_actual_sdk_routes(self) -> None:
+        from channels.http_api.sdk_routes import MODEL_OPERATIONS
+
+        client = _client(HttpApiChannel())
+        spec = client.get("/api/sdk").json()
+        openapi = client.get("/openapi.json").json()
+        paths = openapi["paths"]
+        assert spec["api_version"] == "1"
+        for operation in MODEL_OPERATIONS:
+            assert f"/api/sdk/models/{operation}" in paths
+            assert operation in spec["model_operations"]
+        assert "/api/sessions/control" in paths and "/api/sdk/tools/{name}" in paths
+        assert "APIKeyHeader" in openapi["components"]["securitySchemes"]
+        assert paths["/api/chat"]["post"]["security"]
+        assert "security" not in paths["/health"]["get"]
+
+    def test_public_address_policy_help_and_proxy_prefix_agree(self) -> None:
+        channel = HttpApiChannel()
+        channel._config = HttpApiConfig(public_base_url="https://agent.example.com/gateway", api_token="secret")
+        client = _client(channel)
+        contract = channel.portal_spec()
+        assert contract["base_url"] == "https://agent.example.com/gateway"
+        assert contract["inbound"]["vision_stream"]["path"].startswith("wss://")
+        assert "https://agent.example.com/gateway" in channel.reply_policy.instructions
+        assert client.get("/gateway/api/sdk?token=secret").status_code == 200
+        assert client.get("/gateway/api/sdk").status_code == 401
+        assert client.get("/api/sdk").status_code == 401
+        assert "secret" not in json.dumps(contract)
+
+    def test_public_app_fails_closed_when_token_or_public_config_is_cleared(self) -> None:
+        channel = HttpApiChannel()
+        channel._config = HttpApiConfig(public_base_url="https://agent.example.com", api_token="secret")
+        client = _client(channel)
+        assert client.get("/api/sdk?token=secret").status_code == 200
+        channel._config = HttpApiConfig()
+        assert client.get("/api/sdk").status_code == 401
+
+    @pytest.mark.parametrize("changes", [
+        {"ssl_certfile": "cert.pem"}, {"port": 0}, {"reply_timeout": 0},
+        {"public_base_url": "https://user:pass@example.com"}, {"stream_queue_size": 0},
+    ])
+    def test_invalid_transport_configuration_is_rejected(self, changes: dict[str, Any]) -> None:
+        from pydantic import ValidationError
+        with pytest.raises(ValidationError):
+            HttpApiConfig(**changes)
+
+    def test_auth_precedes_body_validation_and_all_sdk_routes(self) -> None:
+        ConfigManager.set("http_api_api_token", "secret")
+        client = _client(HttpApiChannel())
+        for path in ("/api/chat", "/api/sdk/models/chat", "/api/sdk/tools/unknown", "/api/sessions/control"):
+            response = client.post(path, content="broken-json", headers={"content-type": "application/json"})
+            assert response.status_code == 401
+            assert response.headers["x-request-id"]
+        assert client.get("/api/sdk?token=%E4%B8%AD").status_code == 401
+
+    def test_chunked_body_limit_is_enforced(self, monkeypatch) -> None:
+        monkeypatch.setattr("channels.http_api.adapter._MAX_BODY_BYTES", 100)
+        response = _client(HttpApiChannel()).post(
+            "/api/chat", content=iter([b'{"message":"', b"x" * 200, b'"}']),
+            headers={"content-type": "application/json"},
+        )
+        assert response.status_code == 413
+
+    def test_sdk_models_keep_typed_media_and_encode_binary_results(self, monkeypatch) -> None:
+        from unittest.mock import AsyncMock
+
+        from agent.llm.model_api import ImageContent, ModelResult
+
+        images = AsyncMock(return_value=ModelResult("a cat", "vision", "model"))
+        transcribe = AsyncMock(return_value=ModelResult("hello", "asr", "model"))
+        speech = AsyncMock(return_value=ModelResult(b"\xff\x00", "tts", "model"))
+        monkeypatch.setattr("channels.http_api.sdk_routes.get_model_api", lambda: SimpleNamespace(
+            describe_images=images, transcribe=transcribe, text_to_speech=speech,
+        ))
+        client = _client(HttpApiChannel())
+        response = client.post("/api/sdk/models/describe_images", json={"images": [{"data": "eA=="}]})
+        assert response.status_code == 200 and response.json()["result"]["value"] == "a cat"
+        assert isinstance(images.call_args.kwargs["images"][0], ImageContent)
+        response = client.post("/api/sdk/models/transcribe", json={"audio_data": "_wA="})
+        assert response.status_code == 200 and transcribe.call_args.kwargs["audio_data"] == b"\xff\x00"
+        response = client.post("/api/sdk/models/text_to_speech", json={"text": "hello"})
+        assert response.status_code == 200 and response.json()["result"]["value"] == "_wA="
+        assert client.post("/api/sdk/models/text_to_speech", json={"text": "hello", "typo": True}).status_code == 422
+        assert client.post("/api/sdk/models/not_a_method", json={}).status_code == 404
+
+    def test_tool_calls_obey_permissions_and_bind_scope(self, monkeypatch) -> None:
+        from unittest.mock import AsyncMock
+
+        from agent.approval.types import ApprovalResult
+        from core.conversation_scope import current_scope
+        from core.entity import EntityRegistry
+        from core.tool_context import request_trace
+        from core.tool_registry import tool
+
+        gate = SimpleNamespace(check=AsyncMock(return_value=ApprovalResult(False, "denied", "blocked")))
+        monkeypatch.setattr("agent.approval.get_approval_gate", lambda: gate)
+
+        @tool(name="http_test_context", group="http_test")
+        def context() -> str:
+            from entities._sdk import get_current_scope
+            return json.dumps({"scope": get_current_scope(), "trace": request_trace()})
+
+        try:
+            client = _client(HttpApiChannel())
+            assert client.get("/api/sdk/tools?group=http_test").json()["tools"]
+            body = {"user_id": "alice", "group_id": "room", "session_id": "topic", "request_id": "once"}
+            assert client.post("/api/sdk/tools/http_test_context", json=body).status_code == 403
+            gate.check.return_value = ApprovalResult(True, "allowed", "ok", "review notice")
+            response = client.post("/api/sdk/tools/http_test_context", json=body).json()
+            assert response["notice"] == "review notice"
+            result = response["result"]
+            assert result["scope"] == result["trace"]["scope"] == "group_http_api:room#topic"
+            assert result["trace"]["message_id"] == "once"
+            assert gate.check.call_args.kwargs["user_id"] == "alice"
+            assert client.post("/api/sdk/tools/http_test_context", json=body).json()["status"] == "duplicate"
+            assert gate.check.await_count == 2
+            assert current_scope() == "_global"
+        finally:
+            EntityRegistry.unregister("http_test_context")
+
+    def test_tool_post_retains_sensitive_visibility_after_unregistration(self, monkeypatch) -> None:
+        from unittest.mock import AsyncMock
+
+        from agent.approval.types import ApprovalResult
+        from core.entity import EntityRegistry
+        from core.tool_registry import tool
+
+        gate = SimpleNamespace(check=AsyncMock(return_value=ApprovalResult(True, "allowed", "ok")))
+        hooks = AsyncMock(return_value=SimpleNamespace(allowed=True))
+        monkeypatch.setattr("agent.approval.get_approval_gate", lambda: gate)
+        monkeypatch.setattr("agent.hooks.hooks_active", lambda event: True)
+        monkeypatch.setattr("agent.hooks.run_event_hooks", hooks)
+
+        @tool(name="http_sensitive", group="http_test", sensitive_result=True)
+        def sensitive() -> str:
+            EntityRegistry.unregister("http_sensitive")
+            return "private-value"
+
+        try:
+            response = _client(HttpApiChannel()).post("/api/sdk/tools/http_sensitive", json={}).json()
+            assert response["result"] == "private-value"
+            assert hooks.call_args.args == ("tool_post",)
+            assert "private-value" not in hooks.call_args.kwargs["result_preview"]
+        finally:
+            EntityRegistry.unregister("http_sensitive")
+
+    def test_stop_uses_sdk_target_and_resume_is_idempotent_inbound(self, fake_agent_app, monkeypatch) -> None:
+        from unittest.mock import AsyncMock
+
+        from agent.execution_control import execution_control_port
+
+        stop = AsyncMock(return_value={"status": "ok", "interrupted": True})
+        monkeypatch.setattr(execution_control_port, "_box", [stop])
+        client = _client(HttpApiChannel())
+        body = {"user_id": "alice", "group_id": "room", "session_id": "topic", "run_id": "run1"}
+        response = client.post("/api/sessions/control", json=body)
+        assert response.json()["interrupted"] is True
+        assert stop.call_args.kwargs["scope"] == "group_http_api:room#topic"
+        assert stop.call_args.kwargs["run_id"] == "run1"
+        body.update(action="resume", run_id="", request_id="resume1")
+        assert client.post("/api/sessions/control", json=body).json()["status"] == "accepted"
+        assert client.post("/api/sessions/control", json=body).json()["status"] == "duplicate"
+        assert len(fake_agent_app) == 1
+        assert fake_agent_app[0]["group_id"] == "room" and fake_agent_app[0]["session_id"] == "topic"
+
+    async def test_history_paginates_persisted_messages_without_crossing_scopes(self, tmp_path, monkeypatch) -> None:
+        import httpx
+
+        from agent.channel.output_tools import conversation_data_port
+        from agent.storage.sqlite_backend import SqliteBackend
+
+        db = SqliteBackend(str(tmp_path / "history.sqlite3"))
+        monkeypatch.setattr(conversation_data_port, "_box", [SimpleNamespace(router=SimpleNamespace(sqlite=db))])
+        try:
+            for kind, scope, text in (("user", "http_api:42", "private"),
+                                      ("group", "http_api:42#topic", "one"),
+                                      ("group", "http_api:42#topic", "two")):
+                await db.append_conversation(scope_type=kind, scope_id=scope, role="user", content=text)
+            async with httpx.AsyncClient(transport=httpx.ASGITransport(app=HttpApiChannel()._create_app()),
+                                         base_url="http://test") as client:
+                query = {"group_id": "42", "session_id": "topic", "limit": 1}
+                result = (await client.get("/api/sessions/history", params=query)).json()
+                assert [m["content"] for m in result["messages"]] == ["two"]
+                query["before_id"] = result["messages"][0]["id"]
+                older = (await client.get("/api/sessions/history", params=query)).json()
+                assert [m["content"] for m in older["messages"]] == ["one"]
+                query.pop("before_id")
+                query["after_id"] = older["messages"][0]["id"]
+                newer = (await client.get("/api/sessions/history", params=query)).json()
+                assert [m["content"] for m in newer["messages"]] == ["two"]
+        finally:
+            await db.close()
+
+    async def test_https_and_group_sse_use_real_tls_socket(self, tmp_path) -> None:
+        import ipaddress
+        import socket
+        import ssl
+        from datetime import datetime, timedelta, timezone
+
+        import httpx
+        from cryptography import x509
+        from cryptography.hazmat.primitives import hashes, serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from cryptography.x509.oid import NameOID
+
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "localhost")])
+        now = datetime.now(timezone.utc)
+        cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name).public_key(key.public_key())
+                .serial_number(x509.random_serial_number()).not_valid_before(now - timedelta(minutes=1))
+                .not_valid_after(now + timedelta(days=1))
+                .add_extension(x509.SubjectAlternativeName([x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]), False)
+                .sign(key, hashes.SHA256()))
+        certfile, keyfile = tmp_path / "cert.pem", tmp_path / "key.pem"
+        certfile.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+        keyfile.write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                              serialization.NoEncryption()))
+        with socket.socket() as reserve:
+            reserve.bind(("127.0.0.1", 0))
+            port = reserve.getsockname()[1]
+        channel = HttpApiChannel()
+        channel._config = HttpApiConfig(port=port, api_token="tls-test", ssl_certfile=str(certfile), ssl_keyfile=str(keyfile))
+        await channel.start()
+        try:
+            context = ssl.create_default_context(cafile=str(certfile))
+            async with httpx.AsyncClient(base_url=channel.config.base_url, verify=context,
+                                         trust_env=False, timeout=5, headers={"x-api-token": "tls-test"}) as client:
+                assert (await client.get("/health")).json()["status"] == "ok"
+                assert (await channel.health_check()).healthy
+                async with client.stream("GET", "/api/chat/stream?group_id=room&session_id=topic") as response:
+                    assert response.status_code == 200
+                    await channel.send_text("room", "tls reply", channel_type="group", session_id="topic")
+                    async for line in response.aiter_lines():
+                        if line.startswith("data: "):
+                            assert json.loads(line[6:])["content"] == "tls reply"
+                            break
+            listening_url = channel.config.base_url
+            channel._config = channel.config.model_copy(update={"port": 1})
+            assert json.loads(channel.portal_help())["base_url"] == listening_url
+        finally:
+            await channel.stop()
+        assert not (await channel.health_check()).healthy

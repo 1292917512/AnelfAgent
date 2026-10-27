@@ -50,6 +50,50 @@ class TestPushFrameScopeFilter:
 
 
 class TestSendTextStreamDelivery:
+    def test_private_group_and_subsession_replies_do_not_cross(self) -> None:
+        channel = HttpApiChannel()
+
+        async def scenario() -> None:
+            private = channel._expect_reply("42")
+            group = channel._expect_reply("42", channel_type="group")
+            private_sub = _StreamSub("user_http_api:42")
+            first = _StreamSub("group_http_api:42#one", include_children=False)
+            second = _StreamSub("group_http_api:42#two", include_children=False)
+            channel._stream_subs.extend([private_sub, first, second])
+            await channel.send_text("42", "group", channel_type="group")
+            assert await group == "group"
+            assert not private.done()
+            await channel.send_text("42", "one", session_id="one", channel_type="group")
+            assert json.loads(first.queue.get_nowait())["content"] == "one"
+            assert second.queue.empty() and private_sub.queue.empty()
+            private.cancel()
+
+        asyncio.run(scenario())
+
+    def test_slow_subscriber_is_closed_without_unbounded_growth(self) -> None:
+        channel = HttpApiChannel()
+        sub = _StreamSub("user_http_api:u1", maxsize=1)
+        channel._stream_subs.append(sub)
+        channel._push_frame({"type": "delta", "delta": "one"}, "user_http_api:u1")
+        channel._push_frame({"type": "delta", "delta": "two"}, "user_http_api:u1")
+        assert sub.closed and sub.queue.qsize() == 1
+        assert sub.queue.get_nowait() == ""
+        assert not channel._deliver_to_subscribers("u1", {"type": "reply"})
+
+    def test_interrupted_turn_releases_only_its_own_waiter(self) -> None:
+        channel = HttpApiChannel()
+
+        async def scenario() -> None:
+            current = channel._expect_reply("u1", "one")
+            other = channel._expect_reply("u1", "two")
+            await channel._on_after_reply({"scope": "user_http_api:u1#one", "reason": "interrupted", "turn_id": "run"})
+            with pytest.raises(RuntimeError, match="中止"):
+                await current
+            assert not other.done()
+            other.cancel()
+
+        asyncio.run(scenario())
+
     def test_async_mode_reply_frame(self) -> None:
         """无 pending future 时经 SSE reply 帧投递最终文本。"""
         channel = HttpApiChannel()
@@ -113,7 +157,7 @@ class TestSendTextStreamDelivery:
             with pytest.raises(RuntimeError, match="被取代"):
                 await old
             assert not other.done()
-            assert channel._pending_replies[("u1", "topic-1")] is new
+            assert channel._pending_replies[channel._delivery_key("u1", "topic-1")] is new
 
         asyncio.run(scenario())
 

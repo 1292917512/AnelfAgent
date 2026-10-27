@@ -1,155 +1,143 @@
-# HTTP API 频道
+# HTTP/HTTPS 频道
 
-外部系统与 Agent 的**双向 HTTP 门户**：任何能发 HTTP 的程序（传感器、脚本、其他服务、
-其他 Agent）都经本频道把消息/图片/媒体/视觉画面传给 AI，AI 的回复与主动消息也经本频道
-回投给外部系统。
+为外部应用提供消息、媒体、会话控制、历史、模型 SDK 和系统工具的统一入口。
+默认停用，默认地址 `http://127.0.0.1:8091`。
 
-默认监听 `127.0.0.1:8091`，**默认停用**。配置组 `adapter/http_api`（配置中心可改，
-热读取生效以频道重启为准）：
+## AI 获取帮助
 
-| 配置键 | 默认 | 说明 |
-|--------|------|------|
-| `http_api_enabled` | `false` | 是否启用 |
-| `http_api_host` | `127.0.0.1` | 监听地址；非回环地址必须配置 `api_token`，否则拒绝启动 |
-| `http_api_port` | `8091` | 监听端口 |
-| `http_api_reply_timeout` | `60` | 同步调用等待最终回复的秒数 |
-| `http_api_api_token` | 空 | 入站认证（`x-api-token` 头或 `Authorization: Bearer`）；空 = 仅回环免认证 |
-| `http_api_callback_url` | 空 | 默认出站回调（webhook）；AI 的回复/主动消息 POST 到该地址 |
-| `http_api_callback_token` | 空 | 出站回调时携带的 `Authorization: Bearer` 令牌 |
-| `http_api_callback_timeout` | `10` | 出站回调请求超时（秒） |
+启用频道后，AI 可直接调用 **`http_api_portal_help()`** 获取简短接入说明。
+需要细节时传 `topic="chat"`、`"sessions"`、`"sdk"` 或 `"https"`。
+帮助按当前配置生成，不返回认证令牌；外部应用使用 **`GET /api/sdk`** 发现接口，
+参数、必填项和默认值以 **`GET /openapi.json`** 为准，**`/docs`** 可交互调试。
 
-## 入站（外部系统 → AI）
+推荐顺序：获取帮助 → 分配用户/会话标识 → 先订阅 SSE → 提交异步消息。
 
-### `POST /api/chat` — 消息
+## 配置
 
-```json
-{
-  "message": "门磁开了",
-  "user_id": "sensor_hub",
-  "user_name": "传感器中枢",
-  "group_id": "",
-  "session_id": "",
-  "kind": "chat",
-  "message_id": "hub-0001",
-  "reply_to_id": "",
-  "reply_content": "",
-  "to_me": true,
-  "images": [{"url": "https://…/x.jpg"}],
-  "media": [{"kind": "audio", "base64": "…", "mime_type": "audio/wav", "file_name": "a.wav"}],
-  "callback_url": "http://192.168.1.10:9000/anelf",
-  "async_mode": true,
-  "request_id": "req-001"
-}
-```
+配置中心的键为 `http_api_<字段>`；频道文件 `channels/http_api/channel_config.json`
+使用不带前缀的字段名。通过配置中心或 `set_channel_config` 写入，监听、TLS、并发等配置重启频道生效。
 
-- **会话归属**：`group_id` 非空即群会话（scope `group_http_api:<group_id>`），否则私聊
-  （scope `user_http_api:<user_id>`）；`session_id` 覆盖会话后缀实现多会话隔离，
-  缺省取 `group_id`/`user_id`。同一身份的历史、记忆与上下文在同一 scope 延续。
-- **标准信封**：入站经 `dispatch_inbound` 统一归一化——`[time]/[channel]/[name]/[uid]/
-  [message_id]` 等标签前缀自动生成，与 QQ/TG 等频道同管道同纪律。
-- **`kind`**：`chat`（默认）/ `event` / `system` 留在原会话并以 `[kind:xxx]` 标签区分；
-  `notification` 聚合进通知中心会话（`user_http_api:notification`），正文标注来源，
-  **强制异步受理**（返回 `accepted`，不产生对调用方的同步回复）。
-- **`message_id` 幂等键**：同会话内重复 `message_id` 返回 `status="duplicate"` 不重复入管道
-  （客户端重试/网络重发安全）；缺省取 `request_id`。
-- **`images`**：图片直注模型（视觉模型原生看图）。`url`（仅 http/https）与 `base64` 二选一，
-  base64 落盘 `uploads/image/` 后走标准图片段。
-- **`media`**：非图片媒体（`kind`: `audio` / `video` / `file`），仅接受 `base64`，
-  单条 ≤ 50MB；落盘 `uploads/<类型>/` 后作为媒体消息段进入统一管道（AI 经媒体工具链处理，
-  音频/视频在文本层降级为 `[media_type:…][media_path:…]` 标签，不会静默丢失）。
-  附件总数（images + media）≤ 9，单消息 ≤ 256K 字符，请求体 ≤ 80MB（超出 413/422）。
-- **`async_mode=false`（默认）同步**：阻塞等待最终回复，最长 `reply_timeout` 秒，
-  响应 `{"status": "ok", "reply": "…"}`；超时返回 `status="timeout"`（Agent 仍会处理完，
-  结果只经流/回调可见）。**同一会话的并发同步请求相互取代**：旧请求立即失败，只认最新一条。
-- **`async_mode=true` 异步**：立即返回 `{"status": "accepted"}`，回复与过程帧经
-  `/api/chat/stream` 或 `callback_url` 投递，长任务不受 `reply_timeout` 约束。
-- **`callback_url`**：携带即把本会话的出站回调注册为该地址（仅 http/https），
-  后续回复与主动消息都推送到它；进程重启后需重新注册（或用频道默认回调配置兜底）。
-  显式 `session_id` 的子会话分别登记回调与同步等待；回调负载和 `reply` 帧会携带该字段。
-- 响应 `status`：`ok` / `accepted` / `timeout` / `duplicate` / `error`（`error` 字段带原因）。
+| 字段 | 默认 | 用途 |
+|---|---|---|
+| `enabled` | `false` | 启用频道 |
+| `host` / `port` | `127.0.0.1` / `8091` | 监听地址与端口 |
+| `api_token` | 空 | `Authorization: Bearer` 或 `x-api-token`；公网监听/公开地址必须配置 |
+| `ssl_certfile` / `ssl_keyfile` | 空 | 原生 HTTPS 的 PEM 证书和私钥，必须成对 |
+| `ssl_keyfile_password` | 空 | 加密私钥密码，可用环境变量引用 |
+| `public_base_url` | 空 | 外部基址，如 `https://agent.example.com/gateway`，供 AI 与文档使用 |
+| `cors_origins` | `[]` | 允许跨域的可信浏览器来源 |
+| `reply_timeout` | `60` | 同步答复等待秒数 |
+| `callback_url` / `callback_token` | 空 | 默认 webhook 及其 Bearer 令牌 |
+| `callback_timeout` | `10` | 回调超时秒数 |
+| `stream_queue_size` / `max_stream_subscribers` | `256` / `128` | SSE 缓冲帧数与订阅上限 |
+| `max_connections` / `sdk_concurrency` | `256` / `8` | HTTP 连接/任务与 SDK 调用上限；超载返回 503 |
 
-### `POST /api/vision/push` — 外部视觉源推帧
+集成令牌具有系统工具权限，应由可信后端保管。`user_id` 是来源声明，会话隔离不构成多租户授权。
+面向不可信用户的应用应先在自己的后端认证和授权，再调用门户。
+
+## 接口
+
+| 方法与路径 | 功能 |
+|---|---|
+| `POST /api/chat` | 文本、图片、音频、视频、文件入站 |
+| `GET /api/chat/stream` | SSE：`delta`、`tool_call`、`reply`、`turn_end` |
+| `POST /api/sessions/control` | 停止或继续原会话 |
+| `GET /api/sessions/history` | 分页/增量读取持久化历史 |
+| `POST /api/vision/push` | 外部视觉源单帧 |
+| `WS /api/vision/stream` | 持续视觉推流；HTTPS 时用 `wss://` |
+| `GET /api/sdk` | 生效接入契约 |
+| `GET /api/sdk/models` | 按 `model_type` 列出已启用模型 ID |
+| `POST /api/sdk/models/{operation}` | 模型 SDK 直调 |
+| `GET /api/sdk/tools` | 已启用工具目录与 schema，可按 `group` 筛选 |
+| `POST /api/sdk/tools/{name}` | 经权限与 hook 调用系统工具 |
+| `GET /health` | 公开的进程 HTTP 存活探针 |
+
+### 消息与会话
 
 ```json
-{"source": "doorbell", "image_base64": "…", "mime_type": "image/jpeg", "captured_at": 1730000000.0}
+{"user_id":"my_app:alice","session_id":"support-1","message":"你好","message_id":"msg-001","async_mode":true}
 ```
 
-把一路外部画面（摄像头、其他机器截屏、传感器快照）推入统一视觉缓冲，与本地捕获源
-走相同的判变与上下文注入路径，缓冲中记为 `external:<source>`。png/jpeg/webp，单帧 ≤ 20MB。
-画面变化时 AI 在后续轮次看到该源最新帧；持续推送保持源活跃。停用中的源拒收
-（`vision_disabled_sources` 或视觉页开关）。返回 `{"status": "ok", "changed": …, …}`。
-与主 web 服务 `/api/vision/push` 是同一入口的两个门。
+- 私聊按 `user_id` 分桶；群聊另传 `group_id`，同群不同发送者保留各自 `user_id`。
+  多个窗口另传 `session_id`；用户、群组和子会话的收发独立。身份不得包含 `#`，群 ID 不能为保留值 `"0"`。
+- `kind` 支持 `chat/event/system/notification`；通知聚合到通知中心，强制异步受理。
+  引用回复使用 `reply_to_id/reply_content`，`to_me` 标记是否指向 AI。
+- `images` 为 `[{url|base64, mime_type}]`，两种来源二选一；`media` 为
+  `[{kind: audio|video|file, base64, mime_type, file_name}]`。媒体进入原有处理链，不等同于模型原生实时音视频。
+- `async_mode=false` 等待最终文本，`true` 返回 `accepted`。响应业务状态有
+  `ok/accepted/timeout/duplicate/error`。同一会话并发同步请求只保留最新等待者；需要逐请求结果时串行提交。
+- 请求携带 `callback_url` 即登记该会话的出站回调。文本最终回复依次尝试同步响应、SSE、回调；
+  进度消息只经 SSE/回调。含媒体的整条出站消息仅经回调，无有效接收端则报告失败。
 
-### `WS /api/vision/stream` — 持续推流（实时画面）
+SSE 示例：`GET /api/chat/stream?user_id=my_app:alice&session_id=support-1`。
+群聊改传 `group_id`；省略 `session_id` 才订阅该身份的全部子会话。
+30 秒无帧发送 `ping`；`turn_end` 包含 `turn_id/reason/error`。流不持久化，断线后重新订阅并用历史校准最终内容。
+不能设置请求头的 SSE/WS 客户端可用 `?token=`，一般优先使用认证头。
 
-实时视频源的推流入口：外部系统采帧后逐帧上行，**判变、缓冲与上下文注入由系统内部完成**。
-每帧发一条 JSON 文本（字段同 `/api/vision/push`），服务端每帧回 ack：
+视觉推送/WS 每帧格式：`{source, image_base64, mime_type, captured_at?}`，图片支持 png/jpeg/webp，
+单帧不超过 20MB。系统内部判变、缓冲并在后续轮次注入；WS 坏帧回错误而不断连，未认证关闭码 4401。
 
-```
-→ {"source": "cam1", "image_base64": "…", "mime_type": "image/jpeg"}
-← {"status": "ok", "changed": true, "source": "external:cam1"}
-```
-
-坏帧只回 `{"status": "error", "error": …}` 不断连；鉴权同 HTTP（`?token=` 或请求头），
-认证失败以 4401 关闭。单帧图片 ≤ 20MB（WS 帧上限 32MB）。推流方自行决定帧率与抽帧
-策略（模型侧目前按变化轮次看图，非逐帧实时解析），静态画面持续推送不会被误判离线。
-
-### `GET /api/chat/stream?user_id=<id>` — SSE 订阅
-
-订阅该身份的全部过程帧（`event: message`，data 为 JSON）。**需同一令牌认证**
-（不能自定义请求头的客户端用 `?token=`）：
-
-| `type` | 说明 |
-|--------|------|
-| `delta` | 回复增量（`delta` 文本 + `reasoning` 标记） |
-| `tool_call` | 工具调用起止（`status`: running/done/error） |
-| `reply` | 一条完整文本（异步回复、进度消息、通知） |
-| `turn_end` | 一轮结束（`error` 标记） |
-
-30 秒无帧发 `event: ping` 保活。订阅前缀匹配会话：`user_id` 覆盖其全部 `session_id` 会话；
-子会话的 `reply` 帧携带 `session_id`，供客户端区分。
-
-### `GET /health` — 健康探针
-
-## 出站（AI → 外部系统）
-
-AI 侧无需感知 HTTP 细节：它照常回复或 `send_message`，频道按**三级级联**投递：
-
-1. **同步响应**：有阻塞等待的同步请求时，最终回复直接作为 `/api/chat` 响应体返回；
-2. **SSE 订阅**：该会话有活跃 `/api/chat/stream` 订阅时，文本经 `reply` 帧推送；
-3. **webhook 回调**：以上都不可达时，POST 到会话注册的 `callback_url`
-   （或频道默认 `http_api_callback_url`），带 `callback_token` Bearer 认证。
-
-回调负载：
+### 停止、继续与历史
 
 ```json
-{
-  "event": "message",
-  "chat_id": "sensor_hub",
-  "message_id": "http-4f8a2d94c7b0477cb9b5f4012059d3a1",
-  "segments": [
-    {"type": "text", "text": "已布防"},
-    {"type": "image", "caption": "现场", "path": "/…/x.jpg", "base64": "…", "mime_type": "image/jpeg"}
-  ],
-  "ts": 1730000000.0
-}
+{"user_id":"my_app:alice","session_id":"support-1","action":"stop"}
 ```
 
-含媒体段（image/video/audio/voice/file）的消息整体只经回调投递：本地文件 ≤ 20MB 时内联
-`base64`，否则仅给服务端 `path`。无订阅者或回调时返回投递失败；通知调用方可自行决定是否
-忽略失败，不能把未送达的消息记为已发送。
-接收方按 `message_id` 去重；它是不透明标识，不应依赖其字符格式。
+停止复用 SDK 协作式中断，覆盖该会话回复、子代理和所属后台工作。可附 `run_id` 精确停止，
+但必须与会话目标一致。`ok` 表示受理，`idle` 表示没有目标工作；以 `turn_end.reason=interrupted` 核对本轮收束。
 
-## 给调用方的建议
+```json
+{"user_id":"my_app:alice","session_id":"support-1","action":"resume","request_id":"resume-001"}
+```
 
-- 短问答用同步模式；长任务（视觉分析、委派、工作流）用 `async_mode` + SSE 或回调。
-- 持续画面推送走 `/api/vision/stream`（实时流）或 `/api/vision/push`（低频快照）；
-  一次性看图问答走 `/api/chat` 的 `images`。
-- 外部系统身份用稳定 `user_id`：历史与记忆按它隔离延续。
+等待上一轮收束后再继续；可用 `message` 自定义续接指令。继续是原会话的新输入，不恢复调用栈、
+不自动重放工具；`resume` 不接受 `run_id`，重试复用同一 `request_id`。
 
-## AI 侧自感知
+历史查询同样传 `user_id/group_id/session_id`，返回 `{status, scope, messages}`，记录含 `id/role/content/ts_ns`。
+`limit` 默认 50、上限 200；`before_id` 加载更早消息，`after_id` 按 ID 增量读取，两者互斥。
+查询不改变已读水位、不触发思考，也不重放未持久化的 delta。
 
-- http_api 会话内自动注入门户契约提示（reply_policy）：三级投递级联、同步等待窗口、
-  投递面纪律，均按生效配置实时生成。
-- 任意会话里 AI 都可调用 `http_api_portal_help` 工具获取完整接入契约（端点/字段/认证/
-  收发级联，实时反映当前配置），对外讲解接入方式前先取它，不背默认值。
+### SDK 模型与工具
+
+模型 `operation` 支持 `chat`、`describe_images`、`describe_video`、`embed`、`embed_multimodal`、
+`transcribe`、`text_to_speech`、`rerank`、`generate_image`、`edit_image`、`generate_video`、`generate_music`、`judge`。
+JSON 参数从 `ModelAPI` 签名派生；示例 `POST /api/sdk/models/chat`：
+
+```json
+{"messages":[{"role":"user","content":"你好"}],"timeout":60}
+```
+
+返回 `{status, result}`，保留模型身份与用量，移除供应商 `raw`；字节输入用 base64，字节输出为 URL-safe base64。
+模型直调不继承 Agent 上下文、不自动执行工具；SDK `stream=true` 仍返回聚合结果，过程流使用聊天 SSE。
+
+先查询工具目录，再按 schema 调用 `POST /api/sdk/tools/{name}`：
+
+```json
+{"user_id":"my_app:alice","session_id":"support-1","arguments":{},"request_id":"action-001"}
+```
+
+返回 `{status, request_id, result, notice}`，保留权限提示；HTTP 200 不代表 `result` 中没有工具错误。
+有副作用的调用应提供固定 `request_id`；重发返回 `duplicate`，不重复执行，也不返回旧结果。
+工具直调独立于 Agent 思维循环，会话停止不是任意 HTTP 调用的事务撤销。
+
+## HTTPS 与扩展
+
+原生 HTTPS 配置证书/私钥后重启；证书、私钥或端口不可用时启动失败。
+也可由代理终止 TLS，内部维持回环 HTTP，填写 `public_base_url` 和 `api_token`；
+代理需透传路径和认证头、关闭 SSE 缓冲、支持 WebSocket，并设置足够的长连接超时。
+公开基址用于地址公告，不代表已签发证书或配置代理；证书由部署方提供并续期，客户端保持证书验证。
+
+新增内核/实体工具注册后自动进入目录；新增领域资源 API 使用独立 Router，经 `_create_app` 挂载，
+沿用统一边界，不反向导入 `web/services`。新增功能同步更新 OpenAPI、频道帮助和契约测试。
+
+## 可靠性约定
+
+- 契约 `api_version=1`，既有 `/api` 路径保持兼容；客户端忽略新增字段，参数以 OpenAPI 为准。
+- 认证先于业务解析。401=认证失败、403=权限拒绝、404=不存在、413=体积超限、422=参数错误、
+  502=模型上游失败、503=能力未就绪/超载。业务 HTTP 响应带 `X-Request-ID`。
+- 单消息不超过 256K 字符，附件最多 9 个，单附件最多 50MB，累计请求体最多 80MB，分块上传同样受限。
+- 消息/工具去重共用进程内缓存：300 秒、最多 2000 项；回调登记最多 1000 项，重启后重注册。
+  重启或容量淘汰后不保证去重；webhook 当前没有持久化重试队列，不承诺 exactly-once。
+- 超时/断线不表示未执行，先查历史、执行诊断或实际状态，避免重复写入。SSE 慢客户端会被断开；
+  回调媒体不超过 20MB 时内联 base64，超过时只传服务端路径，文件可达性由接入方安排。
+- 回归覆盖本机真实 TLS/SSE、隔离、重试、控制与 SDK 转发；公网证书、代理、压力与恢复指标需在部署环境验收。
