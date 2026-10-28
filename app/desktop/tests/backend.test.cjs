@@ -1,0 +1,68 @@
+// @ts-check
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+const { validConnection, commandFor, resolveProfile } = require('../backend.cjs');
+const downloads=require('../../downloads.json');
+
+test('backend discovery accepts only authenticated loopback connections', () => {
+  const record = {url:'http://127.0.0.1:8090',token:'a'.repeat(32),pid:123};
+  assert.equal(validConnection(record),true);
+  for(const url of ['https://example.com','http://evil.example:8090','http://user@127.0.0.1:8090','http://127.0.0.1:8090/other']) assert.equal(validConnection({...record,url}),false);
+  assert.equal(validConnection({...record,token:''}),false);
+});
+
+test('bootstrap does not require a user Python or project environment', () => {
+  const options = {root:'/home/user/中文 project',backend:'/app/backend',uv:'/app/tools/uv',timezone:'Asia/Shanghai'};
+  const command = commandFor(options);
+  assert.equal(command.command,options.uv);
+  assert.deepEqual(command.args.slice(0,6),['run','--no-project','--isolated','--python','3.12','--with-requirements']);
+  assert.ok(command.args[6].endsWith('runtime-requirements.txt'));
+  assert.deepEqual(command.args.slice(-8),['python','-m','app','--root',options.root,'serve','--port','0']);
+  assert.equal(command.cwd,options.backend);
+  assert.equal(command.env.ANELF_LAUNCHER_TIMEZONE,'Asia/Shanghai');
+});
+
+test('every uv mirror applies to management dependencies without changing other sources', () => {
+  for (const [key,mirror] of Object.entries(downloads.pypi_sources)) {
+    const profile=resolveProfile(downloads,'global',key,'Asia/Shanghai');
+    assert.equal(profile.pypi,mirror.url);assert.equal(profile.node,downloads.global.node);
+    const command=commandFor({root:'/project',backend:'/backend',uv:'/tools/uv',timezone:'UTC',profile,indexEnvironment:downloads.uv_index_environment});
+    assert.equal(command.args[command.args.indexOf('--default-index')+1],mirror.url);
+    assert.ok(command.args.includes('--no-config'));
+    for(const name of downloads.uv_index_environment)assert.equal(Object.hasOwn(command.env,name),false);
+  }
+  assert.equal(resolveProfile(downloads,'auto','auto','Asia/Shanghai').pypi,downloads.china.pypi);
+  assert.equal(resolveProfile(downloads,'auto','auto','UTC').pypi,downloads.global.pypi);
+  assert.throws(()=>resolveProfile(downloads,'china','not-a-source','UTC'));
+});
+
+test('desktop version follows the project release version',()=>{
+  assert.equal(require('../package.json').version,require('../version.cjs').projectVersion());
+});
+
+
+test('user uv and Python discovery remain read-only and preserve explicit interpreter paths', (context) => {
+  const childProcess = require('node:child_process');
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(),'anelf-reuse-'));
+  const uv = path.join(directory,'uv'), python = path.join(directory,'python');
+  fs.writeFileSync(uv,''); fs.writeFileSync(python,'');
+  /** @type {{args:string[],options:object}[]} */ const calls=[];
+  context.mock.method(childProcess,'spawnSync', (/** @type {string} */ command, /** @type {string[]} */ args, /** @type {object} */ options) => {
+    calls.push({args,options});
+    return {status:0,stdout:args[0]==='--version'?'uv 0.13.6':args[0]==='python'?python:uv,stderr:''};
+  });
+  delete require.cache[require.resolve('../backend.cjs')];
+  const backend = require('../backend.cjs');
+  try {
+    assert.equal(backend.findUv('missing').path,uv);
+    assert.equal(backend.findPython(uv,directory),python);
+    const find=calls.find(item=>item.args[0]==='python');
+    assert.ok(find && find.args.includes('--no-python-downloads') && find.args.includes('--system'));
+    const command=backend.commandFor({root:directory,backend:directory,uv,python,timezone:'UTC'});
+    assert.equal(command.args[4],python);
+    assert.equal(command.env.ANELF_USER_PYTHON_INSTALL_DIR,process.env.UV_PYTHON_INSTALL_DIR || '');
+  } finally { fs.rmSync(directory,{recursive:true,force:true}); }
+});

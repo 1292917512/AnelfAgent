@@ -13,6 +13,10 @@ tools.py 的 RestartHandoffWatcher 消费交接，向原会话推送"重启成�
 
 AI 工具（tools.py，同步工作线程）与 HTTP 路由（router.py，主事件循环）
 统一走本模块，杜绝平行实现。
+
+Model Experience：模型通过既有 devops 工具接收管理器互斥冲突回执，不新增注入。
+Token 影响：仅冲突时增加一条短错误回执，正常路径无额外 token。
+缓存影响：不修改 stable/summary/conversation 前缀层。
 """
 
 from __future__ import annotations
@@ -28,6 +32,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from core.command import run_command
+from core.host_protocol import HostLock
 from core.lifecycle import Lifecycle
 from core.log import log
 from core.path import data_dir
@@ -58,6 +63,7 @@ _HANDOFF_TTL_SECONDS = 3600.0
 _runtime_id = uuid.uuid4().hex
 _build_state: Dict[str, Any] = {"building": False, "last": None, "phase": "idle", "result": None, "operation_id": None}
 _operation_lock = threading.Lock()
+_project_lock = HostLock(PROJECT_ROOT / "logs" / "project-operation.lock")
 
 
 # ── 重启 ─────────────────────────────────────────────────────────────
@@ -214,16 +220,20 @@ def request_restart(
             return {"ok": True, "restarting": True, "already_pending": True, "runtime_id": _runtime_id}
         if _build_state["building"] and source != "build_and_restart":
             return {"ok": False, "error": "build_in_progress", "message": "更新或构建正在进行，请等待完成后再重启"}
+        if source != "build_and_restart":
+            if not _project_lock.acquire():
+                return {"ok": False, "error": "build_in_progress", "message": "环境管理器正在执行运维操作，请稍后重启"}
+            _project_lock.release()
         if not _is_supervised():
             log(
-                f"拒绝重启请求（来源 {source}）：进程非 start.sh 守护拉起，重启将等同关机",
+                f"拒绝重启请求（来源 {source}）：进程非 start.sh / start.bat 守护拉起，重启将等同关机",
                 "WARNING", tag="运维",
             )
             return {
                 "ok": False,
                 "error": "no_supervisor",
-                "message": "当前进程不是由启动脚本（start.sh）守护拉起的，重启等同关机且不会自动拉起；"
-                           "请改用 restart.sh 重启，或先通过 start.sh 启动后再使用本功能",
+                "message": "当前进程没有启动脚本守护，无法在关闭后自动拉起；请先安全停止当前实例，"
+                           "再通过 start.bat（Windows）或 start.sh（macOS/Linux）启动后使用重启功能",
             }
         _restart_pending = True
     if handoff:
@@ -280,6 +290,8 @@ def _begin_operation(phase: str, require_frontend: bool = True) -> Optional[Dict
     with _operation_lock:
         if _build_state["building"] or _restart_pending:
             return {"ok": False, "error": "build_in_progress"}
+        if not _project_lock.acquire():
+            return {"ok": False, "error": "build_in_progress", "message": "其他进程正在执行环境安装或更新"}
         _build_state.update(building=True, phase=phase, result=None, operation_id=uuid.uuid4().hex)
     return None
 
@@ -384,6 +396,7 @@ async def _complete_build(
     finally:
         with _operation_lock:
             _build_state.update(building=False, result=result, phase="restarting" if result.get("ok") else "failed")
+            _project_lock.release()
 
 
 def build_and_restart_blocking(
@@ -473,3 +486,4 @@ def git_pull() -> Dict[str, Any]:
     finally:
         with _operation_lock:
             _build_state.update(building=False, result=result, phase="updated" if result.get("ok") else "failed")
+            _project_lock.release()

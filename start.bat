@@ -1,13 +1,31 @@
 @echo off
+setlocal
 chcp 65001 >nul
 title AnelfAgent
 
 set "ROOT=%~dp0"
+if defined ANELF_PROJECT_ROOT set "ROOT=%ANELF_PROJECT_ROOT%\"
+set "LAUNCH_ENTRY=launch.py"
+if defined ANELF_LAUNCH_ENTRY set "LAUNCH_ENTRY=%ANELF_LAUNCH_ENTRY%"
 cd /d "%ROOT%"
+
+set "CONTROL_ACTION="
+if /I "%~1"=="--manager" set "CONTROL_ACTION=web"
+if /I "%~1"=="stop" set "CONTROL_ACTION=stop"
+if /I "%~1"=="restart" set "CONTROL_ACTION=restart"
+if /I "%~1"=="update" set "CONTROL_ACTION=update"
+if /I "%~1"=="status" set "CONTROL_ACTION=status"
+if defined CONTROL_ACTION goto control
 
 echo.
 echo   AnelfAgent
 echo.
+
+:: APP 已通过所选源完成同步，直接复用 uv 管理的项目环境。
+if "%ANELF_ENV_READY%"=="1" if exist "%ROOT%.venv\Scripts\python.exe" if exist "%ROOT%web\frontend\dist\index.html" (
+    set RUN_CMD="%ROOT%.venv\Scripts\python.exe"
+    goto environment_ready
+)
 
 :: 检测 uv（优先） 或 python
 where uv >nul 2>&1
@@ -16,7 +34,7 @@ if %ERRORLEVEL% EQU 0 (
     for /f "tokens=*" %%v in ('uv --version 2^>^&1') do echo  [运行器] %%v
 
     echo  [环境]   正在同步 Python 依赖...
-    uv sync --quiet
+    uv sync
     if errorlevel 1 (
         echo  [警告]   uv sync 失败，将使用当前环境继续
     ) else (
@@ -57,6 +75,7 @@ if %ERRORLEVEL% EQU 0 (
     )
 )
 
+:environment_ready
 echo  [目录] %ROOT%
 echo.
 echo  WebUI 地址: http://127.0.0.1:8092/webui/
@@ -71,7 +90,7 @@ set CRASH_COUNT=0
 set MAX_CRASH_COUNT=5
 
 :run_loop
-%RUN_CMD% launch.py %*
+%RUN_CMD% "%LAUNCH_ENTRY%" %*
 set EXIT_CODE=%ERRORLEVEL%
 
 if %EXIT_CODE% EQU 42 (
@@ -118,3 +137,19 @@ if %EXIT_CODE% NEQ 0 (
 )
 
 :end
+exit /b %EXIT_CODE%
+
+:control
+if exist "%ROOT%.venv\Scripts\python.exe" goto control_venv
+where uv >nul 2>&1
+if errorlevel 1 goto control_python
+uv run --no-project --python 3.12 python -m app --root "%ROOT%." %CONTROL_ACTION%
+exit /b %ERRORLEVEL%
+
+:control_venv
+"%ROOT%.venv\Scripts\python.exe" -m app --root "%ROOT%." %CONTROL_ACTION%
+exit /b %ERRORLEVEL%
+
+:control_python
+python -m app --root "%ROOT%." %CONTROL_ACTION%
+exit /b %ERRORLEVEL%

@@ -1,0 +1,4 @@
+# Management-only terminal adapters; project dependencies remain in the project uv.lock.
+pyte==0.8.2
+wcwidth==0.2.13
+pywinpty==3.1.1; sys_platform == 'win32'

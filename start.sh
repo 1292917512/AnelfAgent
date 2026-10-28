@@ -2,7 +2,26 @@
 # AnelfTools 启动脚本 (macOS / Linux)
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
+ROOT="${ANELF_PROJECT_ROOT:-$ROOT}"
 cd "$ROOT" || exit 1
+
+CONTROL_ACTION=""
+case "${1:-}" in
+    --manager) CONTROL_ACTION="web" ;;
+    stop|restart|update|status) CONTROL_ACTION="$1" ;;
+esac
+if [ -n "$CONTROL_ACTION" ]; then
+    if [ -x "$ROOT/.venv/bin/python" ]; then
+        exec "$ROOT/.venv/bin/python" -m app --root "$ROOT" "$CONTROL_ACTION"
+    fi
+    if command -v uv >/dev/null 2>&1; then
+        exec uv run --no-project --python 3.12 python -m app --root "$ROOT" "$CONTROL_ACTION"
+    fi
+    if command -v python3 >/dev/null 2>&1; then
+        exec python3 -m app --root "$ROOT" "$CONTROL_ACTION"
+    fi
+    exec python -m app --root "$ROOT" "$CONTROL_ACTION"
+fi
 
 # 守护循环身份登记：restart.sh 先停守护再停 python（缺此登记时守护无
 # 感知，会在 python 被杀后立刻重新拉起、与新实例竞态互杀）
@@ -20,22 +39,25 @@ echo "  │          AnelfAgent                  │"
 echo "  └─────────────────────────────────────┘"
 echo ""
 
-# 检测 uv（优先）或 python
-if command -v uv &>/dev/null; then
-    RUN_CMD="uv run python"
+# APP 已通过所选源完成同步，直接复用 uv 管理的项目环境。
+if [ "${ANELF_ENV_READY:-}" = "1" ] && [ -x "$ROOT/.venv/bin/python" ] && [ -f "$ROOT/web/frontend/dist/index.html" ]; then
+    RUN_CMD=("$ROOT/.venv/bin/python")
+    ENV_READY=1
+elif command -v uv &>/dev/null; then
+    RUN_CMD=(uv run python)
     echo "  [运行器] $(uv --version 2>&1 | head -1)"
 
     echo "  [环境]   正在同步 Python 依赖..."
-    if uv sync --quiet; then
+    if uv sync; then
         echo "  [环境]   Python 依赖已就绪"
     else
         echo "  [警告]   uv sync 失败，将使用当前环境继续"
     fi
 elif command -v python3 &>/dev/null; then
-    RUN_CMD="python3"
+    RUN_CMD=(python3)
     echo "  [运行器] $(python3 --version 2>&1)"
 elif command -v python &>/dev/null; then
-    RUN_CMD="python"
+    RUN_CMD=(python)
     echo "  [运行器] $(python --version 2>&1)"
 else
     echo "  [错误] 未找到 uv 或 python，请先安装运行环境"
@@ -45,7 +67,7 @@ fi
 
 # 同步前端依赖
 FRONTEND_DIR="$ROOT/web/frontend"
-if [ -f "$FRONTEND_DIR/package.json" ] && command -v npm &>/dev/null; then
+if [ "${ENV_READY:-}" != "1" ] && [ -f "$FRONTEND_DIR/package.json" ] && command -v npm &>/dev/null; then
     echo "  [环境]   正在同步前端依赖..."
     if npm install --prefix "$FRONTEND_DIR" --silent 2>/dev/null; then
         echo "  [环境]   前端依赖已就绪"
@@ -97,7 +119,7 @@ _write_crash_state() {
 CRASH_COUNT=0
 while true; do
     START_TS=$(date +%s)
-    $RUN_CMD launch.py "$@"
+    "${RUN_CMD[@]}" "${ANELF_LAUNCH_ENTRY:-launch.py}" "$@"
     EXIT_CODE=$?
 
     if [ $EXIT_CODE -eq 42 ]; then

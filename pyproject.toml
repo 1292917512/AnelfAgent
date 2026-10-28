@@ -110,9 +110,9 @@ dev = [
 
 [tool.pytest.ini_options]
 pythonpath = [".", "tests"]
-# 测试面 = 分层套件（tests/）+ 模块内套件（entities/<name>/tests、channels/<id>/tests）；
+# 测试面 = 分层套件（tests/）+ 模块内套件（entities/<name>/tests、channels/<id>/tests、app/tests）；
 # 模块测试随模块目录走，删除模块即整体拔出（零残留）
-testpaths = ["tests", "entities", "channels"]
+testpaths = ["tests", "entities", "channels", "app/tests"]
 # 模块目录内的非测试子树不进入收集扫描（前端面板源码等）
 norecursedirs = ["*.egg", ".*", "build", "dist", "venv", "node_modules", "frontend", "sources", "vendor"]
 asyncio_mode = "auto"
@@ -180,7 +180,7 @@ warn_redundant_casts = true
 warn_unreachable = true
 strict_optional = true
 check_untyped_defs = true
-exclude = "(\\.venv|workspace|web/frontend|config|tests)"
+exclude = "(\\.venv|workspace|web/frontend|config|tests|app/(build|dist))"
 
 [[tool.mypy.overrides]]
 module = "core.*"

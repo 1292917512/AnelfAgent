@@ -1,0 +1,4 @@
+{
+  "compilerOptions": {"target":"ES2022","module":"ES2022","moduleResolution":"node","lib":["ES2022","DOM","DOM.Iterable"],"allowJs":true,"checkJs":true,"strict":true,"noEmit":true,"skipLibCheck":true},
+  "include":["*.js","lib/*.ts","../desktop/bootstrap.js"]
+}

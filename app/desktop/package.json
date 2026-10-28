@@ -1,0 +1,42 @@
+{
+  "name": "anelf-launcher",
+  "productName": "AnelfAgent",
+  "version": "0.4.0",
+  "description": "AnelfAgent environment installer and local runtime manager",
+  "private": true,
+  "license": "MIT",
+  "author": { "name": "anelf.cn", "url": "https://anelf.cn" },
+  "homepage": "https://anelf.cn",
+  "main": "main.cjs",
+  "packageManager": "pnpm@11.25.0",
+  "engines": { "node": ">=22.12.0" },
+  "anelf": { "uvVersion": "0.13.6" },
+  "scripts": {
+    "start": "node version.cjs && electron .",
+    "stage": "node stage.cjs",
+    "icon": "node render-icon.mjs",
+    "typecheck": "tsc --noEmit && tsc -p ../ui/tsconfig.json",
+    "test": "node --test tests/*.test.cjs",
+    "dist": "node stage.cjs && node package.cjs"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "electron": "45.1.0",
+    "electron-builder": "26.18.0",
+    "extract-zip": "2.0.1",
+    "typescript": "~5.9.3"
+  },
+  "build": {
+    "appId": "cn.anelf.launcher",
+    "productName": "AnelfAgent",
+    "asar": true,
+    "directories": { "output": "../build/package" },
+    "files": ["main.cjs", "window.cjs", "tray.cjs", "exit.cjs", "backend.cjs", "storage.cjs", "managed.cjs", "maintenance.cjs", "cleanup.cjs", "preload.cjs", "bootstrap.html", "bootstrap.js", "bootstrap.css", "theme.css", "icon.svg", "icon.png", "trayTemplate.png", "trayTemplate@2x.png", "package.json"],
+    "extraResources": [{ "from": "../build/backend", "to": "backend" }, { "from": "../build/tools", "to": "tools" }, { "from": "../../LICENSE", "to": "LICENSE-Anelf.txt" }],
+    "artifactName": "AnelfAgent-${version}-${os}-${arch}.${ext}",
+    "win": { "target": ["nsis"], "icon": "icon.png" },
+    "nsis": { "oneClick": false, "perMachine": false, "allowToChangeInstallationDirectory": true, "deleteAppDataOnUninstall": true, "include": "installer.nsh" },
+    "mac": { "target": ["dmg"], "category": "public.app-category.utilities", "icon": "icon.png" },
+    "linux": { "target": ["AppImage", "deb"], "category": "Utility", "icon": "icon.png", "maintainer": "anelf.cn" }
+  }
+}

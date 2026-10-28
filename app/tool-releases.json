@@ -1,0 +1,237 @@
+{
+  "astral-sh/uv": {
+    "tag_name": "0.13.6",
+    "assets": [
+      {
+        "name": "uv-aarch64-apple-darwin.tar.gz",
+        "browser_download_url": "https://github.com/astral-sh/uv/releases/download/0.13.6/uv-aarch64-apple-darwin.tar.gz",
+        "digest": "sha256:60fbd5c8a1ed681845eea28d9d622fcde03c51e91a43465b64a1e17db1ed3472"
+      },
+      {
+        "name": "uv-aarch64-pc-windows-msvc.zip",
+        "browser_download_url": "https://github.com/astral-sh/uv/releases/download/0.13.6/uv-aarch64-pc-windows-msvc.zip",
+        "digest": "sha256:c2426c0c8e28b53d8c440e47a18d96ad4db51e159866c0e81435b196d7f0081c"
+      },
+      {
+        "name": "uv-aarch64-unknown-linux-gnu.tar.gz",
+        "browser_download_url": "https://github.com/astral-sh/uv/releases/download/0.13.6/uv-aarch64-unknown-linux-gnu.tar.gz",
+        "digest": "sha256:229e194255c7958d86d56e8790d969a6f74736592133f0dfd0076f754c642c1d"
+      },
+      {
+        "name": "uv-aarch64-unknown-linux-musl.tar.gz",
+        "browser_download_url": "https://github.com/astral-sh/uv/releases/download/0.13.6/uv-aarch64-unknown-linux-musl.tar.gz",
+        "digest": "sha256:819692e404d23e5aae6bc44c0e260f1f5492fd1910ab4693b2c650f926dbe800"
+      },
+      {
+        "name": "uv-arm-unknown-linux-musleabihf.tar.gz",
+        "browser_download_url": "https://github.com/astral-sh/uv/releases/download/0.13.6/uv-arm-unknown-linux-musleabihf.tar.gz",
+        "digest": "sha256:57ac0f7c04deb42c5d686b4eeeef555c442db6ffea16fe4cbd7adb0384403794"
+      },
+      {
+        "name": "uv-armv7-unknown-linux-gnueabihf.tar.gz",
+        "browser_download_url": "https://github.com/astral-sh/uv/releases/download/0.13.6/uv-armv7-unknown-linux-gnueabihf.tar.gz",
+        "digest": "sha256:d00cd4949c4524c934afcfee1aedfa9d337cf4e43be4d6b692ad8d74d0a65562"
+      },
+      {
+        "name": "uv-armv7-unknown-linux-musleabihf.tar.gz",
+        "browser_download_url": "https://github.com/astral-sh/uv/releases/download/0.13.6/uv-armv7-unknown-linux-musleabihf.tar.gz",
+        "digest": "sha256:b215398c886e8cc2cfa282fe346c02025957f8633b75a3d4fd848e0adda4eddd"
+      },
+      {
+        "name": "uv-i686-pc-windows-msvc.zip",
+        "browser_download_url": "https://github.com/astral-sh/uv/releases/download/0.13.6/uv-i686-pc-windows-msvc.zip",
+        "digest": "sha256:32ceb64db231cbedfd499f7654c72e4c0b564f2846f9e76c0a4a7b2d03d7e67c"
+      },
+      {
+        "name": "uv-i686-unknown-linux-gnu.tar.gz",
+        "browser_download_url": "https://github.com/astral-sh/uv/releases/download/0.13.6/uv-i686-unknown-linux-gnu.tar.gz",
+        "digest": "sha256:665ea831c38d342900950e606beb2ccc37b7ba0fcefc37b814eb4b076305f2b6"
+      },
+      {
+        "name": "uv-i686-unknown-linux-musl.tar.gz",
+        "browser_download_url": "https://github.com/astral-sh/uv/releases/download/0.13.6/uv-i686-unknown-linux-musl.tar.gz",
+        "digest": "sha256:de3a015c4b0fce63c178ae4fa95c94c873adfd92fa1e258c6a2a94e529812629"
+      },
+      {
+        "name": "uv-installer.ps1",
+        "browser_download_url": "https://github.com/astral-sh/uv/releases/download/0.13.6/uv-installer.ps1",
+        "digest": "sha256:d00580051699bee58a2e2d9b925f45788b35f7e0fff7966fd5bedfc3c547dc7d"
+      },
+      {
+        "name": "uv-installer.sh",
+        "browser_download_url": "https://github.com/astral-sh/uv/releases/download/0.13.6/uv-installer.sh",
+        "digest": "sha256:f7a56e7afaec49a3bcbc3ac3cdbe917e7c6ce30e0d815308a12e531aa5ef23b7"
+      },
+      {
+        "name": "uv-powerpc64le-unknown-linux-gnu.tar.gz",
+        "browser_download_url": "https://github.com/astral-sh/uv/releases/download/0.13.6/uv-powerpc64le-unknown-linux-gnu.tar.gz",
+        "digest": "sha256:3b2847185ec2946fcc928500efef7e3e74c255d3be6f2cb435081a84885d8c6c"
+      },
+      {
+        "name": "uv-riscv64gc-unknown-linux-gnu.tar.gz",
+        "browser_download_url": "https://github.com/astral-sh/uv/releases/download/0.13.6/uv-riscv64gc-unknown-linux-gnu.tar.gz",
+        "digest": "sha256:517052603ed46483b59d8875c9c61a577946b8f493c73e4339e45e7b119171d0"
+      },
+      {
+        "name": "uv-riscv64gc-unknown-linux-musl.tar.gz",
+        "browser_download_url": "https://github.com/astral-sh/uv/releases/download/0.13.6/uv-riscv64gc-unknown-linux-musl.tar.gz",
+        "digest": "sha256:659a95dc6aee3ecf86742a08d8ca6c6261422121cbd41decc0042f5a71af6305"
+      },
+      {
+        "name": "uv-s390x-unknown-linux-gnu.tar.gz",
+        "browser_download_url": "https://github.com/astral-sh/uv/releases/download/0.13.6/uv-s390x-unknown-linux-gnu.tar.gz",
+        "digest": "sha256:fb56d731308aa5c7718059d71afcb14d9a933a974997cee3d4eb5d06fc462a4b"
+      },
+      {
+        "name": "uv-x86_64-apple-darwin.tar.gz",
+        "browser_download_url": "https://github.com/astral-sh/uv/releases/download/0.13.6/uv-x86_64-apple-darwin.tar.gz",
+        "digest": "sha256:63ba17fdda55ad1a230d4b37fc6017ffa10c23688c83818bd3bfdf914c652a02"
+      },
+      {
+        "name": "uv-x86_64-pc-windows-msvc.zip",
+        "browser_download_url": "https://github.com/astral-sh/uv/releases/download/0.13.6/uv-x86_64-pc-windows-msvc.zip",
+        "digest": "sha256:a2a8820d5eea32f08ef467ef3b7f66883a9b076d5737a2fc2fbb5f458d1bb50f"
+      },
+      {
+        "name": "uv-x86_64-unknown-linux-gnu.tar.gz",
+        "browser_download_url": "https://github.com/astral-sh/uv/releases/download/0.13.6/uv-x86_64-unknown-linux-gnu.tar.gz",
+        "digest": "sha256:f29c3e94ffabd7e6f3ba521dba169a9b7ec12100bf3257087f0f24f6123f3645"
+      },
+      {
+        "name": "uv-x86_64-unknown-linux-musl.tar.gz",
+        "browser_download_url": "https://github.com/astral-sh/uv/releases/download/0.13.6/uv-x86_64-unknown-linux-musl.tar.gz",
+        "digest": "sha256:5d61f26b6c7213779eda90edc6971ea6b0b796bfb8d49a574c8ad69b59838548"
+      }
+    ]
+  },
+  "git-for-windows/git": {
+    "tag_name": "v2.56.0.windows.4",
+    "assets": [
+      {
+        "name": "MinGit-2.56.0.4-32-bit.zip",
+        "browser_download_url": "https://github.com/git-for-windows/git/releases/download/v2.56.0.windows.4/MinGit-2.56.0.4-32-bit.zip",
+        "digest": "sha256:6b3d71c7536d3c85baebaeb26d461e74c755895ccc1f4c817d0e289470419ccc"
+      },
+      {
+        "name": "MinGit-2.56.0.4-64-bit.zip",
+        "browser_download_url": "https://github.com/git-for-windows/git/releases/download/v2.56.0.windows.4/MinGit-2.56.0.4-64-bit.zip",
+        "digest": "sha256:e3bf78351fe777fba47ddee5950082f8a98bb0f02604fdc7ba3ee2cb68ffa877"
+      },
+      {
+        "name": "MinGit-2.56.0.4-arm64.zip",
+        "browser_download_url": "https://github.com/git-for-windows/git/releases/download/v2.56.0.windows.4/MinGit-2.56.0.4-arm64.zip",
+        "digest": "sha256:70f7649f78088c1db1d2f3571ca46a04d5bef06e4e9d56d8ed7f9829e8c6c4db"
+      },
+      {
+        "name": "MinGit-2.56.0.4-busybox-32-bit.zip",
+        "browser_download_url": "https://github.com/git-for-windows/git/releases/download/v2.56.0.windows.4/MinGit-2.56.0.4-busybox-32-bit.zip",
+        "digest": "sha256:62dc9ff7c421a0742fd6128d91e9ebb2ec035fa21db6a6a2de0f2a018ca7831b"
+      },
+      {
+        "name": "MinGit-2.56.0.4-busybox-64-bit.zip",
+        "browser_download_url": "https://github.com/git-for-windows/git/releases/download/v2.56.0.windows.4/MinGit-2.56.0.4-busybox-64-bit.zip",
+        "digest": "sha256:c4f27d9356ef471dd9fea1f89e5c176cfff7c85b29912a00f3cc7fb59197a39f"
+      },
+      {
+        "name": "MinGit-2.56.0.4-busybox-arm64.zip",
+        "browser_download_url": "https://github.com/git-for-windows/git/releases/download/v2.56.0.windows.4/MinGit-2.56.0.4-busybox-arm64.zip",
+        "digest": "sha256:90f882fd91398dc2bd00f91af32401425815dd2f049a95fee68c9e783c311c7a"
+      }
+    ]
+  },
+  "mamba-org/micromamba-releases": {
+    "tag_name": "2.10.0-0",
+    "assets": [
+      {
+        "name": "micromamba-linux-64",
+        "browser_download_url": "https://github.com/mamba-org/micromamba-releases/releases/download/2.10.0-0/micromamba-linux-64",
+        "digest": "sha256:701f39c06f8e6a670a0e186c8479b9e5c0502a2f0cda6cef65d83bdd2875e8bd"
+      },
+      {
+        "name": "micromamba-linux-64.tar.bz2",
+        "browser_download_url": "https://github.com/mamba-org/micromamba-releases/releases/download/2.10.0-0/micromamba-linux-64.tar.bz2",
+        "digest": "sha256:9a97976244929bbae28fb1fae504e74a3e7e6d1932870e3a03321f01b7fbd07b"
+      },
+      {
+        "name": "micromamba-linux-aarch64",
+        "browser_download_url": "https://github.com/mamba-org/micromamba-releases/releases/download/2.10.0-0/micromamba-linux-aarch64",
+        "digest": "sha256:3bb56786e21b9b24024f599fe9185b4a59dc3f9f59937a42311ee583adbbb23c"
+      },
+      {
+        "name": "micromamba-linux-aarch64.tar.bz2",
+        "browser_download_url": "https://github.com/mamba-org/micromamba-releases/releases/download/2.10.0-0/micromamba-linux-aarch64.tar.bz2",
+        "digest": "sha256:890bc4906e6ab17f1b393f0da21547f75e000078e573a156316ec925b92a4a4c"
+      },
+      {
+        "name": "micromamba-linux-ppc64le",
+        "browser_download_url": "https://github.com/mamba-org/micromamba-releases/releases/download/2.10.0-0/micromamba-linux-ppc64le",
+        "digest": "sha256:f746f14add6430daf77ff525fc3d24ef8e7d611db397dd9bad548c4fb19aa731"
+      },
+      {
+        "name": "micromamba-linux-ppc64le.tar.bz2",
+        "browser_download_url": "https://github.com/mamba-org/micromamba-releases/releases/download/2.10.0-0/micromamba-linux-ppc64le.tar.bz2",
+        "digest": "sha256:6a143602e15bbf10b2345d7a8e322af6ffc7c057bec23d0a73382bd93176c2c9"
+      },
+      {
+        "name": "micromamba-linux-riscv64",
+        "browser_download_url": "https://github.com/mamba-org/micromamba-releases/releases/download/2.10.0-0/micromamba-linux-riscv64",
+        "digest": "sha256:4bb1a8e5975dd7547f996dd7521b97547ed1c74d8807420634871f156b939064"
+      },
+      {
+        "name": "micromamba-linux-riscv64.tar.bz2",
+        "browser_download_url": "https://github.com/mamba-org/micromamba-releases/releases/download/2.10.0-0/micromamba-linux-riscv64.tar.bz2",
+        "digest": "sha256:cb687df4c635b5297ed31cbe9573904e7dc5e7b586c14e312c2f5a4b3aaabd74"
+      },
+      {
+        "name": "micromamba-osx-64",
+        "browser_download_url": "https://github.com/mamba-org/micromamba-releases/releases/download/2.10.0-0/micromamba-osx-64",
+        "digest": "sha256:8421462a1ef1df9f7acd114f9e2a24c1332ce4f4e29f44465b4acb44e2755172"
+      },
+      {
+        "name": "micromamba-osx-64.tar.bz2",
+        "browser_download_url": "https://github.com/mamba-org/micromamba-releases/releases/download/2.10.0-0/micromamba-osx-64.tar.bz2",
+        "digest": "sha256:17b20c4271d65c030a5c86788f5ca86eb575187209f626edabdb8c6a875c6838"
+      },
+      {
+        "name": "micromamba-osx-arm64",
+        "browser_download_url": "https://github.com/mamba-org/micromamba-releases/releases/download/2.10.0-0/micromamba-osx-arm64",
+        "digest": "sha256:c547639f5caf742236641c362746abb4a3505774753ecd08fe341643670c4c01"
+      },
+      {
+        "name": "micromamba-osx-arm64.tar.bz2",
+        "browser_download_url": "https://github.com/mamba-org/micromamba-releases/releases/download/2.10.0-0/micromamba-osx-arm64.tar.bz2",
+        "digest": "sha256:acef4eaab19ec2174ad5a449e5aad981ca326270db819502ff096a92fc31caa6"
+      },
+      {
+        "name": "micromamba-win-64",
+        "browser_download_url": "https://github.com/mamba-org/micromamba-releases/releases/download/2.10.0-0/micromamba-win-64",
+        "digest": "sha256:f8b4284bd4eb1134122eaf93b3ea6c7be567e596de5829e1a6f478e34e41974a"
+      },
+      {
+        "name": "micromamba-win-64.exe",
+        "browser_download_url": "https://github.com/mamba-org/micromamba-releases/releases/download/2.10.0-0/micromamba-win-64.exe",
+        "digest": "sha256:f8b4284bd4eb1134122eaf93b3ea6c7be567e596de5829e1a6f478e34e41974a"
+      },
+      {
+        "name": "micromamba-win-64.tar.bz2",
+        "browser_download_url": "https://github.com/mamba-org/micromamba-releases/releases/download/2.10.0-0/micromamba-win-64.tar.bz2",
+        "digest": "sha256:6283f25f8142606d86e81a43c7103b5d4f1d5c2027e3f9d7326eff23b33930d8"
+      },
+      {
+        "name": "micromamba-win-arm64",
+        "browser_download_url": "https://github.com/mamba-org/micromamba-releases/releases/download/2.10.0-0/micromamba-win-arm64",
+        "digest": "sha256:1fcb3463c684d02366a3d447c153d00922decb16999eef7fb4634d0942a9093e"
+      },
+      {
+        "name": "micromamba-win-arm64.exe",
+        "browser_download_url": "https://github.com/mamba-org/micromamba-releases/releases/download/2.10.0-0/micromamba-win-arm64.exe",
+        "digest": "sha256:1fcb3463c684d02366a3d447c153d00922decb16999eef7fb4634d0942a9093e"
+      },
+      {
+        "name": "micromamba-win-arm64.tar.bz2",
+        "browser_download_url": "https://github.com/mamba-org/micromamba-releases/releases/download/2.10.0-0/micromamba-win-arm64.tar.bz2",
+        "digest": "sha256:1b3ef76e5f720fdab959ae242de78636415691d61a83980916bebd3bc3a07c36"
+      }
+    ]
+  }
+}

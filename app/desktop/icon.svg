@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="tile" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#1c2d43"/><stop offset="1" stop-color="#0b121f"/></linearGradient>
+    <linearGradient id="edge" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#536d86"/><stop offset="1" stop-color="#1c293b"/></linearGradient>
+    <linearGradient id="aurora" x1="0" y1="0" x2=".85" y2="1"><stop stop-color="#b2fff0"/><stop offset=".5" stop-color="#72dfdf"/><stop offset="1" stop-color="#7b9fe5"/></linearGradient>
+  </defs>
+  <g id="background"><rect x="9" y="9" width="238" height="238" rx="58" fill="url(#tile)"/><rect x="10" y="10" width="236" height="236" rx="57" fill="none" stroke="url(#edge)" stroke-width="2"/></g>
+  <g id="symbol">
+    <path d="M64 181 111 74Q115 65 125 65H131Q141 65 145 74L192 181H159L128 107 97 181Z" fill="url(#aurora)"/>
+    <path d="m128 139 17 20-17 20-17-20Z" fill="#e2fff9"/>
+    <path d="M57 189C95 218 185 210 207 147" fill="none" stroke="#82b9dc" stroke-width="5" stroke-linecap="round" opacity=".65"/>
+    <circle cx="207" cy="147" r="6" fill="#b2fff0"/>
+  </g>
+</svg>

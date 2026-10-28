@@ -82,7 +82,7 @@ Cognee dependencies ship with the project and its integration is enabled by defa
 
 - `start.sh` / `start.bat` supervise crashes and stop restarting after the consecutive fatal-crash limit.
 - An instance lock refuses a second takeover of the same checkout, protecting active data writes. Stop the old instance normally before starting another.
-- Use `Ctrl+C` for a normal foreground shutdown. On macOS / Linux, `./stop.sh` and `./restart.sh` provide ordered shutdown and background restart.
+- Use `Ctrl+C` for a normal foreground shutdown. Use `start.bat stop / restart / update / status` on Windows, or the same subcommands with `./start.sh` on macOS / Linux. The older `stop.sh` / `restart.sh` remain compatible.
 - AI restart tools require supervision by the start scripts. Instances launched directly with `launch.py` need a manual restart. A restart handoff note can return ongoing work to the AI after recovery.
 - After pulling a release, run `uv sync --locked`. When frontend resources change, run `npm ci` and `npm run build`. Module reloads and core upgrades follow different paths, described below.
 

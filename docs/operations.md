@@ -5,6 +5,8 @@
 
 ## 进程守护与关停
 
+Electron APP、本机 Web 管理、环境安装和发布流程见[启动器说明](../app/README.md)。
+
 | 机制 | 位置 | 说明 |
 |------|------|------|
 | 单实例守卫 | `core/instance_guard.py` + stop.sh / restart.sh | `logs/anelf.pid.lock` 操作系统文件锁防止同一检出双写；存活旧 PID（含升级前实例）拒绝接管，不发终止信号。POSIX 用 `bash stop.sh` 先核实双方项目归属，再依次向守护与应用发 SIGTERM，不能等守护退出才通知应用；共用默认 600s 等待预算，`ANELF_STOP_TIMEOUT_SECONDS` 可调，每 5s 输出等待 PID，超时失败但不强杀。restart.sh 只在停止成功后启动；锁文件不手工删除 |

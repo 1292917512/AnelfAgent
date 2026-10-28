@@ -7,7 +7,7 @@
 - Embedding 注册表隔离：实体模块导入期注册的全局 backlog 不得挂载到
   测试内 worker（其 handler 会打开真实数据库，aiosqlite 线程泄漏挂住退出）。
 - 自动 marker：tests/unit/ 与模块内 tests/（entities/<name>/tests、
-  channels/<id>/tests）下的用例自动标记 unit，tests/integration/ 下自动标记
+  channels/<id>/tests、app/tests）下的用例自动标记 unit，tests/integration/ 下自动标记
   integration，无需逐文件手写；可用 -m "not integration" 分层运行。
 - 线程泄漏检测：会话结束时报告存活的非守护线程（如未关闭的 aiosqlite
   连接），这类泄漏会阻塞 pytest 进程退出、挂起 CI。
@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 _REPO_ROOT = Path(__file__).parent
 _UNIT_DIR = _REPO_ROOT / "tests" / "unit"
 _INTEGRATION_DIR = _REPO_ROOT / "tests" / "integration"
-_MODULE_PARENTS = ("entities", "channels")
+_MODULE_PARENTS = ("entities", "channels", "app")
 _WORKER_THREAD_LEAKS = pytest.StashKey[list[str]]()
 
 
@@ -158,7 +158,7 @@ async def _isolate_vault_service(
 
 
 def _is_module_test(path: Path) -> bool:
-    """模块内测试判定：entities/channels 下任意层级的 tests/ 目录
+    """模块内测试判定：entities/channels/app 下任意层级的 tests/ 目录
     （含实体组件子包的内嵌套件，如 entities/<name>/modules/<mod>/tests/）。"""
     try:
         rel = path.relative_to(_REPO_ROOT)

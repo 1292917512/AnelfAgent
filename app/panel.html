@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>AnelfAgent</title><link rel="stylesheet" href="/style.css"><script type="module" src="/app.js"></script></head>
+<body><main>
+  <header class="toolbar"><div class="brand"><img class="brand-mark" src="/icon.svg" alt=""><span>AnelfAgent</span><small id="app-version"></small></div><div class="toolbar-actions"><button id="language" class="quiet" aria-label="Language">EN</button><button id="nav-settings" class="icon-button" aria-label="配置"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.5"><path d="m9 3-1 3-3 1-2 3 2 2-1 3 3 2 3-1 2 3 3-1 1-3 3-1 1-3-2-2 1-3-3-2-3 1-2-2Z"/><circle cx="12" cy="11" r="3"/></svg></button></div></header>
+  <div id="connection-loading" class="notice" role="status" data-i18n="connecting"></div>
+  <div id="connection-notice" class="notice" role="status" hidden><span id="connection-notice-text"></span><button id="reconnect" data-i18n="reconnect"></button></div>
+  <div id="message" class="notice" role="status" aria-live="polite" hidden></div>
+  <div id="page-heading" class="section-heading"><button id="nav-home" class="quiet" data-i18n="backHome"></button><h1 id="page-title"></h1><span id="phase" class="pill" hidden></span></div>
+  <section id="project-bar" class="project-bar"><div><span data-i18n="projectPath"></span><code id="root">—</code></div><button id="choose-project" class="quiet" data-i18n="chooseProject"></button></section>
+  <section id="wizard" class="sheet" hidden>
+    <ol class="stepper"><li data-step="1"><b>1</b><span data-i18n="step1"></span></li><li data-step="2"><b>2</b><span data-i18n="step2"></span></li><li data-step="3"><b>3</b><span data-i18n="step3"></span></li></ol>
+    <p id="storage" class="storage" role="status"></p>
+    <div id="step-1" class="step-content"><div class="step-body">
+      <h2 data-i18n="sourceTitle"></h2><p class="description" data-i18n="sourceHint"></p>
+      <p id="source-reason" class="hint"></p>
+      <details id="install-options"><summary data-i18n="installOptions"></summary>
+      <div class="source-grid"><label class="field"><span data-i18n="source"></span><select id="install-source"><option value="auto" data-i18n="auto"></option><option value="gitee">Gitee</option><option value="github">GitHub</option></select></label>
+      <label class="field"><span data-i18n="downloadSource"></span><select id="install-download-source"><option value="auto" data-i18n="auto"></option><option value="china" data-i18n="china"></option><option value="global" data-i18n="global"></option></select></label></div>
+      <div id="initial-pypi-source"><div id="pypi-source-field"><label class="field"><span data-i18n="pypiSource"></span><select id="install-pypi-source"><option value="auto" data-i18n="followSource"></option></select></label><code id="pypi-url"></code><p class="hint" data-i18n="pypiHint"></p></div></div>
+      <div class="source-detail"><code id="source-url"></code></div><p class="hint" data-i18n="networkHint"></p>
+      <details id="network-details"><summary id="network-summary" data-i18n="networkTitle"></summary><div class="section-heading"><p class="hint" data-i18n="networkHintDetail"></p><button id="network-check" class="quiet" data-i18n="networkCheck"></button></div><div id="network-results" class="hint"></div></details>
+      </details></div><div class="step-actions"><button id="next" class="primary" data-i18n="install"></button></div></div>
+    <div id="step-2" class="step-content" hidden><div class="step-body">
+      <div id="environment-heading" class="section-heading"><div><h2 data-i18n="environmentTitle"></h2><p class="description" data-i18n="environmentHint"></p></div><button id="inspect" class="quiet" data-i18n="inspect"></button></div>
+      <details id="environment-details"><summary data-i18n="environmentResults"></summary><div id="environment" class="environment"></div></details>
+      <div id="resume-source" hidden></div>
+      <p id="resume-hint" class="hint" data-i18n="resumeHint" hidden></p>
+      <div id="installation-progress"><details id="progress" class="progress-card" hidden><summary id="progress-toggle"><div class="section-heading"><strong id="stage"></strong><span class="progress-meta"><span id="elapsed" class="muted"></span><svg class="progress-chevron" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5"><path d="m4 6 4 4 4-4"/></svg></span></div><progress id="download" aria-labelledby="stage"></progress><p id="progress-summary" class="progress-summary" aria-live="polite"></p></summary><div id="installation-details" class="progress-details"><code id="install-index"></code><p id="existing-packages" class="hint" hidden></p><div id="uv-progress" hidden><p id="uv-phase"></p><p id="uv-counts" class="muted"></p><p id="uv-package" class="mono"></p><div id="package-progress"></div><details id="package-details" hidden><summary id="package-more"></summary><div id="package-extra"></div></details></div><p id="progress-detail" class="mono"></p><p id="waiting" class="hint" hidden data-i18n="waiting"></p><ol id="stage-list" class="stage-list"></ol></div></details></div>
+      </div><div id="install-actions" class="step-actions"><button id="back" class="quiet" data-i18n="back"></button><button id="install" class="primary" data-action="install" data-i18n="install"></button><button id="cancel" class="danger" data-i18n="cancel" hidden></button></div></div>
+    <div id="step-3" class="step-content complete" hidden><h2 data-i18n="completeTitle"></h2><p class="description" data-i18n="completeHint"></p><button id="finish" class="primary" data-i18n="finish"></button></div>
+  </section>
+  <section id="dashboard" class="dashboard" hidden>
+    <div id="runtime-mark" class="runtime-mark"><div class="orbit"></div><img src="/icon.svg" alt=""></div>
+    <div class="runtime-heading"><h1 id="runtime-state"></h1><p id="runtime-description" class="description"></p></div>
+    <div class="runtime-actions"><button id="start" class="primary toggle" data-i18n="start"></button><button id="update" class="secondary" data-action="update" data-i18n="update"></button></div>
+    <a id="workspace" class="workspace-link" target="_blank" rel="noreferrer" aria-disabled="true" hidden><span data-i18n="workspace"></span><span>↗</span></a>
+    <details id="lan-details" class="access-details" hidden><summary data-i18n="lanAddresses"></summary><div id="lan-addresses"></div><p class="hint" data-i18n="lanHint"></p></details>
+    <div id="runtime-progress"></div><pre id="log-preview" aria-live="polite" hidden></pre>
+    <dl class="runtime-facts"><div><dt data-i18n="process"></dt><dd id="pid">—</dd></div><div><dt data-i18n="address"></dt><dd id="web-address">—</dd></div></dl>
+  </section>
+  <section id="configuration" class="sheet configuration" hidden><div class="settings-body"><p class="description" data-i18n="settingsHint"></p><form id="settings"></form>
+    <div id="password-control" class="field"><label for="access-password"><span data-i18n="passwordLabel"></span><span id="password-status" role="status"></span></label><div class="password-input"><input id="access-password" type="password" maxlength="1024" autocomplete="new-password" aria-describedby="password-status"><button id="password-clear" class="icon-button" type="button" hidden><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8"/></svg></button></div></div>
+    <div id="maintenance-details" class="access-details"><div class="maintenance"><button id="repair" class="quiet" data-i18n="repair"></button><button id="cleanup" class="quiet danger" data-i18n="cleanup"></button></div><p class="hint" data-i18n="cleanupHint"></p></div></div><div class="step-actions"><button id="settings-back" class="quiet" data-i18n="backHome"></button><button id="ports" class="quiet" data-i18n="ports"></button><button id="save" class="primary" data-i18n="save"></button></div></section>
+  <details id="log-panel" class="logs"><summary><span data-i18n="logs"></span></summary><div class="log-heading"><span id="log-path" class="mono"></span><button id="copy-log" class="quiet" data-i18n="copy"></button></div><pre id="logs"></pre></details>
+  <footer><span><i id="connection-dot" class="dot"></i><span id="connection-label"></span></span><span id="footer-hint" data-i18n="footer"></span></footer>
+</main></body></html>

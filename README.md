@@ -77,6 +77,11 @@ cd ../..
 
 ### 启动与首次配置
 
+也可安装 **AnelfAgent** 本地 APP（Windows / macOS / Ubuntu），自动检测和安装运行环境，
+按系统时区默认选择 GitHub/Gitee 源码，完成项目安装与启动。APP 和独立管理网页共用状态，
+原有 `start` 入口继续可用；`start.bat --manager` / `./start.sh --manager` 打开管理页。
+使用、打包和跨平台发布见[启动器说明](app/README.md)。
+
 ```bash
 ./start.sh                 # macOS / Linux
 ```
@@ -100,7 +105,7 @@ Cognee 知识图谱依赖随项目安装，集成默认启用；配置相应聊�
 
 - `start.sh` / `start.bat` 提供崩溃守护；连续致命崩溃达到上限会停止重启，避免无限循环。
 - 实例锁拒绝同一检出的重复接管，保护正在写入的数据。先正常停止旧实例，再启动新实例。
-- 前台运行用 `Ctrl+C` 正常停止；macOS / Linux 可用 `./stop.sh`、`./restart.sh` 有序停止与后台重启。
+- 前台运行用 `Ctrl+C` 正常停止；Windows 可用 `start.bat stop / restart / update / status`，macOS / Linux 对应 `./start.sh` 子命令。旧 `stop.sh` / `restart.sh` 保留兼容。
 - AI 重启工具要求进程由启动脚本守护拉起；直接运行 `launch.py` 的实例需手动重启。重启留言可在恢复后交还 AI 接续。
 - 拉取版本后用 `uv sync --locked` 同步依赖；前端资源变更后执行 `npm ci`、`npm run build`。模块更新与核心升级采用不同路径，见下方热更新表。
 

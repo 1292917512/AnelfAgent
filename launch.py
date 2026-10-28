@@ -55,6 +55,21 @@ def create_application(args: argparse.Namespace) -> Application:
     async def acquire_single_instance() -> None:
         """获取单实例所有权；仍存活或正在关停的实例不可被接管。"""
         acquire_instance(_PID_FILE, Path(__file__).resolve().parent)
+        from core.host_control import register_host_control
+
+        def request_host_restart() -> dict[str, object]:
+            from entities.devops.service import request_restart
+            return request_restart(source="launcher")
+
+        def host_web_url() -> str:
+            if args.no_webui:
+                return ""
+            from web.server import _load_server_config
+            host, port = _load_server_config()
+            host = "127.0.0.1" if host == "0.0.0.0" else "::1" if host == "::" else host
+            return f"http://{'[' + host + ']' if ':' in host else host}:{port}/webui/"
+
+        register_host_control(Path(__file__).resolve().parent, restart=request_host_restart, web_url=host_web_url)
 
     @app.startup.node(skip_on_error=False)
     async def run_bootstrap() -> None:

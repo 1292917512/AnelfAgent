@@ -24,6 +24,7 @@ jobs:
     outputs:
       python: ${{ steps.filter.outputs.python }}
       frontend: ${{ steps.filter.outputs.frontend }}
+      desktop: ${{ steps.filter.outputs.desktop }}
       matrix: ${{ steps.filter.outputs.matrix }}
     steps:
       - uses: actions/checkout@v4
@@ -50,6 +51,7 @@ jobs:
           py=$(grep -E '\.py$|^pyproject\.toml$|^uv\.lock$|^\.github/workflows/ci\.yml$' <<<"$changed" || true)
           # 模块前端（频道 frontend/ 与实体面板 tsx）软链进 web/frontend 参与构建，同属前端改动面
           fe=$(grep -E '^web/frontend/|^channels/[^/]+/frontend/|^entities/.+\.(tsx|ts|mts|css)$|^\.github/workflows/ci\.yml$' <<<"$changed" || true)
+          desktop=$(grep -E '^app/|^\.github/workflows/(ci|launcher-release)\.yml$' <<<"$changed" || true)
 
           # 模块测试腿只跟随 Python 改动面（纯前端/文档改动不触发后端测试）
           changed_py=$(grep -E '\.py$' <<<"$changed" || true)
@@ -78,6 +80,7 @@ jobs:
               done
             fi
             grep -qE '^services/' <<<"$changed_py" && add "services" "tests/unit/services"
+            grep -qE '^app/' <<<"$changed_py" && add "app" "app/tests"
             web_backend=$(grep -E '^web/' <<<"$changed_py" | grep -vE '^web/frontend/' || true)
             [ -n "$web_backend" ] && add "web" "tests/unit/web tests/integration/web"
             entries=$(jq -c 'unique_by(.name)' <<<"$entries")
@@ -86,6 +89,7 @@ jobs:
           {
             echo "python=$([ -n "$py" ] && echo true || echo false)"
             echo "frontend=$([ -n "$fe" ] && echo true || echo false)"
+            echo "desktop=$([ -n "$desktop" ] && echo true || echo false)"
             echo "matrix=$entries"
           } >> "$GITHUB_OUTPUT"
 
@@ -250,6 +254,39 @@ jobs:
           path: |
             index-tests.log
             index-tests.xml
+          retention-days: 7
+
+  desktop:
+    needs: changes
+    if: needs.changes.outputs.desktop == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+      - name: Set up package manager
+        run: npm install --global pnpm@11.25.0
+      - name: Install locked desktop dependencies
+        run: pnpm --dir app/desktop install --frozen-lockfile
+      - name: Check native shell and shared interface
+        run: pnpm --dir app/desktop typecheck && pnpm --dir app/desktop test
+      - name: Install locked browser test dependencies
+        working-directory: web/frontend
+        run: npm ci
+      - name: Set up headless browser
+        working-directory: web/frontend
+        run: npx playwright install --with-deps chromium
+      - name: Check installation and management screens
+        run: node app/desktop/tests/ui.smoke.mjs && node app/desktop/tests/bootstrap.smoke.mjs
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: desktop-preview
+          path: app/build/preview
+          if-no-files-found: ignore
           retention-days: 7
 
   frontend:

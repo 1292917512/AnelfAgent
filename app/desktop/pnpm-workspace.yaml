@@ -1,0 +1,5 @@
+allowBuilds:
+  electron: true
+  app-builder-bin: true
+  dmg-license: true
+  electron-winstaller: false
