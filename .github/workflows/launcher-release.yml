@@ -85,7 +85,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          result=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&per_page=1" --jq '.workflow_runs[0].conclusion')
+          result=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&per_page=100" --jq '.workflow_runs | sort_by(.created_at, .id) | last | .conclusion')
           if [ "$result" != success ]; then
             echo "The source commit must pass CI before publishing (result: $result)." >&2
             exit 1
