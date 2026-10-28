@@ -19,51 +19,11 @@ from agent.messages import (
 )
 from agent.mind.autonomous import Decision, DecisionType, MindPhase
 from agent.mind.execution.reply_journal import clear_settled_reply
-from core.config import get_config_int, register_configs_safe
+from agent.task.reflection import SELF_REFLECTION_TASK
 from core.log import log
 
 if TYPE_CHECKING:
     from agent.mind.mind import Mind
-
-
-# ------------------------------------------------------------------
-# REFLECT 决策冷却配置
-# ------------------------------------------------------------------
-
-_REFLECT_CONFIGS = {
-    "mind/reflect": {
-        "reflection_cooldown_minutes": {
-            "description": (
-                "REFLECT 决策冷却：距上次反思执行不足该分钟数时拒绝登记/执行，"
-                "防元决策对同一态势逐拍重复判定（0 = 关闭）"
-            ),
-            "default": 30,
-            "min": 0,
-            "max": 1440,
-            "unit": "分钟",
-        },
-    },
-}
-
-register_configs_safe(_REFLECT_CONFIGS)
-
-
-def _reflection_cooldown_minutes() -> int:
-    return max(0, get_config_int("reflection_cooldown_minutes", 30))
-
-
-def _reflection_cooldown_state(mind: Mind) -> tuple[bool, float]:
-    """冷却判定：距上次反思执行（mind.reflect 入口打点）是否已过冷却窗口。
-
-    锚点为进程内内存态，重启清零后放行一次（对齐「本次启动以来尚未反思」
-    哨兵语义）；返回 (是否放行, 距上次反思分钟数)。
-    """
-    minutes = _reflection_cooldown_minutes()
-    last = float(getattr(mind, "_last_reflect_time", 0.0) or 0.0)
-    if minutes <= 0 or last <= 0:
-        return True, 0.0
-    elapsed = (time.time() - last) / 60.0
-    return elapsed >= minutes, elapsed
 
 
 async def execute_decision(mind: Mind, decision: Decision) -> bool:
@@ -73,7 +33,7 @@ async def execute_decision(mind: Mind, decision: Decision) -> bool:
     if decision.type == DecisionType.REPLY:
         return await execute_reply(mind, decision)
     elif decision.type == DecisionType.REFLECT:
-        await execute_reflect(mind, decision)
+        return bool(await execute_reflect(mind, decision))
     elif decision.type == DecisionType.REMEMBER:
         await execute_remember(mind, decision)
     elif decision.type == DecisionType.PROACTIVE:
@@ -137,51 +97,19 @@ async def execute_reply(mind: Mind, decision: Decision) -> bool:
         mind._reset_phase_if_idle()
 
 
-async def execute_reflect(mind: Mind, decision: Optional[Decision] = None, *, skip_interval: bool = False) -> int:
-    """执行反思决策：登记待执行标记，由 idle 调度在空闲心跳消费。
-
-    配置了 idle 调度时不再立即执行（反思不打断对话节奏）：标记挂在心跳引擎，
-    下个空闲 tick（活动刷新计数归零、无其他到期任务）时运行 self_reflection，
-    反思原因经 executor extra_note 注入任务指令尾部。
-    未配置 idle 调度时回退为立即执行（兼容旧部署）。
-
-    两条路径共用入口冷却（reflection_cooldown_minutes）：元决策对同一态势
-    会逐拍重复判定（2026-09「对话质量下滑」连爆事故），软提示（距上次反思
-    <0.5h 避免重复）依赖 LLM 自觉、实测被无视，此处为机械门控。
-    """
-    reason = decision.reason if decision else ""
-    engine = mind.heartbeat_engine
-
-    cooldown_ok, elapsed = _reflection_cooldown_state(mind)
-    if not cooldown_ok:
-        cooldown = _reflection_cooldown_minutes()
-        _hb_append(
-            f"反思登记被冷却拒绝: 距上次反思 {elapsed:.0f} 分钟 < 冷却 {cooldown} 分钟，原因丢弃 - {reason[:40]}"
-        )
-        log(
-            f"反思冷却中（{elapsed:.0f} 分钟 < {cooldown} 分钟），忽略登记: {reason[:60]}",
-            tag="思维",
-        )
-        return 0
-
-    if engine.has_idle_schedule():
-        engine.mark_reflection_pending(reason)
-        _hb_append(f"反思已登记，待空闲心跳执行: {reason[:60] or '元决策'}")
-        log(f"反思延迟到空闲窗口（原因: {reason[:60]}）", tag="思维")
-        return 0
-
+async def execute_reflect(mind: Mind, decision: Optional[Decision] = None) -> int:
+    """在当前主周期按需执行反思，复用任务认领、冷却、历史和关停路径。"""
     if mind._reflecting:
-        # 同批/并发 REFLECT 只执行一个（批量决策的去重过滤发生在
-        # 任一任务置位之前，这里是执行入口的最后防线）
         return 0
     mind._reflecting = True
     mind.set_phase(MindPhase.INTROSPECTING)
-
+    reason = decision.reason if decision else ""
     try:
-        result = await engine.run_task("self_reflection")
-        count = 1 if result else 0
-        _hb_append(f"反思完成: {'有产出' if result else '无产出'}")
-        return count
+        result = await mind.heartbeat_engine.run_task(
+            SELF_REFLECTION_TASK, trigger="autonomous",
+            extra_note=f"\n\n[反思触发原因]\n{reason}" if reason else "",
+        )
+        return int(bool(result))
     finally:
         mind._reflecting = False
         if mind.pfc.has_pending_tasks():

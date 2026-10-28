@@ -34,7 +34,7 @@ _VALID_STATUSES = frozenset({STATUS_SUCCESS, STATUS_NO_OUTPUT, STATUS_ERROR, STA
 _SETTLED_STATUSES = frozenset({STATUS_SUCCESS, STATUS_NO_OUTPUT, STATUS_INCOMPLETE})
 
 # 执行历史保留调度、手动与事件触发来源。
-VALID_TRIGGERS = frozenset({"heartbeat", "scheduled", "idle", "manual", "event"})
+VALID_TRIGGERS = frozenset({"heartbeat", "scheduled", "idle", "manual", "event", "autonomous"})
 
 # 产出摘要与错误信息截断上限（单条记录保持轻量）
 _PREVIEW_MAX_CHARS = 200

@@ -93,9 +93,16 @@ heartbeat（每 N 次心跳）/ scheduled（每天指定时间）/ idle / manual
 **idle 空闲调度**：计数维度是「距上次思考的连续空闲心跳数」——`mind.last_activity_ts` 锚点
 （`reply()`/`reflect()` 入口刷新，覆盖对话/任务/子代理/反思，含 idle 任务自身；心跳元决策的
 LLM 调用不经 reflect 故不计）。本 tick 无确定性到期任务时才评估触发，空闲窗口让位给
-scheduled/heartbeat；元决策 REFLECT 不立即执行，改为 `engine.mark_reflection_pending(reason)`
-登记，由 idle 任务在空闲窗口消费（原因经 `TaskExecutor.run(extra_note=...)` 尾部追加注入，
-缓存前缀不动）。写入侧 `validate_schedules` 强校验全局仅一条 idle，AI/Web 双路径同规则。
+scheduled/heartbeat。写入侧 `validate_schedules` 强校验全局仅一条 idle，AI/Web 双路径同规则。
+
+**按需自我反思**：`self_reflection` 不配置独立定时、空闲或事件触发；自主决策选择 REFLECT 时，
+在当前主 Driver 内联执行该任务，避免把任务提交回同一 Driver 后自等待。原因经
+`TaskExecutor.run(extra_note=...)` 尾部追加，历史标记为 `autonomous`。旧自动调度在加载时
+转换为 manual，保留任务定义、历史及调度中指定的模型和思考等级；仍可显式手动触发。
+`agent/task/reflection.py` 统一身份与冷却策略：所有入口在认领时检查该任务的真实执行历史，
+普通任务、子代理和钩子的 `mind.reflect()` 不计作自我反思。失败或取消尝试也进入冷却；
+已持久化的历史跨重启生效。同批多个 REFLECT 只执行一次。
+自主决策只因新证据或待总结的经历选择反思，不因启动或经过一小时强制反思。
 
 ## 任务系统（agent/task/）
 
@@ -106,7 +113,7 @@ scheduled/heartbeat；元决策 REFLECT 不立即执行，改为 `engine.mark_re
   运行数据文件
 - **执行器**（`executor.py`）：LLM 调用 + 结果存储；`task_lean_context` 精简上下文（人设+工具+
   永久记忆+任务指令，环境便签/召回/状态由任务按规则经工具取回——任务间共享稳定前缀、每轮
-  prompt 更小）；`extra_note` 尾部追加动态备注（idle 反思原因注入不破前缀）
+  prompt 更小）；`extra_note` 尾部追加动态备注（自主决策的反思原因注入不破前缀）
 - **执行历史**（`history.py`）：每任务保留最近 N 条（开始时间/耗时/状态/触发来源/产出摘要），
   `<data_dir>/task_history.json`，executor 各终态唯一写入方；Web 任务列表 last_run 与 AI
   list_tasks/task_history 只读消费；任务删除时清理。也是 scheduled 去重的事实源（见上）

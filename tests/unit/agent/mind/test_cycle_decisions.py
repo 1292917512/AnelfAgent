@@ -31,7 +31,7 @@ def _fake_mind() -> Any:
         set_phase=lambda phase: None,
         _schedule_next_cycle=lambda reason, **kwargs: None,
         driver=SimpleNamespace(request_cycle=Mock()),
-        heartbeat_engine=SimpleNamespace(reflection_pending=False),
+        heartbeat_engine=SimpleNamespace(),
         _reply_idle_event=asyncio.Event(),
         tool_assembly=SimpleNamespace(clear_when_idle=Mock()),
         pfc=SimpleNamespace(
@@ -129,9 +129,9 @@ async def test_heartbeat_with_general_tasks_finishes_batch_before_ack(monkeypatc
     mind.pfc.clear_general_tasks_before.assert_called_once_with(1)
 
 
-async def test_heartbeat_still_filters_reflect_when_pending(monkeypatch) -> None:
+async def test_heartbeat_filters_reflect_while_reflecting(monkeypatch) -> None:
     mind = _fake_mind()
-    mind.heartbeat_engine.reflection_pending = True
+    mind._reflecting = True
     scheduled: list[str] = []
 
     async def _safe(_mind, decision: Decision) -> bool:
@@ -282,6 +282,14 @@ async def test_idle_is_valid_but_does_not_reset_no_progress_backoff():
 
 
 class TestSituationSummary:
+    @pytest.mark.parametrize("last", [0.0, 1000.0])
+    def test_reflection_is_evidence_driven(self, last: float) -> None:
+        summary = SituationContext(
+            last_reflect_time=last, current_time=100000.0, is_heartbeat=True,
+        ).to_summary()
+        assert "不要仅因时间经过而反思" in summary
+        assert "建议执行 reflect" not in summary and "999.0 小时" not in summary
+
     def test_pending_message_renders_to_me_and_kind_markers(self) -> None:
         """态势摘要携带对话性质标记：@我 / 平台推送类别，元决策据此判优先级。"""
         ctx = SituationContext(pending_messages=[
@@ -295,3 +303,12 @@ class TestSituationSummary:
         assert "[@我]" in summary
         assert "[notification]" in summary
         assert "大家周末去哪玩" in summary
+
+
+async def test_duplicate_reflection_decisions_execute_only_highest_priority() -> None:
+    mind = _fake_mind()
+    chosen = Decision(type=DecisionType.REFLECT, reason="新证据", priority=9)
+    await cycle_mod.execute_decisions(mind, {}, SituationContext(), [
+        Decision(type=DecisionType.REFLECT, reason="重复请求", priority=2), chosen,
+    ], is_heartbeat=True)
+    cycle_mod.execute_safely.assert_awaited_once_with(mind, chosen)

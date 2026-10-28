@@ -18,7 +18,6 @@
     "taskProgressDesc": "各调度任务的当前心跳计数与触发状态",
     "remaining": "剩余 {{count}} 次",
     "lastActivity": "距上次思考",
-    "reflectionPending": "待反思",
     "runNow": "立即执行",
     "recentLog": "最近心跳日志",
     "noLog": "暂无心跳日志",

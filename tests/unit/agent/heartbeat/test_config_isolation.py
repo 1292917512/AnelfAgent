@@ -8,6 +8,7 @@ load 读隔离路径、save 仍写真实 config/heartbeat.json，测试在真实
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -68,3 +69,43 @@ class TestDynamicPathSameSource:
         loaded = HeartbeatConfig.load()
         sched = loaded.get_schedule("demo")
         assert sched is not None and sched.every_n_beats == 7
+
+
+@pytest.mark.parametrize("mode", ["idle", "heartbeat", "scheduled"])
+def test_reflection_migration_preserves_other_schedules_and_model(_isolate_paths, mode):
+    raw = {"enabled": False, "task_schedules": [
+        {"task_name": "self_reflection", "mode": mode, "every_n_beats": 12,
+         "model_id": "chosen", "reasoning_effort": "high", "schedule_times": ["01:00"]},
+        {"task_name": "custom_idle", "mode": "idle", "every_n_beats": 4, "beat_count": 2},
+        {"task_name": "daily", "mode": "scheduled", "schedule_times": ["05:00"]},
+    ]}
+    _isolate_paths.write_text(json.dumps(raw), encoding="utf-8")
+    cfg = HeartbeatConfig.load()
+    reflection = cfg.get_schedule("self_reflection")
+    assert reflection.mode == ScheduleMode.MANUAL
+    assert reflection.model_id == "chosen" and reflection.reasoning_effort == "high"
+    assert cfg.get_schedule("custom_idle").beat_count == 2
+    assert cfg.get_schedule("daily").schedule_times == ["05:00"]
+    assert not cfg.enabled
+    saved = _isolate_paths.read_bytes()
+    assert HeartbeatConfig.load().to_dict() == cfg.to_dict()
+    assert _isolate_paths.read_bytes() == saved
+    from agent.heartbeat.config import validate_schedules
+    assert validate_schedules([TaskSchedule("self_reflection", mode=ScheduleMode(mode))])
+    with pytest.raises(ValueError, match="按需"):
+        cfg.set_schedule(TaskSchedule("self_reflection", mode=ScheduleMode(mode)))
+
+
+def test_failed_migration_save_keeps_loaded_config(_isolate_paths, monkeypatch):
+    _isolate_paths.write_text(json.dumps({"task_schedules": [
+        {"task_name": "self_reflection", "mode": "idle"},
+        {"task_name": "daily", "mode": "scheduled", "schedule_times": ["05:00"]},
+    ]}), encoding="utf-8")
+    original = _isolate_paths.read_bytes()
+    def fail(*args, **kwargs):
+        raise OSError("read only")
+    monkeypatch.setattr(HeartbeatConfig, "save", fail)
+    cfg = HeartbeatConfig.load()
+    assert cfg.get_schedule("self_reflection").mode == ScheduleMode.MANUAL
+    assert cfg.get_schedule("daily").schedule_times == ["05:00"]
+    assert _isolate_paths.read_bytes() == original

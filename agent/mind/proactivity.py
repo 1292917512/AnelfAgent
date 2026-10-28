@@ -7,8 +7,8 @@ AI 也可依据互动反馈自主微调。
 消费点：
 - 元决策 prompt（autonomous.build_meta_decision_messages）：按档位注入
   主动行为指导（影响 proactive/reflect 等决策的触发倾向）；
-- 心跳 idle 调度（heartbeat.engine._evaluate_idle_schedule）：空闲反思的
-  触发拍数按积极性缩放（积极性高 → 更快进入反思/自由活动，低 → 更安静）。
+- 心跳 idle 调度（heartbeat.engine._evaluate_idle_schedule）：自定义空闲任务的
+  触发拍数按积极性缩放（积极性高 → 更快进入自由活动，低 → 更安静）。
 """
 
 from __future__ import annotations

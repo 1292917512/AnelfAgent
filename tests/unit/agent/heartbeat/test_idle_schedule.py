@@ -1,4 +1,4 @@
-"""心跳 idle 调度单元测试：空闲计数 / 选择优先级 / 单例校验 / 反思延迟 / 同任务去重。"""
+"""心跳 idle 调度单元测试：空闲计数 / 选择优先级 / 单例校验 / 同任务去重。"""
 
 from __future__ import annotations
 
@@ -264,32 +264,52 @@ class TestIdleScheduling:
         # idle 未被评估（有心跳任务到期），计数保持 0
         assert schedules[1].beat_count == 0
 
-    async def test_pending_reflection_triggers_early_with_note(self, monkeypatch) -> None:
-        schedules = [TaskSchedule(task_name="idle_task", mode=ScheduleMode.IDLE, every_n_beats=10)]
-        tasks = {"idle_task": _task("idle_task")}
-        engine, mind = _make_engine(schedules, tasks, monkeypatch)
-
-        await engine.tick()
-        assert schedules[0].beat_count == 1
-
-        engine.mark_reflection_pending("主人提到要跟进 X")
-        executed = await engine.tick()
-        assert executed == ["idle_task"]
-        # 触发原因注入任务指令尾部；消费后清除
-        kwargs = engine.executor.run.call_args.kwargs
-        assert "主人提到要跟进 X" in kwargs["extra_note"]
-        assert engine.reflection_pending is False
-
     async def test_no_idle_schedule_means_no_pending_trigger(self, monkeypatch) -> None:
         schedules = [TaskSchedule(task_name="hb_task", mode=ScheduleMode.HEARTBEAT, every_n_beats=100)]
         tasks = {"hb_task": _task("hb_task")}
         engine, mind = _make_engine(schedules, tasks, monkeypatch)
-        assert engine.has_idle_schedule() is False
         executed = await engine.tick()
         assert executed == []
 
 
 class TestInflightDedup:
+    @pytest.mark.parametrize("status", ["success", "no_output", "incomplete", "error"])
+    async def test_reflection_cooldown_uses_own_persistent_history(self, monkeypatch, status):
+        import time
+
+        from agent.task.history import record_execution
+        from agent.task.reflection import last_reflection_time
+
+        tasks = {"self_reflection": _task("self_reflection"), "other": _task("other")}
+        engine, mind = _make_engine([], tasks, monkeypatch)
+        now = time.time()
+        record_execution("other", started_at=now, duration_ms=1, status="success", trigger="manual")
+        assert last_reflection_time() == 0
+        accepted, _ = engine.claim_task("self_reflection")
+        assert accepted
+        assert not engine.claim_task("self_reflection")[0]
+        engine.release_task_claim("self_reflection")
+        record_execution("self_reflection", started_at=now, duration_ms=1, status=status, trigger="autonomous")
+        # 新引擎实例仍读取同一历史，普通内部 reflect 不再拥有反思时间戳。
+        reopened, _ = _make_engine([], tasks, monkeypatch)
+        assert last_reflection_time() == pytest.approx(now, abs=.001)
+        assert not reopened.claim_task("self_reflection")[0]
+        assert reopened.claim_task("other")[0]
+        from core.config import ConfigManager
+        ConfigManager.set("reflection_cooldown_minutes", 0)
+        assert reopened.claim_task("self_reflection")[0]
+
+    async def test_inline_reflection_preserves_model_reason_and_releases_after_cancel(self, monkeypatch):
+        schedule = TaskSchedule("self_reflection", mode=ScheduleMode.MANUAL, model_id="selected", reasoning_effort="high")
+        engine, _ = _make_engine([schedule], {"self_reflection": _task("self_reflection")}, monkeypatch)
+        engine.executor.run.side_effect = asyncio.CancelledError()
+        with pytest.raises(asyncio.CancelledError):
+            await engine.run_task("self_reflection", trigger="autonomous", extra_note="reason")
+        assert "self_reflection" not in engine._task_inflight
+        kwargs = engine.executor.run.call_args.kwargs
+        assert kwargs["model_id"] == "selected" and kwargs["reasoning_effort"] == "high"
+        assert kwargs["extra_note"] == "reason" and kwargs["trigger"] == "autonomous"
+
     async def test_run_task_rejects_duplicate_while_running(self, monkeypatch) -> None:
         schedules: list[TaskSchedule] = []
         tasks = {"a": _task("a")}
@@ -415,49 +435,6 @@ class TestStartTaskBackground:
             await mind.driver.close()
 
 
-class TestReflectDeferral:
-    async def test_execute_reflect_defers_when_idle_configured(self, monkeypatch) -> None:
-        from agent.mind.autonomous import Decision, DecisionType
-        from agent.mind.decisions import execute_reflect
-
-        schedules = [TaskSchedule(task_name="self_reflection", mode=ScheduleMode.IDLE, every_n_beats=4)]
-        tasks = {"self_reflection": _task("self_reflection")}
-        engine, _ = _make_engine(schedules, tasks, monkeypatch)
-        engine.run_task = AsyncMock(return_value="产出")  # type: ignore[method-assign]
-
-        mind = SimpleNamespace(
-            heartbeat_engine=engine,
-            _reflecting=False,
-            set_phase=lambda phase: None,
-            pfc=SimpleNamespace(has_pending_tasks=lambda: False),
-        )
-        count = await execute_reflect(mind, Decision(type=DecisionType.REFLECT, reason="对话质量下滑"))
-        assert count == 0
-        # 未立即执行，仅登记待消费标记
-        engine.run_task.assert_not_awaited()
-        assert engine.reflection_pending is True
-        assert mind._reflecting is False
-
-    async def test_execute_reflect_immediate_without_idle_config(self, monkeypatch) -> None:
-        from agent.mind.autonomous import Decision, DecisionType
-        from agent.mind.decisions import execute_reflect
-
-        schedules = [TaskSchedule(task_name="hb", mode=ScheduleMode.HEARTBEAT, every_n_beats=10)]
-        tasks = {"self_reflection": _task("self_reflection"), "hb": _task("hb")}
-        engine, _ = _make_engine(schedules, tasks, monkeypatch)
-        engine.run_task = AsyncMock(return_value="产出")  # type: ignore[method-assign]
-
-        mind = SimpleNamespace(
-            heartbeat_engine=engine,
-            _reflecting=False,
-            set_phase=lambda phase: None,
-            pfc=SimpleNamespace(has_pending_tasks=lambda: False),
-        )
-        count = await execute_reflect(mind, Decision(type=DecisionType.REFLECT, reason=""))
-        assert count == 1
-        engine.run_task.assert_awaited_once_with("self_reflection")
-
-
 # ==================================================================
 # 定义文件调度种子（_seed_declared_schedules）
 # ==================================================================
@@ -538,20 +515,6 @@ class TestReplyPriorityGate:
         # 回复收尾后下个 tick 正常补跑
         mind.is_reply = False
         assert await engine.tick() == ["a"]
-
-    async def test_gate_preserves_pending_reflection(self, monkeypatch) -> None:
-        schedules = [TaskSchedule(task_name="self_reflection", mode=ScheduleMode.IDLE, every_n_beats=10)]
-        tasks = {"self_reflection": _task("self_reflection")}
-        engine, mind = _make_engine(schedules, tasks, monkeypatch)
-        engine.mark_reflection_pending("对话质量下滑")
-        mind.is_reply = True
-
-        assert await engine.tick() == []
-        # 待反思标记未被消费，空闲后由 idle 任务消费
-        assert engine.reflection_pending is True
-        mind.is_reply = False
-        assert await engine.tick() == ["self_reflection"]
-        assert engine.reflection_pending is False
 
     async def test_gate_still_runs_maintenance(self, monkeypatch) -> None:
         schedules = [TaskSchedule(task_name="a", mode=ScheduleMode.HEARTBEAT, every_n_beats=1)]

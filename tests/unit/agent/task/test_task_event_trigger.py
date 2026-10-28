@@ -48,6 +48,7 @@ def test_sync_registers_hooks_for_event_tasks():
     engine = _engine([
         _task("a", "after_reply"),
         _task("b", "delegation_resolved"),
+        _task("self_reflection", "after_reply"),  # 自主决策统一触发
         _task("c", ""),              # 无事件触发，不装配
         _task("d", "after_reply", enabled=False),  # 禁用，不装配
     ])

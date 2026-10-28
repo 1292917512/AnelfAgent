@@ -1,7 +1,7 @@
 """反思生命周期 —— 让 REFLECTION 从"AI 随手写"进阶为证据驱动的认知晋升。
 
 机制（证据驱动的反思状态机，长在现有心跳/画像/图谱面上）：
-- 对象：带 ``type:reflection`` 标签的活跃记忆（self_reflection 空闲任务的产出）；
+- 对象：带 ``type:reflection`` 标签的活跃记忆（self_reflection 按需任务的产出）；
 - 状态机（metadata["lifecycle"]["status"]）：pending → confirmed → promoted /
   denied；推进由心跳整理周期（consolidator 同拍）驱动，不在对话路径上；
 - 证据分：evidence.py 的 rein/disp 双通道读时衰减；初始种子由 importance

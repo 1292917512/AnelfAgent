@@ -21,6 +21,8 @@ from typing import TYPE_CHECKING, List, Optional
 from agent.hooks_llm import HOOK_EVENTS, HookContext, HookRegistry, llm_hook
 from core.log import log
 
+from .reflection import SELF_REFLECTION_TASK
+
 if TYPE_CHECKING:
     from agent.heartbeat.engine import HeartbeatEngine
 
@@ -39,7 +41,7 @@ def sync_task_event_hooks(engine: "HeartbeatEngine") -> int:
     count = 0
     for task in engine.task_registry.list_all():
         event = (task.trigger_event or "").strip()
-        if not event or not task.enabled:
+        if not event or not task.enabled or task.name == SELF_REFLECTION_TASK:
             continue
         if event not in HOOK_EVENTS:
             log(

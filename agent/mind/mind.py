@@ -94,7 +94,6 @@ class Mind:
         self._reply_idle_event = asyncio.Event()
         self._reply_idle_event.set()
         self.phase: MindPhase = MindPhase.IDLE
-        self._last_reflect_time: float = 0.0
         # 最近一次真实思考活动时间戳（idle 空闲计数锚点，见 last_activity_ts）
         self._last_activity_ts: float = 0.0
 
@@ -300,8 +299,6 @@ class Mind:
             LLM 产出的文本内容（所有轮次输出的合并）。
         """
         self.note_activity()
-        # 所有反思入口共用计时，供态势查询计算真实间隔。
-        self._last_reflect_time = time.time()
         # 进行中思考计数：phase 空闲判定的活跃事实源（并发 reflect 时仅最后
         # 一个收尾的调用触发归零），异常也必须复位
         self._reflect_depth += 1

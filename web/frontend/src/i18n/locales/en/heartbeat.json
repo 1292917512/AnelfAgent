@@ -18,7 +18,6 @@
     "taskProgressDesc": "Beat count and trigger status for each scheduled task",
     "remaining": "{{count}} remaining",
     "lastActivity": "Since last thought",
-    "reflectionPending": "Reflection pending",
     "runNow": "Run Now",
     "recentLog": "Recent Heartbeat Log",
     "noLog": "No heartbeat log yet",

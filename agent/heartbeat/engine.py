@@ -14,14 +14,13 @@
 
 idle 空闲调度（ScheduleMode.IDLE）：计数维度是"距上次思考的连续空闲心跳数"
 （mind.last_activity_ts 锚点，任何 reply/reflect 活动清零，含 idle 任务自身），
-仅在本 tick 无确定性到期任务时评估触发——反思与自由活动收敛到空闲窗口，
+仅在本 tick 无确定性到期任务时评估触发；自我反思统一由自主决策按需执行，
 不打断对话节奏。同任务排队经 _task_inflight 去重（排队里同一种任务只允许一条）。
 
 Model Experience:
-- 模型看到：idle 任务的 extra_note（反思触发原因）追加在任务指令尾部；
-  心跳日志新增"反思已登记"条目（volatile 态势，不进前缀层）
-- token 影响：反思从对话中段延迟到空闲批量执行，总体更省
-- KV Cache 影响：零——无 prompt 分层变更，extra_note 为尾部追加
+- 模型看到：自主决策选定的反思原因追加在任务指令尾部，普通任务独立运行。
+- token 影响：取消自我反思的独立定时入口，减少重复执行。
+- KV Cache 影响：不改变稳定前缀，extra_note 为尾部追加。
 """
 
 from __future__ import annotations
@@ -39,6 +38,7 @@ from agent.task import history as task_history
 from agent.task.executor import TaskExecutor
 from agent.task.executor import _clean_llm_output as _clean_llm
 from agent.task.model import TaskDefinition, TaskResult
+from agent.task.reflection import SELF_REFLECTION_TASK, reflection_cooldown_reason
 from agent.task.registry import TaskRegistry
 from core.config import ConfigValueType, register_configs_safe
 from core.log import log
@@ -181,8 +181,6 @@ class HeartbeatEngine:
         # idle 空闲计数锚点：上次 tick 已消费到的 mind 思考活动时间戳，
         # 大于它说明两次 tick 之间发生过真实思考 → 空闲计数清零
         self._idle_anchor_ts: float = 0.0
-        # 待执行反思原因（元决策 REFLECT 延迟到空闲窗口消费；空 = 无）
-        self._reflection_pending: str = ""
         # 空闲折叠跟踪：scope → 最近一次见到的最新消息 ts / 连续无新消息心跳数
         self._fold_activity_ts: Dict[str, int] = {}
         self._fold_idle_beats: Dict[str, int] = {}
@@ -360,6 +358,8 @@ class HeartbeatEngine:
 
         seeded = False
         for task in self.task_registry.list_all():
+            if task.name == SELF_REFLECTION_TASK:
+                continue
             mode = (task.schedule_mode or "manual").strip().lower()
             if mode not in ("heartbeat", "scheduled", "idle"):
                 continue
@@ -419,8 +419,8 @@ class HeartbeatEngine:
         # 回复优先：用户回复进行中时本 tick 只做维护与提醒，不启动新任务。
         # 任务上下文是启动时刻的快照（对话历史周期内不重读），与在途回复
         # 并发会双方各认为「还没回复」而对同一问题双答（2026-09-14 双发
-        # 事故）。让路语义与心跳忙碌延后一致：不递增任何计数器、保留待反思
-        # 标记，回复收尾后的下个 tick 自然补跑（调度层防线；出站层见
+        # 事故）。让路语义与心跳忙碌延后一致：不递增任何计数器，回复收尾后的
+        # 下个 tick 自然补跑（调度层防线；出站层见
         # agent/channel/outbound_guard.py）。
         if self.mind.is_reply:
             log("回复进行中，本 tick 不启动任务（维护照常）", "DEBUG", tag="心跳")
@@ -475,8 +475,7 @@ class HeartbeatEngine:
                     pending_task = task
                     pending_schedule_idx = idx
 
-        # 空闲评估：本 tick 无其他到期任务时，idle 调度按"连续空闲拍数/待反思
-        # 标记"触发（确定性调度优先，空闲窗口让位给它们）
+        # 空闲评估：本 tick 无其他到期任务时，idle 调度按连续空闲拍数触发。
         if pending_task is None:
             idle_hit = self._evaluate_idle_schedule()
             if idle_hit is not None:
@@ -561,9 +560,8 @@ class HeartbeatEngine:
                     dirty = True
                 elif current.mode == ScheduleMode.IDLE:
                     # 任务执行经 mind.reflect 已刷新思考活动 → 下次评估计数自然
-                    # 归零，此处仅复位持久化计数并消费待反思标记
+                    # 归零，此处仅复位持久化计数
                     current.beat_count = 0
-                    self._reflection_pending = ""
                     dirty = True
 
         if dirty:
@@ -589,15 +587,12 @@ class HeartbeatEngine:
                 schedule.beat_count = 0
             else:
                 schedule.beat_count += 1
-            # 积极性缩放：proactivity_level 越高，空闲反思/自由活动触发越快
+            # 积极性缩放：proactivity_level 越高，自定义空闲任务触发越快
             from agent.mind.proactivity import idle_beats_factor
 
             effective_beats = max(1, round(schedule.every_n_beats * idle_beats_factor()))
-            if schedule.beat_count >= effective_beats or self._reflection_pending:
-                extra_note = ""
-                if self._reflection_pending:
-                    extra_note = f"\n\n[反思触发原因]\n{self._reflection_pending}"
-                return idx, task, extra_note
+            if schedule.beat_count >= effective_beats:
+                return idx, task, ""
             return None
         return None
 
@@ -627,6 +622,8 @@ class HeartbeatEngine:
             return False, f"任务 {task_name} 已禁用"
         if task_name in self._task_inflight:
             return False, f"任务 {task_name} 已在执行或排队中"
+        if task_name == SELF_REFLECTION_TASK and (reason := reflection_cooldown_reason()):
+            return False, reason
         self._task_inflight.add(task_name)
         return True, ""
 
@@ -634,15 +631,15 @@ class HeartbeatEngine:
         """释放排队或执行阶段的任务认领。"""
         self._task_inflight.discard(task_name)
 
-    async def run_task(self, task_name: str, *, trigger: str = "manual") -> Optional[str]:
+    async def run_task(self, task_name: str, *, trigger: str = "manual", extra_note: str = "") -> Optional[str]:
         """在当前主 Driver 工作内联执行任务；外部触发应改用 submit_task。"""
         accepted, message = self.claim_task(task_name)
         if not accepted:
             log(f"任务 [{task_name}] 未受理: {message}", "WARNING", tag="心跳")
             return None
-        return await self.run_claimed_task(task_name, trigger=trigger)
+        return await self.run_claimed_task(task_name, trigger=trigger, extra_note=extra_note)
 
-    async def run_claimed_task(self, task_name: str, *, trigger: str) -> Optional[str]:
+    async def run_claimed_task(self, task_name: str, *, trigger: str, extra_note: str = "") -> Optional[str]:
         """复核最新定义后执行已认领任务，并在所有退出路径释放认领。"""
         try:
             task = self.task_registry.get(task_name)
@@ -661,12 +658,15 @@ class HeartbeatEngine:
             ) as session:
                 session.end["reason"] = "task_incomplete"
                 entity = await self._pop_analysis_entity() if task.scope.value == "entity" else None
+                schedule = self.config.get_schedule(task_name)
                 try:
                     result = await self.executor.run(
                         task,
                         entity,
                         temperature=self.config.analysis_temperature,
-                        trigger=trigger,
+                        trigger=trigger, extra_note=extra_note,
+                        model_id=schedule.model_id if schedule else "",
+                        reasoning_effort=schedule.reasoning_effort if schedule else "",
                     )
                 except Exception as exc:
                     session.end["reason"] = "task_failed"
@@ -677,23 +677,6 @@ class HeartbeatEngine:
                 return result.content if result else None
         finally:
             self.release_task_claim(task_name)
-
-    # ------------------------------------------------------------------
-    # 反思延迟消费（元决策 REFLECT → 空闲窗口）
-    # ------------------------------------------------------------------
-
-    def mark_reflection_pending(self, reason: str) -> None:
-        """登记待执行反思：idle 调度在下个空闲心跳消费，不打断对话节奏。"""
-        self._reflection_pending = (reason or "").strip()
-
-    @property
-    def reflection_pending(self) -> bool:
-        """是否存在待执行反思（消费于 idle 任务触发时）。"""
-        return bool(self._reflection_pending)
-
-    def has_idle_schedule(self) -> bool:
-        """是否配置了 idle 模式调度（决定 REFLECT 决策延迟还是立即执行）。"""
-        return any(s.mode == ScheduleMode.IDLE for s in self.config.task_schedules)
 
     # ------------------------------------------------------------------
     # 内置维护
@@ -1289,7 +1272,6 @@ class HeartbeatEngine:
             "task_count": len(self.task_registry.list_all()),
             "schedule_count": len(self.config.task_schedules),
             "last_activity_sec": int(time.time() - activity_ts) if activity_ts > 0 else None,
-            "reflection_pending": self.reflection_pending,
             "schedules": [
                 {
                     **s.to_dict(),

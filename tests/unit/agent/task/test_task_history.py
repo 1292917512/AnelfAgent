@@ -29,7 +29,7 @@ def _record(name: str, started_at: float, *, status: str = "success", trigger: s
 
 
 class TestHistoryStore:
-    @pytest.mark.parametrize("trigger", ["manual", "event"])
+    @pytest.mark.parametrize("trigger", ["manual", "event", "autonomous"])
     def test_record_and_get_newest_first(self, trigger: str) -> None:
         assert _record("t1", 100.0, trigger=trigger)
         assert _record("t1", 200.0, trigger=trigger)

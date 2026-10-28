@@ -188,6 +188,7 @@
     "trigger_scheduled": "每日定时",
     "trigger_idle": "空闲触发",
     "trigger_manual": "手动",
+    "trigger_autonomous": "自主决策",
     "historyTitle": "执行记录",
     "historyLoading": "加载执行记录…",
     "historyEmpty": "暂无执行记录",

@@ -58,7 +58,7 @@ async def test_reply_failure_is_terminal_and_preserves_execution_facts(sqlite, m
     mind.reply = MethodType(Mind.reply, mind)
     mind._auto_cycle_retry = 2
     mind._reflecting = False
-    mind.heartbeat_engine = SimpleNamespace(reflection_pending=False)
+    mind.heartbeat_engine = SimpleNamespace()
     mind.tool_assembly.clear_when_idle = Mock()
     prepare = AsyncMock(return_value=await data.get_conversation_record_by_everything(message))
     monkeypatch.setattr("agent.mind.execution.reply.coordinator.prepare_recollection", prepare)

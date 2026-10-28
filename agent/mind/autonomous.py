@@ -1,4 +1,9 @@
-"""自主决策系统：AI 自行决定回复/反思/主动行动。"""
+"""自主决策系统：AI 自行决定回复/反思/主动行动。
+
+模型可见：动态态势只按真实自我反思的执行历史计时，不因时间经过建议反思。
+Token：不新增上下文通道，减少重复反思调用。
+缓存：信息仅在本次态势消息，不修改稳定前缀。
+"""
 
 from __future__ import annotations
 
@@ -133,18 +138,10 @@ class SituationContext:
         lines.append(f"[当前时间] {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(self.current_time))}")
         hours = self.hours_since_reflect
         if hours >= 999.0:
-            # 哨兵值：本进程启动后尚未执行过 reflect（时间戳为内存态，不跨进程
-            # 持久）——如实显示"未知"，不再输出误导性的"999.0 小时"饱和读数；
-            # 首次 reflect 后即恢复真实计时（打点见 Mind.reflect 入口）
-            lines.append("[距上次反思] 未知（本次启动以来尚未反思）")
-            if self.is_heartbeat:
-                lines.append("  [建议] 可执行 reflect 进行阶段性反思（执行后恢复真实计时）")
+            lines.append("[距上次自我反思尝试] 无执行记录")
         else:
-            lines.append(f"[距上次反思] {hours:.1f} 小时")
-            if hours < 0.5:
-                lines.append("  [注意] 距上次反思时间很短，避免重复反思，优先做其他事情")
-            elif self.is_heartbeat and hours > 1.0:
-                lines.append(f"  [建议] 距上次反思已 {hours:.1f} 小时，建议执行 reflect 进行阶段性反思")
+            lines.append(f"[距上次自我反思尝试] {hours:.1f} 小时")
+        lines.append("反思按需选择：有新证据、重复错误或值得总结的经历再执行；不要仅因时间经过而反思。")
 
         if self.connected_channels:
             lines.append(f"[通信通道] {len(self.connected_channels)} 个：{', '.join(self.connected_channels)}")
@@ -213,7 +210,7 @@ META_DECISION_SYSTEM = """你是决策核心。分析当前态势，调用 decid
 2. tool_action — 有需要立即执行的工具操作
 3. plan — 目标管理：推进活跃目标、创建新计划；发现反复出现的周期性工作时，
    用 create_task + set_task_schedule 把它沉淀为自动任务（而非每次手动 plan）
-4. reflect — 心跳时距上次反思较久，或有待整理画像
+4. reflect — 有新证据、重复错误或值得总结的经历时，按需执行自我反思
 5. remember — 只记全新的重要信息，要克制
 6. proactive — 有充分理由主动联系某人时才使用；
    群聊历史中没有 [to_me:1] 标签的消息是群员之间的对话，不是对你说的话，

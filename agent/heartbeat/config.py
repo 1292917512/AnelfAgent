@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from agent.llm.reasoning import CANONICAL_EFFORTS
+from agent.task.reflection import SELF_REFLECTION_TASK
 from core.log import log
 from core.path import ConfigPaths
 
@@ -73,12 +74,12 @@ class ScheduleMode(str, Enum):
     """每天指定时间执行。"""
 
     IDLE = "idle"
-    """连续 N 次心跳无思考活动后执行（反思 + 自由活动），全局仅允许一条。
+    """连续 N 次心跳无思考活动后执行自定义空闲任务，全局仅允许一条。
 
     计数维度是"距上次思考的空闲心跳数"：任何真实思考（回复/反思/任务执行，
     含本任务自身）都会清零计数——因此 idle 任务天然单例串行，只会在 AI 空闲时
     触发，不打断对话节奏。every_n_beats 应短于所有 heartbeat 任务的循环拍数，
-    保证空闲窗口优先让给反思与自由活动。
+    保证空闲任务让位于确定性到期任务。
     """
 
     MANUAL = "manual"
@@ -158,6 +159,8 @@ class HeartbeatConfig:
         仅在新旧双方都是计数类模式（heartbeat/idle）时继承，其余归零。
         Web 整表保存不走此路径（前端全量回传自带计数值，含显式清零）。
         """
+        if schedule.task_name == SELF_REFLECTION_TASK and schedule.mode != ScheduleMode.MANUAL:
+            raise ValueError("自我反思由自主决策按需执行，仅支持 manual 调度")
         for i, s in enumerate(self.task_schedules):
             if s.task_name == schedule.task_name:
                 counter_modes = (ScheduleMode.HEARTBEAT, ScheduleMode.IDLE)
@@ -194,10 +197,17 @@ class HeartbeatConfig:
             return _try_migrate()
         try:
             raw = json.loads(p.read_text("utf-8"))
-            return _parse_config(raw)
+            cfg = _parse_config(raw)
         except Exception as exc:
             log(f"心跳配置加载失败，使用默认值: {exc}", "WARNING", tag="心跳")
             return cls()
+        if any(s.get("task_name") == SELF_REFLECTION_TASK and s.get("mode", "manual") != "manual"
+               for s in raw.get("task_schedules", [])):
+            try:
+                cfg.save(p)
+            except OSError as exc:
+                log(f"反思调度转换已在内存生效，持久化失败: {exc}", "WARNING", tag="心跳")
+        return cfg
 
 
 def validate_schedules(schedules: List["TaskSchedule"]) -> Optional[str]:
@@ -206,6 +216,8 @@ def validate_schedules(schedules: List["TaskSchedule"]) -> Optional[str]:
     idle 模式全局仅允许一条：思考会刷新空闲计数（含 idle 任务自身），
     多条 idle 调度会互相抢占计数语义，必须在写入侧拒绝。
     """
+    if any(s.task_name == SELF_REFLECTION_TASK and s.mode != ScheduleMode.MANUAL for s in schedules):
+        return "自我反思由自主决策按需执行，仅支持 manual 调度"
     idle_names = [s.task_name for s in schedules if s.mode == ScheduleMode.IDLE]
     if len(idle_names) > 1:
         return f"idle 模式调度仅允许一条（思考会刷新空闲计数，多条会互相抢占），当前有: {idle_names}"
@@ -227,9 +239,13 @@ def _dedupe_idle_schedules(schedules: List[TaskSchedule]) -> List[TaskSchedule]:
 
 
 def _parse_config(raw: Dict[str, Any]) -> HeartbeatConfig:
-    schedules = _dedupe_idle_schedules(
-        [TaskSchedule.from_dict(s) for s in raw.get("task_schedules", [])]
-    )
+    schedules = [TaskSchedule.from_dict(s) for s in raw.get("task_schedules", [])]
+    for schedule in schedules:
+        if schedule.task_name == SELF_REFLECTION_TASK:
+            schedule.mode = ScheduleMode.MANUAL
+            schedule.beat_count = 0
+            schedule.schedule_times = []
+    schedules = _dedupe_idle_schedules(schedules)
     return HeartbeatConfig(
         enabled=raw.get("enabled", True),
         analysis_temperature=float(raw.get("analysis_temperature", 0.7)),
@@ -268,18 +284,11 @@ def _try_migrate() -> HeartbeatConfig:
                     name = data.get("name", jf.stem)
                     cfg.task_schedules.append(TaskSchedule(
                         task_name=name,
-                        mode=ScheduleMode.HEARTBEAT,
+                        mode=ScheduleMode.MANUAL if name == SELF_REFLECTION_TASK else ScheduleMode.HEARTBEAT,
                         every_n_beats=reflect_beats,
                     ))
                 except Exception:
                     log("_try_migrate 异常已忽略", "DEBUG")
-
-        cfg.task_schedules.append(TaskSchedule(
-            task_name="self_reflection",
-            mode=ScheduleMode.HEARTBEAT,
-            every_n_beats=reflect_beats,
-        ))
-
         return cfg
     except Exception as exc:
         log(f"心跳配置迁移失败: {exc}", "WARNING", tag="心跳")

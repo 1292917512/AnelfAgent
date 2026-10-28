@@ -4,7 +4,7 @@
 
 Model Experience:
 - 模型看到：任务指令头部带 [执行时间] 与任务元信息（[任务创建]/[最近更新]/
-  [生效截止]，运行开始时生成一次，全程冻结）；extra_note（idle 反思触发原因等）
+  [生效截止]，运行开始时生成一次，全程冻结）；extra_note（自主决策的反思触发原因等）
   追加在任务指令（最后一条消息）尾部；历次执行的时长/状态/产出摘要经
   执行历史落盘，由 list_tasks（概况）与 task_history（明细）只读查询
 - 模型看到的终态区分完成、未完成和未知；未确认的工具效果只报告回执，不推断完成。
@@ -65,9 +65,9 @@ class TaskExecutor:
 
         model_id 优先级：参数传入 > task.model_id > 默认模型。
         reasoning_effort 优先级：参数传入 > task.reasoning_effort > 全局设置。
-        extra_note：追加到任务指令之后的动态备注（如 idle 反思触发原因）——
+        extra_note：追加到任务指令之后的动态备注（如自主决策的反思触发原因）——
         位于最后一条消息内，属纯尾部追加，不影响任务稳定前缀的缓存命中。
-        trigger：执行触发来源（heartbeat/scheduled/idle/manual/event），随执行历史
+        trigger：执行触发来源（heartbeat/scheduled/idle/manual/event/autonomous），随执行历史
         落盘供 Web 与 AI 查询。
         """
         if not task.prompt:

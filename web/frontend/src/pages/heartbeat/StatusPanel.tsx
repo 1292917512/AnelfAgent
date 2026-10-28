@@ -92,7 +92,6 @@ export function StatusPanel() {
         <div className="p-3 rounded-md border border-border bg-card">
           <p className="text-[10px] text-muted uppercase tracking-wide">
             {t("status.lastActivity")}
-            {hbStatus?.reflection_pending ? ` · ${t("status.reflectionPending")}` : ""}
           </p>
           <p className="text-sm font-semibold text-heading">
             {hbStatus?.last_activity_sec != null ? formatTime(hbStatus.last_activity_sec) : "—"}

@@ -34,6 +34,7 @@ from agent.mind.autonomous import (
 from agent.mind.cross_channel import collect_channel_info
 from agent.mind.decisions import execute_decision, normalize_target_scope
 from agent.planning.situation import active_goal_lines
+from agent.task.reflection import last_reflection_time
 from core.event_bus import (
     EVENT_THINKING_DECISION,
     EVENT_THINKING_SITUATION,
@@ -117,7 +118,7 @@ async def run_cycle(mind: "Mind", end_payload: Dict[str, Any], *, is_heartbeat: 
                 pending_tasks=[],
                 pending_profile_count=0,
                 recent_memories=[],
-                last_reflect_time=mind._last_reflect_time,
+                last_reflect_time=last_reflection_time(),
                 current_time=time.time(),
                 is_heartbeat=False,
                 connected_channels=[],
@@ -231,8 +232,19 @@ async def execute_decisions(
     })
 
     sorted_decisions = sorted(decisions, key=lambda d: d.priority, reverse=True)
-    if mind._reflecting or mind.heartbeat_engine.reflection_pending:
+    if mind._reflecting:
         sorted_decisions = [d for d in sorted_decisions if d.type != DecisionType.REFLECT]
+
+    # 同批多个 REFLECT 共享一个行动，关闭冷却也不重复执行。
+    reflection_seen = False
+    unique_decisions: List[Decision] = []
+    for decision in sorted_decisions:
+        if decision.type == DecisionType.REFLECT:
+            if reflection_seen:
+                continue
+            reflection_seen = True
+        unique_decisions.append(decision)
+    sorted_decisions = unique_decisions
 
     snapshot_count = len(mind.pfc.peek_general_tasks()) if consume_general_tasks else 0
     executed: List[tuple[Decision, bool]] = []
@@ -331,7 +343,7 @@ async def gather_situation(mind: "Mind", *, is_heartbeat: bool = False) -> Situa
         pending_tasks=general_tasks,
         pending_profile_count=len(mind.pfc.pending_analysis),
         recent_memories=recent_mem_lines,
-        last_reflect_time=mind._last_reflect_time,
+        last_reflect_time=last_reflection_time(),
         current_time=time.time(),
         is_heartbeat=is_heartbeat,
         connected_channels=connected_channels,

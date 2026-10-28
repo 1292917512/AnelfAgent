@@ -188,6 +188,7 @@
     "trigger_scheduled": "Daily",
     "trigger_idle": "Idle",
     "trigger_manual": "Manual",
+    "trigger_autonomous": "Autonomous decision",
     "historyTitle": "Execution History",
     "historyLoading": "Loading history…",
     "historyEmpty": "No execution records yet",

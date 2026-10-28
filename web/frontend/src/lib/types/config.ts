@@ -29,7 +29,6 @@ export interface HeartbeatStatus {
   /** 距上次真实思考的秒数（null = 进程启动后尚未思考） */
   last_activity_sec?: number | null;
   /** 是否存在待空闲窗口消费的反思 */
-  reflection_pending?: boolean;
   schedules: (TaskSchedule & {
     task_exists: boolean;
     task_enabled: boolean;
