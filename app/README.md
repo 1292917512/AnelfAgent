@@ -255,9 +255,10 @@ deb、AppImage 或解包目录。stage 只收集管理后端、终端适配依�
 Ubuntu x64。手动运行 workflow 仅生成 Actions artifacts。版本以根 `pyproject.toml` 的 `[project].version`
 为准；开发启动、stage、打包和发布检查通过 `desktop/version.cjs` 同步到 APP 的 `package.json`，
 界面显示、安装包元数据与文件名保持一致，不单独递增 APP 版本。发布版本使用 `主.次.修订` 格式。
-发布时先等待源码提交的 CI 通过，再推送与项目版本一致的 `launcher-v<版本>` 标签。所有平台构建成功后，
+发布时先等待源码提交的 CI 通过，再推送与项目版本一致的 `v<版本>` 标签（也兼容 `launcher-v<版本>`）。所有平台构建成功后，
 发布任务再次核实该提交的 CI，检查五个安装包并生成 `SHA256SUMS.txt`；附件上传至草稿后才公开 GitHub Release。
 发布说明保存在 `app/RELEASE_NOTES.md`，发版时同步维护。主 CI 同时检查 APP 类型、桌面逻辑和无界面浏览器交互。
+Linux x64 的文件名遵循打包格式：AppImage 使用 `x86_64`，deb 使用 `amd64`，均对应同一 64 位架构。
 发布前将对应项目源码同步到 GitHub 与 Gitee，确保自动选源的用户获得相同的控制协议。
 Gitee 源码使用者仍可下载相同安装包；工作流不自动发布到 Gitee Releases。
 

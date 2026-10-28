@@ -2,7 +2,7 @@ name: Launcher packages
 
 on:
   push:
-    tags: ["launcher-v*"]
+    tags: ["v*", "launcher-v*"]
   workflow_dispatch:
 
 permissions:
@@ -46,8 +46,8 @@ jobs:
       - name: Check release version
         run: node version.cjs
       - name: Check release tag
-        if: startsWith(github.ref, 'refs/tags/launcher-v')
-        run: node -e "if(process.env.GITHUB_REF_NAME !== 'launcher-v' + require('./package.json').version) process.exit(1)"
+        if: startsWith(github.ref, 'refs/tags/')
+        run: node -e "const v=require('./package.json').version;if(!['v'+v,'launcher-v'+v].includes(process.env.GITHUB_REF_NAME))process.exit(1)"
       - name: Check native shell
         run: pnpm typecheck && pnpm test
       - uses: astral-sh/setup-uv@v5
@@ -68,7 +68,7 @@ jobs:
             app/dist/*.deb
 
   release:
-    if: startsWith(github.ref, 'refs/tags/launcher-v')
+    if: startsWith(github.ref, 'refs/tags/')
     needs: package
     runs-on: ubuntu-latest
     permissions:
@@ -94,9 +94,10 @@ jobs:
         env:
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          version=${RELEASE_TAG#launcher-v}
-          for artifact in "win-x64.exe" "mac-x64.dmg" "mac-arm64.dmg" "linux-x64.AppImage" "linux-x64.deb"; do
-            test -s "app/dist/AnelfAgent-$version-$artifact"
+          version=${RELEASE_TAG#launcher-}
+          version=${version#v}
+          for artifact in "win-x64.exe" "mac-x64.dmg" "mac-arm64.dmg" "linux-x86_64.AppImage" "linux-amd64.deb"; do
+            test -s "app/dist/AnelfAgent-$version-$artifact" || { echo "Missing package: $artifact" >&2; ls -l app/dist; exit 1; }
           done
           cd app/dist
           sha256sum *.exe *.dmg *.AppImage *.deb > SHA256SUMS.txt
@@ -105,10 +106,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
+          version=${RELEASE_TAG#launcher-}
+          version=${version#v}
           if gh release view "$RELEASE_TAG" --json isDraft > app/build-release.json 2>/dev/null; then
             test "$(jq -r .isDraft app/build-release.json)" = true
             gh release upload "$RELEASE_TAG" app/dist/* --clobber
           else
-            gh release create "$RELEASE_TAG" app/dist/* --draft --verify-tag --title "AnelfAgent ${RELEASE_TAG#launcher-v}" --notes-file app/RELEASE_NOTES.md
+            gh release create "$RELEASE_TAG" app/dist/* --draft --verify-tag --title "AnelfAgent $version" --notes-file app/RELEASE_NOTES.md
           fi
           gh release edit "$RELEASE_TAG" --draft=false --latest

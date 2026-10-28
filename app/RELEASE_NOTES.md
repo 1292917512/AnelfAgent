@@ -15,8 +15,8 @@
 | Windows x64 | `AnelfAgent-0.4.0-win-x64.exe` |
 | macOS Intel | `AnelfAgent-0.4.0-mac-x64.dmg` |
 | macOS Apple Silicon | `AnelfAgent-0.4.0-mac-arm64.dmg` |
-| Linux x64（AppImage） | `AnelfAgent-0.4.0-linux-x64.AppImage` |
-| Ubuntu / Debian x64 | `AnelfAgent-0.4.0-linux-x64.deb` |
+| Linux x64（AppImage） | `AnelfAgent-0.4.0-linux-x86_64.AppImage` |
+| Ubuntu / Debian x64 | `AnelfAgent-0.4.0-linux-amd64.deb` |
 
 安装包附 SHA-256 校验清单。构建产物仅作为 Release 附件，不提交源码仓库。
 包体尚未配置 Windows 代码签名及 Apple 公证，系统可能提示来源未经验证。
