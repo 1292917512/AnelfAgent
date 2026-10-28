@@ -3,7 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const {connectionAt} = require('./backend.cjs');
-const {projects, removeOwned, verifyOwnership} = require('./managed.cjs');
+const {projects, removeOwned, verifyOwnership,retainedProjects} = require('./managed.cjs');
 /** @param {import('./backend.cjs').Connection} connection @param {string} endpoint @param {object} [body] */
 async function request(connection, endpoint, body) {
   const response = await fetch(connection.url + '/api/' + endpoint,{method:body ? 'POST' : 'GET',headers:{Authorization:'Bearer ' + connection.token,'Content-Type':'application/json'},body:body ? JSON.stringify(body) : undefined,signal:AbortSignal.timeout(8000)});
@@ -33,17 +33,18 @@ async function hasRunningServices(roots) {
   }));
   return states.some(Boolean);
 }
-/** @param {string} root @param {boolean} stopServices */
-async function drain(root, stopServices) {
+/** @param {string} root @param {boolean} stopServices @param {()=>Promise<unknown>} [stopRuntime] */
+async function drain(root, stopServices, stopRuntime) {
   const connection = await connectionAt(root);
   if (!connection) {
+    if (stopServices && stopRuntime && await hasRunningServices([root])) await stopRuntime();
     // A live runtime without its manager needs its original entry point for safe shutdown.
     for (const filename of ['runtime.json','connection.json']) {
       try { const value = JSON.parse(fs.readFileSync(path.join(root,'logs/manager',filename),'utf8')); if (Number.isInteger(value.pid) && value.pid > 0 && alive(value.pid)) throw new Error('AnelfAgent is still running without its manager. Stop it through its original entry point.'); }
       catch (error) { if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') continue; throw error; }
     }
-    try {
-      const pid=Number(fs.readFileSync(path.join(root,'logs/anelf.pid'),'utf8').trim());
+    for (const name of ['anelf.pid','anelf_guardian.pid']) try {
+      const pid=Number(fs.readFileSync(path.join(root,'logs',name),'utf8').trim());
       if (Number.isInteger(pid) && pid > 0 && alive(pid)) throw new Error('AnelfAgent is still running without its manager. Stop it through its original entry point.');
     } catch (error) {if (!error || typeof error !== 'object' || !('code' in error) || error.code !== 'ENOENT') throw error;}
     return;
@@ -66,8 +67,21 @@ async function drain(root, stopServices) {
 /** @param {string} data @param {boolean} uninstall */
 async function prepare(data, uninstall) {
   const entries = projects(data);
+  const installRoot=path.dirname(path.resolve(data));
+  const protectedFolders=new Set();
+  if(uninstall && process.platform==='win32')for(const entry of entries) {
+    if(entry.owned || !fs.existsSync(entry.root))continue;
+    const relative=path.relative(installRoot,fs.realpathSync(entry.root));
+    if(!relative)throw new Error('An imported project shares the app installation directory. Move it outside before uninstalling.');
+    if(!relative.startsWith('..'+path.sep) && relative!=='..' && !path.isAbsolute(relative))protectedFolders.add(relative.split(path.sep)[0]);
+  }
   if (uninstall) for (const entry of entries) if (entry.owned) verifyOwnership(data,entry);
   for (const entry of entries) await drain(entry.root,uninstall && entry.owned);
   if (uninstall) for (const entry of entries) if (entry.owned) await removeOwned(data,entry);
+  if(uninstall) {
+    const retained=retainedProjects(data),marker=path.join(data,'preserved-projects.json');
+    if(retained.length || protectedFolders.size)fs.writeFileSync(marker,JSON.stringify({retained,folders:[...protectedFolders]}));else fs.rmSync(marker,{force:true});
+    for(const name of protectedFolders)fs.writeFileSync(path.join(data,'preserve-'+name+'.flag'),'');
+  }
 }
 module.exports = {prepare,drain,request,hasRunningServices};

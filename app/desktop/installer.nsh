@@ -12,13 +12,20 @@
 
 !macro customRemoveFiles
   SetOutPath $TEMP
+  StrCpy $R3 0
   ${if} ${isUpdated}
+    StrCpy $R3 1
+  ${endif}
+  IfFileExists "$INSTDIR\data\preserved-projects.json" 0 +2
+  StrCpy $R3 1
+  ${if} $R3 == 1
     ; APP upgrades replace binaries while preserving the complete managed data tree.
     FindFirst $R1 $R2 "$INSTDIR\*.*"
     ${DoWhile} $R2 != ""
       ${if} $R2 != "."
       ${andIf} $R2 != ".."
       ${andIf} $R2 != "data"
+        IfFileExists "$INSTDIR\data\preserve-$R2.flag" anelf_keep_folder
         IfFileExists "$INSTDIR\$R2\*.*" 0 +3
         RMDir /r "$INSTDIR\$R2"
         Goto +2
@@ -26,6 +33,7 @@
         IfFileExists "$INSTDIR\$R2" 0 +2
         Abort "Unable to replace an application file. The project data was preserved."
       ${endif}
+      anelf_keep_folder:
       FindNext $R1 $R2
     ${Loop}
     FindClose $R1

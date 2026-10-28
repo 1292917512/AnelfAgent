@@ -23,15 +23,19 @@ await page.addInitScript(catalog=>{
   window.trayStates=[];
   window.anelfDesktop={
     trayState:async value=>{window.trayStates.push(value);},onNavigate:callback=>{window.navigateFromTray=callback;},
-    bootstrapInfo:async()=>({root,source:'auto',downloadSource:'china',pypiSource:'auto',pypiSources:catalog.pypi_sources,pypiDefaults:{china:catalog.china.pypi,global:catalog.global.pypi},timezone:'Asia/Shanghai',china:true,language:'zh',uv:{bundled:false,version:'uv 0.13.6',path:'C:/Users/test/.local/bin/uv.exe'},storage:storage()}),
+    bootstrapInfo:async()=>({root,defaultTarget:'E:/AnelfAgent/project',source:'auto',downloadSource:'china',pypiSource:'auto',pypiSources:catalog.pypi_sources,pypiDefaults:{china:catalog.china.pypi,global:catalog.global.pypi},timezone:'Asia/Shanghai',china:true,language:'zh',uv:{bundled:false,version:'uv 0.13.6',path:'C:/Users/test/.local/bin/uv.exe'},storage:storage()}),
     bootstrapStorage:async()=>storage(),
-    chooseProject:async()=>{root='E:/AnelfAgent/project';free=20*1024**3;return root;},
-    onBootstrapProgress:()=>{},bootstrapStart:value=>{window.started.push(value);return new Promise((_resolve,reject)=>{window.finishBootstrap=()=>reject(new Error('Cancelled'));});},bootstrapCancel:async()=>window.finishBootstrap()
+    chooseProject:async purpose=>{if(purpose==='existing')return 'D:/My old project';root='E:/AnelfAgent/project';free=20*1024**3;return root;},
+    onBootstrapProgress:callback=>{window.progress=callback;},bootstrapStart:value=>{window.started.push(value);if(value.existing)return Promise.resolve({accepted:false});return new Promise((_resolve,reject)=>{window.finishBootstrap=()=>reject(new Error('Cancelled'));});},bootstrapCancel:async()=>window.finishBootstrap()
   };
 },downloads);
 try {
   await page.goto(`http://127.0.0.1:${server.address().port}/bootstrap.html`);
   await page.waitForFunction(()=>document.querySelector('#storage').textContent.includes('空间不足'));
+  assert.equal(await page.locator('#project-question').isVisible(),true);
+  assert.equal(await page.locator('#setup-options').isVisible(),false);
+  await page.screenshot({animations:'disabled',path:path.join(directory,'../build/preview/project-question.png')});
+  await page.locator('#existing-no').click();
   assert.equal(await page.locator('#continue').isDisabled(),true);
   assert.match(await page.locator('#uv').textContent(),/检测到 uv/);
   await page.locator('#choose').click();
@@ -69,6 +73,27 @@ try {
   await page.locator('#bootstrap-details summary').click();assert.equal(await page.locator('#output').isVisible(),true);
   assert.equal(await page.locator('#continue').isDisabled(),false);
   assert.equal(await page.evaluate(()=>window.started[0].pypiSource),'huawei');
+  await page.locator('#back-choice').click();await page.locator('#existing-yes').click();
+  assert.equal(await page.locator('#existing-root').textContent(),'D:/My old project');
+  assert.equal(await page.locator('#move-project').isChecked(),true);
+  await page.locator('#source-options').evaluate(node=>{node.open=false;});
+  await page.setViewportSize({width:640,height:Math.ceil(await page.locator('main').evaluate(node=>node.getBoundingClientRect().height))});
+  await page.screenshot({animations:'disabled',path:path.join(directory,'../build/preview/import-project.png')});
+  await page.locator('#continue').click();
+  await page.waitForFunction(()=>!document.querySelector('#existing-options').hidden);
+  assert.equal(await page.locator('#progress').isVisible(),false);
+  assert.equal(await page.evaluate(()=>window.started.at(-1).existing.move),true);
+  await page.locator('#move-project').uncheck();
+  assert.equal(await page.locator('#migration-target').isVisible(),false);
+  assert.match(await page.locator('#existing-hint').textContent(),/文件保留在原目录/);
+  await page.locator('#continue').click();
+  await page.waitForFunction(()=>!document.querySelector('#existing-options').hidden);
+  assert.equal(await page.evaluate(()=>window.started.at(-1).existing.move),false);
+  assert.equal(await page.evaluate(()=>window.started.at(-1).existing.root),'D:/My old project');
+  await page.evaluate(()=>window.progress(JSON.stringify({message:'跨盘迁移',received:512*1024**2,total:1024**3})+'\n'));
+  assert.match(await page.locator('#status').textContent(),/50%.*512.0 \/ 1024.0 MiB/);
+  await page.locator('#move-project').check();
+  await page.setViewportSize({width:640,height:Math.ceil(await page.locator('main').evaluate(node=>node.getBoundingClientRect().height))});
   assert.deepEqual(errors,[]);
   console.log('First-run space checks, existing uv, folder changes and retry passed.');
 } finally {await browser.close();server.close();}

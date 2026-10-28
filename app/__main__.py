@@ -32,6 +32,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Anelf environment installer and supervisor")
     parser.add_argument("--root", type=Path, default=Path.cwd(), help="AnelfAgent checkout or empty install directory")
     sub = parser.add_subparsers(dest="command")
+    transfer = sub.add_parser("migrate")
+    transfer.add_argument("--target", type=Path, required=True)
+    transfer.add_argument("--data", type=Path, required=True)
+    transfer.add_argument("--cancel-file", type=Path, required=True)
+    recovery = sub.add_parser("recover-migration")
+    recovery.add_argument("--data", type=Path, required=True)
     for name in ("serve", "web", "status", "doctor", "setup", "install", "update", "start", "stop", "restart", "shutdown"):
         command = sub.add_parser(name)
         if name in {"serve", "web"}:
@@ -40,6 +46,23 @@ def main(argv: list[str] | None = None) -> int:
             command.add_argument("--source", choices=["auto", "github", "gitee"], default=None)
     args = parser.parse_args(argv)
     try:
+        if args.command in {"migrate", "recover-migration"}:
+            from app.migration import migrate, recover
+            last_report = 0.0
+            last_stage = ""
+
+            def report(message: str, received: int, total: int) -> None:
+                nonlocal last_report, last_stage
+                now, stage = time.monotonic(), message.split(" · ", 1)[0]
+                if stage == last_stage and received != total and now - last_report < 0.1:
+                    return
+                last_report, last_stage = now, stage
+                print(json.dumps({"message": message, "received": received, "total": total}, ensure_ascii=False), flush=True)
+
+            root = (recover(args.data) if args.command == "recover-migration" else
+                    migrate(args.root, args.target, args.data, report, args.cancel_file))
+            print(json.dumps({"root": root}, ensure_ascii=False), flush=True)
+            return 0
         layout = Layout(args.root)
         if args.command == "serve":
             if not 0 <= args.port <= 65535:

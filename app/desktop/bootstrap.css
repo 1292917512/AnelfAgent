@@ -11,6 +11,12 @@ label { display: block; font-size: 11px; margin: 7px 0; color: var(--muted); }
 .path { display: flex; justify-content: space-between; gap: 12px; align-items: center; margin-bottom: 8px; }
 .path code { min-width: 0; }
 .path button { white-space: nowrap; padding: 4px; border: 0; background: transparent; color: var(--accent); }
+.check { display: flex; align-items: center; gap: 9px; margin: 14px 0; color: var(--ink); }
+.check input { width: 15px; height: 15px; accent-color: var(--accent); }
+#existing-options { animation: reveal .2s ease-out; }
+#existing-hint { color: var(--muted); font-size: 11px; }
+#project-question { margin: 8px 0 16px; }
+#setup-options:has(#install-location[hidden]) #source-options { margin-top: 0; border-top: 0; }
 select { margin-bottom: 6px; }
 .actions { display: flex; justify-content: center; gap: 8px; flex-shrink: 0; }
 .actions .primary { min-width: 128px; }

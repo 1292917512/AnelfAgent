@@ -2,7 +2,7 @@
 /** Expose only fixed native actions; the renderer has no Node or shell access. */
 const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('anelfDesktop', Object.freeze({
-  chooseProject: () => ipcRenderer.invoke('anelf:choose-project'),
+  chooseProject: (/** @type {'existing'|'destination'} */ purpose) => ipcRenderer.invoke('anelf:choose-project',purpose),
   version: () => ipcRenderer.invoke('anelf:version'),
   reconnect: () => ipcRenderer.invoke('anelf:reconnect'),
   cleanup: () => ipcRenderer.invoke('anelf:cleanup'),
@@ -15,7 +15,7 @@ contextBridge.exposeInMainWorld('anelfDesktop', Object.freeze({
     ipcRenderer.on('anelf:navigate',listener);
     return ()=>ipcRenderer.removeListener('anelf:navigate',listener);
   },
-  bootstrapStart: (/** @type {{source:string,downloadSource:string,pypiSource:string}} */ value) => ipcRenderer.invoke('anelf:bootstrap-start',value),
+  bootstrapStart: (/** @type {import('../ui/lib/types').BootstrapSelection} */ value) => ipcRenderer.invoke('anelf:bootstrap-start',value),
   bootstrapCancel: () => ipcRenderer.invoke('anelf:bootstrap-cancel'),
   onExitState: (/** @type {(value:{stopping:boolean,error:string})=>void} */ callback) => {
     const listener = (/** @type {Electron.IpcRendererEvent} */ _event, /** @type {{stopping:boolean,error:string}} */ value) => callback(value);

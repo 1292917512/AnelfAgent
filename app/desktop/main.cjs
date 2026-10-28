@@ -5,7 +5,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const {pathToFileURL} = require('node:url');
 const {spawn} = require('node:child_process');
-const {ensureBackend,findUv,connectionAt,resolveProfile} = require('./backend.cjs');
+const {ensureBackend,findUv,connectionAt,resolveProfile,runTask} = require('./backend.cjs');
+const {inspectProject,transferProject} = require('./project-import.cjs');
 const {register,projects} = require('./managed.cjs');
 const {prepare,request,drain,hasRunningServices} = require('./maintenance.cjs');
 const {inspectStorage,requireStorage} = require('./storage.cjs');
@@ -40,7 +41,7 @@ const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 const backendSource = app.isPackaged ? path.join(process.resourcesPath,'backend') : packageRoot;
 const downloads = JSON.parse(fs.readFileSync(path.join(backendSource,'app/downloads.json'),'utf8'));
 const requirements = JSON.parse(fs.readFileSync(path.join(backendSource,'app/install-requirements.json'),'utf8'));
-/** @type {{root:string,source:string,downloadSource:string,pypiSource:string,configured:boolean}} */
+/** @type {{root:string,source:string,downloadSource:string,pypiSource:string,configured:boolean,projectChoice?:'new'|'existing'}} */
 let preferences = {root:app.isPackaged ? path.join(data,'project') : packageRoot,source:'auto',downloadSource:'auto',pypiSource:'auto',configured:false};
 try { preferences = {...preferences,...JSON.parse(fs.readFileSync(path.join(data,'bootstrap.json'),'utf8'))}; } catch { /* A fresh installation has no selection. */ }
 /** @param {import('electron').IpcMainInvokeEvent} event */
@@ -189,25 +190,54 @@ async function start() {
   ipcMain.handle('anelf:bootstrap-info',event => {
     if (!trusted(event)) throw new Error('Untrusted sender');
     const selected = runtime();
-    return {...preferences,pypiSources:downloads.pypi_sources,pypiDefaults:{china:downloads.china.pypi,global:downloads.global.pypi},timezone,china:downloads.china_timezones.includes(timezone),uv:selected.uv,storage:storage(),language:chinese?'zh':'en'};
+    return {...preferences,defaultTarget:path.join(data,'project'),pypiSources:downloads.pypi_sources,pypiDefaults:{china:downloads.china.pypi,global:downloads.global.pypi},timezone,china:downloads.china_timezones.includes(timezone),uv:selected.uv,storage:storage(),language:chinese?'zh':'en'};
   });
   ipcMain.handle('anelf:bootstrap-start',async(event,value) => {
     if (!trusted(event) || event.senderFrame?.url !== bootstrapUrl) throw new Error('Untrusted sender');
+    if (bootstrap) throw new Error('Please wait for the current operation');
     if (!value || !['auto','github','gitee'].includes(value.source) || !['auto','china','global'].includes(value.downloadSource)) throw new Error('Invalid download source');
     resolveProfile(downloads,value.downloadSource,value.pypiSource,timezone);
-    preferences.source=value.source;preferences.downloadSource=value.downloadSource;preferences.pypiSource=value.pypiSource;save();await connect(true);
+    if (value.existing) {
+      if(typeof value.existing.root!=='string' || typeof value.existing.target!=='string' || typeof value.existing.move!=='boolean')throw new Error('Invalid project selection');
+      const root=inspectProject(value.existing.root),target=path.resolve(value.existing.target);
+      bootstrap=new AbortController();
+      let complete=()=>{};bootstrapDone=new Promise(resolve=>{complete=resolve;});
+      try {
+        const selected=runtime();
+        const result=await transferProject({root,target,move:value.existing.move},{root,backend:selected.backend,uv:selected.uv.path,timezone,
+          profile:resolveProfile(downloads,value.downloadSource,value.pypiSource,timezone),indexEnvironment:downloads.uv_index_environment,
+          tools:path.join(data,'tools'),signal:bootstrap.signal,progress:text=>window?.webContents.send('anelf:bootstrap-progress',text)},data,async()=>{
+          if(!window)return false;
+          const choice=await dialog.showMessageBox(window,{type:'question',title:'AnelfAgent',
+            message:chinese?'旧项目服务正在运行，关闭后继续迁移？':'The existing service is running. Stop it and continue?',
+            detail:root,buttons:chinese?['关闭服务并迁移','否，返回上一步']:['Stop and move','No, go back'],defaultId:1,cancelId:1,noLink:true});
+          return choice.response===0;
+        });
+        if(!result.accepted)return {accepted:false};
+        preferences.root=result.root;preferences.configured=false;preferences.projectChoice='existing';
+      } catch(error) {
+        // A durable move may have committed even if subsequent cleanup was interrupted.
+        if(fs.existsSync(path.join(data,'bootstrap.json')))preferences={...preferences,...JSON.parse(fs.readFileSync(path.join(data,'bootstrap.json'),'utf8'))};
+        throw error;
+      } finally {bootstrap=null;complete();}
+    } else preferences.projectChoice='new';
+    preferences.source=value.source;preferences.downloadSource=value.downloadSource;preferences.pypiSource=value.pypiSource;save();
+    await connect(!value.existing || value.existing.move);
+    return {accepted:true};
   });
   ipcMain.handle('anelf:bootstrap-cancel',event => { if (!trusted(event)) throw new Error('Untrusted sender'); bootstrap?.abort(); });
-  ipcMain.handle('anelf:choose-project',async event => {
+  ipcMain.handle('anelf:choose-project',async (event,purpose) => {
     if (!trusted(event) || !window || bootstrap) throw new Error('Please wait for the current operation');
     if (connection && (await request(connection,'status')).busy) throw new Error('Cancel the current installation before changing projects');
     const result = await dialog.showOpenDialog(window,{title:chinese?'选择已有项目或空安装目录':'Choose a checkout or empty folder',properties:['openDirectory','createDirectory']});
     if (!result.canceled && result.filePaths[0]) {
+      if(purpose==='existing')return inspectProject(result.filePaths[0]);
+      if(purpose==='destination')return path.resolve(result.filePaths[0]);
       preferences.root=path.resolve(result.filePaths[0]);save();
       if (event.senderFrame?.url === bootstrapUrl) return preferences.root;
       await window.loadFile(bootstrapFile);
     }
-    return preferences.root;
+    return purpose ? undefined : preferences.root;
   });
   ipcMain.handle('anelf:reconnect',async event => { if (!trusted(event) || !window) throw new Error('Untrusted sender'); await window.loadFile(bootstrapFile); });
   ipcMain.handle('anelf:cleanup',async event => {
@@ -221,6 +251,17 @@ async function start() {
     }
   });
   await window.loadFile(bootstrapFile);
+  if(fs.existsSync(path.join(data,'migration.json'))) {
+    bootstrap=new AbortController();
+    try {
+      const selected=runtime();
+      await runTask({root:preferences.root,backend:selected.backend,uv:selected.uv.path,timezone,
+        profile:resolveProfile(downloads,preferences.downloadSource,preferences.pypiSource,timezone),tools:path.join(data,'tools'),
+        progress:text=>window?.webContents.send('anelf:bootstrap-progress',text)},['recover-migration','--data',data]);
+      if(fs.existsSync(path.join(data,'bootstrap.json')))preferences={...preferences,...JSON.parse(fs.readFileSync(path.join(data,'bootstrap.json'),'utf8'))};
+    } finally {bootstrap=null;}
+    await window.loadFile(bootstrapFile);
+  }
   if (preferences.configured || await connectionAt(preferences.root)) { try { await connect(); } catch(error) { window?.webContents.send('anelf:bootstrap-progress',String(error)); } }
 }
 const maintenance = process.argv.includes('--prepare-uninstall') || process.argv.includes('--prepare-upgrade');

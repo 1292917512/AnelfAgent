@@ -2,7 +2,7 @@
 /** Remove the app-owned data tree only after the parent desktop process exits. */
 const fs = require('node:fs');
 const path = require('node:path');
-const {projects} = require('./managed.cjs');
+const {projects,removeAppData} = require('./managed.cjs');
 /** @param {string} data @param {number} parent */
 async function cleanup(data,parent) {
   const root = path.resolve(data);
@@ -12,7 +12,7 @@ async function cleanup(data,parent) {
   if (projects(root).some(entry=>entry.owned && fs.existsSync(entry.root))) throw new Error('Project cleanup has not completed');
   const deadline = Date.now()+30000;
   while(Date.now()<deadline) {
-    try {process.kill(parent,0);} catch {await fs.promises.rm(root,{recursive:true,force:true,maxRetries:8,retryDelay:500});return;}
+    try {process.kill(parent,0);} catch {await removeAppData(root);return;}
     await new Promise(resolve=>setTimeout(resolve,250));
   }
   throw new Error('Desktop is still running');

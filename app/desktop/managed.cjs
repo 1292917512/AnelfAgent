@@ -35,6 +35,7 @@ function verifyOwnership(data, entry) {
   const root = path.resolve(entry.root), owner = path.resolve(data);
   if (!entry.owned || root === path.parse(root).root || root === owner || owner.startsWith(root + path.sep)) throw new Error('Refusing to delete a non-owned project');
   if (!fs.existsSync(root)) return;
+  if (retainedProjects(data).some(item=>comparable(item.root).startsWith(comparable(root)+path.sep))) throw new Error('An imported project is inside this directory; preserve it before cleanup');
   const realRoot=comparable(fs.realpathSync(root)),realOwner=comparable(fs.realpathSync(owner));
   if (realRoot===realOwner || realOwner.startsWith(realRoot+path.sep)) throw new Error('Refusing to delete the application data directory');
   if (fs.lstatSync(root).isSymbolicLink() || realRoot !== comparable(entry.realRoot || root)) throw new Error('Project path has changed');
@@ -46,4 +47,25 @@ async function removeOwned(data, entry) {
   verifyOwnership(data,entry);
   await fs.promises.rm(entry.root,{recursive:true,force:true,maxRetries:4,retryDelay:300});
 }
-module.exports = {projects,register,verifyOwnership,removeOwned};
+/** @param {string} data */
+function retainedProjects(data) {
+  const root=comparable(fs.realpathSync(data));
+  return projects(data).filter(entry=>!entry.owned && fs.existsSync(entry.root) && comparable(fs.realpathSync(entry.root)).startsWith(root+path.sep));
+}
+/** Remove app files while retaining imported projects and their parent directories.
+ * @param {string} data */
+async function removeAppData(data) {
+  const retained=retainedProjects(data).map(entry=>comparable(fs.realpathSync(entry.root)));
+  /** @param {string} folder */
+  async function clean(folder) {
+    if(retained.includes(comparable(fs.realpathSync(folder))))return;
+    for(const item of await fs.promises.readdir(folder,{withFileTypes:true})) {
+      const full=path.join(folder,item.name),real=comparable(item.isSymbolicLink()?full:fs.realpathSync(full));
+      if(retained.some(root=>root===real || root.startsWith(real+path.sep))) {if(item.isDirectory())await clean(full);}
+      else await fs.promises.rm(full,{recursive:true,force:true,maxRetries:4,retryDelay:300});
+    }
+  }
+  if(!retained.length)await fs.promises.rm(data,{recursive:true,force:true,maxRetries:8,retryDelay:500});
+  else await clean(data);
+}
+module.exports = {projects,register,verifyOwnership,removeOwned,retainedProjects,removeAppData};

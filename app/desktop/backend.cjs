@@ -122,4 +122,18 @@ function findPython(uv, cwd) {
   return result.status === 0 && candidate && fs.existsSync(candidate) ? candidate : undefined;
 }
 
-module.exports = { validConnection, commandFor, connectionAt, ensureBackend, findUv, findPython, resolveProfile };
+/** Run a finite backend task without opening a console or launching application services.
+ * @param {Options} options @param {string[]} args */
+async function runTask(options,args) {
+  const command=commandFor({...options,python:findPython(options.uv,options.backend)});
+  command.args.splice(command.args.lastIndexOf('serve'),3,...args);
+  return new Promise((resolve,reject)=>{
+    const child=spawn(command.command,command.args,{cwd:command.cwd,env:command.env,windowsHide:true,stdio:['ignore','pipe','pipe']});
+    let output='';
+    const collect=(/** @type {string} */ value)=>{output=(output+value).slice(-12000);options.progress?.(value);};
+    child.stdout.setEncoding('utf8').on('data',collect);child.stderr.setEncoding('utf8').on('data',collect);
+    child.on('error',reject);
+    child.on('close',code=>code===0 ? resolve(output) : reject(new Error(output || 'Project operation failed ('+code+')')));
+  });
+}
+module.exports = { validConnection, commandFor, connectionAt, ensureBackend, findUv, findPython, resolveProfile, runTask };
