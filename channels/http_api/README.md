@@ -6,7 +6,7 @@
 ## AI 获取帮助
 
 启用频道后，AI 可直接调用 **`http_api_portal_help()`** 获取简短接入说明。
-需要细节时传 `topic="chat"`、`"sessions"`、`"sdk"` 或 `"https"`。
+需要细节时传 `topic="chat"`、`"sessions"`、`"context"`、`"sdk"` 或 `"https"`。
 帮助按当前配置生成，不返回认证令牌；外部应用使用 **`GET /api/sdk`** 发现接口，
 参数、必填项和默认值以 **`GET /openapi.json`** 为准，**`/docs`** 可交互调试。
 
@@ -31,6 +31,7 @@
 | `callback_timeout` | `10` | 回调超时秒数 |
 | `stream_queue_size` / `max_stream_subscribers` | `256` / `128` | SSE 缓冲帧数与订阅上限 |
 | `max_connections` / `sdk_concurrency` | `256` / `8` | HTTP 连接/任务与 SDK 调用上限；超载返回 503 |
+| `context_inject` / `max_context_sessions` | `true` / `256` | 外部动态上下文注入开关与会话容量；均可热更 |
 
 集成令牌具有系统工具权限，应由可信后端保管。`user_id` 是来源声明，会话隔离不构成多租户授权。
 面向不可信用户的应用应先在自己的后端认证和授权，再调用门户。
@@ -43,6 +44,7 @@
 | `GET /api/chat/stream` | SSE：`delta`、`tool_call`、`reply`、`turn_end` |
 | `POST /api/sessions/control` | 停止或继续原会话 |
 | `GET /api/sessions/history` | 分页/增量读取持久化历史 |
+| `PUT/GET/DELETE /api/sessions/context` | 更新、查看、清除会话动态上下文 |
 | `POST /api/vision/push` | 外部视觉源单帧 |
 | `WS /api/vision/stream` | 持续视觉推流；HTTPS 时用 `wss://` |
 | `GET /api/sdk` | 生效接入契约 |
@@ -62,6 +64,8 @@
   多个窗口另传 `session_id`；用户、群组和子会话的收发独立。身份不得包含 `#`，群 ID 不能为保留值 `"0"`。
 - `kind` 支持 `chat/event/system/notification`；通知聚合到通知中心，强制异步受理。
   引用回复使用 `reply_to_id/reply_content`，`to_me` 标记是否指向 AI。
+- `skills` 为显式技能名数组（最多 8 个）；服务端转换内部标签，在本次执行中直接加载正文。
+  只指定 `skills` 也可提交消息；技能正文不依赖自动匹配命中。
 - `images` 为 `[{url|base64, mime_type}]`，两种来源二选一；`media` 为
   `[{kind: audio|video|file, base64, mime_type, file_name}]`。媒体进入原有处理链，不等同于模型原生实时音视频。
 - `async_mode=false` 等待最终文本，`true` 返回 `accepted`。响应业务状态有
@@ -96,6 +100,59 @@ SSE 示例：`GET /api/chat/stream?user_id=my_app:alice&session_id=support-1`。
 历史查询同样传 `user_id/group_id/session_id`，返回 `{status, scope, messages}`，记录含 `id/role/content/ts_ns`。
 `limit` 默认 50、上限 200；`before_id` 加载更早消息，`after_id` 按 ID 增量读取，两者互斥。
 查询不改变已读水位、不触发思考，也不重放未持久化的 delta。
+
+### 外部应用动态上下文
+
+先用 `PUT /api/sessions/context` 登记快照，再向 `/api/chat` 发消息；两者使用相同的
+`user_id/group_id/session_id`。应用可在 Agent 执行期间继续更新状态，无需发送聊天消息：
+
+```json
+{
+  "user_id": "my_app:alice",
+  "session_id": "support-1",
+  "dynamic_context": "当前打开工单 #42，订单已发货，用户申请修改收货地址。",
+  "skills": ["order-support"]
+}
+```
+
+快照与 AI 桌面等插件共用 `ContextProviderRegistry`，每次模型调用前读取最新内存内容，
+放在工具链之后、执行状态之前的 `provider` 层；已发出的模型请求沿用发送时快照。
+更新不触发思考、不入对话历史、不改 `stable/summary/conversation` 前缀。
+文本限 16K 字符，另受公共 provider token 总预算约束，预算不足时可省略。
+
+这里的连接指 `user_id/group_id/session_id` 对应的逻辑会话，不依赖单次 HTTP 请求的 TCP 连接。
+每个完整 scope 只保留一条快照，新写入整体覆盖文本和技能选择，不追加历史；不更新时持续生效。
+`dynamic_context` 与 `skills` 至少提供一个字段，两者均空时清除；省略技能数组表示新快照不选择技能。
+`GET /api/sessions/context?user_id=my_app:alice&session_id=support-1` 查看当前值，
+同 URL 的 `DELETE` 清除。完整 scope 隔离用户、群组与子会话，同群上下文由群成员共享。
+`context_inject=false` 停止注入，保存值仍可管理；容量耗尽返回 503，不淘汰已有会话。
+快照为进程内存态，频道停止即清除，外部应用重连后应重新登记。
+
+应用的固定说明与实时状态均可合并进这一条快照，状态变化时重新发送完整内容即可。
+该接口只写动态区；`/api/sdk/models/chat` 直调仍只使用调用方显式传入的 `messages`，
+不继承 Agent 会话的上下文。
+
+### 指定技能
+
+HTTP 协议使用 `skills` 字段，接入方无需在文本里编写标签。例如提交本次任务：
+
+```json
+{"user_id":"my_app:alice","session_id":"support-1","message":"请处理这张工单","skills":["order-support"],"async_mode":true}
+```
+
+消息字段只作用于本次执行；`PUT /api/sessions/context` 的技能数组随连接快照保持并覆盖。
+两处选择按名称去重。服务端使用 `core.tags` 编码内部标签，SDK 消息也可直接使用内部
+`[skill:技能名]`。统一加载器只解释明确的 skill 标签，读取本地技能正文，不执行任意工具。
+
+先用 `GET /api/sdk/tools?group=skills` 查看真实工具声明，再用
+`POST /api/sdk/tools/list_skills`（`arguments: {}`）查询可用名称，或用
+`POST /api/sdk/tools/get_skill`（`arguments: {"name":"order-support"}`）读取详情。
+工具直调结果返回外部调用方，不会自动绑定到后续 Agent 会话；会话绑定使用 `skills` 字段。
+
+指定技能会在动态区直接呈现正文；一轮最多 8 个、正文合计 24K 字符，超限有提示并可经
+`get_skill` 按需读取。不存在的技能明确标为不可用；正文在同一次执行内复用，消费次数按每技能
+每次执行记一次，读取不表示步骤执行完成。关联 MCP 状态沿用现有查询，不自动连接或激活分组，
+实际工具调用仍经过原有权限和审批入口。
 
 ### SDK 模型与工具
 

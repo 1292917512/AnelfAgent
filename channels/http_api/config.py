@@ -28,6 +28,8 @@ class HttpApiConfig(ChannelConfig):
     max_stream_subscribers: int = Field(default=128, ge=1, le=10000, description="同时在线的 SSE 订阅上限")
     max_connections: int = Field(default=256, ge=1, description="HTTP 并发连接/任务上限，超出返回 503")
     sdk_concurrency: int = Field(default=8, ge=1, le=1000, description="SDK 模型和工具并发调用上限，超出返回 503")
+    context_inject: bool = Field(default=True, description="是否注入外部应用提供的动态上下文")
+    max_context_sessions: int = Field(default=256, ge=1, le=10000, description="外部上下文会话容量，超出返回 503")
     cors_origins: list[str] = Field(default_factory=list, description="允许浏览器跨域访问的来源地址；默认不开放跨域")
     api_token: str = Field(
         default="", description="API Token（空则免认证）",

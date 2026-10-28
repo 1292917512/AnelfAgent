@@ -13,6 +13,7 @@ Model Experience:
         完整契约经 http_api_portal_help 工具按需自取；
     token 影响 —— 仅 http_api 会话每轮数百 token，契约详文按需加载；
     缓存影响 —— channel_policy 尾部层，不触碰 stable 前缀。
+    外部应用动态快照复用 provider 每轮采集，最多 16K 字符，不改变稳定前缀。
 """
 
 from __future__ import annotations
@@ -50,6 +51,7 @@ from agent.messages import build_entity_scope
 from core.log import log
 
 from .config import HttpApiConfig
+from .context import HttpSessionContexts
 from .help import HelpTopic
 from .schemas import ChatRequest
 from .schemas import ImageItem as ImageItem
@@ -146,6 +148,8 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
         # message_id 去重：客户端重试/网络重发不重复入管道（全频道共用去重器）
         self._dedup = MessageDedup()
         super().__init__()
+        self.contexts = HttpSessionContexts(enabled=lambda: self.config.context_inject,
+                                            capacity=lambda: self.config.max_context_sessions)
 
     channel_id = "http_api"
 
@@ -238,6 +242,7 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
             await self.stop()
             raise
         self._subscribe_stream_events()
+        self.contexts.register()
         self._bound_base_url = bound_base_url
         self._status = ChannelStatus.RUNNING
         outbound = f"，出站回调: {self.config.callback_url}" if self.config.callback_url else ""
@@ -277,6 +282,7 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
         from core.event_bus import event_bus
         event_bus.off_by_owner("channel:http_api")
         self._callbacks.clear()
+        self.contexts.close()
         self._status = ChannelStatus.STOPPED
         log("HTTP API 频道已停止")
 
@@ -544,8 +550,8 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
 
     def _validate_chat_request(self, req: ChatRequest) -> str:
         """廉价前置校验（在落盘/去重登记之前）；返回空串表示通过。"""
-        if not req.message.strip() and not req.images and not req.media:
-            return "空消息：message 与附件至少其一"
+        if not req.message.strip() and not req.images and not req.media and not req.skills:
+            return "空消息：message、附件与 skills 至少其一"
         if len(req.images) + len(req.media) > _MAX_ATTACHMENTS:
             return f"附件数量超限（上限 {_MAX_ATTACHMENTS}）"
         if req.callback_url and not req.callback_url.lower().startswith(("http://", "https://")):
@@ -616,6 +622,7 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
         from agent.llm.model_api import JudgmentError, LLMNotConfiguredError, ModelCallError
         from core.tool_errors import error_from_exception
 
+        from .context_routes import build_context_router
         from .routes import build_router
         from .sdk_routes import build_sdk_router
         from .transport import HttpBoundary
@@ -628,7 +635,7 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
         if self.config.cors_origins:
             from fastapi.middleware.cors import CORSMiddleware
             app.add_middleware(
-                CORSMiddleware, allow_origins=self.config.cors_origins, allow_methods=["GET", "POST"],
+                CORSMiddleware, allow_origins=self.config.cors_origins, allow_methods=["GET", "POST", "PUT", "DELETE"],
                 allow_headers=["Authorization", "X-API-Token", "Content-Type"],
                 expose_headers=["X-Request-ID"],
             )
@@ -659,6 +666,7 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
 
         app.include_router(build_router(self))
         app.include_router(build_sdk_router(self))
+        app.include_router(build_context_router(self))
         return app
 
     # ------------------------------------------------------------------

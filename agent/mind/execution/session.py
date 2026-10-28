@@ -10,6 +10,7 @@ from agent.mind.execution.messages import _user_initiated, snapshot_watermark
 from agent.mind.execution.result_pipeline import ToolResultPipeline
 from agent.mind.execution.state import ExecutionContext, RoundState, ThinkMode
 from agent.mind.recall import coordinator
+from agent.skills.tag_context import SkillTagContext
 from core.event_bus import event_bus
 from core.stream_events import EVENT_ASSISTANT_DELTA
 
@@ -95,6 +96,7 @@ async def _prepare_think_context(
             base_messages = []
 
     mc = mind.config
+    skills = getattr(mind.recollection, "skills", None)
     # 纯工具模式（可选，默认关）：开启后 LLM 调用强制工具选择（tool_choice=required）
     pure_tool_mode = bool(getattr(mc, "force_tool_use", False))
     # 后台任务等待：等待意图挂起的单次上限与本轮回复累计预算（秒）
@@ -162,6 +164,7 @@ async def _prepare_think_context(
         journal=journal,
         blocked_tools=frozenset(blocked_tools or ()),
         reflect_tool_selectors=tuple(reflect_tool_selectors or ()),
+        skill_context=SkillTagContext(skills.store if skills is not None else None),
     )
     state = RoundState(
         auto_reply_eligible=mode == ThinkMode.REPLY and _user_initiated(base_messages),

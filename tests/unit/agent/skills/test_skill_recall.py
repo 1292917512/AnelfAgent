@@ -22,6 +22,33 @@ class _NullEmbedder:
         return None
 
 
+async def test_explicit_skill_tags_are_exact_bounded_and_retry_missing_definitions(tmp_path, monkeypatch):
+    from agent.skills.skill_store import SkillStore
+    from agent.skills.tag_context import SkillTagContext
+    from core.tags import tag_label
+
+    store = SkillStore(str(tmp_path / "selected-skills"))
+    store.create(name="known", description="known", content="KNOWN_BODY")
+    context = SkillTagContext(store)
+    messages = await context.build(tag_label("skill", "../known") + tag_label("unknown", "known"), [], scope="test")
+    assert "KNOWN_BODY" not in str(messages) and "不可用" in str(messages)
+    assert store.get("known").use_count == 0
+    store.set_state("known", SkillState.ARCHIVED)
+    archived = await SkillTagContext(store).build(tag_label("skill", "known"), [], scope="test")
+    assert "KNOWN_BODY" in str(archived) and "已归档" in archived[0]["content"]
+    assert store.get("known").state is SkillState.ARCHIVED
+    context = SkillTagContext(store)
+    assert "不可用" in str(await context.build(tag_label("skill", "later"), [], scope="test"))
+    store.create(name="later", description="later", content="LATER_BODY")
+    assert "LATER_BODY" in str(await context.build("", [], scope="test"))
+    assert store.get("later").use_count == 1
+    monkeypatch.setattr("agent.skills.tag_context._MAX_CHARS", 300)
+    store.create(name="large", description="large", content="body" * 1000)
+    messages = await SkillTagContext(store).build(tag_label("skill", "large"), [], scope="test")
+    assert len(messages[0]["content"]) <= 300
+    assert messages[0]["_source"]["skills"][0]["truncated"] and "get_skill" in messages[0]["content"]
+
+
 # ==================================================================
 # recall_split 的计划就绪信号
 # ==================================================================

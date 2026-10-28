@@ -120,7 +120,7 @@ def context_skills(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     skills: list[dict[str, Any]] = []
     for message in messages:
         source = message.get("_source") or {}
-        if source.get("origin") != "skill_match":
+        if source.get("origin") not in {"skill_match", "skill_tag"}:
             continue
         content = str(message.get("content", "")).removesuffix("\n（已截断）")
         for fact in source.get("skills", []):

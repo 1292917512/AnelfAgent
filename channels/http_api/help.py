@@ -11,7 +11,7 @@ from typing import Any, Literal
 
 from .config import HttpApiConfig
 
-HelpTopic = Literal["overview", "chat", "sessions", "sdk", "https"]
+HelpTopic = Literal["overview", "chat", "sessions", "context", "sdk", "https"]
 
 
 def build_portal_spec(config: HttpApiConfig) -> dict[str, Any]:
@@ -33,7 +33,7 @@ def build_portal_spec(config: HttpApiConfig) -> dict[str, Any]:
             "chat": {
                 "method": "POST", "path": f"{base}/api/chat",
                 "fields": {
-                    "message": "消息文本（≤256K 字符，与附件至少其一）",
+                    "message": "消息文本（≤256K 字符，与附件、skills 至少其一）",
                     "user_id / group_id / session_id": "身份与会话归属（历史/记忆按它隔离延续）",
                     "kind": "chat（默认）/ event / system → 历史 [kind:xxx] 标签；"
                             "notification → 聚合进通知中心会话（强制异步受理，无同步回复）",
@@ -43,6 +43,7 @@ def build_portal_spec(config: HttpApiConfig) -> dict[str, Any]:
                     "async_mode": "false 同步阻塞等回复（≤reply_timeout 秒）；true 立即返回 accepted",
                     "callback_url": "携带即注册本会话出站回调（http/https）",
                     "message_id": "幂等键：重复 id 返回 duplicate 不重复入管道",
+                    "skills": "显式技能名数组，最多 8 个；服务端转内部标签，在本次执行动态加载正文，不依赖自动匹配",
                 },
                 "status": "ok / accepted / timeout / duplicate / error",
             },
@@ -70,6 +71,13 @@ def build_portal_spec(config: HttpApiConfig) -> dict[str, Any]:
                 "query": "user_id / group_id / session_id；limit=1..200；before_id 或 after_id 翻页",
                 "note": "SSE 重连后用 after_id 补取持久化消息；不重放过程 delta",
             },
+            "context": {
+                "method": "PUT / GET / DELETE", "path": f"{base}/api/sessions/context",
+                "fields": "PUT {user_id, group_id?, session_id?, dynamic_context?, skills?}；GET/DELETE 用查询参数选择会话",
+                "note": "与 AI 桌面共用 provider，每次模型调用前刷新；不入聊天历史、不触发思考、不改静态前缀",
+                "lifetime": "同一完整 scope 只保留一条，新写入覆盖旧值；持续到空文本、DELETE 或频道停止后清除，重连后可重新登记",
+                "skills": "skills 数组转为内部 skill 标签，随连接快照替换；正文由统一链路加载，字段和文本均空时清除快照",
+            },
             "sdk": {
                 "discovery": f"{base}/api/sdk",
                 "models": f"{base}/api/sdk/models",
@@ -92,6 +100,7 @@ def build_portal_spec(config: HttpApiConfig) -> dict[str, Any]:
             "stream_subscribers": cfg.max_stream_subscribers,
             "connections": cfg.max_connections,
             "sdk_calls": cfg.sdk_concurrency,
+            "context_sessions": cfg.max_context_sessions, "context_max_chars": 16_000,
         },
         "integration": {
             "discover_first": "GET /api/sdk 获取生效契约；GET /openapi.json 获取参数类型、必填项和默认值；/docs 可交互调试",
@@ -102,6 +111,8 @@ def build_portal_spec(config: HttpApiConfig) -> dict[str, Any]:
             "stop_example": {"user_id": "my_app:alice", "session_id": "support-1", "action": "stop"},
             "resume_example": {"user_id": "my_app:alice", "session_id": "support-1", "action": "resume",
                                "request_id": "resume-1"},
+            "context_example": {"user_id": "my_app:alice", "session_id": "support-1",
+                                "dynamic_context": "当前打开工单 #42，状态：待回复。", "skills": ["order-support"]},
             "tools": "GET /api/sdk/tools?group=... 自动发现已启用工具；POST /api/sdk/tools/{name}，正文 {user_id, group_id?, session_id?, arguments, request_id}；复用权限与 hook",
             "models": "POST /api/sdk/models/{operation} 的参数由 ModelAPI 签名生成；二进制字段采用 base64；不自动运行工具或继承对话",
             "trust": "单一集成令牌有系统工具权限；user_id 是调用方身份声明，不是多租户授权凭据。令牌由可信外部后端保管",
@@ -129,7 +140,7 @@ def build_portal_help(config: HttpApiConfig, topic: HelpTopic = "overview") -> d
             "inbound": {key: {name: value for name, value in item.items() if name in {"method", "path", "discovery"}}
                         for key, item in spec["inbound"].items()},
             "outbound": {key: spec["outbound"][key] for key in ("cascade", "callback_url")},
-            "topics": {"chat": "消息、媒体、SSE", "sessions": "停止、继续、历史",
+            "topics": {"chat": "消息、媒体、SSE", "sessions": "停止、继续、历史", "context": "动态上下文",
                        "sdk": "模型和系统工具", "https": "证书和外部地址"},
             "trust": spec["integration"]["trust"],
         }
@@ -141,6 +152,13 @@ def build_portal_help(config: HttpApiConfig, topic: HelpTopic = "overview") -> d
         return {**common, "control": spec["inbound"]["execution"], "history": spec["inbound"]["history"],
                 "stop": spec["integration"]["stop_example"], "resume": spec["integration"]["resume_example"],
                 "semantics": spec["reliability"]["stop"]}
+    if topic == "context":
+        return {**common, **spec["inbound"]["context"], "example": spec["integration"]["context_example"],
+                "enabled": config.context_inject, "capacity": config.max_context_sessions,
+                "max_chars": 16_000, "budget": "复用公共 provider token 总预算，预算不足时可省略",
+                "skill_budget": "最多 8 个技能，正文共 24K 字符；缺失或截断会提示，读取不代表步骤执行完成，也不会连接或激活 MCP",
+                "models": "模型 SDK 直调仅接收显式 messages，不继承这些 Agent 会话上下文",
+                "trust": spec["integration"]["trust"]}
     if topic == "sdk":
         from .sdk_routes import MODEL_OPERATIONS
         return {**common, **spec["inbound"]["sdk"], "model_operations": list(MODEL_OPERATIONS),
@@ -151,4 +169,4 @@ def build_portal_help(config: HttpApiConfig, topic: HelpTopic = "overview") -> d
                 "proxy": "代理终止 TLS 时填写 public_base_url；代理需支持 SSE 无缓冲和 WebSocket 转发",
                 "auth": "公网监听或设置 public_base_url 必须配置 api_token；调用方验证服务端证书",
                 "cors": "可信浏览器应用按需配置 cors_origins；系统令牌保管在可信后端"}
-    raise ValueError("未知帮助主题；请选择 overview/chat/sessions/sdk/https")
+    raise ValueError("未知帮助主题；请选择 overview/chat/sessions/context/sdk/https")

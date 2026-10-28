@@ -3,11 +3,30 @@
 from __future__ import annotations
 
 import uuid
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, Field, ValidationInfo, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator, model_validator
 
 from agent.messages import build_entity_scope
+from core.tags import tag_label
+
+SkillName = Annotated[str, Field(min_length=1, max_length=64, pattern=r"^[a-z0-9_](?:[a-z0-9_-]*[a-z0-9_])?$")]
+
+
+class SkillSelection(BaseModel):
+    """外部协议使用技能名字段，由适配器转换内部标签。"""
+
+    skills: list[SkillName] = Field(default_factory=list, max_length=8, description="显式加载正文的技能名，最多 8 个")
+
+    @field_validator("skills")
+    @classmethod
+    def unique_skills(cls, values: list[str]) -> list[str]:
+        return list(dict.fromkeys(values))
+
+    def tagged_content(self, content: str) -> str:
+        """使用统一编码器生成内部标签，正文无需包含标签协议。"""
+        prefix = "".join(tag_label("skill", name) for name in self.skills)
+        return f"{prefix}\n{content}" if prefix else content
 
 
 class SessionTarget(BaseModel):
@@ -55,7 +74,7 @@ class MediaItem(BaseModel):
     file_name: str = Field(default="", max_length=255)
 
 
-class ChatRequest(SessionTarget):
+class ChatRequest(SessionTarget, SkillSelection):
     message: str = Field(default="", max_length=256_000)
     user_name: str = Field(default="", max_length=128)
     message_id: str = Field(default="", max_length=128)
@@ -75,6 +94,20 @@ class ChatResponse(BaseModel):
     status: str = "ok"
     reply: str = ""
     error: str = ""
+
+
+class ContextRequest(SessionTarget, SkillSelection):
+    """覆盖连接的唯一动态快照；空字符串清除，不改静态提示词。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    dynamic_context: str = Field(default="", max_length=16_000, description="实时环境快照，每次模型调用前刷新；与空 skills 一起清除")
+
+    @model_validator(mode="after")
+    def require_context(self) -> ContextRequest:
+        if not self.model_fields_set.intersection({"dynamic_context", "skills"}):
+            raise ValueError("至少提供 dynamic_context 或 skills")
+        return self
 
 
 class VisionPushRequest(BaseModel):

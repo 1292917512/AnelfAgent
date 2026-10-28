@@ -234,7 +234,7 @@ bootstrap 不重复维护这些声明的导入清单。
 - 系统注入消息（压缩反馈、rehydration、超时恢复、后台任务、实体推送等）须附
   `"_source": {"origin": "<词汇>"}`，发送前由 `normalize_for_send` 与 `_layer` 一并剥离
   （LLM 不可见，供归因）。已用词汇：`compression` / `rehydration` / `timeout_recovery` /
-  `length_recovery` / `background_task` / `push` / `context_provider`；新增注入点复用或扩充词汇表。
+  `length_recovery` / `background_task` / `push` / `context_provider` / `skill_tag`；新增注入点复用或扩充词汇表。
   `_source` 不进 DB，仅作用于内存消息链
 - 一次性事件（后台任务完成/实体推送/定时提醒/重启补回/会话切换/委托完成）写目标会话**对话历史**
   （system，trigger_mind=False）而非短期记忆：await 返回即历史落库，随后的回复周期拉取必含
@@ -266,7 +266,7 @@ context      便签、文件索引等尾部上下文（内容寻址缓存保证�
 session      画像、召回、短期记忆和技能（每会话构建）
 message      本轮状态或安全提示
 tool_chain   本轮工具调用（think_loop 管理，追加式冻结）
-provider     上下文提供者实时注入（每轮发送组装时收集最新快照，置于工具链之后、exec_context 之前）
+provider     上下文提供者实时快照与显式 skill 标签的技能正文（逐轮组装，置于工具链之后、exec_context 之前）
 exec_context 本轮执行状态（每轮全量重建）
 ```
 

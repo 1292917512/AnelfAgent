@@ -17,6 +17,7 @@ if TYPE_CHECKING:
     )
     from agent.mind.guardrails import GuardrailController
     from agent.mind.mind import Mind
+    from agent.skills.tag_context import SkillTagContext
 
 
 class ThinkMode(str, Enum):
@@ -131,3 +132,4 @@ class ExecutionContext:
     reflect_tool_selectors: tuple[str, ...] = ()
     require_output: bool = False
     summary_only: bool = False
+    skill_context: SkillTagContext | None = None

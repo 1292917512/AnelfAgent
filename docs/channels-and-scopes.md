@@ -60,6 +60,12 @@ http_api 频道是外部系统的 HTTP/HTTPS 门户（默认 127.0.0.1:8091，�
 （≤20MB 内联 base64）；没有实际接收端时出站返回失败。
 报文契约见 channels/http_api/README.md；频道内会话规则经 reply_policy 注入，完整接入契约
 由 `http_api_portal_help` 频道工具按生效配置实时生成供 AI 自取。
+`PUT/GET/DELETE /api/sessions/context` 按完整 scope 管理外部应用动态快照，复用与 AI 桌面相同的
+`ContextProviderRegistry`，每次模型调用前在 provider 尾部层读取；更新不触发思考、不入历史、
+不改稳定前缀。每个逻辑连接（完整 scope）只保留一条，新值覆盖旧值，保留至显式清除或频道停止；
+固定应用说明与实时状态可合并成同一快照，不进入 stable 层。快照受字符与会话容量限制。
+消息与动态快照都接受独立 `skills` 数组，HTTP 层经 `core.tags` 转成内部标签，统一技能链按名称
+读取正文；消息选择限本次执行，连接选择随快照覆盖，不把工具直调结果误认为会话绑定。
 `GET /api/sdk` 与 `/openapi.json` 供外部应用发现真实契约；模型方法按 `ModelAPI` 签名派生，
 工具目录读取已启用的实体注册表，执行复用权限、hook 与统一工具入口。会话控制
 `POST /api/sessions/control` 的 stop 复用 SDK 协作式停止，resume 向原会话提交新输入；

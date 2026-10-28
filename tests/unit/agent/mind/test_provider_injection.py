@@ -23,6 +23,56 @@ from core.context_provider import (
 )
 
 
+@pytest.mark.parametrize("multimodal", [False, True])
+async def test_explicit_skill_tags_load_bodies_and_follow_live_context_replacement(tmp_path, multimodal):
+    from types import SimpleNamespace
+
+    from agent.context.message_schema import normalize_for_send
+    from agent.skills.skill_store import SkillStore
+    from core.tags import tag_label
+
+    store = SkillStore(str(tmp_path / "skills"))
+    for name in ("message-rule", "context-old", "context-new", "history-only", "tool-only"):
+        store.create(name=name, description=name, content=f"BODY_{name}")
+    live = [tag_label("skill", "context-old")]
+
+    async def provide(scope):
+        return live[0]
+
+    ContextProviderRegistry.register(ProviderMeta(name="external-context", provide_fn=provide))
+
+    class ChangingMind(FakeMind):
+        async def execute_tool(self, tc):
+            result = await super().execute_tool(tc)
+            live[0] = tag_label("skill", "context-new")
+            return result
+
+    mind = ChangingMind(rounds=[tool_result("", ["inspect"]), end_reply_result()], default_text=None,
+                        context=FakeContext(exec_layer=True), tool_results={"inspect": tag_label("skill", "tool-only")})
+    mind.recollection.skills = SimpleNamespace(store=store)
+    text = tag_label("skill", "message-rule") + "处理订单"
+    content = [{"type": "text", "text": text}, {"type": "image_url", "image_url": {"url": "data:image/png;base64,eA=="}}] if multimodal else text
+    base = [{"role": "system", "content": "stable", "_layer": "stable"},
+            {"role": "user", "content": tag_label("skill", "history-only"), "_layer": "conversation"},
+            {"role": "user", "content": content, "_layer": "conversation"}]
+    completion = {}
+    await run_think_loop(mind, base_messages=base, completion=completion)
+    first, second = mind.sent_messages
+    assert all(messages[:len(base)] == base for messages in (first, second))
+    assert "BODY_message-rule" in str(first) and "BODY_message-rule" in str(second)
+    assert "BODY_context-old" in str(first) and "BODY_context-old" not in str(second)
+    assert "BODY_context-new" in str(second) and "BODY_context-new" not in str(first)
+    for name in ("message-rule", "context-old", "context-new"):
+        assert store.get(name).use_count == 1
+    for name in ("history-only", "tool-only"):
+        assert store.get(name).use_count == 0
+        assert f"BODY_{name}" not in str(mind.sent_messages)
+    assert "BODY_" not in str(completion["messages"])
+    skill_message = next(message for message in second if message.get("_source", {}).get("origin") == "skill_tag")
+    assert skill_message["_layer"] == "provider" and skill_message["_source"]["skills"][0]["mode"] == "read"
+    assert all("_source" not in message and "_layer" not in message for message in normalize_for_send(second))
+
+
 async def test_tool_progress_refreshes_providers_without_automatic_recall(monkeypatch):
     from unittest.mock import AsyncMock
 

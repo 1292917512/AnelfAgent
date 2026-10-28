@@ -96,6 +96,115 @@ def _client(channel: HttpApiChannel) -> TestClient:
     return TestClient(channel._create_app())
 
 
+class TestSessionContexts:
+    async def test_skill_fields_encode_internal_tags_and_replace_connection_selection(self, fake_agent_app) -> None:
+        from core.tags import tag_label
+
+        channel = HttpApiChannel()
+        client = _client(channel)
+        target = {"user_id": "app:alice", "session_id": "support"}
+        first = client.put("/api/sessions/context", json={**target, "skills": ["order-support", "order-support"]})
+        assert first.status_code == 200 and first.json()["skills"] == ["order-support"]
+        assert first.json()["dynamic_context"] == ""
+        snapshot = await channel.contexts.provide(ChatRequest(**target).scope)
+        assert snapshot is not None and tag_label("skill", "order-support") in snapshot.content
+        second = client.put("/api/sessions/context", json={**target, "dynamic_context": "当前订单已发货", "skills": ["shipping"]})
+        assert second.json()["dynamic_context"] == "当前订单已发货" and second.json()["skills"] == ["shipping"]
+        snapshot = await channel.contexts.provide(ChatRequest(**target).scope)
+        assert snapshot is not None and "order-support" not in snapshot.content
+        assert tag_label("skill", "shipping") in snapshot.content
+        response = client.post("/api/chat", json={**target, "message": "请处理订单", "skills": ["order-support"], "async_mode": True})
+        assert response.json()["status"] == "accepted"
+        assert fake_agent_app[-1]["content"] == tag_label("skill", "order-support") + "\n请处理订单"
+        assert client.post("/api/chat", json={**target, "skills": ["shipping"], "async_mode": True}).json()["status"] == "accepted"
+        assert client.delete("/api/sessions/context", params=target).json()["skills"] == []
+        assert await channel.contexts.provide(ChatRequest(**target).scope) is None
+        for skills in (["../order-support"], ["bad][channel:qq"], [f"skill-{index}" for index in range(9)]):
+            assert client.put("/api/sessions/context", json={**target, "skills": skills}).status_code == 422
+            assert client.post("/api/chat", json={**target, "message": "x", "skills": skills}).status_code == 422
+
+    def test_context_api_isolates_users_groups_and_sessions(self, fake_agent_app) -> None:
+        channel = HttpApiChannel()
+        client = _client(channel)
+        targets = [
+            {"user_id": "app:alice", "session_id": "first"},
+            {"user_id": "app:alice", "session_id": "second"},
+            {"user_id": "app:bob", "session_id": "first"},
+            {"user_id": "app:alice", "group_id": "app:alice", "session_id": "first"},
+        ]
+        for index, target in enumerate(targets):
+            response = client.put("/api/sessions/context", json={**target, "dynamic_context": f"state-{index}"})
+            assert response.status_code == 200
+        for index, target in enumerate(targets):
+            assert client.get("/api/sessions/context", params=target).json()["dynamic_context"] == f"state-{index}"
+        assert client.delete("/api/sessions/context", params=targets[0]).json()["dynamic_context"] == ""
+        assert client.get("/api/sessions/context", params=targets[1]).json()["dynamic_context"] == "state-1"
+        assert fake_agent_app == []
+
+    def test_one_context_per_connection_overwrites_at_capacity_and_clear_releases_slot(self) -> None:
+        channel = HttpApiChannel()
+        channel._config = HttpApiConfig(max_context_sessions=1)
+        client = _client(channel)
+        target = {"user_id": "alice", "session_id": "one"}
+        assert client.put("/api/sessions/context", json={**target, "dynamic_context": "old"}).status_code == 200
+        assert client.put("/api/sessions/context", json={**target, "dynamic_context": "latest"}).status_code == 200
+        assert client.get("/api/sessions/context", params=target).json()["dynamic_context"] == "latest"
+        assert client.put("/api/sessions/context", json={"user_id": "bob", "dynamic_context": "new"}).status_code == 503
+        assert client.get("/api/sessions/context", params=target).json()["dynamic_context"] == "latest"
+        assert client.put("/api/sessions/context", json={**target, "dynamic_context": ""}).status_code == 200
+        assert client.get("/api/sessions/context", params=target).json()["dynamic_context"] == ""
+        assert client.put("/api/sessions/context", json={"user_id": "bob", "dynamic_context": "new"}).status_code == 200
+
+    async def test_dynamic_snapshots_refresh_through_existing_provider_and_gate(self, monkeypatch) -> None:
+        from agent.context.providers import collect_provider_messages
+        from core.context_provider import ContextProviderRegistry
+
+        monkeypatch.setattr(ContextProviderRegistry, "_providers", {})
+        channel = HttpApiChannel()
+        channel.contexts.register()
+        client = _client(channel)
+        target = {"user_id": "alice", "session_id": "one"}
+        scope = ChatRequest(**target).scope
+        try:
+            assert client.put("/api/sessions/context", json={**target, "dynamic_context": "first snapshot"}).status_code == 200
+            first = await collect_provider_messages(None, scope)
+            assert len(first) == 1 and "first snapshot" in first[0]["content"]
+            assert first[0]["_layer"] == "provider"
+            assert first[0]["_source"]["provider"] == "http_api_context"
+            assert await collect_provider_messages(None, ChatRequest(user_id="other").scope) == []
+            client.put("/api/sessions/context", json={**target, "dynamic_context": "second snapshot"})
+            second = await collect_provider_messages(None, scope)
+            assert "second snapshot" in second[0]["content"] and "first snapshot" not in str(second)
+            assert "first snapshot" in first[0]["content"]
+            ConfigManager.set("http_api_context_inject", False)
+            assert await collect_provider_messages(None, scope) == []
+            assert client.get("/api/sessions/context", params=target).json()["dynamic_context"] == "second snapshot"
+            ConfigManager.set("http_api_context_inject", True)
+            assert "second snapshot" in str(await collect_provider_messages(None, scope))
+        finally:
+            await channel.stop()
+        assert client.get("/api/sessions/context", params=target).json()["dynamic_context"] == ""
+        assert channel.contexts.provider_name not in {meta.name for meta in ContextProviderRegistry.get_all()}
+
+    def test_context_auth_validation_discovery_and_browser_methods(self) -> None:
+        channel = HttpApiChannel()
+        channel._config = HttpApiConfig(api_token="secret", cors_origins=["https://app.local"])
+        client = _client(channel)
+        url = "/api/sessions/context"
+        for method in ("GET", "PUT", "DELETE"):
+            assert client.request(method, url).status_code == 401
+        headers = {"x-api-token": "secret", "Origin": "https://app.local"}
+        for body in ({}, {"dynamic_context": "x", "typo": True},
+                     {"dynamic_context": "x" * 16_001}, {"user_id": "bad#id", "dynamic_context": "x"}):
+            assert client.put(url, json=body, headers=headers).status_code == 422
+        for method in ("PUT", "DELETE"):
+            response = client.options(url, headers={"Origin": "https://app.local", "Access-Control-Request-Method": method})
+            assert response.status_code == 200
+        assert set(client.get("/openapi.json").json()["paths"][url]) == {"put", "get", "delete"}
+        spec = client.get("/api/sdk", headers=headers).json()["portal"]["inbound"]["context"]
+        assert spec["path"].endswith(url)
+
+
 class TestVisionPushEndpoint:
     def test_push_ok(self, fake_hash, tmp_path, monkeypatch) -> None:
         monkeypatch.setattr("core.path.ConfigPaths.UPLOAD_DIR", str(tmp_path), raising=False)
@@ -652,7 +761,7 @@ class TestVisionStreamWs:
 class TestPortalHelpTool:
     @pytest.mark.parametrize("topic,required", [
         ("overview", "steps"), ("chat", "example"), ("sessions", "stop"),
-        ("sdk", "model_operations"), ("https", "native"),
+        ("context", "example"), ("sdk", "model_operations"), ("https", "native"),
     ])
     def test_ai_help_is_available_by_topic_without_credentials(self, topic, required) -> None:
         channel = HttpApiChannel()

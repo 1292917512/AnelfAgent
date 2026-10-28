@@ -1,7 +1,7 @@
 """执行轮次的上下文准备与发送快照组装。
 
-模型可见：主回复刷新当前对话、推送和跨会话通知；内部执行只接收自己的任务与显式转向。
-Token：内部执行省去无关会话通知；主回复沿用压缩与动态提供者预算。
+模型可见：主回复刷新当前对话、推送和跨会话通知；显式 skill 标签加载正文，内部执行只接收自己的任务与显式转向。
+Token：内部执行省去无关会话通知；主回复沿用压缩与动态提供者预算，显式 skill 标签另受技能正文预算约束。
 缓存：对话只追加执行链；通知与实时状态仍在动态尾部，不改稳定前缀。
 """
 
@@ -10,6 +10,7 @@ from __future__ import annotations
 from agent.channel.delivery import observe_delivery_context
 from agent.context.dynamic import append_execution_status, format_delivery_status
 from agent.context.providers import collect_provider_messages
+from agent.judgment.evidence import dialogue_messages
 from agent.mind.background.context import background_context
 from agent.mind.execution.compression import _compress_context, _precompact_flush
 from agent.mind.execution.messages import _merge_new_messages, _merge_pushes, _merge_steered_messages
@@ -73,6 +74,14 @@ async def prepare_round_context(
     await _merge_pushes(ctx, state)
     # 并入转向指令（子代理步骤边界；主会话未绑定 drain 时零开销）
     _merge_steered_messages(ctx, state)
+
+    if ctx.skill_context is not None:
+        latest_input = next((message["content"] for message in reversed(dialogue_messages(ctx.base_messages))
+                             if message.get("role") == "user"), "")
+        provider_texts = [message["content"] for message in provider_msgs
+                          if message.get("_source", {}).get("origin") == "context_provider"
+                          and isinstance(message.get("content"), str)]
+        provider_msgs.extend(await ctx.skill_context.build(latest_input, provider_texts, scope=ctx.current_scope))
 
     if mode == ThinkMode.REPLY:
         from agent.mind.cross_channel import build_cross_channel_narrative

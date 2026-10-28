@@ -56,8 +56,9 @@ def build_router(adapter: HttpApiChannel) -> APIRouter:
             target = notification_channel("HTTP API") if notification else AdapterChannel(
                 channel_id=req.chat_id, channel_type=ChannelType(req.channel_type),
             )
-            content = (f"来自 {req.user_name or req.user_id}({req.user_id}) 的通知：\n{req.message}"
-                       if notification else req.message)
+            message_content = req.tagged_content(req.message)
+            content = (f"来自 {req.user_name or req.user_id}({req.user_id}) 的通知：\n{message_content}"
+                       if notification else message_content)
             inbound = AdapterMessage(
                 message_id=message_id, sender=sender, channel=target, content=content,
                 segments=segments, kind=kind, is_to_me=req.to_me,
