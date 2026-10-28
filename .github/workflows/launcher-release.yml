@@ -53,7 +53,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
       - name: Check native terminal, installation and cancellation
         working-directory: .
-        run: uv run --no-project --isolated --python 3.12 --with pytest==8.4.2 --with-requirements app/runtime-requirements.txt python -m pytest -c app/tests/isolated.ini --confcutdir=app/tests app/tests -q
+        run: uv run --no-project --isolated --python 3.12 --with-requirements app/tests/requirements.txt python -m pytest -c app/tests/isolated.ini --confcutdir=app/tests app/tests -q
       - name: Package native application
         run: pnpm dist --${{ matrix.platform }} --${{ matrix.arch }}
       - uses: actions/upload-artifact@v7
@@ -85,7 +85,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          result=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&event=push&per_page=1" --jq '.workflow_runs[0].conclusion')
+          result=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs?head_sha=$GITHUB_SHA&per_page=1" --jq '.workflow_runs[0].conclusion')
           if [ "$result" != success ]; then
             echo "The source commit must pass CI before publishing (result: $result)." >&2
             exit 1

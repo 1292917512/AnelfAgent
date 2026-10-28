@@ -3,3 +3,7 @@ allowBuilds:
   app-builder-bin: true
   dmg-license: true
   electron-winstaller: false
+# The tested Electron release is pinned and integrity-locked to its official npm artifact.
+# Keep age checks for all other versions and dependencies.
+minimumReleaseAgeExclude:
+  - electron@45.1.0

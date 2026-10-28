@@ -7,7 +7,6 @@ import os
 import shutil
 import subprocess
 import sys
-import sysconfig
 import time
 from pathlib import Path
 from typing import Callable
@@ -36,7 +35,9 @@ def test_old_checkout_gets_control_without_source_edits(tmp_path: Path, monkeypa
     subprocess.run([str(shutil.which("uv")), "venv", "--offline", "--no-config", "--no-python-downloads",
                     "--cache-dir", str(tmp_path / "cache"), "--python", sys._base_executable, str(root / ".venv")],
                    check=True, capture_output=True, **background_options())
-    monkeypatch.setenv("PYTHONPATH", os.pathsep.join([str(repo), sysconfig.get_path("purelib")]))
+    # uv --with may put dependencies in an overlay rather than the interpreter's purelib.
+    dependencies = [path for path in sys.path if Path(path).name in {"site-packages", "dist-packages"}]
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join([str(repo), *dependencies]))
     files = {
         "core/__init__.py": f"__path__.append({str(repo / 'core')!r})\n",
         "web/__init__.py": "",
