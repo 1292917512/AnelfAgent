@@ -9,7 +9,7 @@ const $ = id => {const node=document.getElementById(id);if(!node)throw new Error
 /** @param {string} id */
 const control = id => {const node=$(id);if(!(node instanceof HTMLButtonElement || node instanceof HTMLSelectElement || node instanceof HTMLInputElement))throw new Error(id);return node;};
 /** @param {unknown} error */
-const errorText = error => error instanceof Error ? error.message : String(error);
+const errorText = error => (error instanceof Error ? error.message : String(error)).replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/,'');
 const desktop=window.anelfDesktop;
 if(!desktop)throw new Error('Desktop bridge unavailable');
 let locale = words.zh, busy = false;
@@ -18,6 +18,7 @@ let enoughSpace = false;
 /** @type {'question'|'new'|'existing'} */ let projectChoice='question';
 let existingRoot='',targetRoot='';
 let progressBuffer='';
+/** @type {import('../ui/lib/types').RepositoryInfo | null} */ let existingRepository=null;
 const moving=()=>{const node=$('move-project');return node instanceof HTMLInputElement && node.checked;};
 const canContinue=()=>projectChoice==='existing' ? !!existingRoot : projectChoice==='new' && enoughSpace;
 /** @type {import('../ui/lib/types').BootstrapInfo | null} */ let catalog=null;
@@ -25,6 +26,8 @@ Object.assign(words.zh,{pypi:'uv / Python 包镜像',followSource:'跟随环境�
 Object.assign(words.en,{pypi:'uv / Python package index',followSource:'Follow environment source',details:'Expand or collapse progress details'});
 Object.assign(words.zh,{title:'准备安装 AnelfAgent',hint:'确认安装位置，其余环境自动准备。',continue:'开始安装',installOptions:'调整安装选项',preparingTitle:'正在准备环境',preparingHint:'自动复用现有工具，准备好后继续安装项目。',preparing:'正在准备基础环境…'});
 Object.assign(words.en,{title:'Install AnelfAgent',hint:'Confirm the folder. We will prepare the environment.',continue:'Install',installOptions:'Installation options',preparingTitle:'Preparing your environment',preparingHint:'Reusing existing tools before continuing with the project.',preparing:'Preparing the environment…'});
+Object.assign(words.zh,{failed:'未能完成，请展开查看具体原因。',keepOrigin:'沿用原仓库',originUnknown:'暂时无法读取 origin，默认保留原仓库',customOrigin:'自定义仓库：保留当前 origin，镜像地址需通过 Git 配置。'});
+Object.assign(words.en,{failed:'Unable to complete. Expand to see the reason.',keepOrigin:'Keep current origin',originUnknown:'Origin unavailable; keep the existing repository',customOrigin:'Custom repository: keep origin; configure its mirror through Git.'});
 Object.assign(words.zh,{question:'已有 AnelfAgent 项目？',questionHint:'接入之前通过 Git 下载的项目，或开始全新安装。',existingYes:'是，选择已有项目',existingNo:'否，全新安装',existingTitle:'接入已有项目',existingIntro:'以所选项目为准，保留代码、配置与数据。',oldPath:'原项目目录',moveProject:'迁移到安装目录',targetPath:'迁移目标目录',moveHint:'运行中会先询问是否停服。完整校验后移动文件，再用 uv 准备新路径的环境。',keepHint:'文件保留在原目录，直接接入管理；不会移动项目或停止服务。',selectHint:'请选择已有项目文件夹',import:'接入项目',move:'迁移并继续',back:'返回',backHint:'已返回上一步，项目文件未移动。'});
 Object.assign(words.en,{question:'Already have an AnelfAgent project?',questionHint:'Connect a checkout you already have, or start a fresh installation.',existingYes:'Yes, select project',existingNo:'No, fresh install',existingTitle:'Connect your project',existingIntro:'Keep the selected project’s code, configuration and data.',oldPath:'EXISTING PROJECT',moveProject:'Move to the installation folder',targetPath:'DESTINATION',moveHint:'Ask before stopping a running service. Verify and move files, then prepare the environment with uv.',keepHint:'Use the original folder. No files are moved and no service is stopped.',selectHint:'Choose an existing project folder',import:'Connect project',move:'Move & continue',back:'Back',backHint:'Returned to the previous step. Project files were not moved.'});
 /** @type {Record<string,string>} */
@@ -48,9 +51,21 @@ function showStep() {
   $('existing-root').textContent=existingRoot || locale.selectHint;
   $('target-root').textContent=targetRoot;
   $('existing-hint').textContent=moving()?locale.moveHint:locale.keepHint;
+  showRepository();
   document.querySelectorAll('ol li').forEach((node,index)=>node.classList.toggle('current',index===(busy?1:0)));
   requestAnimationFrame(fitWindow);
 }
+function showRepository() {
+  const source=control('source');if(!(source instanceof HTMLSelectElement))return;
+  const existing=projectChoice==='existing',info=existingRepository;
+  source.options[0].textContent=existing ? locale.keepOrigin+(info?.source?' · '+info.source:'') : locale.auto;
+  for(const option of source.options)option.disabled=existing && !!info?.origin && !info.switchable && option.value!=='auto' && option.value!==info.source;
+  const selected=source.value;
+  const address=selected==='auto' || !info?.switchable ? info?.origin : catalog?.repositories?.[selected];
+  $('existing-origin').textContent=address || locale.originUnknown;
+  $('existing-origin').title=address || '';
+}
+control('source').onchange=showRepository;
 function showIndex() {
   if (!catalog) return;
   const source=control('pypi').value,region=control('downloads').value;
@@ -87,7 +102,7 @@ desktop.onBootstrapProgress(value => {
   }catch{ /* Management setup also emits plain-text tool output. */ }
   if(first)requestAnimationFrame(fitWindow);
 });
-const selectExisting=async()=>{try{const root=await desktop.chooseProject('existing');if(root)existingRoot=root;showStep();}catch(error){$('progress').hidden=false;$('status').textContent=errorText(error);requestAnimationFrame(fitWindow);}};
+const selectExisting=async()=>{try{const root=await desktop.chooseProject('existing');if(root){existingRoot=root;existingRepository=await desktop.projectRepository(root);control('source').value='auto';}showStep();}catch(error){$('progress').hidden=false;$('status').textContent=errorText(error);requestAnimationFrame(fitWindow);}};
 $('existing-yes').onclick=async()=>{projectChoice='existing';const checkbox=$('move-project');if(checkbox instanceof HTMLInputElement)checkbox.checked=true;showStep();await selectExisting();};
 $('existing-no').onclick=()=>{projectChoice='new';showStep();};
 $('choose-existing').onclick=selectExisting;
@@ -106,7 +121,7 @@ $('continue').onclick = async () => {
     if(result?.accepted===false){$('progress').hidden=true;$('output').textContent='';}
   }
   catch(error) {
-    if(!stoppingForExit){$('status').textContent=errorText(error).includes('Cancelled')?locale.cancelled:locale.failed;$('output').textContent=errorText(error);}
+    if(!stoppingForExit){const detail=errorText(error);$('status').textContent=detail.includes('Cancelled')?locale.cancelled:detail;$('status').title=detail;$('output').textContent+='\n'+detail;}
     const info=await desktop.bootstrapInfo();
     if(projectChoice==='existing' && info.projectChoice==='existing' && info.root===targetRoot){
       existingRoot=info.root;const checkbox=$('move-project');if(checkbox instanceof HTMLInputElement)checkbox.checked=false;
@@ -120,7 +135,7 @@ document.querySelectorAll('[data-text]').forEach(node=>{if(node instanceof HTMLE
 $('bootstrap-progress-toggle').title=locale.details;
 $('root').textContent=info.root;control('source').value=info.source;control('downloads').value=info.downloadSource;
 targetRoot=info.defaultTarget;
-if(info.projectChoice){projectChoice=info.projectChoice;if(projectChoice==='existing'){existingRoot=info.root;const checkbox=$('move-project');if(checkbox instanceof HTMLInputElement)checkbox.checked=false;}}
+if(info.projectChoice){projectChoice=info.projectChoice;if(projectChoice==='existing'){existingRoot=info.root;existingRepository=await desktop.projectRepository(info.root);const checkbox=$('move-project');if(checkbox instanceof HTMLInputElement)checkbox.checked=false;}}
 control('pypi').replaceChildren(new Option(locale.followSource,'auto'),...Object.entries(info.pypiSources).map(([key,value])=>new Option(value.label[info.language] || key,key)));
 control('pypi').value=info.pypiSource;showIndex();
 renderStorage(info.storage);

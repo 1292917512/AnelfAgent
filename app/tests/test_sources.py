@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
 
 from app.environment import Environment
+from app.manager import Manager
+from app.repository import describe, origin, selected_origin
 from app.settings import DOWNLOADS, Layout, Settings, download_profile
 
 
@@ -35,3 +38,42 @@ def test_existing_settings_keep_automatic_source() -> None:
     assert download_profile(Settings(download_source="china"))["pypi"] == DOWNLOADS["china"]["pypi"]
     with pytest.raises(ValueError, match="Unknown uv"):
         Settings.parse({"pypi_source": "https://example.invalid"})
+
+
+def test_repository_selection_preserves_existing_urls_and_protects_custom_forks() -> None:
+    old = "git@github.com:1292917512/AnelfAgent.git"
+    assert selected_origin(old, "auto") == old
+    assert selected_origin(old, "gitee") == "https://gitee.com/eflyz/AnelfAgent.git"
+    assert selected_origin("ssh://git@gitee.com/eflyz/AnelfAgent.git", "github") == "https://github.com/1292917512/AnelfAgent.git"
+    fork = "https://github.com/my-team/custom-agent.git"
+    assert selected_origin(fork, "auto") == selected_origin(fork, "github") == fork
+    with pytest.raises(ValueError, match="自定义仓库"):
+        selected_origin(fork, "gitee")
+    assert describe("https://user:secret@github.com/1292917512/AnelfAgent.git?secret=x")["origin"] == "https://github.com/1292917512/AnelfAgent.git"
+
+
+def test_manager_detects_and_switches_origin_without_changing_worktree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    original = "git@github.com:1292917512/AnelfAgent.git"
+    subprocess.run(["git", "-C", str(tmp_path), "remote", "add", "origin", original], check=True)
+    local = tmp_path / "keep.txt"
+    local.write_text("uncommitted")
+    manager = Manager(Layout(tmp_path))
+    assert manager.status()["resolved_source"] == "github"
+    manager.configure_repository("auto")
+    assert origin(tmp_path, manager.environment.tool("git")) == original
+    manager.configure_repository("gitee")
+    assert manager.status()["repository"]["origin"] == "https://gitee.com/eflyz/AnelfAgent.git"
+    manager.configure_repository("github")
+    assert origin(tmp_path, manager.environment.tool("git")) == "https://github.com/1292917512/AnelfAgent.git"
+    assert local.read_text() == "uncommitted"
+    with monkeypatch.context() as patch:
+        def fail_save(_self: Layout, _settings: Settings) -> None:
+            raise OSError("Disk unavailable")
+        patch.setattr(Layout, "save_settings", fail_save)
+        with pytest.raises(OSError, match="Disk unavailable"):
+            manager.configure_repository("gitee")
+    assert manager.settings.source == "github"
+    assert origin(tmp_path, manager.environment.tool("git")) == "https://github.com/1292917512/AnelfAgent.git"
+    manager.configure_repository("auto")
+    assert manager.settings.source == "auto"

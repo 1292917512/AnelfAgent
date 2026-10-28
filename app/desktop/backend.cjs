@@ -129,11 +129,12 @@ async function runTask(options,args) {
   command.args.splice(command.args.lastIndexOf('serve'),3,...args);
   return new Promise((resolve,reject)=>{
     const child=spawn(command.command,command.args,{cwd:command.cwd,env:command.env,windowsHide:true,stdio:['ignore','pipe','pipe']});
-    let output='';
+    let output='',errors='';
     const collect=(/** @type {string} */ value)=>{output=(output+value).slice(-12000);options.progress?.(value);};
-    child.stdout.setEncoding('utf8').on('data',collect);child.stderr.setEncoding('utf8').on('data',collect);
+    child.stdout.setEncoding('utf8').on('data',collect);
+    child.stderr.setEncoding('utf8').on('data',(/** @type {string} */ value)=>{errors=(errors+value).slice(-12000);collect(value);});
     child.on('error',reject);
-    child.on('close',code=>code===0 ? resolve(output) : reject(new Error(output || 'Project operation failed ('+code+')')));
+    child.on('close',code=>code===0 ? resolve(output) : reject(new Error(errors.trim().split(/\r?\n/).at(-1) || output || 'Project operation failed ('+code+')')));
   });
 }
 module.exports = { validConnection, commandFor, connectionAt, ensureBackend, findUv, findPython, resolveProfile, runTask };

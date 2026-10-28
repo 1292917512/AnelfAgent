@@ -19,6 +19,7 @@ from typing import Any
 from app.environment import Environment
 from app.operation import Cancelled, Operation
 from app.processes import background_options
+from app.repository import RepositoryInfo, change_origin, describe, origin, set_source
 from app.settings import REPOSITORY_SOURCES, Layout, Settings, download_profile, probe_port, resolve_source
 from app.storage import inspect_storage, require_storage
 from core.host_protocol import HostLock, write_json
@@ -70,6 +71,11 @@ class Manager:
         self._last: dict[str, Any] | None = None
         self.operation = Operation()
         self.environment = Environment(layout, self.emit, self.operation)
+        self._repository = describe("")
+        try:
+            self.inspect_repository()
+        except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+            logging.getLogger(__name__).debug("Repository inspection unavailable: %s", exc)
         try:
             previous = json.loads((layout.state / "operation.json").read_text("utf-8"))
             if previous.get("status") == "running":
@@ -150,7 +156,8 @@ class Manager:
             return {"root": str(self.layout.root), "phase": phase, "running": pid is not None,
                     "pid": pid, "external_pid": self._external_pid(), "busy": busy,
                     "settings": asdict(self.settings), "web_url": self.web_url,
-                    "resolved_source": resolve_source(self.settings.source, self.settings.timezone),
+                    "resolved_source": self._repository["source"] or resolve_source(self.settings.source, self.settings.timezone),
+                    "repository": self._repository,
                     "downloads": download_profile(self.settings),
                     "storage": inspect_storage(self.layout.root),
                     "ready": ready, "resumable": not ready and (self.layout.root / "pyproject.toml").is_file(),
@@ -193,8 +200,38 @@ class Manager:
             port = probe_port(settings.web_host, settings.web_port)
             if not port["available"]:
                 raise RuntimeError(f"Port unavailable: {port['detail']}")
-            self.layout.save_settings(settings)
+            self._save_configuration(settings, repository="source" in value)
+
+    def inspect_repository(self) -> RepositoryInfo:
+        self._repository = describe(origin(self.layout.root, self.environment.tool("git")))
+        return self._repository
+
+    def configure_repository(self, source: str) -> RepositoryInfo:
+        """Change an explicit upstream without restarting a service or touching its branch."""
+        with self._mutex:
+            if self._operation.locked():
+                raise RuntimeError("Wait for the current project operation before changing its repository")
+            settings = Settings.parse({**asdict(self.settings), "source": source})
+            self._save_configuration(settings, repository=True)
+            return self._repository
+
+    def _save_configuration(self, settings: Settings, *, repository: bool) -> None:
+        if not self._project.acquire():
+            raise RuntimeError("Another operation is using this project")
+        try:
+            git = self.environment.tool("git") if repository else None
+            old = origin(self.layout.root, git) if repository else ""
+            selected = set_source(self.layout.root, git, settings.source) if repository else self._repository
+            try:
+                self.layout.save_settings(settings)
+            except OSError:
+                if repository and git:
+                    change_origin(self.layout.root, git, origin(self.layout.root, git), old)
+                raise
             self.settings = settings
+            self._repository = selected
+        finally:
+            self._project.release()
 
     def web_access(self, password: str | None = None) -> dict[str, Any]:
         """通过项目解释器与 ConfigPaths 读写原 Web 密码；只返回是否设置，不回传密码。"""
@@ -309,6 +346,8 @@ class Manager:
         self._stop()
         self.operation.check()
         write_json(self.layout.state / "installation.json", {"ready": False})
+        if git:
+            self._repository = set_source(self.layout.root, git, self.settings.source)
         if update and git:
             self.operation.stage("checkout")
             self.environment.run([git, "pull", "--ff-only"], timeout=120)

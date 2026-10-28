@@ -17,7 +17,7 @@ Electron 本地 APP、浏览器管理页和命令行共用 `app/` 的管理后�
 
 首次进入先选择是否已有 AnelfAgent Git 项目：选「否」按以下流程全新安装；选「是」选择旧项目
 根目录，并确认「迁移到安装目录」（默认勾选）及目标路径。取消勾选则直接接入原目录，不移动文件、
-不停止原服务，也不改写 Git 上游。接入后检查原环境，完整可用的项目直接进入管理界面。
+不停止原服务。自动读取原项目的 Git origin，默认沿用；接入后检查原环境，完整可用的项目直接进入管理界面。
 
 迁移前检查服务状态；正在运行时询问是否安全关闭，选「否，返回上一步」不执行停服或移动。
 确认后等待宿主及管理服务退出，无法安全关停的旧实例需要通过原入口停止。目标必须为空且与原目录
@@ -28,8 +28,9 @@ Electron 本地 APP、浏览器管理页和命令行共用 `app/` 的管理后�
 项目 Git 历史、未提交更改、配置与数据一起迁移。Python 虚拟环境包含绝对路径，不能直接当作可移动
 环境使用（参见 [Python venv 文档](https://docs.python.org/3/library/venv.html)）；旧 `.venv` 保存在
 新项目 `logs/manager/migration-backups/` 下，再由 uv 按锁文件准备新路径的环境并完整构建前端。
-APP 不自行修改源码、远程仓库或任意配置里的绝对路径；自定义的外部数据位置仍保留在原处。
-Git linked worktree、子模块、对象共享及无法安全重定位的目录联接应取消迁移勾选，直接使用原目录。
+APP 不自行修改源码或任意配置里的绝对路径；自定义的外部数据位置仍保留在原处。
+子模块使用相对路径且 Git 元数据完整位于迁移范围内时可随项目移动。Git linked worktree、外部对象共享、
+绝对路径的 Git 关联及无法安全重定位的目录联接应取消迁移勾选，直接使用原目录；检查失败会指出具体路径。
 接入的项目始终属于用户，迁移到 APP 数据目录也不获得卸载删除所有权；卸载保留这些项目。
 
 1. **位置与来源**：确认完整项目路径，默认按系统时区推荐 GitHub/Gitee 与国内/国际环境源。
@@ -83,7 +84,9 @@ APP 不会把一次网络失败当成仍在安装，也不会自动开始第二�
 `https://github.com/1292917512/AnelfAgent.git`。Windows 命令行同时识别中国标准时间名称。
 设置可手动指定 GitHub 或 Gitee，显式选择优先。时区只用于默认选源，不进行 IP 定位。
 
-新安装记录所选仓库为 Git origin；已有项目保持自己的上游，不因切换偏好重写远程地址。
+新安装记录所选仓库为 Git origin；已有项目的「自动」沿用当前 origin，保留 SSH / HTTPS 地址。
+明确选择 GitHub / Gitee 时，官方仓库切换为对应镜像地址，保留当前分支和未提交文件；后续更新使用该地址。
+自定义 fork 不自动映射到官方仓库，需自行通过 Git 配置对应镜像。环境和 uv 包镜像独立设置，不改写源码源。
 更新只接受干净工作区与 `git pull --ff-only`，不 stash/reset/覆盖用户文件。依赖同步失败时保留
 日志并暂停启动，不假装新版本已就绪。
 
@@ -269,12 +272,14 @@ deb、AppImage 或解包目录。stage 只收集管理后端、终端适配依�
 共享网页、宿主协议与经 SHA-256 校验的 uv，不递归复制项目或用户目录。
 
 `.github/workflows/launcher-release.yml` 在原生系统上分别构建 Windows x64、macOS x64/arm64、
-Ubuntu x64。手动运行 workflow 仅生成 Actions artifacts。版本以根 `pyproject.toml` 的 `[project].version`
+Ubuntu x64。手动运行 workflow 默认仅生成 Actions artifacts。版本以根 `pyproject.toml` 的 `[project].version`
 为准；开发启动、stage、打包和发布检查通过 `desktop/version.cjs` 同步到 APP 的 `package.json`，
 界面显示、安装包元数据与文件名保持一致，不单独递增 APP 版本。发布版本使用 `主.次.修订` 格式。
 发布时先等待源码提交的 CI 通过，再推送与项目版本一致的 `v<版本>` 标签（也兼容 `launcher-v<版本>`）。所有平台构建成功后，
 发布任务再次核实该提交的 CI，检查五个安装包并生成 `SHA256SUMS.txt`；附件上传至草稿后才公开 GitHub Release。
 发布说明保存在 `app/RELEASE_NOTES.md`，发版时同步维护。主 CI 同时检查 APP 类型、桌面逻辑和无界面浏览器交互。
+同版本修复可在该提交 CI 通过后手动运行并勾选 `replace_existing`：仅替换已有公开 Release 的附件和校验清单，
+不新建 Release、不移动或新建标签；目标发布不存在时失败退出。发布说明会记录实际构建提交，便于追溯对应源码。
 Linux x64 的文件名遵循打包格式：AppImage 使用 `x86_64`，deb 使用 `amd64`，均对应同一 64 位架构。
 发布前将对应项目源码同步到 GitHub 与 Gitee，确保自动选源的用户获得相同的控制协议。
 Gitee 源码使用者仍可下载相同安装包；工作流不自动发布到 Gitee Releases。

@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from app.migration import migrate, recover, validate_project
+from app.migration import migrate, recover, validate_git_link, validate_project
 from core.host_protocol import HostLock
 
 
@@ -159,3 +159,41 @@ def test_fast_move_preserves_internal_and_external_link_targets(checkout: tuple[
     migrate(source, target, data, lambda *_: None, data / "cancel")
     assert (target / "internal").resolve() == target / "config/data.db"
     assert (target / "external").read_text() == "outside"
+
+
+@pytest.mark.parametrize("cross", [False, True])
+def test_nested_relative_submodule_moves_with_the_checkout(
+    checkout: tuple[Path, Path, Path], monkeypatch: pytest.MonkeyPatch, cross: bool,
+) -> None:
+    source, target, data = checkout
+    upstream = source.parent / "submodule-upstream"
+    upstream.mkdir()
+    subprocess.run(["git", "init", "-q", str(upstream)], check=True)
+    (upstream / "module.txt").write_text("committed\n")
+    subprocess.run(["git", "-C", str(upstream), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(upstream), "-c", "user.name=Test", "-c", "user.email=test@example.invalid",
+                    "commit", "-qm", "fixture"], check=True)
+    reference = source / ".other/Reference"
+    reference.mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", str(reference)], check=True)
+    subprocess.run(["git", "-c", "protocol.file.allow=always", "-C", str(reference), "submodule", "add",
+                    str(upstream), "vendor/module"], check=True, capture_output=True)
+    module = reference / "vendor/module"
+    (module / "module.txt").write_text("local uncommitted change\n")
+    before = subprocess.check_output(["git", "-C", str(module), "status", "--porcelain"])
+    if cross:
+        cross_device(monkeypatch, source, target)
+    migrate(source, target, data, lambda *_: None, data / "cancel")
+    moved = target / ".other/Reference/vendor/module"
+    assert subprocess.check_output(["git", "-C", str(moved), "status", "--porcelain"]) == before
+    assert (moved / "module.txt").read_text() == "local uncommitted change\n"
+    assert "gitdir: ../../.git/modules/vendor/module" in (moved / ".git").read_text()
+
+
+def test_external_git_link_is_rejected_with_its_relative_path(checkout: tuple[Path, Path, Path]) -> None:
+    source, _target, _data = checkout
+    linked = source / "reference"
+    linked.mkdir()
+    (linked / ".git").write_text("gitdir: ../../external.git\n")
+    with pytest.raises(ValueError, match=r"reference[/\\]\.git"):
+        validate_git_link(linked / ".git", source)

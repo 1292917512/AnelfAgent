@@ -18,7 +18,8 @@ from core.host_protocol import HostLock, write_json
 
 SETTINGS_SCHEMA = [
     {"name": "source", "type": "select", "advanced": True, "options": ["auto", "github", "gitee"],
-     "label": {"zh": "新安装代码来源", "en": "Source for new installations"}},
+     "option_labels": {"auto": {"zh": "沿用原仓库 / 新安装自动选择", "en": "Keep origin / automatic for new installs"}},
+     "label": {"zh": "项目仓库来源", "en": "Project repository"}},
     {"name": "download_source", "type": "select", "advanced": True, "options": ["auto", "china", "global"],
      "label": {"zh": "环境下载源", "en": "Environment download source"}},
     {"name": "pypi_source", "type": "select", "advanced": True, "options": ["auto", *DOWNLOADS["pypi_sources"]],
@@ -117,7 +118,8 @@ class Handler(BaseHTTPRequestHandler):
                 self._reply(200, {"repositories": REPOSITORY_SOURCES, "pypi_sources": DOWNLOADS["pypi_sources"],
                                   "china_timezones": DOWNLOADS["china_timezones"],
                                   "pypi_defaults": {key: DOWNLOADS[key]["pypi"] for key in ("china", "global")},
-                                  "downloads": download_profile(self.server.manager.settings)})
+                                  "downloads": download_profile(self.server.manager.settings),
+                                  "repository": self.server.manager.inspect_repository()})
             elif path == "/api/ports":
                 settings = self.server.manager.settings
                 self._reply(200, probe_port(settings.web_host, settings.web_port))
@@ -158,6 +160,10 @@ class Handler(BaseHTTPRequestHandler):
             elif path == "/api/settings":
                 self.server.manager.configure(body)
                 self._reply(200, {"ok": True})
+            elif path == "/api/repository":
+                if set(body) != {"source"} or not isinstance(body["source"], str):
+                    raise ValueError("Expected a repository source")
+                self._reply(200, self.server.manager.configure_repository(body["source"]))
             elif path == "/api/web-access":
                 password = body.get("password")
                 if not isinstance(password, str) or len(password) > 1024 or set(body) != {"password"}:
@@ -183,7 +189,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._reply(404, {"message": "Unknown endpoint"})
         except (ValueError, TypeError) as exc:
             self._reply(400, {"message": str(exc)})
-        except RuntimeError as exc:
+        except (OSError, RuntimeError) as exc:
             self._reply(409, {"message": str(exc)})
 
 

@@ -6,6 +6,7 @@ kills a service. A durable journal recovers interrupted commits before reconnect
 
 from __future__ import annotations
 
+import configparser
 import errno
 import hashlib
 import json
@@ -33,11 +34,40 @@ def validate_project(root: Path, *, moving: bool = False) -> Path:
     if moving:
         if root.is_symlink() or root.is_junction() or not (root / ".git").is_dir():
             raise ValueError("链接目录或 Git worktree 请取消迁移勾选，直接使用原目录。")
-        for name in ("worktrees", "objects/info/alternates"):
-            item = root / ".git" / name
-            if item.exists() and (any(item.iterdir()) if item.is_dir() else item.stat().st_size):
-                raise ValueError("此仓库依赖其他 Git 工作目录，请直接使用原目录。")
+        _validate_git_directory(root / ".git", root)
     return root.resolve()
+
+
+def _validate_git_directory(directory: Path, root: Path) -> None:
+    for name in ("worktrees", "objects/info/alternates"):
+        item = directory / name
+        if item.exists() and (any(item.iterdir()) if item.is_dir() else item.stat().st_size):
+            raise ValueError(f"Git 关联尚不能独立迁移：{item.relative_to(root)}。请保留原目录使用；更换下载源不会修复此结构。")
+
+
+def validate_git_link(item: Path, root: Path) -> None:
+    """Relative submodule links wholly inside the moved tree remain valid after relocation."""
+    value = item.read_text("utf-8").strip()
+    if not value.startswith("gitdir:"):
+        return
+    reference = Path(value[7:].strip())
+    directory = (item.parent / reference).resolve()
+    if reference.is_absolute() or not directory.is_relative_to(root.resolve()) or not directory.is_dir():
+        raise ValueError(f"Git 链接指向项目外部或绝对路径：{item.relative_to(root)}。请保留原目录使用。")
+    common = directory / "commondir"
+    if common.exists():
+        raise ValueError(f"Git linked worktree 需要单独迁移：{item.relative_to(root)}。请保留原目录使用。")
+    config = configparser.RawConfigParser(strict=False, allow_no_value=True)
+    try:
+        config.read(directory / "config", encoding="utf-8")
+        worktree = config.get("core", "worktree", fallback="") or ""
+        if worktree.startswith('"'):
+            worktree = str(json.loads(worktree))
+    except (configparser.Error, ValueError) as exc:
+        raise ValueError(f"无法验证 Git 工作路径：{item.relative_to(root)}。请保留原目录使用。") from exc
+    if worktree and (Path(worktree).is_absolute() or (directory / worktree).resolve() != item.parent.resolve()):
+        raise ValueError(f"Git 工作路径不能随目录移动：{item.relative_to(root)}。请保留原目录使用。")
+    _validate_git_directory(directory, root)
 
 
 def _stopped(root: Path) -> None:
@@ -64,8 +94,11 @@ def _inventory(root: Path) -> dict[str, tuple[int, int, int, str]]:
             link = item.is_symlink() or item.is_junction()
             if not (link or stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
                 raise ValueError(f"无法安全迁移特殊文件：{item}")
-            if name == ".git" and item.is_file():
-                raise ValueError("项目含 Git 子模块或链接检出，请直接使用原目录。")
+            if name == ".git":
+                if item.is_file():
+                    validate_git_link(item, root)
+                elif item.is_dir():
+                    _validate_git_directory(item, root)
             result[item.relative_to(root).as_posix()] = (
                 info.st_mode, info.st_size, info.st_mtime_ns, os.readlink(item) if link else "",
             )

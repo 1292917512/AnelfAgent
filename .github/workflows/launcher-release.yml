@@ -4,6 +4,11 @@ on:
   push:
     tags: ["v*", "launcher-v*"]
   workflow_dispatch:
+    inputs:
+      replace_existing:
+        description: Replace assets on the existing version's Release without changing its tag
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -68,7 +73,7 @@ jobs:
             app/dist/*.deb
 
   release:
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') || inputs.replace_existing == true
     needs: package
     runs-on: ubuntu-latest
     permissions:
@@ -76,6 +81,20 @@ jobs:
       actions: read
     steps:
       - uses: actions/checkout@v7
+      - name: Resolve release target
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPLACE_EXISTING: ${{ inputs.replace_existing == true }}
+        run: |
+          if [ "$REPLACE_EXISTING" = true ]; then
+            tag="v$(node -p "require('./app/desktop/package.json').version")"
+            gh release view "$tag" --json isDraft --jq 'if .isDraft then error("Replacement requires a published Release") else true end'
+            original=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$tag" --jq '.object.sha')
+            echo "ORIGINAL_TAG_OBJECT=$original" >> "$GITHUB_ENV"
+          else
+            tag="$GITHUB_REF_NAME"
+          fi
+          echo "RELEASE_TAG=$tag" >> "$GITHUB_ENV"
       - uses: actions/download-artifact@v7
         with:
           pattern: launcher-*
@@ -91,8 +110,6 @@ jobs:
             exit 1
           fi
       - name: Verify packages and create checksums
-        env:
-          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           version=${RELEASE_TAG#launcher-}
           version=${version#v}
@@ -104,10 +121,19 @@ jobs:
       - name: Publish installers
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.ref_name }}
+          REPLACE_EXISTING: ${{ inputs.replace_existing == true }}
         run: |
           version=${RELEASE_TAG#launcher-}
           version=${version#v}
+          if [ "$REPLACE_EXISTING" = true ]; then
+            test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq '.object.sha')" = "$ORIGINAL_TAG_OBJECT"
+            gh release upload "$RELEASE_TAG" app/dist/* --clobber
+            cp app/RELEASE_NOTES.md app/build-release-notes.md
+            printf '\n安装包构建提交：[%s](https://github.com/%s/commit/%s)。本次仅替换同版本附件，原标签保持不变；对应源码请使用此构建提交。\n' "$GITHUB_SHA" "$GITHUB_REPOSITORY" "$GITHUB_SHA" >> app/build-release-notes.md
+            gh release edit "$RELEASE_TAG" --notes-file app/build-release-notes.md
+            test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_TAG" --jq '.object.sha')" = "$ORIGINAL_TAG_OBJECT"
+            exit 0
+          fi
           if gh release view "$RELEASE_TAG" --json isDraft > app/build-release.json 2>/dev/null; then
             test "$(jq -r .isDraft app/build-release.json)" = true
             gh release upload "$RELEASE_TAG" app/dist/* --clobber

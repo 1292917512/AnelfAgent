@@ -7,6 +7,7 @@ const {pathToFileURL} = require('node:url');
 const {spawn} = require('node:child_process');
 const {ensureBackend,findUv,connectionAt,resolveProfile,runTask} = require('./backend.cjs');
 const {inspectProject,transferProject} = require('./project-import.cjs');
+const {inspectRepository} = require('./repository.cjs');
 const {register,projects} = require('./managed.cjs');
 const {prepare,request,drain,hasRunningServices} = require('./maintenance.cjs');
 const {inspectStorage,requireStorage} = require('./storage.cjs');
@@ -40,6 +41,7 @@ const bootstrapFile = path.join(__dirname,'bootstrap.html'), bootstrapUrl = path
 const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 const backendSource = app.isPackaged ? path.join(process.resourcesPath,'backend') : packageRoot;
 const downloads = JSON.parse(fs.readFileSync(path.join(backendSource,'app/downloads.json'),'utf8'));
+const repositories = JSON.parse(fs.readFileSync(path.join(backendSource,'app/repositories.json'),'utf8'));
 const requirements = JSON.parse(fs.readFileSync(path.join(backendSource,'app/install-requirements.json'),'utf8'));
 /** @type {{root:string,source:string,downloadSource:string,pypiSource:string,configured:boolean,projectChoice?:'new'|'existing'}} */
 let preferences = {root:app.isPackaged ? path.join(data,'project') : packageRoot,source:'auto',downloadSource:'auto',pypiSource:'auto',configured:false};
@@ -121,8 +123,8 @@ function runtime() {
   }
   return {backend,uv:findUv(bundled)};
 }
-/** @param {boolean} [setup] */
-async function connect(setup=false) {
+/** @param {boolean} [setup] @param {string} [repositorySource] */
+async function connect(setup=false,repositorySource) {
   if (bootstrap) return;
   bootstrap = new AbortController();
   let completed = () => {};
@@ -140,9 +142,19 @@ async function connect(setup=false) {
     const selected = runtime();
     const profile=resolveProfile(downloads,setup ? preferences.downloadSource : existing.download_source || preferences.downloadSource,
       setup ? preferences.pypiSource : existing.pypi_source || preferences.pypiSource,timezone);
-    connection = await ensureBackend({root:preferences.root,backend:selected.backend,uv:selected.uv.path,timezone,
+    const backendOptions={root:preferences.root,backend:selected.backend,uv:selected.uv.path,timezone,
       profile,indexEnvironment:downloads.uv_index_environment,tools:path.join(data,'tools'),signal:bootstrap.signal,
-      progress:value => window?.webContents.send('anelf:bootstrap-progress',value)});
+      progress:(/** @type {string} */ value) => window?.webContents.send('anelf:bootstrap-progress',value)};
+    connection = await ensureBackend(backendOptions);
+    if(repositorySource!==undefined) {
+      const status=await request(connection,'status');
+      if(status.busy)throw new Error('请等待当前项目操作结束后再接入 / Wait for the current project operation.');
+      if(!status.repository) {
+        await drain(preferences.root,false);
+        connection=await ensureBackend(backendOptions);
+      }
+    }
+    if(repositorySource!==undefined)await request(connection,'repository',{source:repositorySource});
     preferences.configured = true; save();
     if (window && !quitting && !stoppingForExit) await window.loadURL(connection.url + '/' + (setup ? '?setup=1' : '') + '#' + connection.token);
   } finally { bootstrap = null; completed(); }
@@ -190,7 +202,11 @@ async function start() {
   ipcMain.handle('anelf:bootstrap-info',event => {
     if (!trusted(event)) throw new Error('Untrusted sender');
     const selected = runtime();
-    return {...preferences,defaultTarget:path.join(data,'project'),pypiSources:downloads.pypi_sources,pypiDefaults:{china:downloads.china.pypi,global:downloads.global.pypi},timezone,china:downloads.china_timezones.includes(timezone),uv:selected.uv,storage:storage(),language:chinese?'zh':'en'};
+    return {...preferences,repositories,defaultTarget:path.join(data,'project'),pypiSources:downloads.pypi_sources,pypiDefaults:{china:downloads.china.pypi,global:downloads.global.pypi},timezone,china:downloads.china_timezones.includes(timezone),uv:selected.uv,storage:storage(),language:chinese?'zh':'en'};
+  });
+  ipcMain.handle('anelf:project-repository',(event,root)=>{
+    if(!trusted(event) || typeof root!=='string')throw new Error('Invalid project selection');
+    return inspectRepository(inspectProject(root),repositories);
   });
   ipcMain.handle('anelf:bootstrap-start',async(event,value) => {
     if (!trusted(event) || event.senderFrame?.url !== bootstrapUrl) throw new Error('Untrusted sender');
@@ -222,7 +238,7 @@ async function start() {
       } finally {bootstrap=null;complete();}
     } else preferences.projectChoice='new';
     preferences.source=value.source;preferences.downloadSource=value.downloadSource;preferences.pypiSource=value.pypiSource;save();
-    await connect(!value.existing || value.existing.move);
+    await connect(!value.existing || value.existing.move,value.existing?value.source:undefined);
     return {accepted:true};
   });
   ipcMain.handle('anelf:bootstrap-cancel',event => { if (!trusted(event)) throw new Error('Untrusted sender'); bootstrap?.abort(); });

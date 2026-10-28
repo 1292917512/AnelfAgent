@@ -25,6 +25,7 @@ await page.addInitScript(catalog=>{
     trayState:async value=>{window.trayStates.push(value);},onNavigate:callback=>{window.navigateFromTray=callback;},
     bootstrapInfo:async()=>({root,defaultTarget:'E:/AnelfAgent/project',source:'auto',downloadSource:'china',pypiSource:'auto',pypiSources:catalog.pypi_sources,pypiDefaults:{china:catalog.china.pypi,global:catalog.global.pypi},timezone:'Asia/Shanghai',china:true,language:'zh',uv:{bundled:false,version:'uv 0.13.6',path:'C:/Users/test/.local/bin/uv.exe'},storage:storage()}),
     bootstrapStorage:async()=>storage(),
+    projectRepository:async()=>({origin:'git@github.com:1292917512/AnelfAgent.git',source:'github',switchable:true}),
     chooseProject:async purpose=>{if(purpose==='existing')return 'D:/My old project';root='E:/AnelfAgent/project';free=20*1024**3;return root;},
     onBootstrapProgress:callback=>{window.progress=callback;},bootstrapStart:value=>{window.started.push(value);if(value.existing)return Promise.resolve({accepted:false});return new Promise((_resolve,reject)=>{window.finishBootstrap=()=>reject(new Error('Cancelled'));});},bootstrapCancel:async()=>window.finishBootstrap()
   };
@@ -76,6 +77,9 @@ try {
   await page.locator('#back-choice').click();await page.locator('#existing-yes').click();
   assert.equal(await page.locator('#existing-root').textContent(),'D:/My old project');
   assert.equal(await page.locator('#move-project').isChecked(),true);
+  assert.equal(await page.locator('#source').inputValue(),'auto');
+  assert.match(await page.locator('#source option[value="auto"]').textContent(),/github/);
+  assert.match(await page.locator('#existing-origin').textContent(),/git@github.com/);
   await page.locator('#source-options').evaluate(node=>{node.open=false;});
   await page.setViewportSize({width:640,height:Math.ceil(await page.locator('main').evaluate(node=>node.getBoundingClientRect().height))});
   await page.screenshot({animations:'disabled',path:path.join(directory,'../build/preview/import-project.png')});

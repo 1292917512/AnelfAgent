@@ -31,7 +31,7 @@
     "productName": "AnelfAgent",
     "asar": true,
     "directories": { "output": "../build/package" },
-    "files": ["main.cjs", "window.cjs", "tray.cjs", "exit.cjs", "backend.cjs", "storage.cjs", "managed.cjs", "maintenance.cjs", "project-import.cjs", "cleanup.cjs", "preload.cjs", "bootstrap.html", "bootstrap.js", "bootstrap.css", "theme.css", "icon.svg", "icon.png", "trayTemplate.png", "trayTemplate@2x.png", "package.json"],
+    "files": ["main.cjs", "window.cjs", "tray.cjs", "exit.cjs", "backend.cjs", "storage.cjs", "managed.cjs", "maintenance.cjs", "project-import.cjs", "repository.cjs", "cleanup.cjs", "preload.cjs", "bootstrap.html", "bootstrap.js", "bootstrap.css", "theme.css", "icon.svg", "icon.png", "trayTemplate.png", "trayTemplate@2x.png", "package.json"],
     "extraResources": [{ "from": "../build/backend", "to": "backend" }, { "from": "../build/tools", "to": "tools" }, { "from": "../../LICENSE", "to": "LICENSE-Anelf.txt" }],
     "artifactName": "AnelfAgent-${version}-${os}-${arch}.${ext}",
     "win": { "target": ["nsis"], "icon": "icon.png" },

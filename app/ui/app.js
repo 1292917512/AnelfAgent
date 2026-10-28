@@ -38,9 +38,9 @@ function pypiOptions() {
 }
 function sources() {
   const choice = input('install-source').value;
-  const resolved = choice === 'auto' ? state?.resolved_source || 'github' : choice;
-  el('source-reason').textContent = (choice === 'auto' ? t('automatic') + ' · ' + timezone : t('manual')) + ' → ' + (resolved === 'gitee' ? 'Gitee' : 'GitHub');
-  el('source-url').textContent = repositories[resolved] || '';
+  const repository=state?.repository,resolved = choice === 'auto' ? state?.resolved_source || 'github' : choice;
+  el('source-reason').textContent = (choice === 'auto' ? repository?.origin?t('keepOrigin'):t('automatic') + ' · ' + timezone : t('manual')) + ' → ' + (resolved === 'gitee' ? 'Gitee' : resolved==='github'?'GitHub':t('customRepository'));
+  el('source-url').textContent = repository?.origin && (choice==='auto' || !repository.switchable)?repository.origin:repositories[resolved] || '';
   const pypi=input('install-pypi-source').value,downloads=input('install-download-source').value;
   el('pypi-url').textContent=pypi === 'auto' ? pypiDefaults[downloads === 'auto' ? chinaTimezones.includes(timezone) ? 'china' : 'global' : downloads] || '' : pypiSources[pypi]?.url || '';
 }

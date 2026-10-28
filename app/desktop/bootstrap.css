@@ -15,6 +15,7 @@ label { display: block; font-size: 11px; margin: 7px 0; color: var(--muted); }
 .check input { width: 15px; height: 15px; accent-color: var(--accent); }
 #existing-options { animation: reveal .2s ease-out; }
 #existing-hint { color: var(--muted); font-size: 11px; }
+.repository-origin { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #project-question { margin: 8px 0 16px; }
 #setup-options:has(#install-location[hidden]) #source-options { margin-top: 0; border-top: 0; }
 select { margin-bottom: 6px; }

@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('anelfDesktop', Object.freeze({
   reconnect: () => ipcRenderer.invoke('anelf:reconnect'),
   cleanup: () => ipcRenderer.invoke('anelf:cleanup'),
   bootstrapInfo: () => ipcRenderer.invoke('anelf:bootstrap-info'),
+  projectRepository: (/** @type {string} */ root) => ipcRenderer.invoke('anelf:project-repository',root),
   bootstrapStorage: () => ipcRenderer.invoke('anelf:bootstrap-storage'),
   resize: (/** @type {{view:string,logs:boolean,height?:number}} */ value) => ipcRenderer.invoke('anelf:resize',value),
   trayState: (/** @type {import('./tray.cjs').TrayState} */ value) => ipcRenderer.invoke('anelf:tray-state',value),

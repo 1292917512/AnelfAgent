@@ -13,10 +13,7 @@ from typing import Any
 
 from core.host_protocol import write_json
 
-REPOSITORY_SOURCES = {
-    "github": "https://github.com/1292917512/AnelfAgent.git",
-    "gitee": "https://gitee.com/eflyz/AnelfAgent.git",
-}
+REPOSITORY_SOURCES = json.loads(Path(__file__).with_name("repositories.json").read_text("utf-8"))
 DOWNLOADS = json.loads(Path(__file__).with_name("downloads.json").read_text("utf-8"))
 
 
