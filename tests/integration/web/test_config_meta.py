@@ -66,6 +66,33 @@ class TestGetMeta:
 
 
 class TestSaveMeta:
+    def test_autonomous_interval_is_editable_without_changing_heartbeat(self, client, tmp_path, monkeypatch) -> None:
+        import json
+
+        import agent.config as config
+
+        path = tmp_path / "mind.json"
+        path.write_text(json.dumps({"heartbeat_interval": 600.0}), encoding="utf-8")
+        ConfigManager.set("mind_config_path", str(path))
+        monkeypatch.setattr(config, "_provider", None)
+        mind = config.get_config_provider().mind
+
+        groups = client.get("/api/config/meta").json()["groups"]
+        item = next(item for group in groups for item in group["items"]
+                    if item["key"] == "autonomous_decision_interval")
+        assert item["value"] == item["default"] == 3600.0
+        assert item["source"] == "mind" and item["min"] == 60 and item["editable"]
+
+        for value, expected in ((7200, 7200.0), (1, 60.0)):
+            response = client.put("/api/config/meta/autonomous_decision_interval", json={"value": value})
+            assert response.status_code == 200 and response.json()["value"] == expected
+            assert mind is config.get_config_provider().mind
+            assert mind.autonomous_decision_interval == expected
+            assert mind.heartbeat_interval == 600.0
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            assert saved["autonomous_decision_interval"] == expected
+            assert saved["heartbeat_interval"] == 600.0
+
     def test_profile_history_is_shared_with_ai_config_tools(self, client) -> None:
         import json
 

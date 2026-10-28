@@ -9,8 +9,9 @@ LLM 钩子 / 工作流 ask / Minecraft 自主轮次），它们不经本调度�
 被即时唤醒取代时不重复触发。任务在排队前即认领（queued 与 running 共用
 任务在飞集合），未开始的认领在关停时释放。
 
-模型可见：周期异常后的未消费待办按新态势重新进入主周期，不注入额外提示。
-Token：恢复复用正常周期的模型调用；退避等待不调用模型。
+模型可见：周期异常后的未消费待办按新态势重新进入主周期，不注入额外提示；
+定时自主决策只在独立间隔到期后收集态势，维护和事件驱动周期沿用原通道。
+Token：恢复复用正常周期的模型调用；退避等待与未到期的心跳不调用决策模型。
 缓存：不改上下文组装或稳定前缀，仅改变已有待办的调度时机。
 """
 
@@ -19,6 +20,7 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from dataclasses import dataclass
+from time import monotonic
 from typing import TYPE_CHECKING, List, Optional
 
 from core.log import log
@@ -56,6 +58,7 @@ class MindDriver:
         self._current_work = ""
         self._closed = False
         self._interleaved_cycle = False
+        self._last_autonomous_decision_at = monotonic()
 
     # ------------------------------------------------------------------
     # 只读状态
@@ -240,7 +243,7 @@ class MindDriver:
                     checkpoint=self._maintenance_checkpoint, should_yield=self._user_waiting)
                 if self._cycle_requested or self._interleaved_cycle:
                     log("心跳任务已收束，先处理新消息；自主决策留待后续周期", "DEBUG", tag="思维")
-                else:
+                elif self._autonomous_decision_due():
                     await self._mind._autonomous_cycle(is_heartbeat=True)
             else:
                 await self._run_tick()
@@ -256,6 +259,15 @@ class MindDriver:
             self._running = False
             self._current_work = ""
             self._mind._reset_phase_if_idle()
+
+    def _autonomous_decision_due(self) -> bool:
+        """按单调时钟认领到期的定时自主决策，消息周期与维护不参与计时。"""
+        now = monotonic()
+        interval = max(60.0, self._mind.config.autonomous_decision_interval)
+        if now - self._last_autonomous_decision_at < interval:
+            return False
+        self._last_autonomous_decision_at = now
+        return True
 
     async def _run_tick(self) -> None:
         try:

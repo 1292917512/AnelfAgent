@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+from agent.config import MindConfig
 from agent.messages import build_entity_scope
 from agent.mind.autonomous import MindTask, TaskType
 from agent.mind.driver import MindDriver
@@ -20,6 +21,7 @@ from agent.mind.prefrontal_cortex import PrefrontalCortex
 def _fake_mind() -> Any:
     claimed: set[str] = set()
     mind = SimpleNamespace(
+        config=MindConfig(),
         _reset_phase_if_idle=Mock(),
         _autonomous_cycle=AsyncMock(),
         _auto_cycle_retry=0,
@@ -48,8 +50,17 @@ def _fake_mind() -> Any:
     return mind
 
 
-async def test_cycle_requests_are_serial_and_latched() -> None:
+@pytest.fixture(autouse=True)
+def decision_clock(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """只替换 Driver 的决策时钟，不影响 asyncio 的真实超时。"""
+    now = [0.0]
+    monkeypatch.setattr("agent.mind.driver.monotonic", lambda: now[0])
+    return now
+
+
+async def test_cycle_requests_are_serial_and_latched(decision_clock: list[float]) -> None:
     mind = _fake_mind()
+    decision_clock[0] = 3600.0
     entered = asyncio.Event()
     release = asyncio.Event()
     calls: list[bool] = []
@@ -80,8 +91,11 @@ async def test_cycle_requests_are_serial_and_latched() -> None:
         await mind.driver.close()
 
 
-async def test_heartbeat_yields_at_completed_tick_before_starting_another_model_cycle() -> None:
+async def test_heartbeat_yields_at_completed_tick_before_starting_another_model_cycle(
+    decision_clock: list[float],
+) -> None:
     mind = _fake_mind()
+    decision_clock[0] = 3600.0
     entered, release = asyncio.Event(), asyncio.Event()
 
     async def tick(**kwargs):
@@ -98,8 +112,69 @@ async def test_heartbeat_yields_at_completed_tick_before_starting_another_model_
         await asyncio.wait_for(mind.driver.when_idle(), timeout=1)
         mind._autonomous_cycle.assert_awaited_once_with(is_heartbeat=False)
         mind.heartbeat_engine.tick.assert_awaited_once()
+        mind.driver.request_cycle(is_heartbeat=True)
+        await asyncio.wait_for(mind.driver.when_idle(), timeout=1)
+        mind._autonomous_cycle.assert_awaited_with(is_heartbeat=True)
+        assert mind._autonomous_cycle.await_count == 2
     finally:
         release.set()
+        await mind.driver.close()
+
+
+async def test_hourly_decisions_preserve_every_maintenance_tick(decision_clock: list[float]) -> None:
+    mind = _fake_mind()
+    try:
+        for now, decisions in ((300, 0), (1800, 0), (3599, 0), (3600, 1), (3900, 1), (7200, 2)):
+            decision_clock[0] = now
+            mind.driver.request_cycle(is_heartbeat=True)
+            await asyncio.wait_for(mind.driver.when_idle(), 1)
+            assert mind._autonomous_cycle.await_count == decisions
+        assert mind.heartbeat_engine.tick.await_count == 6
+        assert all(call.kwargs == {"is_heartbeat": True} for call in mind._autonomous_cycle.await_args_list)
+    finally:
+        await mind.driver.close()
+
+
+async def test_decision_interval_hot_reload_and_events_do_not_reset_cadence(decision_clock: list[float]) -> None:
+    mind = _fake_mind()
+    try:
+        for now in (600, 1200):
+            decision_clock[0] = now
+            mind.driver.request_cycle()
+            await asyncio.wait_for(mind.driver.when_idle(), 1)
+        assert mind._autonomous_cycle.await_count == 2
+        assert all(call.kwargs == {"is_heartbeat": False} for call in mind._autonomous_cycle.await_args_list)
+
+        mind.config.autonomous_decision_interval = 1800.0
+        for now, expected in ((1799, 2), (1800, 3)):
+            decision_clock[0] = now
+            mind.driver.request_cycle(is_heartbeat=True)
+            await asyncio.wait_for(mind.driver.when_idle(), 1)
+            assert mind._autonomous_cycle.await_count == expected
+
+        mind.config.autonomous_decision_interval = 7200.0
+        for now, expected in ((3600, 3), (8999, 3), (9000, 4), (100000, 5), (100001, 5)):
+            decision_clock[0] = now
+            mind.driver.request_cycle(is_heartbeat=True)
+            await asyncio.wait_for(mind.driver.when_idle(), 1)
+            assert mind._autonomous_cycle.await_count == expected
+        assert mind.heartbeat_engine.tick.await_count == 7
+    finally:
+        await mind.driver.close()
+
+
+async def test_empty_failed_decision_waits_for_next_interval(decision_clock: list[float]) -> None:
+    mind = _fake_mind()
+    mind._autonomous_cycle.side_effect = RuntimeError("decision model unavailable")
+    try:
+        for now, expected in ((3600, 1), (3900, 1), (7200, 2)):
+            decision_clock[0] = now
+            mind.driver.request_cycle(is_heartbeat=True)
+            await asyncio.wait_for(mind.driver.when_idle(), 1)
+            assert mind._autonomous_cycle.await_count == expected
+        assert mind.heartbeat_engine.tick.await_count == 3
+        mind._schedule_next_cycle.assert_not_called()
+    finally:
         await mind.driver.close()
 
 
@@ -205,9 +280,10 @@ async def test_close_cancels_inflight_tick_waiters() -> None:
 @pytest.mark.parametrize("heartbeat", [False, True])
 @pytest.mark.parametrize("pending", ["message", "general", "analysis"])
 async def test_failed_cycle_recovers_pending_work(
-    monkeypatch: pytest.MonkeyPatch, heartbeat: bool, pending: str,
+    monkeypatch: pytest.MonkeyPatch, heartbeat: bool, pending: str, decision_clock: list[float],
 ) -> None:
     mind = _fake_mind()
+    decision_clock[0] = 3600.0
     monkeypatch.setattr("core.config.get_config_float", lambda key, default: 0.1)
     scope = build_entity_scope("user", "test", "u1")
     if pending == "message":
@@ -412,8 +488,11 @@ async def test_close_during_interleaved_reply_cancels_tick_without_resuming_writ
 
 @pytest.mark.parametrize("arrival_order", list(permutations(("message", "task", "tick"))))
 @pytest.mark.parametrize("task_fails", [False, True])
-async def test_task_in_flight_orders_mixed_arrivals_without_losing_claims(arrival_order, task_fails):
+async def test_task_in_flight_orders_mixed_arrivals_without_losing_claims(
+    arrival_order, task_fails, decision_clock: list[float],
+):
     mind = _fake_mind()
+    decision_clock[0] = 3600.0
     entered, release = asyncio.Event(), asyncio.Event()
     events: list[str] = []
     active = 0

@@ -90,15 +90,20 @@ class TestResetPhaseIfIdle:
 
 
 class TestExecuteMindPhaseReset:
-    async def test_cycle_end_resets_deciding(self) -> None:
+    async def test_cycle_end_resets_deciding(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """心跳 idle 决策路径：周期内标记 DECIDING，锁释放后归零。"""
+        now = [0.0]
+        monkeypatch.setattr("agent.mind.driver.monotonic", lambda: now[0])
         mind = _bare_mind()
+        now[0] = 3600.0
+        phases = _phase_log(mind)
 
         async def _cycle(*, is_heartbeat: bool = False) -> None:
             mind.set_phase(MindPhase.DECIDING)
 
         mind._autonomous_cycle = _cycle
         await mind.execute_mind(is_heartbeat=True)
+        assert phases == [MindPhase.DECIDING, MindPhase.IDLE]
         assert mind.phase is MindPhase.IDLE
         await mind.driver.close()
 

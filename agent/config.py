@@ -37,6 +37,15 @@ _MIND_CONFIGS = {
             "min": 60,
             "unit": "秒",
         },
+        "autonomous_decision_interval": {
+            "description": (
+                "定时自主决策间隔（默认 1 小时）：心跳维护后到期才调用决策模型；"
+                "不改变维护、定时任务或空闲任务的调度，不延迟消息和后台通知处理"
+            ),
+            "default": 3600.0,
+            "min": 60,
+            "unit": "秒",
+        },
         "heartbeat_busy_defer_seconds": {
             "description": "心跳忙碌延后轮询间隔（AI 回复/反思执行中时按此间隔轮询，空闲后立即补跑心跳）",
             "default": 60.0,
@@ -317,6 +326,7 @@ class MindConfig:
     由 IntrospectionConfig 管理。
     """
     heartbeat_interval: float = 300.0
+    autonomous_decision_interval: float = 3600.0
     # 心跳忙碌延后轮询间隔：AI 执行中时按此间隔轮询，空闲后立即补跑
     heartbeat_busy_defer_seconds: float = 60.0
     meta_decision_temperature: float = 0.3
