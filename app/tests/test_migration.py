@@ -6,11 +6,14 @@ import errno
 import json
 import os
 import subprocess
-from pathlib import Path
+import tempfile
+from contextlib import ExitStack
+from pathlib import Path, PureWindowsPath
 
 import pytest
 
 from app.migration import migrate, recover, validate_git_link, validate_project
+from app.migration_links import Link, relocated_target
 from core.host_protocol import HostLock
 
 
@@ -150,15 +153,23 @@ def test_recover_fast_move_between_rename_and_metadata(checkout: tuple[Path, Pat
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX symbolic links do not require developer mode")
-def test_fast_move_preserves_internal_and_external_link_targets(checkout: tuple[Path, Path, Path]) -> None:
+@pytest.mark.parametrize("cross", [False, True])
+def test_move_preserves_internal_and_external_link_targets(
+    checkout: tuple[Path, Path, Path], monkeypatch: pytest.MonkeyPatch, cross: bool,
+) -> None:
     source, target, data = checkout
     external = source.parent / "external.txt"
     external.write_text("outside")
     (source / "internal").symlink_to(source / "config/data.db")
     (source / "external").symlink_to("../external.txt")
+    (source / ".venv/package-link").symlink_to(source / ".venv/custom-package.txt")
+    if cross:
+        cross_device(monkeypatch, source, target)
     migrate(source, target, data, lambda *_: None, data / "cancel")
     assert (target / "internal").resolve() == target / "config/data.db"
     assert (target / "external").read_text() == "outside"
+    saved = json.loads((target / "logs/manager/migration.json").read_text())["environment_backup"]
+    assert (target / saved / "package-link").read_text() == "preserve packages"
 
 
 @pytest.mark.parametrize("cross", [False, True])
@@ -197,3 +208,99 @@ def test_external_git_link_is_rejected_with_its_relative_path(checkout: tuple[Pa
     (linked / ".git").write_text("gitdir: ../../external.git\n")
     with pytest.raises(ValueError, match=r"reference[/\\]\.git"):
         validate_git_link(linked / ".git", source)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows directory junctions")
+@pytest.mark.parametrize("mode", ["rename", "copy", "volume", "recover"])
+def test_windows_junctions_preserve_internal_packages_and_external_data(
+    checkout: tuple[Path, Path, Path], monkeypatch: pytest.MonkeyPatch, mode: str,
+) -> None:
+    import _winapi
+
+    source, target, data = checkout
+    package = source / "node_modules/.pnpm/example/node_modules/example"
+    package.mkdir(parents=True)
+    (package / "index.js").write_text("local package")
+    external = source.parent / "external-data"
+    external.mkdir()
+    (external / "keep.txt").write_text("external data")
+    _winapi.CreateJunction(str(package), str(source / "node_modules/example"))
+    _winapi.CreateJunction(str(external), str(source / "external"))
+    extra = source / ".venv/extra"
+    extra.mkdir()
+    (extra / "keep.txt").write_text("extra package")
+    _winapi.CreateJunction(str(extra), str(source / ".venv/alias"))
+    _winapi.CreateJunction(str(source / ".venv"), str(source / "old-environment"))
+    with ExitStack() as stack:
+        if mode == "volume":
+            candidates = [Path.home() / "AppData/Local/Temp", Path.cwd() / "app/build"]
+            other = next((item for item in candidates if item.exists() and item.stat().st_dev != source.stat().st_dev), None)
+            if other is None:
+                pytest.skip("A second writable volume is unavailable")
+            base = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="anelf-migration-test-", dir=other)))
+            data = base / "data"
+            target = data / "project"
+        elif mode in {"copy", "recover"}:
+            cross_device(monkeypatch, source, target)
+        if mode == "recover":
+            rename = Path.rename
+            with monkeypatch.context() as patch:
+                def interrupt(self: Path, destination: Path) -> Path:
+                    if ".anelf-link-" in self.name:
+                        raise OSError("Interrupted while replacing a junction")
+                    return rename(self, destination)
+                patch.setattr(Path, "rename", interrupt)
+                with pytest.raises(OSError, match="Interrupted"):
+                    migrate(source, target, data, lambda *_: None, data / "cancel")
+            assert (data / "migration.json").exists()
+            assert recover(data) == str(target)
+        else:
+            migrate(source, target, data, lambda *_: None, data / "cancel")
+        link = target / "node_modules/example"
+        assert link.is_junction() and link.samefile(target / package.relative_to(source))
+        assert (link / "index.js").read_text() == "local package"
+        assert (target / "external").is_junction() and (target / "external").samefile(external)
+        saved = json.loads((target / "logs/manager/migration.json").read_text())["environment_backup"]
+        assert (target / saved / "alias/keep.txt").read_text() == "extra package"
+        assert (target / "old-environment").samefile(target / saved)
+        assert not source.exists()
+    assert (external / "keep.txt").read_text() == "external data"
+
+
+def test_windows_link_paths_normalize_extended_drives_and_unc_shares() -> None:
+    source, target = PureWindowsPath("E:/project"), PureWindowsPath("D:/app/project")
+    internal = PureWindowsPath(r"\\?\E:\project\packages\example")
+    assert relocated_target(source, target, "node_modules/example", internal, junction=True) == r"D:\app\project\packages\example"
+    assert relocated_target(source, target, "node_modules/example", internal, junction=False) == r"..\packages\example"
+    external = PureWindowsPath(r"\\?\E:\shared\example")
+    assert relocated_target(source, target, "link", external, junction=False) == r"E:\shared\example"
+    network = PureWindowsPath(r"\\?\UNC\host\share\project\package")
+    assert relocated_target(PureWindowsPath(r"\\host\share\project"), target, "link", network, junction=True) == r"D:\app\project\package"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows directory junctions")
+def test_link_creation_failure_precedes_file_copy_and_preserves_external_target(
+    checkout: tuple[Path, Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import _winapi
+
+    import app.migration as migration
+
+    source, target, data = checkout
+    _winapi.CreateJunction(str(source / "config"), str(source / "config-link"))
+    cross_device(monkeypatch, source, target)
+    create = migration.create_link
+
+    def fail_staging(item: Path, link: Link, *, original: bool = False) -> None:
+        if any(part.startswith(".anelf-transfer-") for part in item.parts):
+            raise RuntimeError("Destination does not support links")
+        create(item, link, original=original)
+
+    monkeypatch.setattr(migration, "create_link", fail_staging)
+    messages: list[str] = []
+    with pytest.raises(RuntimeError, match="does not support"):
+        migrate(source, target, data, lambda message, *_: messages.append(message), data / "cancel")
+    assert not any(message.startswith("正在迁移 ·") for message in messages)
+    assert (source / "config/data.db").read_bytes() == b"user-data\x00\xff"
+    assert (source / "config-link").is_junction() and not target.exists()
+    assert not list(target.parent.glob(".anelf-transfer-*"))

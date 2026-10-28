@@ -13,11 +13,13 @@ import json
 import os
 import shutil
 import stat
+import tempfile
 import uuid
 from pathlib import Path
 from typing import Any, Callable
 
 from app.manager import pid_alive
+from app.migration_links import Link, create_link, environment_links, plan_link, restore_links
 from core.host_protocol import HostLock, write_json
 
 Report = Callable[[str, int, int], None]
@@ -127,22 +129,6 @@ def _remove_tree(root: Path) -> None:
     shutil.rmtree(root, onexc=writable)
 
 
-def _relocated_links(source: Path, target: Path) -> dict[str, str]:
-    links: dict[str, str] = {}
-    for name, (_mode, _size, _time, link) in _inventory(source).items():
-        if not link:
-            continue
-        item = source / name
-        resolved = (item.parent / link).resolve()
-        destination = target / resolved.relative_to(source) if resolved.is_relative_to(source) else resolved
-        relocated = os.path.relpath(destination, (target / name).parent)
-        if relocated != link:
-            if item.is_junction():
-                raise ValueError(f"项目含不可重定位的 Windows 目录联接：{name}。请取消迁移，使用原目录。")
-            links[name] = relocated
-    return links
-
-
 def _preferences(data: Path, target: Path) -> None:
     file = data / "bootstrap.json"
     value = json.loads(file.read_text("utf-8")) if file.exists() else {}
@@ -155,20 +141,15 @@ def _preferences(data: Path, target: Path) -> None:
     write_json(file, entries)
 
 
-def _prepare_target(target: Path, source: Path, token: str, links: dict[str, str] | None = None) -> None:
-    for name, link in (links or {}).items():
-        item = target / name
-        if not item.is_symlink() or os.readlink(item) != link:
-            directory = item.is_dir()
-            temporary = item.with_name(item.name + ".anelf-link-" + token)
-            temporary.symlink_to(link, target_is_directory=directory)
-            temporary.replace(item)
+def _prepare_target(target: Path, source: Path, token: str, links: dict[str, Link | str] | None = None) -> None:
     state = target / "logs/manager"
     saved = state / "migration-backups" / token
     venv = target / ".venv"
     if venv.exists():
         saved.mkdir(parents=True, exist_ok=True)
         venv.rename(saved / "venv")
+    restore_links(target, environment_links(target, saved / "venv", links or {})
+                  if (saved / "venv").exists() else links or {}, token)
     # An imported project never inherits another installation's deletion ownership.
     ownership = state / "ownership.json"
     if ownership.exists():
@@ -191,13 +172,14 @@ def recover(data: Path) -> str | None:
             or staging.name != f".anelf-transfer-{token}" or backup.name != f".anelf-original-{token}"
             or source == target or source in target.parents or target in source.parents):
         raise RuntimeError("迁移记录路径异常，请保留文件并检查。")
-    if record.get("mode") == "rename" and target.is_dir() and not source.exists():
+    marker = target / "logs/manager/migration.json"
+    published = marker.is_file() and json.loads(marker.read_text("utf-8")).get("id") == token
+    if not published and (record.get("mode") == "rename" or record.get("verified")) and target.is_dir() and not source.exists():
         info = target.stat()
         if [info.st_dev, info.st_ino] != record.get("identity"):
             raise RuntimeError("迁移目标发生变化，未执行恢复或删除。")
         _prepare_target(target, source, token, record.get("links"))
-    marker = target / "logs/manager/migration.json"
-    published = marker.is_file() and json.loads(marker.read_text("utf-8")).get("id") == token
+        published = True
     if published:
         _preferences(data, target)
         if backup.exists():
@@ -249,10 +231,19 @@ def migrate(source: Path, target: Path, data: Path, report: Report, cancel: Path
         check()
         report("正在检查项目文件", 0, 0)
         target.parent.mkdir(parents=True, exist_ok=True)
+        before = _inventory(source)
+        links = {name: plan_link(source, target, name, link) for name, (_mode, _size, _time, link) in before.items() if link}
+        record["links"] = links
         info = source.stat()
         if info.st_dev == target.parent.stat().st_dev:
+            if links:
+                report("正在检查目录联接与符号链接", 0, 0)
+                with tempfile.TemporaryDirectory(prefix=".anelf-links-", dir=target.parent) as probe:
+                    for index, link_plan in enumerate(links.values()):
+                        check()
+                        create_link(Path(probe) / str(index), link_plan, original=True)
             report("同盘快速移动 · 不复制项目文件", 0, 0)
-            record.update(mode="rename", identity=[info.st_dev, info.st_ino], links=_relocated_links(source, target))
+            record.update(mode="rename", identity=[info.st_dev, info.st_ino])
             write_json(journal, record)
             check()
             for lock in locks:
@@ -275,25 +266,26 @@ def migrate(source: Path, target: Path, data: Path, report: Report, cancel: Path
                 report("快速移动完成，接下来检查运行环境", 1, 1)
                 return str(target)
         report("跨盘迁移 · 正在统计文件大小", 0, 0)
-        before = _inventory(source)
         total = sum(size for mode, size, _mtime, link in before.values() if stat.S_ISREG(mode) and not link)
         if shutil.disk_usage(target.parent).free < total + 512 * 1024**2:
             raise ValueError("目标磁盘空间不足，需要容纳完整项目并预留 512 MiB。")
         data.mkdir(parents=True, exist_ok=True)
         write_json(journal, record)
         staging.mkdir()
+        for relative, (mode, _size, _mtime, link) in before.items():
+            check()
+            if stat.S_ISDIR(mode) and not link:
+                (staging / relative).mkdir(exist_ok=True)
+        report("正在检查目录联接与符号链接", 0, 0)
+        for relative, link_plan in links.items():
+            check()
+            create_link(staging / relative, link_plan, original=True)
         done = 0
         hashes: dict[str, str] = {}
         for relative, (mode, _size, _mtime, link) in before.items():
             check()
             old, new = source / relative, staging / relative
-            if link:
-                resolved = (old.parent / link).resolve()
-                destination = target / resolved.relative_to(source) if resolved.is_relative_to(source) else resolved
-                new.symlink_to(os.path.relpath(destination, (target / relative).parent), target_is_directory=old.is_dir())
-            elif stat.S_ISDIR(mode):
-                new.mkdir(exist_ok=True)
-            else:
+            if not link and not stat.S_ISDIR(mode):
                 digest = hashlib.sha256()
                 with old.open("rb") as reader, new.open("xb") as writer:
                     while chunk := reader.read(1024 * 1024):
@@ -317,7 +309,9 @@ def migrate(source: Path, target: Path, data: Path, report: Report, cancel: Path
         for relative, (mode, _size, _mtime, link) in reversed(before.items()):
             if stat.S_ISDIR(mode) and not link:
                 shutil.copystat(source / relative, staging / relative)
-        _prepare_target(staging, source, token)
+        info = staging.stat()
+        record.update(verified=True, identity=[info.st_dev, info.st_ino])
+        write_json(journal, record)
         check()
         _stopped(source)
         # Windows cannot rename directories containing our open lock handles.
@@ -328,7 +322,6 @@ def migrate(source: Path, target: Path, data: Path, report: Report, cancel: Path
         if target.exists():
             target.rmdir()
         staging.rename(target)
-        _preferences(data, target)
         recover(data)
         report("项目迁移完成，接下来检查运行环境", total, total)
         return str(target)
