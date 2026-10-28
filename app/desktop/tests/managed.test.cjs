@@ -29,3 +29,21 @@ test('offline and stopped states cannot open a workspace; a busy installation ca
   assert.equal(controls({...state,busy:true,operation:{cancellable:true,steps:[]}},true).cancel,true);
   assert.equal(controls({...state,busy:true,operation:{cancellable:true,cancelling:true,steps:[]}},true).cancel,false);
 });
+
+test('POSIX owned paths retain their original filesystem target through parent aliases',{skip:process.platform==='win32'},async()=>{
+  const root=fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(),'anelf-alias-')));
+  try {
+    const original=path.join(root,'original'),other=path.join(root,'other'),alias=path.join(root,'alias'),data=path.join(root,'data');
+    fs.mkdirSync(original);fs.mkdirSync(other);
+    fs.symlinkSync(original,alias,'dir');
+    const first=register(data,path.join(alias,'first'));
+    await removeOwned(data,first);
+    assert.equal(fs.existsSync(path.join(original,'first')),false);
+    const second=register(data,path.join(alias,'second'));
+    fs.cpSync(path.join(original,'second'),path.join(other,'second'),{recursive:true});
+    fs.unlinkSync(alias);fs.symlinkSync(other,alias,'dir');
+    await assert.rejects(removeOwned(data,second),/path has changed/);
+    assert.ok(fs.existsSync(path.join(other,'second')));
+    assert.ok(fs.existsSync(path.join(original,'second')));
+  } finally {fs.rmSync(root,{recursive:true,force:true});}
+});
