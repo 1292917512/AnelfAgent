@@ -94,6 +94,10 @@ override-dependencies = ["onnxruntime>=1.30"]
 url = "https://pypi.org/simple"
 default = true
 
+[tool.uv.sources]
+# 上游正则字面量修复；固定提交并由锁文件校验源码，不在分词层屏蔽警告。
+jieba = { url = "https://github.com/fxsjy/jieba/archive/9ad240225ce521400cf2f10c8921ab5e6cbf0a16.tar.gz" }
+
 [dependency-groups]
 dev = [
     "pytest>=9.1.1",

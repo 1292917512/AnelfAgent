@@ -17,10 +17,8 @@ jieba 导入失败时整体降级为 bigram 切分（与改造前行为一致）
 
 from __future__ import annotations
 
-import logging
 import re
 import threading
-import warnings
 from types import ModuleType
 from typing import Iterable, List
 
@@ -61,15 +59,7 @@ def _load_jieba() -> ModuleType | None:
         if _jieba_ready:
             return _jieba
         try:
-            # 兼容依赖中的旧式正则字面量；过滤仅限此依赖的已知编译警告。
-            with warnings.catch_warnings():
-                warnings.filterwarnings(
-                    "ignore", message=r"invalid escape sequence '\\[.s]'$", category=SyntaxWarning,
-                    module=r"(?:jieba(?:\.|$)|.*[\\/]jieba[\\/])",
-                )
-                import jieba as _mod
-
-            _mod.setLogLevel(logging.WARNING)
+            import jieba as _mod
 
             for word in sorted(_pending_words):
                 if word:
