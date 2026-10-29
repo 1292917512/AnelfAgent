@@ -37,11 +37,15 @@ i18n/locales/{zh,en}/         # 核心 namespace（zh/en key 一一对应；插�
 
 配置跳转由公共层维护：`lib/config-navigation.ts` 生成按注册键或分组定位的站内地址，
 `components/common/ConfigLink.tsx` 提供声明式入口，命令等程序化导航使用 `configHref(target)`。
-调用方传 `{ key }` 或 `{ group }`，不拼接 `/webui`、配置路径或查询串；Router 统一处理 basename。
+调用方传 `{ key }`、`{ group }` 或 `{ page: "models" }`，不拼接 `/webui`、配置路径或查询串；Router 统一处理 basename。
 配置页通过 `useConfigFocus` 在元数据加载和高级区展开后滚动、聚焦并高亮目标；再次导航、刷新和
 浏览器返回沿用 URL 定位，未注册键明确提示。配置搜索使用 `q` 参数，键定位优先。
 工作区只消费执行结果的 `limit` 事实（实际轮次和约束配置键），不推断配置归属、不维护跳转路由。
 单次调用直接指定的预算没有配置键，提示调用者调整该预算；不会误导用户修改无效的全局设置。
+
+全局 `ModelSetupGuide` 在服务就绪、模型目录读取成功且没有启用的 chat 模型时展示配置入口；
+仅有非对话模型或所有对话模型停用同样需要引导。加载、请求失败及模型管理页面不展示，避免误报和自指跳转。
+引导与模型选择器共用 `modelPrioritiesQuery` 及 `priorities` 缓存，保存、启停和删除后的现有失效通知会自动更新提示。
 
 Cognee 的“模型与配置”按抽取模型、召回查询、同步构图、存储保护分区；常用参数直接展示，
 高级参数折叠。通用字段、约束与分区来自 `CogneeConfig` 的字段元数据，由配置 API 下发，

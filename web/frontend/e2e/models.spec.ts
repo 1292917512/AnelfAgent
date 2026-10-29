@@ -27,6 +27,40 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
+test("missing chat models guide to setup and the guide disappears after a model is added", async ({ page }, info) => {
+  let configured = false;
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.route("**/api/models/priorities", (route) => route.fulfill({ json: configured ? { chat: [item("first-chat-model", true)] } : {} }));
+  await page.route("**/api/models/providers", (route) => route.fulfill({ json: [{ ...provider, model_count: configured ? 1 : 0 }] }));
+  await page.route("**/api/models/providers/demo/models", async (route) => {
+    if (route.request().method() === "POST") {
+      configured = true;
+      await route.fulfill({ json: { ...model, id: "first-chat-model" } });
+    } else await route.fulfill({ json: configured ? [{ ...model, id: "first-chat-model" }] : [] });
+  });
+  await page.goto("/webui/");
+  const guide = page.getByRole("status", { name: "Set up a chat model" });
+  await expect(guide).toBeVisible();
+  await page.screenshot({ path: info.outputPath("model-setup-guide.png") });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await guide.getByRole("link", { name: "Configure models" }).click();
+  await expect(page).toHaveURL(/\/webui\/models$/);
+  await expect(guide).toHaveCount(0);
+  await expect(page.getByRole("tab", { name: "Model Config", exact: true })).toHaveAttribute("aria-selected", "true");
+  await page.getByRole("button", { name: /Demo provider/ }).click();
+  await page.getByRole("button", { name: "Manual Add", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Add Model Manually", exact: true });
+  await dialog.getByRole("textbox", { name: "Model ID", exact: true }).fill("first-chat-model");
+  await dialog.getByRole("button", { name: "Create", exact: true }).click();
+  await expect(dialog).toHaveCount(0);
+  const refreshed = page.waitForResponse("**/api/models/priorities");
+  await page.goBack();
+  await refreshed;
+  await expect(guide).toHaveCount(0);
+  expect(errors).toEqual([]);
+});
+
 test("manual model dialog aligns actions and animates guarded close and successful save", async ({ page, isMobile }, info) => {
   await page.goto("/webui/models");
   await page.evaluate(() => document.addEventListener("animationstart", (event) => {

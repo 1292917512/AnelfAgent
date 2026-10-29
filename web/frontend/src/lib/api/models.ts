@@ -50,7 +50,7 @@ export const modelsApi = {
   rename: (id: string, newId: string) =>
     api.put(`/models/${encodeURIComponent(id)}/rename`, { new_id: newId }),
   setDefault: (modelId: string) => api.put("/models/config/default", { model_id: modelId }),
-  priorities: () => api.get<Record<string, ModelPriorityItem[]>>("/models/priorities"),
+  priorities: (signal?: AbortSignal) => api.get<Record<string, ModelPriorityItem[]>>("/models/priorities", { signal }),
   setPriority: (modelType: string, modelIds: string[]) =>
     api.put(`/models/priorities/${encodeURIComponent(modelType)}`, { model_ids: modelIds }),
   movePriority: (modelId: string, modelType: string, direction: number) =>

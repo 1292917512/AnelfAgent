@@ -1,4 +1,9 @@
 {
+  "setupGuide": {
+    "title": "尚未配置可用的对话模型",
+    "description": "添加供应商并配置、启用对话模型后，即可开始对话和执行任务。",
+    "action": "前往模型配置"
+  },
   "tabs": {
     "config": "模型配置",
     "priorities": "模型管理",

@@ -65,6 +65,22 @@ it("follows growth, ignores downward and nested scrolling, and resumes after rea
   expect(resumed).toHaveBeenCalledOnce();
 });
 
+it("captures the reading anchor before a resize can cancel its pending save frame", () => {
+  render(<Feed />);
+  const feed = screen.getByTestId("feed");
+  geometry(feed, 1200, 200, 1000);
+  act(resize);
+  flush();
+  fireEvent.wheel(feed, { deltaY: -150 });
+  feed.scrollTop = 850;
+  fireEvent.scroll(feed);
+  geometry(feed, 1200, 150, 850);
+  act(resize);
+  flush();
+  expect(feed.scrollTop).toBe(850);
+  expect(screen.getByText("reading")).toBeTruthy();
+});
+
 it("persists an explicit pause during reading and keeps it across remount until resumed", () => {
   const saved = vi.fn();
   const { unmount } = render(<Feed initial={{ mode: "reading", offset: 0, top: 80 }} save={saved} />);

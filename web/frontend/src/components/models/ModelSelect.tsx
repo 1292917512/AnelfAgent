@@ -6,18 +6,14 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Brain, Check, ChevronsUpDown, Eye, Pin, Search, TriangleAlert, Wrench } from "lucide-react";
 import { modelsApi } from "@/lib/api";
+import { modelPrioritiesQuery } from "@/lib/model-queries";
 import type { ModelPriorityItem } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { QueryError } from "@/components/common/AsyncState";
 import { Button } from "@/components/ui/Button";
 
-const priorityOptions = {
-  queryKey: ["priorities"],
-  queryFn: () => modelsApi.priorities().then((response) => response.data),
-};
-
 export function usePriorities() {
-  return useQuery({ ...priorityOptions, throwOnError: false });
+  return useQuery(modelPrioritiesQuery());
 }
 
 export function useModelPin() {
@@ -25,7 +21,7 @@ export function useModelPin() {
   return useMutation({
     mutationFn: async ({ modelType, modelId }: { modelType: string; modelId: string }) => {
       if (modelType === "chat") { await modelsApi.setDefault(modelId); return; }
-      const priorities = await client.fetchQuery(priorityOptions);
+      const priorities = await client.fetchQuery(modelPrioritiesQuery());
       const rest = (priorities[modelType] ?? []).filter((item) => item.id !== modelId).map((item) => item.id);
       await modelsApi.setPriority(modelType, [modelId, ...rest]);
     },

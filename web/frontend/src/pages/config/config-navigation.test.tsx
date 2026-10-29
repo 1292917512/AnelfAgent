@@ -42,6 +42,7 @@ it("encodes keys and groups once without assuming a deployment base path", () =>
   expect(url.searchParams.get("key")).toBe(target.key);
   expect(url.searchParams.get("group")).toBe(target.group);
   expect(configHref({ group: "network/proxy" })).toBe("/config?group=network%2Fproxy");
+  expect(configHref({ page: "models" })).toBe("/models");
 });
 
 it("opens the actual limit setting after loading, expands advanced fields and supports Back", async () => {

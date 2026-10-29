@@ -1,4 +1,9 @@
 {
+  "setupGuide": {
+    "title": "Set up a chat model",
+    "description": "Add a provider and enable a chat model to start conversations and run tasks.",
+    "action": "Configure models"
+  },
   "tabs": {
     "config": "Model Config",
     "priorities": "Model Management",

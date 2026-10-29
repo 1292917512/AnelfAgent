@@ -147,6 +147,11 @@ export function useActivityFollow(revision: string, onPause: () => void, current
       lastScrollTop.current = element.scrollTop;
       if (!enabled.current && !manual.current && current && downward && downwardIntent.current
         && element.scrollHeight - element.clientHeight - element.scrollTop <= BOTTOM_GAP) resume();
+      if (!enabled.current && positionRef.current) {
+        // 先按滚动差值更新现有锚点，避免缩放取消帧回调时恢复到旧位置。
+        const previous = positionRef.current;
+        positionRef.current = { ...previous, top: element.scrollTop, offset: previous.offset + previous.top - element.scrollTop };
+      }
       if (!enabled.current && rememberFrame.current == null) rememberFrame.current = requestAnimationFrame(() => {
         rememberFrame.current = null;
         remember();

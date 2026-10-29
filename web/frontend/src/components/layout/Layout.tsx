@@ -13,6 +13,7 @@ import { cn } from "@/lib/utils";
 import { CORE_ROUTES } from "@/lib/core-routes";
 import { startUiStateReporting } from "@/lib/ui-state-reporting";
 import { useVisualViewport } from "@/hooks/useVisualViewport";
+import { ModelSetupGuide } from "@/components/models/ModelSetupGuide";
 
 export function Layout() {
   useVisualViewport();
@@ -36,6 +37,7 @@ export function Layout() {
       </DialogSurface> : <Sidebar />}
       <div className="app-frame flex min-w-0 flex-1 flex-col">
         <Header />
+        <ModelSetupGuide />
         <main id="main-content" tabIndex={-1} className={cn("min-h-0 flex-1 outline-none", workspace ? "overflow-hidden" : "page-scroll overflow-y-auto overscroll-contain px-4 py-6 md:px-8 md:py-8")}>
           <Outlet />
         </main>
