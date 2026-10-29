@@ -35,7 +35,7 @@ function verifyOwnership(data, entry) {
   const root = path.resolve(entry.root), owner = path.resolve(data);
   if (!entry.owned || root === path.parse(root).root || root === owner || owner.startsWith(root + path.sep)) throw new Error('Refusing to delete a non-owned project');
   if (!fs.existsSync(root)) return;
-  if (retainedProjects(data).some(item=>comparable(item.root).startsWith(comparable(root)+path.sep))) throw new Error('An imported project is inside this directory; preserve it before cleanup');
+  if (projects(data).some(item=>!item.owned && fs.existsSync(item.root) && comparable(fs.realpathSync(item.root)).startsWith(comparable(fs.realpathSync(root))+path.sep))) throw new Error('An imported project is inside this directory; preserve it before cleanup');
   const realRoot=comparable(fs.realpathSync(root)),realOwner=comparable(fs.realpathSync(owner));
   if (realRoot===realOwner || realOwner.startsWith(realRoot+path.sep)) throw new Error('Refusing to delete the application data directory');
   if (fs.lstatSync(root).isSymbolicLink() || realRoot !== comparable(entry.realRoot || root)) throw new Error('Project path has changed');

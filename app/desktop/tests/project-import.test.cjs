@@ -59,7 +59,7 @@ test('Windows uninstall marks imported folders outside data for preservation',{s
   try{
     const data=path.join(root,'data'),project=path.join(root,'my-project');
     fs.mkdirSync(project);fs.writeFileSync(path.join(project,'user.db'),'keep');
-    register(data,project);await prepare(data,true);
+    register(data,project);await prepare(data,'purge');
     assert.equal(fs.readFileSync(path.join(project,'user.db'),'utf8'),'keep');
     assert.equal(fs.existsSync(path.join(data,'preserve-my-project.flag')),true);
     assert.equal(fs.existsSync(path.join(data,'preserved-projects.json')),true);

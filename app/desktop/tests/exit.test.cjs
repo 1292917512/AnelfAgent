@@ -7,13 +7,43 @@ const path=require('node:path');
 const {spawn}=require('node:child_process');
 const {createExitHandler}=require('../exit.cjs');
 const {ensureBackend}=require('../backend.cjs');
-const {drain,request,hasRunningServices}=require('../maintenance.cjs');
+const {drain,request,hasRunningServices,prepare}=require('../maintenance.cjs');
+const {register}=require('../managed.cjs');
 
 test('unchecked exit keeps services; cancellation keeps the app open',async()=>{
   let choice={response:0,checkboxChecked:false},stops=0,quits=0;
   const exit=createExitHandler({confirm:async()=>choice,stop:async()=>{stops++;},quit:()=>{quits++;},failed:error=>assert.fail(String(error))});
   await exit();assert.equal(stops,0);assert.equal(quits,1);
   choice={response:1,checkboxChecked:true};await exit();assert.equal(stops,0);assert.equal(quits,1);
+});
+
+for(const mode of /** @type {const} */ (['upgrade','uninstall']))test(mode+' safely detaches or stops the owned service while retaining its files',async()=>{
+  const folder=fs.mkdtempSync(path.join(os.tmpdir(),'anelf-maintenance-'));
+  const data=path.join(folder,'data'),root=path.join(data,'project'),events=path.join(folder,'events.json');
+  register(data,root);fs.writeFileSync(path.join(root,'user.db'),'keep');
+  const helper=spawn(process.execPath,['-e',`
+    const fs=require('node:fs'),http=require('node:http'),path=require('node:path');
+    const [root,file]=process.argv.slice(1),events=[];let running=true;
+    const server=http.createServer(async(req,res)=>{
+      if(req.headers.authorization!=='Bearer '+'x'.repeat(32)){res.writeHead(401);res.end();return;}
+      let body='';for await(const chunk of req)body+=chunk;
+      if(req.url==='/api/action'){events.push(JSON.parse(body).action);running=false;}
+      const exit=['/api/shutdown','/api/detach'].includes(req.url);
+      if(exit){events.push(req.url);fs.writeFileSync(file,JSON.stringify({events,running}));}
+      res.setHeader('Content-Type','application/json');
+      res.end(JSON.stringify(req.url==='/api/status'?{root,running,busy:false,phase:running?'running':'stopped',last:{ok:true}}:{ok:true}));
+      if(exit)server.close();
+    });
+    server.listen(0,'127.0.0.1',()=>fs.writeFileSync(path.join(root,'logs/manager/connection.json'),JSON.stringify({url:'http://127.0.0.1:'+server.address().port,token:'x'.repeat(32),pid:process.pid})));
+  `,root,events],{windowsHide:true,stdio:'ignore'});
+  try {
+    const connectionFile=path.join(root,'logs/manager/connection.json');
+    for(let i=0;i<100&&!fs.existsSync(connectionFile);i++)await new Promise(resolve=>setTimeout(resolve,50));
+    assert.ok(fs.existsSync(connectionFile));
+    await prepare(data,mode);
+    assert.deepEqual(JSON.parse(fs.readFileSync(events,'utf8')),mode==='upgrade'?{events:['/api/detach'],running:true}:{events:['stop','/api/shutdown'],running:false});
+    assert.equal(fs.readFileSync(path.join(root,'user.db'),'utf8'),'keep');
+  } finally {if(helper.exitCode===null)helper.kill();fs.rmSync(folder,{recursive:true,force:true});}
 });
 
 test('checked exit waits for shutdown, coalesces repeated closes and allows retry after failure',async()=>{

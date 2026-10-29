@@ -3,7 +3,8 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const {connectionAt} = require('./backend.cjs');
-const {projects, removeOwned, verifyOwnership,retainedProjects} = require('./managed.cjs');
+const {projects, removeOwned, verifyOwnership} = require('./managed.cjs');
+const {preserveProjects}=require('./preservation.cjs');
 /** @param {import('./backend.cjs').Connection} connection @param {string} endpoint @param {object} [body] */
 async function request(connection, endpoint, body) {
   const response = await fetch(connection.url + '/api/' + endpoint,{method:body ? 'POST' : 'GET',headers:{Authorization:'Bearer ' + connection.token,'Content-Type':'application/json'},body:body ? JSON.stringify(body) : undefined,signal:AbortSignal.timeout(8000)});
@@ -64,24 +65,22 @@ async function drain(root, stopServices, stopRuntime) {
   while (alive(connection.pid) && Date.now() < exitDeadline) await new Promise(resolve => setTimeout(resolve,200));
   if (alive(connection.pid)) throw new Error('The manager has not exited. Files were preserved.');
 }
-/** @param {string} data @param {boolean} uninstall */
-async function prepare(data, uninstall) {
+/** Retaining data is the default; deletion always requires an explicit purge.
+ * @param {string} data @param {'upgrade'|'uninstall'|'purge'} [mode] */
+async function prepare(data, mode='uninstall') {
+  if(!['upgrade','uninstall','purge'].includes(mode))throw new Error('Invalid maintenance mode');
+  const removeData=mode==='purge';
   const entries = projects(data);
-  const installRoot=path.dirname(path.resolve(data));
-  const protectedFolders=new Set();
-  if(uninstall && process.platform==='win32')for(const entry of entries) {
-    if(entry.owned || !fs.existsSync(entry.root))continue;
-    const relative=path.relative(installRoot,fs.realpathSync(entry.root));
-    if(!relative)throw new Error('An imported project shares the app installation directory. Move it outside before uninstalling.');
-    if(!relative.startsWith('..'+path.sep) && relative!=='..' && !path.isAbsolute(relative))protectedFolders.add(relative.split(path.sep)[0]);
+  if(removeData && fs.existsSync(path.join(data,'migration.json')))throw new Error('Finish or recover the project migration before deleting app data.');
+  if (removeData) for (const entry of entries) if (entry.owned) verifyOwnership(data,entry);
+  const retained=preserveProjects(data,removeData);
+  if(removeData)for(const entry of entries)if(entry.owned && fs.existsSync(entry.root)) {
+    for(const item of retained) {
+      const relative=path.relative(fs.realpathSync(entry.root),fs.realpathSync(item.root));
+      if(!relative || relative!=='..' && !relative.startsWith('..'+path.sep) && !path.isAbsolute(relative))throw new Error('An imported or selected project is inside this directory; preserve it before cleanup.');
+    }
   }
-  if (uninstall) for (const entry of entries) if (entry.owned) verifyOwnership(data,entry);
-  for (const entry of entries) await drain(entry.root,uninstall && entry.owned);
-  if (uninstall) for (const entry of entries) if (entry.owned) await removeOwned(data,entry);
-  if(uninstall) {
-    const retained=retainedProjects(data),marker=path.join(data,'preserved-projects.json');
-    if(retained.length || protectedFolders.size)fs.writeFileSync(marker,JSON.stringify({retained,folders:[...protectedFolders]}));else fs.rmSync(marker,{force:true});
-    for(const name of protectedFolders)fs.writeFileSync(path.join(data,'preserve-'+name+'.flag'),'');
-  }
+  for (const entry of entries) await drain(entry.root,mode!=='upgrade' && entry.owned);
+  if (removeData) for (const entry of entries) if (entry.owned) await removeOwned(data,entry);
 }
 module.exports = {prepare,drain,request,hasRunningServices};

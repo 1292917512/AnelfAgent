@@ -263,7 +263,7 @@ async function start() {
     const owned = projects(data).filter(entry => entry.owned).map(entry => entry.root).join('\n');
     const result = await dialog.showMessageBox(window,{type:'warning',title:'AnelfAgent',message:chinese?'停止服务并删除 APP 创建的项目与环境？':'Stop services and delete app-created projects and environments?',detail:owned,buttons:chinese?['取消','删除并退出']:['Cancel','Delete and quit'],defaultId:0,cancelId:0});
     if(result.response===1){
-      await prepare(data,true);
+      await prepare(data,'purge');
       const child=spawn(process.execPath,[path.join(__dirname,'cleanup.cjs'),data,String(process.pid)],{env:{...process.env,ELECTRON_RUN_AS_NODE:'1'},detached:process.platform !== 'win32',windowsHide:true,stdio:'ignore'});
       child.unref();quitting=true;app.quit();
     }
@@ -284,7 +284,8 @@ async function start() {
 }
 const maintenance = process.argv.includes('--prepare-uninstall') || process.argv.includes('--prepare-upgrade');
 if (maintenance) {
-  app.whenReady().then(() => prepare(data,process.argv.includes('--prepare-uninstall'))).then(() => app.exit(0)).catch(error => {fs.writeFileSync(path.join(data,'uninstall-error.log'),String(error));app.exit(1);});
+  const mode=process.argv.includes('--prepare-upgrade')?'upgrade':process.argv.includes('--delete-project-data')?'purge':'uninstall';
+  app.whenReady().then(() => prepare(data,mode)).then(() => app.exit(0)).catch(error => {fs.writeFileSync(path.join(data,'uninstall-error.log'),String(error));app.exit(1);});
 } else if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on('second-instance',show);app.whenReady().then(start).catch(error => {dialog.showErrorBox('AnelfAgent',String(error));app.quit();});
