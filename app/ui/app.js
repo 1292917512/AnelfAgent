@@ -124,7 +124,8 @@ function render() {
   button('update').disabled ||= !!state.external_pid;
   button('update').disabled ||= state.running && state.controllable===false;
   button('update').disabled ||= transitioning;
-  button('update').hidden = !state.running && !updating;
+  button('update').hidden = !state.ready && !state.running && !updating;
+  button('update').textContent = t(updating ? 'updating' : state.running ? 'update' : 'updateStopped');
   button('update').title = space && !space.sufficient ? storageText(space) : t('updateHint');
   el('storage').hidden = !wizard || state.busy;
   el('storage').textContent = space ? storageText(space) : t('diskUnknown');
@@ -142,7 +143,7 @@ function render() {
   el('resume-hint').hidden = !state.resumable || state.busy;
   el('environment-heading').hidden = installing(state);
   el('environment-details').hidden = installing(state);
-  button('cancel').hidden = !installing(state); button('cancel').disabled = !flags.cancel; button('cancel').textContent = t(state.operation.cancelling ? 'cancelling' : 'cancel');
+  button('cancel').hidden = !installing(state); button('cancel').disabled = !flags.cancel; button('cancel').textContent = t(state.operation.cancelling ? 'cancelling' : updating ? 'cancelUpdate' : 'cancel');
   el('cleanup').hidden = !window.anelfDesktop; button('cleanup').disabled = state.busy || pending;
   el('choose-project').hidden = !window.anelfDesktop;
   const progressTarget = el(updating ? 'runtime-progress' : 'installation-progress');
@@ -214,7 +215,7 @@ async function refresh() {
     else if (previous?.external_pid) message('');
     render();
     if (stoppingForExit || el('log-panel').hasAttribute('open') || state.busy || ['starting','restarting','stopping'].includes(state.phase)) {
-      const kind = stoppingForExit ? ['cancel-install','cancel-update','prepare-exit'].includes(exitStage)?'commands':'application' : wizard ? 'commands' : 'application'; el('log-path').textContent = state.root + '/logs/manager/' + kind + '.log';
+      const kind = stoppingForExit ? ['cancel-install','cancel-update','prepare-exit'].includes(exitStage)?'commands':'application' : wizard || installing(state) ? 'commands' : 'application'; el('log-path').textContent = state.root + '/logs/manager/' + kind + '.log';
       const log = el('logs'), atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 35;
       try { log.textContent = (await api('logs/' + kind)).text || t('noLogs'); el('log-preview').textContent = log.textContent.trim().split('\n').slice(-3).join('\n'); el('exit-log-preview').textContent=el('log-preview').textContent;if(stoppingForExit)el('exit-log-preview').hidden=el('log-panel').hasAttribute('open'); if (atBottom) log.scrollTop = log.scrollHeight; }
       catch { log.textContent = t('logUnavailable'); }
