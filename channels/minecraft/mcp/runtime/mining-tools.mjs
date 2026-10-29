@@ -1,6 +1,6 @@
 // @ts-check
-/** Model Experience: mining tools expose progress, inventory gains and a minimum feet Y.
- * Token effect: a few hundred schema tokens, including one optional height limit; replaces per-block LLM calls.
+/** Model Experience: mining tools expose progress, inventory gains, a height limit and explicit torch policy.
+ * Token effect: one optional boolean permits initial stone collection without a separate torch-preparation loop.
  * Cache effect: schema changes once; task progress stays in tool results/events.
  */
 import path from 'node:path'
@@ -26,6 +26,7 @@ const input = {
   length: z.number().int().min(0).max(32).default(16).describe('Maximum extra horizontal tunnel length after the stairs.'),
   item: z.string().default('cobblestone').describe('Inventory item to gather; gains are measured against the starting inventory.'),
   count: z.number().int().min(1).max(256).default(16),
+  requireTorches: z.boolean().default(true).describe('Require torches before passages of four or more steps. Explicitly set false for initial unlit mining; carried torches are still placed when available. Health, tools, floor protection and confirmed return remain required.'),
   extend: z.boolean().default(false).describe('Continue the saved mine corridor from its fixed entrance instead of creating a new corridor.')
 }
 const options = z.object(input)
@@ -75,8 +76,9 @@ async function start (ctx, args) {
   const { extend: _extend, ...mineArgs } = args
   let record
   if (args.extend) {
-    if (!s.record || !s.record.returned || s.record.phase !== 'completed') {
-      throw new ToolError('NOT_FOUND', 'No completed mine corridor is available for extension.')
+    if (!s.record || !s.record.returned || !(s.record.phase === 'completed' ||
+        (s.record.phase === 'partial' && s.record.steps === s.record.depth + s.record.length))) {
+      throw new ToolError('NOT_FOUND', 'No completed or fully excavated, returned mine corridor is available for extension.')
     }
     if (directionValue !== s.record.direction) {
       throw new ToolError('FORBIDDEN', 'Mine extensions must keep the saved corridor direction.')
@@ -146,7 +148,7 @@ async function resumeSaved (ctx, returnOnly) {
 /** @param {Registrar} reg */
 export function registerMining (reg) {
   reg({ name: 'mine_resources', group: 'build',
-    description: 'Start a BACKGROUND mine task at the fixed mine entrance. Builds a 1-wide, 3-high stair passage, optionally extends the saved corridor, verifies walking return routes, then actually returns to the entrance. Bring a suitable pickaxe, food, torches and 8 spare blocks. Excavates natural terrain only. Use extend=true to continue a completed corridor; never start a new random corridor for the same site. Returns a task id, not completed work. Inspect mining_status; use cancel_task to stop immediately or return_from_mine to return safely.',
+    description: 'Start a BACKGROUND mine task at the fixed mine entrance. Builds a 1-wide, 3-high stair passage, optionally extends the saved corridor, verifies walking return routes, then actually returns to the entrance. Bring a suitable pickaxe, food and 8 spare blocks; torches are required by default, or explicitly set requireTorches=false for initial unlit work. Excavates natural terrain only. Use extend=true to continue a completed corridor, or a fully excavated partial corridor with confirmed return; never start a new random corridor for the same site. Returns a task id, not completed work. Inspect mining_status; use cancel_task to stop immediately or return_from_mine to return safely.',
     inputSchema: input, annotations: { title: 'Mine and return', destructiveHint: true },
     handler: (args, ctx) => start(ctx, options.parse(args)) })
   reg({ name: 'mining_status', group: 'build', description: 'Read the current/last mine task, actual inventory gains, entrance and confirmed return status. A saved interrupted task requires explicit resume or return.',
@@ -176,7 +178,8 @@ export function wrapMiningTools (def) {
         const spec = z.object({ direction, depth: z.number().int().min(1).max(16).optional(),
           length: z.number().int().min(1).max(32).optional(), width: z.literal(1).optional(), height: z.number().min(2).max(3).optional() }).parse(args)
         return start(ctx, { direction: spec.direction, depth: def.name === 'dig_staircase' ? (spec.depth ?? 8) : 0,
-          length: def.name === 'dig_tunnel' ? (spec.length ?? 8) : 0, item: 'cobblestone', count: 0 })
+          length: def.name === 'dig_tunnel' ? (spec.length ?? 8) : 0, item: 'cobblestone', count: 0,
+          requireTorches: true, extend: false })
       }
       if (def.name === 'configure_movements') {
         const settings = z.object({ canDig: z.boolean().optional(), allow1by1towers: z.boolean().optional(),

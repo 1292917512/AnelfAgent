@@ -220,7 +220,7 @@ export class GatherNavigation {
     }
     safety.restrictMovements(movement)
     movement.blocksCantBreak ??= new Set()
-    if (mode === 'leaf') for (const [name, definition] of Object.entries(this.bot.registry?.blocksByName ?? {})) {
+    for (const [name, definition] of Object.entries(this.bot.registry?.blocksByName ?? {})) {
       if (!isLeafBlockName(name) && Number.isInteger(definition?.id)) movement.blocksCantBreak.add(definition.id)
     }
     movement.exclusionAreasStep.push(block => {
@@ -277,8 +277,8 @@ export class GatherNavigation {
     // into a block the client world does not show (world data divergence).
     // Normal walking never receives these forced syncs, so a burst of them is
     // an unambiguous position fight: abandon the leg at once — every stand
-    // rotation inside this area would hit the same disagreement. Registered
-    // before the first await so even an immediate first sync is counted.
+    // rotation inside this area would hit the same disagreement. Track syncs
+    // during preflight too, and release the listener if preflight rejects.
     const forcedSyncs = []
     let resolveFight = null
     const positionFight = new Promise(resolve => { resolveFight = resolve })
@@ -293,14 +293,19 @@ export class GatherNavigation {
     // chunk is still streaming in, A* keeps re-planning against null blocks
     // forever instead of failing. Wait for the world around the goal before
     // committing to a route — the worker dispatches the moment the bot spawns.
-    for (let waited = 0; this.bot.blockAt(to) == null && waited < 10000; waited += 250) {
+    try {
+      for (let waited = 0; this.bot.blockAt(to) == null && waited < 10000; waited += 250) {
+        this.signal.throwIfAborted()
+        await delay(250, undefined, { signal: this.signal })
+      }
       this.signal.throwIfAborted()
-      await delay(250, undefined, { signal: this.signal })
+      if (!await this.reachable(this.bot.entity.position, to, mode)) throw new Error(`GATHER_NO_ROUTE: No confirmed ${mode} route.`)
+      this.signal.throwIfAborted()
+      this.bot.pathfinder.setMovements(this.movements(mode))
+    } catch (error) {
+      this.bot._client?.removeListener?.('position', onForced)
+      throw error
     }
-    this.signal.throwIfAborted()
-    if (!await this.reachable(this.bot.entity.position, to, mode)) throw new Error(`GATHER_NO_ROUTE: No confirmed ${mode} route.`)
-    this.signal.throwIfAborted()
-    this.bot.pathfinder.setMovements(this.movements(mode))
     // Only clear the goal this walk installed: when survival rescue preempts,
     // the walk's own cleanup must never kill the rescue's replacement goal.
     let installed = null
@@ -311,11 +316,17 @@ export class GatherNavigation {
     let unsafe = false
     /** @param {import('mineflayer-pathfinder').PartiallyComputedPath} result */
     const validate = result => {
-      if (result.path.some(p => !this.safeRoutePoint(p, mode) || !this.allowedBreaks(p.toBreak, mode, p.y) ||
+      const rejected = result.path.find(p => !this.safeRoutePoint(p, mode) || !this.allowedBreaks(p.toBreak, mode, p.y) ||
         (mode !== 'scaffold' ? p.toPlace.length : p.toPlace.some(place => {
           const y = placementTarget(place).y
           return y < this.entry.y || y > this.entry.y + scaffoldHeight - 1
-        })))) {
+        })))
+      if (rejected) {
+        const point = new Vec3(rejected.x, rejected.y, rejected.z).floored()
+        console.error('[anelf] gather path rejected:', JSON.stringify({ mode, to, point,
+          feet: this.bot.blockAt(point)?.name, head: this.bot.blockAt(point.offset(0, 1, 0))?.name,
+          floor: this.bot.blockAt(point.offset(0, -1, 0))?.name,
+          breaks: rejected.toBreak, places: rejected.toPlace }))
         unsafe = true; result.path.length = 0; stop()
       }
     }
@@ -395,13 +406,7 @@ export class GatherNavigation {
       stall.abort()
       timeout.abort(); stop()
       if (onForced && this.bot._client?.removeListener) this.bot._client.removeListener('position', onForced)
-      if (motion) await motion.catch(error => {
-        const message = error instanceof Error ? error.message : String(error)
-        if (message.includes('goal was changed')) {
-          const site = new Error('replacement-site').stack ?? ''
-          console.error('[anelf] goal replaced during walk:', String(this.bot.pathfinder.goal), site.slice(0, 600))
-        }
-      })
+      if (motion) await motion.catch(() => {})
       await Promise.allSettled([...placements])
       if (mode === 'scaffold') this.bot.placeBlock = originalPlace
       this.signal.removeEventListener('abort', stop)

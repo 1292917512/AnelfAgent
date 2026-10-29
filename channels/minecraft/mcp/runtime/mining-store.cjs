@@ -14,6 +14,7 @@ const recordSchema = z.object({
   direction: z.enum(['north', 'south', 'east', 'west']),
   depth: z.number().int().min(0).max(16), length: z.number().int().min(0).max(32),
   requestedDepth: z.number().int().min(0).max(16).optional(), minY: z.number().int().optional(),
+  requireTorches: z.boolean().optional(),
   item: z.string(), count: z.number().int().min(0).max(256),
   baseline: z.number().int().nonnegative(), gained: z.number().int().nonnegative(),
   dug: z.number().int().nonnegative(), steps: z.number().int().nonnegative(),

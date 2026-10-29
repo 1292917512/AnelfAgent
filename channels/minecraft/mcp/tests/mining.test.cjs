@@ -117,6 +117,17 @@ async function fixture (options = {}, gain = true, { surfaceY = 30, minY = -64 }
   return { bot, ctx, record, task, set, digs, walks, placed, events, saves }
 }
 
+test('an ineffective held pickaxe is put away for dirt and logs, retained for stone', async () => {
+  const { bot } = await fixture()
+  for (const name of ['dirt', 'oak_log', 'stone']) {
+    const pickaxe = bot.inventory.items().find(item => item.name === 'iron_pickaxe')
+    await bot.equip(pickaxe, 'hand')
+    const block = Block.fromStateId(registry.blocksByName[name].defaultState, 0)
+    await safety.equipHarvestTool(bot, block)
+    assert.equal(bot.heldItem?.name ?? null, name === 'stone' ? 'iron_pickaxe' : null)
+  }
+})
+
 test('eight steps keep three-block headroom and traverse the staircase back to the entrance', async () => {
   const f = await fixture()
   f.task.start()
@@ -369,6 +380,50 @@ for (const options of [{ depth: 2, length: 2 }, { depth: 0, length: 4 }]) {
   })
 }
 
+test('explicit unlit mining collects initial stone and confirms its protected return', async () => {
+  const f = await fixture({ depth: 3, length: 6, count: 16, requireTorches: false })
+  f.bot.inventory.updateSlot(11, null)
+  f.task.start()
+  await f.task.done
+  assert.equal(f.record.phase, 'completed', f.record.reason)
+  assert.ok(f.record.gained >= 16)
+  assert.equal(f.record.returned, true)
+  assert.equal(f.placed.length, 0)
+  assert.ok(f.saves.every(record => record.requireTorches === false))
+})
+
+test('a fully excavated returned corridor may extend when its item goal was only partial', async t => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'anelf-partial-extension-'))
+  const previous = process.env.AWESOME_MINEFLAYER_MCP_HOME
+  process.env.AWESOME_MINEFLAYER_MCP_HOME = home
+  try {
+    const runtime = await import(pathToFileURL(path.join(root, 'node_modules/awesome-mineflayer-mcp/dist/tools/anelf-mining.mjs')).href)
+    const f = await fixture()
+    const defs = new Map()
+    runtime.registerMining(def => defs.set(def.name, def))
+    const run = (name, args = {}) => defs.get(name).handler(args, f.ctx)
+    const settle = async () => {
+      let status
+      do { await new Promise(resolve => setTimeout(resolve, 20)); status = await run('mining_status') } while (status.active)
+      return status
+    }
+    await run('mine_resources', { direction: 'east', depth: 1, length: 0, count: 16 })
+    const initial = await settle()
+    assert.equal(initial.phase, 'partial')
+    assert.equal(initial.returned, true)
+    await run('mine_resources', { direction: 'east', depth: 1, length: 1, count: 1, extend: true, requireTorches: false })
+    const extended = await settle()
+    assert.equal(extended.phase, 'completed', extended.reason)
+    assert.equal(extended.returned, true)
+    assert.equal(extended.steps, 2)
+    assert.deepEqual(extended.entry, initial.entry)
+  } finally {
+    if (previous === undefined) delete process.env.AWESOME_MINEFLAYER_MCP_HOME
+    else process.env.AWESOME_MINEFLAYER_MCP_HOME = previous
+    await fs.rm(home, { recursive: true, force: true })
+  }
+})
+
 test('registered tools expose background status, reject competing movement and settle cancellation', async t => {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), 'anelf-mining-tools-'))
   const previous = process.env.AWESOME_MINEFLAYER_MCP_HOME
@@ -424,7 +479,7 @@ test('actual MCP server registers mining schemas and completes a protocol handsh
     const prepareSchema = tools.find(t => t.name === 'prepare_build_site').inputSchema
     assert.deepEqual(Object.keys(prepareSchema.properties), ['home', 'footprint', 'maxFillDepth'])
     const schema = tools.find(t => t.name === 'mine_resources').inputSchema
-    assert.deepEqual(Object.keys(schema.properties), ['direction', 'depth', 'minY', 'length', 'item', 'count', 'extend'])
+    assert.deepEqual(Object.keys(schema.properties), ['direction', 'depth', 'minY', 'length', 'item', 'count', 'requireTorches', 'extend'])
     const status = await client.callTool({ name: 'get_connection_status', arguments: {} })
     assert.equal(status.isError, undefined)
     assert.equal(JSON.parse(status.content[0].text).survival.version, 1)

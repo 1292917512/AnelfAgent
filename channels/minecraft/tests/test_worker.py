@@ -15,6 +15,13 @@ from channels.minecraft.worker import (
     MinecraftWorker,
     StackOutcome,
 )
+from channels.minecraft.worker_crafting import prepare_pickaxe
+from channels.minecraft.worker_mining import (
+    approach_shallow_face,
+    blocked_tree_order,
+    shallow_stone_order,
+    start_stone_mining,
+)
 
 
 class FakeGame:
@@ -60,6 +67,33 @@ class FakeGame:
                 flag["online"] = False
 
         self.status_hooks.append(hook)
+
+
+class ProgressionGame(FakeGame):
+    """以真实库存变化驱动制作与采石的先后顺序。"""
+
+    def __init__(self, inventory: dict[str, int]) -> None:
+        super().__init__()
+        self.inventory = inventory
+        self.production: list[dict[str, Any]] = [
+            {"id": "craft1", "item": "wooden_pickaxe", "active": True, "phase": "running"},
+            {"id": "craft1", "item": "wooden_pickaxe", "active": False,
+             "phase": "completed", "inventoryClean": True},
+        ]
+        self.deliver_pickaxe = True
+
+    async def __call__(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+        if name == "get_inventory":
+            self.calls.append((name, dict(args)))
+            return {"items": [{"name": n, "count": c} for n, c in self.inventory.items()]}
+        if name in {"prepare_item", "production_status"}:
+            assert not self.gather_orders(), "制作尚未完成，不应开始采石"
+            self.calls.append((name, dict(args)))
+            status = self.production.pop(0)
+            if status.get("phase") == "completed" and self.deliver_pickaxe:
+                self.inventory = {"wooden_pickaxe": 1, "cobblestone": 0}
+            return status
+        return await super().__call__(name, args)
 
 
 class FakeMind:
@@ -243,13 +277,13 @@ async def test_empty_blocked_groups_do_not_consume_stack_numbers(
 async def test_work_goal_holds_on_inventory_holdings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """一轮目标按背包持有量判定：泥土两组 + 原木一组即收工；泥土满后订单只砍树。"""
+    """有镐后补足圆石缺口，按真实持有量待命，resume 不多下一单。"""
     monkeypatch.setattr("agent.runtime.singleton.get_runtime", lambda: None)
 
     class QuotaGame(FakeGame):
         def __init__(self) -> None:
             super().__init__()
-            self.inventory = {"dirt": 200, "oak_log": 10}
+            self.inventory = {"dirt": 64, "oak_log": 64, "stone_pickaxe": 1, "cobblestone": 58}
 
         async def __call__(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
             if name == "get_inventory":
@@ -259,10 +293,11 @@ async def test_work_goal_holds_on_inventory_holdings(
     game = QuotaGame()
     game.status_results = [
         {"active": False, "phase": "completed", "gained": 64, "dug": 64, "requested": 64, "reason": "",
-         "items": [{"item": "oak_log", "gained": 54, "available": 64}]},
+         "items": [{"item": "cobblestone", "gained": 6, "available": 64}]},
     ]
-    game.gather_hooks.append(lambda: setattr(game, "inventory", {"dirt": 200, "oak_log": 100}))
+    game.gather_hooks.append(lambda: game.inventory.update(cobblestone=64))
     worker, flag, _records, announces = _make_worker(game, item="auto")
+    game.flip_offline_when_status_exhausted(flag)
 
     task = asyncio.create_task(worker._session_loop())
     await asyncio.sleep(0.05)
@@ -272,16 +307,22 @@ async def test_work_goal_holds_on_inventory_holdings(
 
     orders = game.gather_orders()
     assert len(orders) == 1
-    assert orders[0]["logsOnly"] is True  # 背包泥土已超两组，第一组就只砍树
+    assert orders[0]["block"] == "stone"
+    assert orders[0]["count"] == 6
+    assert "chunk" not in orders[0]
     assert worker.holding and worker._hold_reason == "goal_met"
     assert any("备齐" in text for text in announces)
+    worker.resume()
+    flag["online"] = True
+    assert await worker._work_one_stack() is None
+    assert len(game.gather_orders()) == 1
 
 
 @pytest.mark.asyncio
-async def test_work_goal_switches_to_dirt_only_when_wood_met(
+async def test_work_goal_crafts_before_stone_instead_of_filling_dirt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """木头配额已满、泥土未满：auto 订单降级为只挖土，不再挑树撞爬树储备门槛。"""
+    """原木已足时先制作，即使泥土不足一组，也不再下挖土订单。"""
     monkeypatch.setattr("agent.runtime.singleton.get_runtime", lambda: None)
 
     class WoodMetGame(FakeGame):
@@ -292,6 +333,14 @@ async def test_work_goal_switches_to_dirt_only_when_wood_met(
         async def __call__(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
             if name == "get_inventory":
                 return {"items": [{"name": n, "count": c} for n, c in self.inventory.items()]}
+            if name == "prepare_item":
+                self.calls.append((name, dict(args)))
+                return {"id": "craft1", "item": "wooden_pickaxe", "active": True, "phase": "running"}
+            if name == "production_status":
+                self.calls.append((name, dict(args)))
+                self.inventory = {"dirt": 57, "spruce_log": 89, "wooden_pickaxe": 1}
+                return {"id": "craft1", "item": "wooden_pickaxe", "active": False,
+                        "phase": "completed", "inventoryClean": True}
             return await super().__call__(name, args)
 
     game = WoodMetGame()
@@ -307,11 +356,356 @@ async def test_work_goal_switches_to_dirt_only_when_wood_met(
     await _drain_reports(worker)
 
     orders = game.gather_orders()
-    assert orders  # 木头 91 ≥ 一组：每组都只挖土
-    assert all(order["block"] == "dirt" for order in orders)
+    assert orders
+    assert all(order["block"] == "stone" for order in orders)
     assert all("logsOnly" not in order for order in orders)
-    assert orders[0]["chunk"] == {"x": orders[0]["x"] // 16, "z": orders[0]["z"] // 16}
-    assert not worker.holding  # 泥土 57 < 两组，不收工
+    assert orders[0]["count"] == 3
+    names = [name for name, _args in game.calls]
+    assert names.index("prepare_item") < names.index("production_status") < names.index("gather_resources")
+    assert not worker.holding
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("wood", [7, 8])
+async def test_eight_total_logs_trigger_crafting_and_then_stone(wood: int) -> None:
+    game = ProgressionGame({"dirt": 64, "oak_log": wood - 3, "birch_log": 3})
+    worker, _flag, _records, _announces = _make_worker(game, item="auto")
+    await worker._work_one_stack()
+    order = game.gather_orders()[0]
+    if wood == 7:
+        assert not any(name == "prepare_item" for name, _args in game.calls)
+        assert order["block"] == "auto" and order["logTarget"] == 8
+        assert order["logsOnly"] is True
+    else:
+        assert ("prepare_item", {"item": "wooden_pickaxe", "count": 1, "mode": "ensure"}) in game.calls
+        assert order["block"] == "stone" and order["count"] == 3
+        await worker._work_one_stack()
+        assert sum(name == "prepare_item" for name, _args in game.calls) == 1
+        assert all(order["block"] == "stone" for order in game.gather_orders())
+    await _drain_reports(worker)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["blocked", "dirty", "missing_pickaxe", "foreign_task", "not_started"])
+async def test_unconfirmed_crafting_never_starts_stone_gathering(failure: str) -> None:
+    game = ProgressionGame({"oak_log": 8})
+    terminal = game.production[1]
+    if failure == "blocked":
+        terminal.update(phase="blocked", reason="no safe table space")
+    elif failure == "dirty":
+        terminal["inventoryClean"] = False
+    elif failure == "missing_pickaxe":
+        game.deliver_pickaxe = False
+    elif failure == "foreign_task":
+        terminal["id"] = "other-task"
+    else:
+        game.production = [{"error": "missing materials"}]
+    worker, _flag, _records, _announces = _make_worker(game, item="auto")
+    outcome = await worker._work_one_stack()
+    assert outcome is not None and outcome.phase == "blocked"
+    assert not game.gather_orders()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pickaxe", ["wooden_pickaxe", "stone_pickaxe", "iron_pickaxe"])
+async def test_existing_pickaxe_survives_restart_and_probes_stone_only(pickaxe: str) -> None:
+    game = ProgressionGame({pickaxe: 1})
+    worker, _flag, _records, _announces = _make_worker(game, item="auto")
+    await worker._work_one_stack()
+    assert game.gather_orders()[0]["block"] == "stone"
+    assert not any(name == "prepare_item" for name, _args in game.calls)
+    await worker._probe_targets({"x": 0, "y": 64, "z": 0})
+    probes = [args for name, args in game.calls if name == "find_blocks"]
+    assert len(probes) == 1 and probes[0]["matching"] == ["stone"]
+
+
+@pytest.mark.asyncio
+async def test_explicit_dirt_work_does_not_enter_automatic_crafting() -> None:
+    game = ProgressionGame({"oak_log": 8})
+    worker, _flag, _records, _announces = _make_worker(game, item="dirt")
+    await worker._work_one_stack()
+    assert game.gather_orders()[0]["block"] == "dirt"
+    assert not any(name == "prepare_item" for name, _args in game.calls)
+
+
+@pytest.mark.asyncio
+async def test_fresh_inventory_progresses_through_both_pickaxes_to_three_full_stacks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """耗材真实扣库存，制作等待确认，三种物资齐备才待命。"""
+    monkeypatch.setattr("agent.runtime.singleton.get_runtime", lambda: None)
+
+    class SurvivalGame(ProgressionGame):
+        crafting: str = ""
+
+        async def __call__(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+            if name == "prepare_item":
+                self.calls.append((name, dict(args)))
+                self.crafting = args["item"]
+                return {"id": self.crafting, "item": self.crafting, "phase": "running", "active": True}
+            if name == "production_status":
+                self.calls.append((name, dict(args)))
+                self.inventory[self.crafting] = 1
+                self.inventory["oak_log"] -= 3 if self.crafting == "wooden_pickaxe" else 1
+                if self.crafting == "stone_pickaxe":
+                    self.inventory["cobblestone"] -= 3
+                return {"id": self.crafting, "item": self.crafting, "phase": "completed",
+                        "active": False, "inventoryClean": True}
+            if name == "gather_resources":
+                self.calls.append((name, dict(args)))
+                if args["block"] == "stone":
+                    self.inventory["cobblestone"] = self.inventory.get("cobblestone", 0) + args["count"]
+                else:
+                    self.inventory["dirt"] = 64
+                    self.inventory["oak_log"] = args["logTarget"]
+                return {"phase": "running", "active": True}
+            return await super().__call__(name, args)
+
+    game = SurvivalGame({})
+    worker, _flag, _records, _announces = _make_worker(game, item="auto")
+    for _ in range(8):
+        if worker.holding:
+            break
+        assert await worker._work_one_stack() is not None
+        await worker._refresh_inventory_goals()
+        worker._hold_if_goal_met()
+    await _drain_reports(worker)
+    assert worker.holding and worker._hold_reason == "goal_met"
+    assert {name: game.inventory[name] for name in ("dirt", "oak_log", "cobblestone")} == {
+        "dirt": 64, "oak_log": 64, "cobblestone": 64,
+    }
+    assert [args["item"] for name, args in game.calls if name == "prepare_item"] == [
+        "wooden_pickaxe", "stone_pickaxe",
+    ]
+    assert [(order["block"], order["count"]) for order in game.gather_orders()] == [
+        ("auto", 64), ("stone", 3), ("stone", 64), ("auto", 64),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("pickaxe,stone,expected", [
+    ("wooden_pickaxe", 0, "wooden_pickaxe"), ("stone_pickaxe", 64, "stone_pickaxe"),
+])
+async def test_low_durability_pickaxe_is_replaced_before_continuing(pickaxe: str, stone: int, expected: str) -> None:
+    class WornGame(ProgressionGame):
+        async def __call__(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+            if name == "get_inventory":
+                return {"items": [{"name": n, "count": c, "durabilityLeft": 5 if n == pickaxe else None}
+                                  for n, c in self.inventory.items()]}
+            if name == "prepare_item":
+                self.calls.append((name, dict(args)))
+                return {"error": "stop after checking replacement order"}
+            return await super().__call__(name, args)
+
+    game = WornGame({"oak_log": 64, "dirt": 64, pickaxe: 1, "cobblestone": stone})
+    worker, _flag, _records, _announces = _make_worker(game, item="auto")
+    outcome = await worker._work_one_stack()
+    assert outcome is not None and outcome.phase == "blocked"
+    assert ("prepare_item", {"item": expected, "count": 1, "mode": "craft"}) in game.calls
+    assert not game.gather_orders() and not worker.holding
+
+
+@pytest.mark.asyncio
+async def test_buried_stone_opens_bounded_stairs_and_preserves_mining_gains() -> None:
+    class ShallowGame(ProgressionGame):
+        mining = False
+        saved: dict[str, Any] = {"active": False, "task": None}
+
+        async def __call__(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+            if name == "mining_status":
+                self.calls.append((name, dict(args)))
+                if self.mining:
+                    self.inventory["cobblestone"] = 6
+                    self.saved = {"id": "mine1", "active": False, "phase": "partial", "item": "cobblestone",
+                                  "count": 16, "gained": 6, "dug": 10, "returned": True}
+                return self.saved
+            if name == "find_blocks":
+                self.calls.append((name, dict(args)))
+                return {"positions": [{"x": 12, "y": 62, "z": -5}]}
+            if name == "mine_resources":
+                self.calls.append((name, dict(args)))
+                self.mining = True
+                return {"id": "mine1", "active": True, "phase": "running"}
+            return await super().__call__(name, args)
+
+    game = ShallowGame({"stone_pickaxe": 1, "dirt": 64})
+    game.status_results = [{"active": False, "phase": "blocked", "reason": "GATHER_NO_TARGET",
+                            "gained": 0, "dug": 0, "requested": 16}]
+    worker, _flag, _records, _announces = _make_worker(game, item="auto")
+    outcome = await worker._work_one_stack()
+    assert outcome is not None and outcome.phase == "partial"
+    assert outcome.gained == 6 and outcome.dug == 10 and outcome.items == (("cobblestone", 6),)
+    orders = [args for name, args in game.calls if name == "mine_resources"]
+    assert orders == [{"direction": "east", "depth": 3, "length": 8, "minY": 61,
+                       "item": "cobblestone", "count": 64, "extend": False, "requireTorches": False}]
+    assert await shallow_stone_order(game, {"x": 10, "y": 64, "z": -5}, 10) is None
+    assert len([name for name, _args in game.calls if name == "mine_resources"]) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stone_y,depth", [(60, 4), (58, 6), (57, None)])
+async def test_starter_mine_reaches_thicker_soil_without_exceeding_depth_limit(stone_y: int, depth: int | None) -> None:
+    async def call(name: str, _args: dict[str, Any]) -> dict[str, Any]:
+        if name == "find_blocks":
+            return {"positions": [{"x": 12, "y": stone_y, "z": -5}]}
+        return {}
+
+    order = await shallow_stone_order(call, {"x": 10, "y": 64, "z": -5}, 3)
+    if depth is None:
+        assert order is None
+    else:
+        assert order is not None and order["depth"] == depth and order["minY"] == 64 - depth
+
+
+@pytest.mark.asyncio
+async def test_returned_starter_mine_continues_without_repeating_surface_search() -> None:
+    class CorridorGame(ProgressionGame):
+        started = False
+
+        async def __call__(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+            if name == "mining_status":
+                return {"id": "mine1", "phase": "partial", "returned": True, "active": False,
+                        "item": "cobblestone", "direction": "south", "depth": 4, "length": 8,
+                        "steps": 12, "count": 64, "gained": 20 if self.started else 0}
+            if name == "mine_resources":
+                self.calls.append((name, dict(args)))
+                self.started = True
+                return {"active": True}
+            return await super().__call__(name, args)
+
+    game = CorridorGame({"stone_pickaxe": 1, "cobblestone": 27})
+    worker, _flag, _records, _announces = _make_worker(game, item="auto")
+    outcome = await worker._work_one_stack()
+    assert outcome is not None and outcome.gained == 20
+    assert not game.gather_orders() and not any(name == "find_blocks" for name, _args in game.calls)
+    assert ("mine_resources", {"direction": "south", "depth": 4, "length": 8, "item": "cobblestone",
+                               "count": 37, "extend": True, "requireTorches": False}) in game.calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("returned,phase,steps,allowed", [
+    (True, "partial", 3, True), (True, "partial", 2, False),
+    (False, "partial", 3, False), (True, "interrupted", 3, False),
+])
+async def test_starter_mine_only_extends_a_fully_walked_returned_corridor(
+    returned: bool, phase: str, steps: int, allowed: bool,
+) -> None:
+    async def call(_name: str, _args: dict[str, Any]) -> dict[str, Any]:
+        return {"id": "mine1", "returned": returned, "phase": phase, "steps": steps,
+                "depth": 3, "length": 0, "item": "cobblestone", "direction": "north"}
+
+    order = await shallow_stone_order(call, {"x": 0, "y": 63, "z": 0}, 13)
+    if allowed:
+        assert order == {"direction": "north", "depth": 3, "length": 8, "item": "cobblestone",
+                         "count": 13, "extend": True, "requireTorches": False}
+    else:
+        assert order is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("actual_name,visible,inside,repair", [
+    ("grass_block", True, True, True), ("chest", True, True, False),
+    ("grass_block", False, True, False), ("grass_block", True, False, False),
+])
+async def test_stone_mine_repairs_only_visible_soil_inside_its_saved_passage(
+    actual_name: str, visible: bool, inside: bool, repair: bool,
+) -> None:
+    calls: list[str] = []
+    cleared = False
+
+    async def call(name: str, _args: dict[str, Any]) -> dict[str, Any]:
+        nonlocal cleared
+        calls.append(name)
+        if name == "mine_resources":
+            if not cleared:
+                raise RuntimeError("MINING_RETURN_BLOCKED: Return passage obstructed by grass_block at -38,66,6.")
+            return {"id": "mine2", "active": True}
+        if name == "mining_status":
+            return {"entry": {"x": -38 if inside else -48, "y": 66, "z": 6}, "direction": "north",
+                    "steps": 3, "depth": 3, "returned": True, "phase": "partial"}
+        if name == "get_block_at":
+            return {"name": actual_name, "canSee": visible, "canDig": True}
+        if name == "dig":
+            cleared = True
+            return {"serverConfirmed": True}
+        return {}
+
+    if repair:
+        result = await start_stone_mining(call, {"extend": True})
+        assert result["active"] is True
+        assert calls == ["mine_resources", "mining_status", "get_block_at", "dig", "mine_resources"]
+    else:
+        with pytest.raises(RuntimeError, match="MINING_RETURN_BLOCKED"):
+            await start_stone_mining(call, {"extend": True})
+        assert "dig" not in calls
+
+
+@pytest.mark.asyncio
+async def test_blocking_tree_is_cleared_whole_before_same_mine_resumes() -> None:
+    class TreeGame(ProgressionGame):
+        cleared = False
+        resumed = False
+
+        async def __call__(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+            if name == "mining_status":
+                self.calls.append((name, args))
+                if self.resumed:
+                    self.inventory["cobblestone"] = 16
+                    return {"id": "mine1", "phase": "completed", "active": False, "item": "cobblestone",
+                            "count": 13, "gained": 13, "dug": 13, "returned": True}
+                return {"id": "mine1", "phase": "blocked", "returned": True, "item": "cobblestone",
+                        "entry": {"x": 10, "y": 64, "z": -5}, "direction": "east", "steps": 2, "depth": 0,
+                        "reason": "Unexpected birch_log at (13, 65, -5); do not excavate buildings or containers."}
+            if name == "get_block_at":
+                self.calls.append((name, args))
+                return {"name": "air" if self.cleared else "birch_log"}
+            if name == "gathering_status":
+                self.calls.append((name, args))
+                self.cleared = True
+                return {"phase": "completed", "active": False, "gained": 5, "dug": 5, "requested": 64,
+                        "items": [{"item": "birch_log", "gained": 5}]}
+            if name == "resume_mining":
+                self.calls.append((name, args))
+                assert self.cleared
+                self.resumed = True
+                return {"active": True, "id": "mine1"}
+            return await super().__call__(name, args)
+
+    game = TreeGame({"stone_pickaxe": 1, "cobblestone": 3})
+    worker, _flag, _records, _announces = _make_worker(game, item="auto")
+    outcome = await worker._work_one_stack()
+    assert game.gather_orders() == [{"block": "birch_log", "count": 64, "mode": "tree", "radius": 8,
+                                    "x": 13, "y": 65, "z": -5}]
+    assert outcome is not None and outcome.phase == "completed"
+    assert dict(outcome.items) == {"birch_log": 5, "cobblestone": 13}
+    assert await blocked_tree_order(game) is None
+
+
+@pytest.mark.asyncio
+async def test_shallow_mine_uses_exact_bottom_goal_instead_of_horizontal_near_goal() -> None:
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    async def call(name: str, args: dict[str, Any]) -> dict[str, Any]:
+        calls.append((name, args))
+        if name == "mining_status":
+            return {"entry": {"x": -38, "y": 66, "z": 6}, "direction": "north", "steps": 3,
+                    "depth": 3, "length": 0, "returned": True, "phase": "partial", "active": False}
+        if name == "get_state":
+            return {"position": {"x": -37.5, "y": 66, "z": 6.5}}
+        return {}
+
+    await approach_shallow_face(call)
+    assert calls[-1] == ("goto", {"goalType": "block", "x": -38, "y": 63, "z": 3, "timeout": 30000})
+
+
+@pytest.mark.asyncio
+async def test_crafting_timeout_cancels_instead_of_releasing_an_active_task() -> None:
+    game = ProgressionGame({"oak_log": 8})
+    times = iter([0.0, 151.0])
+    with pytest.raises(TimeoutError, match="CRAFT_TIMEOUT"):
+        await prepare_pickaxe(game, running=lambda: True, poll_seconds=0.01, clock=lambda: next(times))
+    assert ("cancel_task", {}) in game.calls
+    assert not game.gather_orders()
 
 
 @pytest.mark.asyncio
@@ -601,6 +995,13 @@ async def test_relocate_probe_prefers_reserve_soil_and_orders_by_chunk_ring(
     assert [(t["x"], t["z"]) for t in targets] == [(12, 0), (20, 0), (40, 0)], (
         "保底满足后回到环距+块距的就近扩搜"
     )
+
+    game = RingProbeGame(dirt=64)
+    worker, _flag, _records, _announces = _make_worker(game, item="auto")
+    targets = await worker._probe_targets(here)
+    assert [(t["x"], t["z"]) for t in targets] == [(12, 0), (20, 0)]
+    assert all(set(args["matching"]) != set(_RELOCATE_SOIL_BLOCKS)
+               for name, args in game.calls if name == "find_blocks")
 
 
 @pytest.mark.asyncio

@@ -1,5 +1,9 @@
 // @ts-check
-/** Own gathering, verified inventory gains, return travel and optional explicit chest transfers. */
+/** Own gathering, verified inventory gains, return travel and optional explicit chest transfers.
+ * Model input/output: existing progress receipts report verified gains and bounded failure reasons.
+ * Token impact: no extra model calls or receipt fields.
+ * Cache impact: tool-result facts only; stable prefixes are unchanged.
+ */
 import { randomUUID } from 'node:crypto'
 import { setImmediate as yieldFrame, setTimeout as delay } from 'node:timers/promises'
 import { Vec3 } from 'vec3'
@@ -28,6 +32,7 @@ const soilSet = new Set(soilNames)
 // top soil layer takes absolute priority over trees, because climbing a tree
 // needs dirt to stand on. Climbing's own 64-dirt hard reserve stays independent.
 const tier1DirtFloor = 10
+const routineDirtTarget = 64
 
 /** Trunk attachments that hide dig faces — vines and jungle cocoa pods —
  * get stripped before the dig, not hopped. */
@@ -43,10 +48,17 @@ export function trunkLogNames (bot) {
   return Object.keys(bot.registry?.blocksByName ?? {})
     .filter(name => name.endsWith('_log') && !name.startsWith('stripped_'))
 }
+
+/** Native pathfinder errors retain their name; wrappers may preserve only the message.
+ * @param {unknown} error
+ */
+function goalChanged (error) {
+  return error instanceof Error && (error.name === 'GoalChanged' || /\bgoal was changed\b/i.test(error.message))
+}
 /** @typedef {import('mineflayer').Bot & {tool:import('mineflayer-tool').Tool}} Bot */
 /** @typedef {{x:number,y:number,z:number}} Position */
 /** @typedef {{block:keyof typeof resources,count:number,x:number,y:number,z:number,radius:number,
- * mode?:'count'|'tree',chest?:Position,withdraw:import('./anelf-supply-plan.mjs').Request[],deposit:boolean}} Order */
+ * mode?:'count'|'tree',logTarget?:number,chest?:Position,withdraw:import('./anelf-supply-plan.mjs').Request[],deposit:boolean}} Order */
 /** @typedef {'running'|'completed'|'blocked'|'cancelled'|'interrupted'} Phase */
 
 export class GatherTask {
@@ -64,6 +76,7 @@ export class GatherTask {
     // surface is mostly grass blocks (and podzol, mycelium, dirt paths), all of
     // which drop the requested dirt item without silk touch.
     this.surfaceSoil = order.block === 'dirt'
+    this.stoneSurface = order.block === 'stone' || order.block === 'cobblestone'
     // An auto order mixes the surface soil family with every natural trunk log
     // in this registry, so a new wood species needs no code change here.
     this.logNames = new Set(this.mixed ? trunkLogNames(bot) : [])
@@ -110,6 +123,20 @@ export class GatherTask {
 
   /** Surface-soil targets follow the dirt order rules (own support, descent). */
   soilHarvest (blockName) { return this.surfaceSoil || (this.mixed && soilSet.has(blockName)) }
+
+  /** Preserve trunk-bearing soil until the log above it has actually been removed.
+   * @param {import('prismarine-block').Block} block
+   */
+  canHarvestTarget (block) {
+    if (this.stoneSurface && block.position.y < Math.floor(this.bot.entity.position.y)) return false
+    const soil = this.soilHarvest(block.name)
+    if (soil) {
+      if (this.mixed && (this.logsOnly || itemCount(this.bot, 'dirt') >= routineDirtTarget)) return false
+      const above = this.bot.blockAt(block.position.offset(0, 1, 0))
+      if (!above || above.name.endsWith('_log')) return false
+    }
+    return safety.canHarvestBlock(this.bot, block, soil)
+  }
 
   /** @param {string} item @param {number} delta @param {number} available */
   recordGain (item, delta, available) {
@@ -194,6 +221,12 @@ export class GatherTask {
   /** @param {GatherNavigation} navigation @param {Set<string>} [tried] @param {Map<string,Vec3>|null} [allowed] @param {Set<string>|null} [excluded] */
   async candidate (navigation, tried = new Set(), allowed = null, excluded = null) {
     const center = new Vec3(this.order.x, this.order.y, this.order.z)
+    // Filter buried floor blocks during discovery, before findBlocks applies
+    // its count limit; otherwise dense underground stone hides exposed faces.
+    const stoneOptions = this.stoneSurface ? {
+      /** @param {import('prismarine-block').Block} block */
+      useExtraInfo: block => block.position.y >= Math.floor(this.bot.entity.position.y),
+    } : {}
     // Work faces: chunk-clamped soil is searched across its whole standard
     // 16×16 chunk column from the chunk center — never a bot-centered radius.
     // Trees keep a radius around the order center so trunks standing just
@@ -212,10 +245,10 @@ export class GatherTask {
       } else if (this.chunk) {
         positions = this.bot.findBlocks({ matching: this.targetIds,
           point: new Vec3(this.chunk.x * 16 + 8, this.order.y, this.chunk.z * 16 + 8),
-          maxDistance: 14, count: this.surfaceSoil ? 512 : 64 })
+          maxDistance: 14, count: this.surfaceSoil ? 512 : 64, ...stoneOptions })
       } else {
         positions = this.bot.findBlocks({ matching: this.targetIds, point: center,
-          maxDistance: this.order.radius, count: this.surfaceSoil || this.mixed ? 512 : 64 })
+          maxDistance: this.order.radius, count: this.surfaceSoil || this.mixed ? 512 : 64, ...stoneOptions })
       }
     }
     if (!allowed && this.surfaceSoil) {
@@ -228,6 +261,15 @@ export class GatherTask {
       const feet = this.bot.entity.position
       positions = [...positions].sort((a, b) => b.y - a.y || a.distanceTo(feet) - b.distanceTo(feet))
     }
+    if (this.stoneSurface) {
+      // Clear a nearby stone column's headroom before its foot block, so the
+      // next pickup stand is walkable rather than a one-block-high pocket.
+      const feet = this.bot.entity.position, headY = Math.floor(feet.y) + 1
+      /** @param {Vec3} p */
+      const horizontal = p => (p.x + 0.5 - feet.x) ** 2 + (p.z + 0.5 - feet.z) ** 2
+      positions = [...positions].sort((a, b) => horizontal(a) - horizontal(b) ||
+        Math.abs(a.y - headY) - Math.abs(b.y - headY))
+    }
     // Mixed orders pick by distance to the bot's current feet, so the sweep
     // follows the bot across the face instead of zigzagging around the fixed
     // order center.
@@ -238,8 +280,8 @@ export class GatherTask {
     // Single-resource chunk orders clamp the whole authorized face to the
     // chunk column, producing chunk-aligned square clearing.
     if (!allowed && this.chunk && !this.mixed) positions = positions.filter(p => this.inChunk(p))
-    if (!allowed && this.mixed && this.logsOnly) {
-      // Dirt-quota orders never touch soil; the reserve floor is implied met.
+    if (!allowed && this.mixed && (this.logsOnly || itemCount(this.bot, 'dirt') >= routineDirtTarget)) {
+      // Recheck holdings after each dig: reaching one stack switches this order to wood.
       positions = positions.filter(p => {
         const block = this.bot.blockAt(p)
         return block == null || !soilSet.has(block.name)
@@ -289,6 +331,9 @@ export class GatherTask {
 
   /** @param {GatherNavigation} navigation @param {Vec3[]} positions @param {Set<string>} tried @param {Map<string,Vec3>|null} allowed @param {Set<string>|null} excluded */
   async scan (navigation, positions, tried, allowed, excluded) {
+    const started = Date.now()
+    let loggedAt = started
+    let probes = 0
     for (const p of positions) {
       if (allowed && !allowed.has(safety.key(p))) continue
       if (excluded && excluded.has(safety.key(p))) continue
@@ -301,9 +346,10 @@ export class GatherTask {
       // supporting floor as an excavation target. Surface soil is the floor
       // itself: it may dig the block underfoot, and the layer-by-layer order
       // then descends only after the current level is fully cleared.
-      const minY = soil ? Math.floor(this.bot.entity.position.y) - 1 : this.entry.y - 3
+      const minY = this.stoneSurface ? Math.floor(this.bot.entity.position.y)
+        : soil ? Math.floor(this.bot.entity.position.y) - 1 : this.entry.y - 3
       if (p.y < minY || (p.y > this.entry.y + scaffoldHeight && !(allowed && allowed.has(safety.key(p))))) continue
-      if (!safety.canHarvestBlock(this.bot, block, soil)) continue
+      if (!this.canHarvestTarget(block)) continue
       const modes = p.y > this.entry.y + 2 ? ['scaffold', 'high'] : ['leaf', 'high', 'scaffold']
       for (const mode of modes) {
         // Without reserve material in the inventory a scaffold route can
@@ -315,6 +361,9 @@ export class GatherTask {
           ? [Math.min(this.entry.y + scaffoldHeight, Math.max(this.entry.y + 1, p.y))]
           : [feetY - 1, feetY, feetY + 1]
         const stands = []
+        // A narrow work face may have no empty cell beside the target even
+        // though its exposed face is already within the bot's digging reach.
+        if (navigation.safeRoutePoint(this.bot.entity.position, mode)) stands.push(this.bot.entity.position.clone())
         for (let standY of standYs) for (let x = -1; x <= 1; x++) for (let z = -1; z <= 1; z++) {
           const stand = new Vec3(p.x + x, standY, p.z + z)
           if (navigation.safeRoutePoint(stand, mode)) stands.push(stand)
@@ -335,13 +384,32 @@ export class GatherTask {
           // reserve; a bot already elevated is mid-climb on placed supports
           // and continues with whatever it carries.
           const elevated = Math.floor(this.bot.entity.position.y) > this.entry.y + 2
-          if (mode === 'scaffold' && !allowed && !this.surfaceSoil && !this.dirtReserveReady && !elevated) {
+          if (mode === 'scaffold' && !this.surfaceSoil && !this.dirtReserveReady && !elevated) {
             await this.ensureDirtReserve(navigation.signal)
             this.dirtReserveReady = true
           }
-          if (await navigation.reachable(this.bot.entity.position, stand, mode)) return { block, stand, mode }
+          const reachable = await navigation.reachable(this.bot.entity.position, stand, mode)
+          probes++
+          if (Date.now() - loggedAt >= 3000) {
+            console.error('[anelf] gather route search:', JSON.stringify({ id: this.id, stage: this.stage,
+              elapsedMs: Date.now() - started, probes, candidates: positions.length,
+              from: this.bot.entity.position, target: p, stand, mode, reachable }))
+            loggedAt = Date.now()
+          }
+          if (reachable) return { block, stand, mode }
         }
       }
+    }
+    if (this.stoneSurface &&
+        Date.now() - (this.lastStoneScanLog ?? 0) >= 5000) {
+      this.lastStoneScanLog = Date.now()
+      console.error('[anelf] stone face unavailable:', JSON.stringify({ id: this.id, from: this.bot.entity.position,
+        candidates: positions.length, nearest: positions.slice(0, 16).map(p => {
+          const block = this.bot.blockAt(p)
+          return { p, name: block?.name, allowed: Boolean(block && this.canHarvestTarget(block)),
+            visible: reachableFace(this.bot, p, this.bot.entity.position) }
+        }), drops: Object.values(this.bot.entities ?? {}).filter(e => e.name === 'item' && e.position &&
+          e.position.distanceTo(this.bot.entity.position) <= 12).slice(0, 16).map(e => e.position) }))
     }
     throw new Error('GATHER_NO_TARGET: No permitted target with a level walking and return route; buried blocks require a mine task.')
   }
@@ -375,12 +443,12 @@ export class GatherTask {
         // approach. A position fight means the route crossed a cell the
         // server disagrees with (terrain desync), so retrying the identical
         // stand can only repeat the pull-back.
-        if (!/GATHER_(?:TRAVEL_TIMEOUT|NOT_ARRIVED|NO_ROUTE|POSITION_FIGHT)/.test(message)) throw error
+        if (!goalChanged(error) && !/GATHER_(?:TRAVEL_TIMEOUT|NOT_ARRIVED|NO_ROUTE|POSITION_FIGHT)/.test(message)) throw error
         if (message.includes('POSITION_FIGHT')) fought = true
       }
       this.check(signal)
       if (!arrived) continue
-      if (this.bot.blockAt(block.position)?.type !== block.type || !safety.canHarvestBlock(this.bot, block, this.soilHarvest(block.name))) {
+      if (this.bot.blockAt(block.position)?.type !== block.type || !this.canHarvestTarget(block)) {
         throw new Error('GATHER_TARGET_CHANGED: Target changed or became unsafe before digging.')
       }
       if (reachableFace(this.bot, block.position, this.bot.entity.position)) return { block, mode }
@@ -412,7 +480,7 @@ export class GatherTask {
       if (!obstruction || !(navigation.breakable(hit.position, mode, this.bot.entity.position.y) || wrapping) ||
           !safety.canHarvestBlock(this.bot, obstruction)) continue
       try {
-        await this.bot.tool.equipForBlock(obstruction, { requireHarvest: true, getFromChest: false })
+        await safety.equipHarvestTool(this.bot, obstruction)
         this.check(signal)
         await this.bot.dig(obstruction, true, 'raycast')
       } catch {
@@ -462,14 +530,14 @@ export class GatherTask {
       }
       const dugBefore = this.dug
       const harvest = async () => {
-        await this.collectOne(navigation, signal, component.logs)
         await this.collectTree(navigation, signal, component.logs, block.name)
+        await this.settleTree(navigation)
       }
       try {
         await harvest()
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
-        const skippable = /GATHER_(?:NO_TARGET|NO_SIGHT)|GATHER_SCAFFOLD_RESERVE|Goal was changed|Digging aborted/.test(message) &&
+        const skippable = (goalChanged(error) || /GATHER_(?:NO_TARGET|NO_SIGHT)|GATHER_SCAFFOLD_RESERVE|Digging aborted/.test(message)) &&
           (message.includes('GATHER_SCAFFOLD_RESERVE') ? this.dug === dugBefore : true)
         if (!skippable) throw error
         // Hanging litter must not be abandoned on a transient miss: retry the
@@ -524,9 +592,10 @@ export class GatherTask {
     for (const miss of [...visit.values()].slice(0, 24)) {
       this.check(signal)
       const stand = miss.position.floored()
-      if (!navigation.safeRoutePoint(stand, 'leaf')) continue
+      const mode = stand.y < this.entry.y ? 'high' : 'leaf'
+      if (!navigation.safeRoutePoint(stand, mode)) continue
       const before = miss.item != null && !miss.reclaimed ? itemCount(this.bot, miss.item) : 0
-      try { await navigation.walk(stand, 'leaf') } catch { /* best effort */ }
+      try { await navigation.walk(stand, mode) } catch { /* best effort */ }
       if (miss.item == null || miss.reclaimed) {
         // Pure vacuum and scaffold reclaim: walked over and picked up without
         // crediting the order.
@@ -601,7 +670,14 @@ export class GatherTask {
       if (!await this.clearSightObstruction(navigation, block, mode, signal)) {
         throw new Error('GATHER_NO_SIGHT: No visible harvest face at the dig site.')
       }
-      await this.digBlock(block, soil, signal)
+      try {
+        await this.digBlock(block, soil, signal)
+      } catch (retryError) {
+        if (retryError instanceof Error && retryError.message.includes('Block not in view')) {
+          throw new Error('GATHER_NO_SIGHT: Harvest face is still hidden after clearing one obstruction.')
+        }
+        throw retryError
+      }
     }
   }
 
@@ -623,9 +699,9 @@ export class GatherTask {
     await this.clearVineWrap(block, signal)
     const soil = this.soilHarvest(block.name)
     const item = this.itemFor(block.name)
-    await this.bot.tool.equipForBlock(block, { requireHarvest: true, getFromChest: false })
+    await safety.equipHarvestTool(this.bot, block)
     this.check(signal)
-    if (this.bot.blockAt(block.position)?.type !== block.type || !reachableFace(this.bot, block.position, this.bot.entity.position) || !safety.canHarvestBlock(this.bot, block, soil)) {
+    if (this.bot.blockAt(block.position)?.type !== block.type || !reachableFace(this.bot, block.position, this.bot.entity.position) || !this.canHarvestTarget(block)) {
       throw new Error('GATHER_TARGET_CHANGED: Target or sightline changed during tool selection; stopped before digging.')
     }
     const held = this.bot.heldItem
@@ -756,7 +832,10 @@ export class GatherTask {
    */
   async collectTree (navigation, signal, initialTargets, logName) {
     const known = new Map([...initialTargets.entries()].map(([key, position]) => [key, position.clone()]))
-    for (let pass = 0; pass < 64; pass++) {
+    let recoveryAttempts = 0
+    // Each known log, two recovery attempts, and one final completion check.
+    const maxPasses = Math.min(64, known.size) + 3
+    for (let pass = 0; pass < maxPasses; pass++) {
       this.check(signal)
       const targets = [...known.values()].filter(position => this.bot.blockAt(position)?.name === logName)
       if (!targets.length) return
@@ -765,9 +844,29 @@ export class GatherTask {
         throw new Error('GATHER_TREE_TOO_HIGH: Full tree cleanup needs a reachable scaffold above the bounded gathering height.')
       }
       const allowed = new Map(targets.map(position => [safety.key(position), position]))
-      await this.collectOne(navigation, signal, allowed)
+      try {
+        await this.collectOne(navigation, signal, allowed)
+      } catch (error) {
+        this.check(signal)
+        const message = error instanceof Error ? error.message : String(error)
+        const recoverable = goalChanged(error) || /GATHER_(?:NO_SIGHT|TARGET_CHANGED|TRAVEL_TIMEOUT|NOT_ARRIVED|NO_ROUTE)/.test(message)
+        if (!recoverable || recoveryAttempts >= 2) throw error
+        recoveryAttempts++
+        this.stage = 'recovering'
+        await delay(250, undefined, { signal })
+      }
     }
     throw new Error('GATHER_TREE_LIMIT: Tree cleanup exceeded the bounded log budget.')
+  }
+
+  /** Dismantle temporary climbing supports before travelling to another tree.
+   * @param {GatherNavigation} navigation
+   */
+  async settleTree (navigation) {
+    if (!navigation.scaffolds.size) return
+    this.stage = 'cleaning_scaffolds'
+    await navigation.cleanupScaffolding()
+    this.recordScaffoldDrops()
   }
 
   /**
@@ -779,18 +878,23 @@ export class GatherTask {
    */
   async collectMixed (navigation, signal) {
     const excluded = new Set()
-    if (this.chunk) {
-      await this.sweepFloatingLogs(navigation, signal, excluded, () => this.gained < this.order.count)
+    // Check the carried-log target only between complete trees: crossing the
+    // threshold inside a component must never abandon its remaining crown.
+    const needsWork = () => this.gained < this.order.count && (this.order.logTarget === undefined ||
+      this.bot.inventory.items().filter(item => this.logNames.has(item.name))
+        .reduce((total, item) => total + item.count, 0) < this.order.logTarget)
+    if (this.chunk && needsWork()) {
+      await this.sweepFloatingLogs(navigation, signal, excluded, needsWork)
     }
     let recoveryAttempts = 0
-    while (this.gained < this.order.count) {
+    while (needsWork()) {
       this.check(signal)
       let found
       try {
         found = await this.candidate(navigation, new Set(), null, excluded)
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
-        const recoverable = /GATHER_(?:NO_TARGET|NO_SIGHT|NO_PICKUP|TARGET_CHANGED|TRAVEL_TIMEOUT|NOT_ARRIVED)|MINING_PROTECTED_FLOOR|Goal was changed|Digging aborted/.test(message)
+        const recoverable = goalChanged(error) || /GATHER_(?:NO_TARGET|NO_SIGHT|NO_PICKUP|TARGET_CHANGED|TRAVEL_TIMEOUT|NOT_ARRIVED)|MINING_PROTECTED_FLOOR|Digging aborted/.test(message)
         if (!recoverable || recoveryAttempts >= 2) throw error
         recoveryAttempts++
         this.stage = 'recovering'
@@ -811,8 +915,8 @@ export class GatherTask {
         }
         const dugBefore = this.dug
         try {
-          await this.collectOne(navigation, signal, component.logs)
           await this.collectTree(navigation, signal, component.logs, found.block.name)
+          await this.settleTree(navigation)
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
           // Climbing without the 64-dirt reserve aborts before the first dig:
@@ -837,7 +941,7 @@ export class GatherTask {
         recoveryAttempts = 0
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
-        const recoverable = /GATHER_(?:NO_TARGET|NO_SIGHT|NO_PICKUP|TARGET_CHANGED|TRAVEL_TIMEOUT|NOT_ARRIVED)|MINING_PROTECTED_FLOOR|Goal was changed|Digging aborted/.test(message)
+        const recoverable = goalChanged(error) || /GATHER_(?:NO_TARGET|NO_SIGHT|NO_PICKUP|TARGET_CHANGED|TRAVEL_TIMEOUT|NOT_ARRIVED)|MINING_PROTECTED_FLOOR|Digging aborted/.test(message)
         if (!recoverable || recoveryAttempts >= 2) throw error
         recoveryAttempts++
         this.stage = 'recovering'
@@ -849,7 +953,7 @@ export class GatherTask {
 
   /** Keep the routine temporary-support reserve on dirt before a tree climb. */
   async ensureDirtReserve (signal) {
-    const reserve = 64
+    const reserve = routineDirtTarget
     const available = itemCount(this.bot, 'dirt')
     if (available >= reserve) return
     const task = new GatherTask(this.ctx, this.bot, {
@@ -904,7 +1008,6 @@ export class GatherTask {
           if ([...component.logs.values()].some(position => position.y > this.entry.y + scaffoldHeight)) {
             throw new Error('GATHER_TREE_TOO_HIGH: Full tree cleanup needs a reachable scaffold above the bounded gathering height.')
           }
-          await this.collectOne(navigation, handle.signal, component.logs)
           await this.collectTree(navigation, handle.signal, component.logs, preview.block.name)
         } else if (this.mixed) {
           await this.collectMixed(navigation, handle.signal)
@@ -916,7 +1019,7 @@ export class GatherTask {
               recoveryAttempts = 0
             } catch (error) {
               const message = error instanceof Error ? error.message : String(error)
-              const recoverable = /GATHER_(?:NO_TARGET|NO_SIGHT|NO_PICKUP|TARGET_CHANGED|TRAVEL_TIMEOUT|NOT_ARRIVED)|MINING_PROTECTED_FLOOR|Goal was changed|Digging aborted/.test(message)
+              const recoverable = goalChanged(error) || /GATHER_(?:NO_TARGET|NO_SIGHT|NO_PICKUP|TARGET_CHANGED|TRAVEL_TIMEOUT|NOT_ARRIVED)|MINING_PROTECTED_FLOOR|Digging aborted/.test(message)
               if (!recoverable || recoveryAttempts >= 2) throw error
               recoveryAttempts++
               this.stage = 'recovering'
@@ -932,11 +1035,6 @@ export class GatherTask {
       if (!this.connected()) throw new Error('GATHER_INTERRUPTED: Connection changed before return.')
       this.stage = 'returning'
       try {
-        if (!nested && this.order.block !== 'dirt' && this.bot.entity.position.floored().y > this.entry.y && !this.dirtReserveReady) {
-          this.stage = 'reserving_dirt'
-          await this.ensureDirtReserve(handle.signal)
-          this.dirtReserveReady = true
-        }
         const preferred = this.bot.entity.position.floored().y > this.entry.y ? 'scaffold' : 'leaf'
         const returnModes = [...new Set([preferred, 'high', 'scaffold', 'leaf'])]
         let returned = false
@@ -965,7 +1063,8 @@ export class GatherTask {
         // to the entry when a route exists, otherwise report the honest
         // position instead of claiming the return.
         if (this.bot.entity.position.distanceTo(this.entry) > 2.5) {
-          try { await navigation.walk(this.entry, 'leaf') } catch { /* best effort */ }
+          const mode = Math.abs(this.bot.entity.position.y - this.entry.y) > 1 ? 'high' : 'leaf'
+          try { await navigation.walk(this.entry, mode) } catch { /* best effort */ }
           if (this.bot.entity.position.distanceTo(this.entry) > 2.5) this.returned = false
         }
       } catch (error) {

@@ -18,11 +18,15 @@ Model Experience:
 ② token 影响：每组一次 2 迭代小轮次（数百 token），替代按分钟轮询的
    多迭代大反思，作业期间模型零调用；汇报与裁决只进动态尾部。
 ③ 缓存影响：不触碰 stable/summary 前缀；历史追加与裁决轮均为动态区，不破缓存。
+
+自动启动进程：原木合计达到 8 个后准备工作台与木镐，采 3 个圆石升级石镐，补齐三组材料。
+模型只看到已确认的动态作业事实，制作与阶段切换不增加模型轮次，不触碰缓存前缀。
 """
 
 from __future__ import annotations
 
 import asyncio
+import math
 import re
 import time
 from collections.abc import Awaitable, Callable
@@ -35,6 +39,8 @@ from core.tool_context import tool_request
 
 from .judgment_gate import verdict_needed
 from .protocol import GATHER_ITEM_LABELS
+from .worker_crafting import prepare_pickaxe
+from .worker_mining import approach_shallow_face, blocked_tree_order, shallow_stone_order, start_stone_mining
 
 ToolCall = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
 
@@ -79,9 +85,13 @@ _COOLDOWN_ANNOUNCE_INTERVAL = 300.0
 # 同因连续受阻升级换区的阈值：个别原因（如脚下不是完整实心方块的 UNSAFE_ENTRY）
 # 不在换区名单里，但原地连败说明站位本身不利，主动搬家比原地重试强。
 _REPEATED_BLOCK_RELOCATE_AFTER = 5
-# 一轮自主作业的产出目标：2 组泥土 + 1 组木头，达成即收工待命（!resume 开新一轮）。
-_WORK_GOAL_DIRT_GROUPS = 2
-_WORK_GOAL_WOOD_GROUPS = 1
+# 泥土保有量封顶一组；原木达到启动量后制作木镐，先备齐一批圆石。
+_WORK_GOAL_DIRT = 64
+_CRAFT_LOG_TARGET = 8
+_WORK_GOAL_WOOD = 64
+_WORK_GOAL_STONE = 64
+_STONE_UPGRADE_COST = 3
+_STRONG_PICKAXES = frozenset({"stone_pickaxe", "iron_pickaxe", "diamond_pickaxe", "netherite_pickaxe"})
 _ACTIVE_PHASES = frozenset({"running", "returning", "pausing", "paused", "stopping"})
 _BLOCKED_PHASES = frozenset({"blocked", "interrupted"})
 
@@ -138,8 +148,9 @@ class StackOutcome:
             reason=str(snapshot.get("reason") or ""),
             dug=_as_int(snapshot.get("dug")),
             gained=_as_int(snapshot.get("gained")),
-            requested=_as_int(snapshot.get("requested")),
-            items=items,
+            requested=_as_int(snapshot.get("requested", snapshot.get("count"))),
+            items=items or (((str(snapshot["item"]), _as_int(snapshot.get("gained"))),)
+                            if snapshot.get("item") and _as_int(snapshot.get("gained")) else ()),
             entry=entry,
         )
 
@@ -193,6 +204,9 @@ class MinecraftWorker:
         self._totals: dict[str, int] = {}
         self._inv_dirt = 0
         self._inv_wood = 0
+        self._inv_stone = 0
+        self._inventory: dict[str, int] = {}
+        self._pickaxe_durability: dict[str, int | None] = {}
         self._last_block_reason = ""
         self._repeated_blocks = 0
         self._relocate_pending = False
@@ -284,12 +298,7 @@ class MinecraftWorker:
             self._apply_block_outcome(outcome)
             self._track_stuck_spot(outcome)
             await self._refresh_inventory_goals()
-            if self._dirt_goal_met() and self._wood_goal_met():
-                self._hold_reason = "goal_met"
-                self._relocate_pending = False
-                log(f"Minecraft 自主作业目标达成（背包泥土 {self._inv_dirt}、原木 {self._inv_wood}），收工待命",
-                    "INFO", tag="Minecraft")
-                self._spawn_announce("两组泥土和一组木头都备齐啦，我在这儿歇着；用掉一些后喊 !resume 我再补。")
+            self._hold_if_goal_met()
             if outcome.phase != "completed":
                 # 瞬时受阻（如新连接区块未加载的 UNSAFE_ENTRY）若不歇拍会形成
                 # 每秒数十次的 RPC 风暴，反而饿死区块加载；完成组仍立即受理下一组。
@@ -306,54 +315,188 @@ class MinecraftWorker:
         """开工一组：等 bot 空闲 → 以当前位置为作业面下达采集 → 监视到终态。"""
         if not await self._wait_until_free():
             return None
+        if not await self._refresh_inventory_goals():
+            return None
+        if self._item() == "auto" and self._hold_if_goal_met():
+            return None
+        if (self._item() == "auto" and not self._has_pickaxe() and self._inv_wood >= _CRAFT_LOG_TARGET
+                and self._inv_stone < _STONE_UPGRADE_COST):
+            try:
+                await prepare_pickaxe(
+                    self._call, running=lambda: self._online() and not self._paused and self._hold_reason is None,
+                    poll_seconds=self._poll_seconds(), clock=self._clock,
+                    mode="craft" if self._inventory.get("wooden_pickaxe", 0) else "ensure",
+                )
+                if not await self._refresh_inventory_goals() or not self._has_pickaxe():
+                    raise RuntimeError("CRAFT_UNCONFIRMED: 制作结束但背包未确认有镐")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                return StackOutcome(phase="blocked", reason=str(exc), dug=0, gained=0, requested=0)
+            self._spawn_announce("工作台和木镐准备好啦，先挖 3 个圆石升级石镐，再备齐三组材料。")
+        if (self._item() == "auto" and not self._has_strong_pickaxe() and self._inv_stone >= _STONE_UPGRADE_COST
+                and (self._has_pickaxe() or self._inv_wood >= _CRAFT_LOG_TARGET)):
+            try:
+                await prepare_pickaxe(
+                    self._call, running=lambda: self._online() and not self._paused and self._hold_reason is None,
+                    poll_seconds=self._poll_seconds(), clock=self._clock, item="stone_pickaxe",
+                    mode="craft" if self._inventory.get("stone_pickaxe", 0) else "ensure",
+                )
+                if not await self._refresh_inventory_goals() or not self._has_strong_pickaxe():
+                    raise RuntimeError("CRAFT_UNCONFIRMED: 背包未确认有可用石镐")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                return StackOutcome(phase="blocked", reason=str(exc), dug=0, gained=0, requested=0)
+        if not self._online() or self._paused or self._hold_reason is not None:
+            return None
+        stone_work = self._stone_work()
+        stone_target = _WORK_GOAL_STONE if self._has_strong_pickaxe() else _STONE_UPGRADE_COST
+        if stone_work:
+            obstacle = await blocked_tree_order(self._call)
+            if obstacle is not None:
+                clearing, target, mine_id = obstacle
+                await self._call("gather_resources", clearing)
+                trees = await self._watch_stack()
+                if trees.phase != "completed":
+                    return trees
+                actual = await self._call("get_block_at", target)
+                saved = await self._call("mining_status", {})
+                name = actual.get("name")
+                if not isinstance(name, str) or name.endswith("_log") or saved.get("id") != mine_id:
+                    return StackOutcome(phase="blocked", reason="MINING_TREE_NOT_CLEARED: 矿道原木仍在或任务已变更",
+                                        dug=trees.dug, gained=trees.gained, requested=trees.requested, items=trees.items)
+                await self._call("resume_mining", {})
+                mined = await self._watch_stack("mining_status")
+                gains = dict(trees.items)
+                for name, gained in mined.items:
+                    gains[name] = gains.get(name, 0) + gained
+                return StackOutcome(phase=mined.phase, reason=mined.reason, dug=trees.dug + mined.dug,
+                                    gained=trees.gained + mined.gained, requested=mined.requested,
+                                    items=tuple(gains.items()), entry=trees.entry)
+            opening = await shallow_stone_order(
+                self._call, await self._entry_point(), min(self._stack_size(), stone_target - self._inv_stone),
+                extend_only=True,
+            )
+            if opening is not None:
+                try:
+                    await start_stone_mining(self._call, opening)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    return StackOutcome(phase="blocked", reason=str(exc), dug=0, gained=0, requested=opening["count"])
+                return await self._watch_stack("mining_status")
+            try:
+                await asyncio.wait_for(approach_shallow_face(self._call), timeout=35)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log(f"Minecraft 浅层采石面暂不可达: {exc}", "DEBUG", tag="Minecraft")
         entry = await self._entry_point()
         order: dict[str, Any] = {
-            "block": self._item(),
-            "count": self._stack_size(),
+            "block": "stone" if stone_work else self._item(),
+            "count": min(self._stack_size(), stone_target - self._inv_stone) if stone_work else self._stack_size(),
             "x": entry["x"],
             "y": entry["y"],
             "z": entry["z"],
             "radius": _WORK_RADIUS,
             "mode": "count",
         }
-        if self._item() in {"auto", "dirt"}:
+        if order["block"] in {"auto", "dirt"}:
             # 区块对齐作业面：// 是 floor 语义，负坐标也落在正确区块。
             order["chunk"] = {"x": entry["x"] // 16, "z": entry["z"] // 16}
-        await self._refresh_inventory_goals()
-        if self._item() == "auto" and self._dirt_goal_met() and not self._wood_goal_met():
-            # 泥土配额已满、木头未满：本组只砍树。
-            order["logsOnly"] = True
-        if self._item() == "auto" and self._wood_goal_met() and not self._dirt_goal_met():
-            # 木头配额已满、泥土未满：本组只挖土，别再让混合单挑中树后撞爬树储备门槛。
-            order["block"] = "dirt"
+        if order["block"] == "auto":
+            order["logTarget"] = _WORK_GOAL_WOOD if self._has_pickaxe() else _CRAFT_LOG_TARGET
+            if self._dirt_goal_met():
+                order["logsOnly"] = True
+            elif self._inv_wood >= _WORK_GOAL_WOOD:
+                order["block"] = "dirt"
+                order["count"] = min(self._stack_size(), _WORK_GOAL_DIRT - self._inv_dirt)
+                order.pop("logTarget")
         await self._call("gather_resources", order)
-        return await self._watch_stack()
+        outcome = await self._watch_stack()
+        if stone_work and outcome.phase == "blocked" and _NO_TARGET_MARKER in outcome.reason:
+            if not await self._wait_until_free() or not await self._refresh_inventory_goals():
+                return outcome
+            missing = min(self._stack_size(), stone_target - self._inv_stone)
+            if missing <= 0:
+                return outcome
+            opening = await shallow_stone_order(self._call, await self._entry_point(), missing)
+            if opening is not None:
+                try:
+                    await start_stone_mining(self._call, opening)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    return StackOutcome(phase="blocked", reason=str(exc), dug=outcome.dug,
+                                        gained=outcome.gained, requested=outcome.requested, items=outcome.items)
+                mined = await self._watch_stack("mining_status")
+                gains = dict(outcome.items)
+                for item, gained in mined.items:
+                    gains[item] = gains.get(item, 0) + gained
+                return StackOutcome(phase=mined.phase, reason=mined.reason, dug=outcome.dug + mined.dug,
+                                    gained=outcome.gained + mined.gained, requested=outcome.requested,
+                                    items=tuple(gains.items()), entry=outcome.entry)
+        return outcome
 
     def _dirt_goal_met(self) -> bool:
-        return self._inv_dirt >= self._stack_size() * _WORK_GOAL_DIRT_GROUPS
+        return self._inv_dirt >= _WORK_GOAL_DIRT
 
-    def _wood_goal_met(self) -> bool:
-        return self._inv_wood >= self._stack_size() * _WORK_GOAL_WOOD_GROUPS
+    def _hold_if_goal_met(self) -> bool:
+        """三类材料库存均达到一组后待命；重复检查不重复播报。"""
+        if (self._item() != "auto" or not self._has_pickaxe() or not self._dirt_goal_met()
+                or self._inv_wood < _WORK_GOAL_WOOD or self._inv_stone < _WORK_GOAL_STONE):
+            return False
+        if self._hold_reason != "goal_met":
+            log(f"Minecraft 自主作业目标达成（泥土 {self._inv_dirt}、原木 {self._inv_wood}、圆石 {self._inv_stone}），收工待命",
+                "INFO", tag="Minecraft")
+            self._spawn_announce("一组泥土、一组原木和一组圆石都备齐啦，我在这儿歇着；用掉后喊 !resume 我再补。")
+        self._hold_reason = "goal_met"
+        self._relocate_pending = False
+        return True
 
-    async def _refresh_inventory_goals(self) -> None:
+    def _has_pickaxe(self) -> bool:
+        return any(count > 0 and name.endswith("_pickaxe") and self._usable_pickaxe(name)
+                   for name, count in self._inventory.items())
+
+    def _has_strong_pickaxe(self) -> bool:
+        return any(count > 0 and name in _STRONG_PICKAXES and self._usable_pickaxe(name)
+                   for name, count in self._inventory.items())
+
+    def _usable_pickaxe(self, name: str) -> bool:
+        remaining = self._pickaxe_durability.get(name)
+        return remaining is None or remaining >= 12
+
+    def _stone_work(self) -> bool:
+        return self._item() == "auto" and self._has_pickaxe() and self._inv_stone < _WORK_GOAL_STONE
+
+    async def _refresh_inventory_goals(self) -> bool:
         """按背包持有量刷新目标进度：重启不清零，玩家取走材料后 resume 补足。"""
         try:
-            inventory = await asyncio.wait_for(self._call("get_inventory", {}), timeout=10)
+            inventory = await asyncio.wait_for(self._call("get_inventory", {"format": "detailed"}), timeout=10)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             log(f"Minecraft 自主作业库存查询失败: {exc}", "DEBUG", tag="Minecraft")
-            return
-        dirt = wood = 0
+            return False
+        counts: dict[str, int] = {}
+        durability: dict[str, int | None] = {}
         for item in inventory.get("items") or []:
             if not isinstance(item, dict):
                 continue
             name = str(item.get("name") or "").casefold().removeprefix("minecraft:")
-            if name == "dirt":
-                dirt += int(item.get("count") or 0)
-            elif name.endswith("_log"):
-                wood += int(item.get("count") or 0)
-        self._inv_dirt, self._inv_wood = dirt, wood
+            counts[name] = counts.get(name, 0) + _as_int(item.get("count"))
+            if name.endswith("_pickaxe"):
+                remaining = item.get("durabilityLeft")
+                left = _as_int(remaining) if remaining is not None else None
+                previous = durability.get(name)
+                durability[name] = max(previous or 0, left) if left is not None else previous
+        self._inventory = counts
+        self._pickaxe_durability = durability
+        self._inv_dirt = counts.get("dirt", 0)
+        self._inv_wood = sum(count for name, count in counts.items() if name.endswith("_log"))
+        self._inv_stone = counts.get("cobblestone", 0)
+        return True
 
     async def _wait_until_free(self) -> bool:
         """等他方动作（玩家指令、对话派工）释放 bot；持有或掉线则放弃本轮。"""
@@ -374,7 +517,7 @@ class MinecraftWorker:
         position = state.get("position") or {}
         if not all(k in position for k in ("x", "y", "z")):
             raise RuntimeError("无法读取 bot 位置，无法确定作业面")
-        return {k: int(float(position[k])) for k in ("x", "y", "z")}
+        return {k: math.floor(float(position[k])) for k in ("x", "y", "z")}
 
     async def _relocate(self) -> None:
         """原地无目标时换区：目标在正下方先受控下撤，再朝最近可见资源走，
@@ -383,7 +526,7 @@ class MinecraftWorker:
         position = (state or {}).get("position") or {}
         if not all(k in position for k in ("x", "y", "z")):
             return
-        here = {k: int(float(position[k])) for k in ("x", "y", "z")}
+        here = {k: math.floor(float(position[k])) for k in ("x", "y", "z")}
         # 目标明显在下方时优先受控下撤：能摔不死直接掉血落地，会摔死才
         # 逐格垂直下挖（每格确认下方仍有实心支撑）到安全高度再落。下撤
         # 带上目标层高度，越过资源层继续挖没有意义。它先于长跳升级——
@@ -471,15 +614,22 @@ class MinecraftWorker:
         → 周围 8 区块 → 继续扩环」的扩搜顺序。丢弃高差过大与刚走完的目标——
         深埋方块走向了也挖不到，原地重走只会制造"到达即完成"的空换区。
         """
-        soil_first = await self._dirt_below_floor()
-        soil = await self._probe_blocks(_RELOCATE_SOIL_BLOCKS, here)
-        logs = await self._probe_blocks(_RELOCATE_LOG_BLOCKS, here)
+        await self._refresh_inventory_goals()
+        stone_work = self._stone_work()
+        soil_first = self._inv_dirt < _DIRT_RESERVE_FLOOR
+        soil = [] if stone_work or (self._item() == "auto" and self._dirt_goal_met()) else await self._probe_blocks(_RELOCATE_SOIL_BLOCKS, here)
+        if stone_work:
+            logs = await self._probe_blocks(("stone",), here)
+        else:
+            logs = [] if self._item() == "auto" and self._inv_wood >= _WORK_GOAL_WOOD else await self._probe_blocks(_RELOCATE_LOG_BLOCKS, here)
         home = (here["x"] // 16, here["z"] // 16)
         ranked: list[tuple[tuple[int, int, int], dict[str, Any]]] = []
         for is_soil, hits in ((True, soil), (False, logs)):
             for hit in hits:
                 x, y, z = (hit[k] for k in ("x", "y", "z"))
-                if abs(y - here["y"]) > (_RELOCATE_SOIL_MAX_DY if is_soil else _RELOCATE_LOG_MAX_DY):
+                dy = y - here["y"]
+                if (stone_work and not -6 <= dy <= 16) or (not stone_work and
+                        abs(dy) > (_RELOCATE_SOIL_MAX_DY if is_soil else _RELOCATE_LOG_MAX_DY)):
                     continue
                 if self._last_relocate_target is not None and abs(x - self._last_relocate_target[0]) <= 8 \
                         and abs(z - self._last_relocate_target[1]) <= 8:
@@ -513,24 +663,6 @@ class MinecraftWorker:
             if isinstance(entry, dict) and all(k in entry for k in ("x", "y", "z"))
         ]
 
-    async def _dirt_below_floor(self) -> bool:
-        """背包泥土是否低于垫脚保底；读不到库存时保守视为不缺。"""
-        try:
-            inventory = await asyncio.wait_for(self._call("get_inventory", {}), timeout=10)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            log(f"Minecraft 自主作业库存查询失败: {exc}", "DEBUG", tag="Minecraft")
-            return False
-        total = 0
-        for item in inventory.get("items") or []:
-            if not isinstance(item, dict):
-                continue
-            name = str(item.get("name") or "").casefold().removeprefix("minecraft:")
-            if name == "dirt":
-                total += int(item.get("count") or 0)
-        return total < _DIRT_RESERVE_FLOOR
-
     async def _walk_relocate(self, x: int, z: int) -> bool:
         """y 无关目标走一步：固定高度的 near 目标在起伏地形上必然大量不可达。"""
         try:
@@ -546,13 +678,22 @@ class MinecraftWorker:
         self._last_relocate_target = (x, z)
         return True
 
-    async def _watch_stack(self) -> StackOutcome:
+    async def _watch_stack(self, status_tool: str = "gathering_status") -> StackOutcome:
         """轮询采集状态直到终态；裁决/暂停/掉线落在中途则放弃记账。"""
         deadline = self._clock() + _WATCH_TIMEOUT_SECONDS
+        previous_progress: tuple[str, int, int] | None = None
+        logged_at = 0.0
         while True:
             if self._hold_reason is not None or self._paused or not self._online():
                 return StackOutcome(phase="cancelled", reason="watch released", dug=0, gained=0, requested=0)
-            status = await self._call("gathering_status", {})
+            status = await self._call(status_tool, {})
+            progress = (str(status.get("stage") or ""), _as_int(status.get("dug")), _as_int(status.get("gained")))
+            now = self._clock()
+            if progress != previous_progress or now - logged_at >= 15:
+                log(f"Minecraft 自主作业进度: stage={progress[0]} dug={progress[1]} gained={progress[2]} "
+                    f"active={status.get('active')} elapsed={now - (deadline - _WATCH_TIMEOUT_SECONDS):.1f}s "
+                    f"reason={status.get('reason') or ''}", "DEBUG", tag="Minecraft")
+                previous_progress, logged_at = progress, now
             if not self._is_active(status):
                 log(f"Minecraft 自主作业本组终态: {status}", "DEBUG", tag="Minecraft")
                 return StackOutcome.from_snapshot(status)
