@@ -721,3 +721,24 @@ async def test_chat_stream_via_responses_failed_event() -> None:
     with pytest.raises(RuntimeError, match="boom"):
         async for _ in client.chat_stream([{"role": "user", "content": "hi"}]):
             pass
+
+
+async def test_responses_wrapper_closes_provider_stream_before_return(monkeypatch):
+    from agent.llm.responses.client import ResponsesClient
+
+    closed = False
+    async def upstream():
+        nonlocal closed
+        try:
+            yield {"type": "response.created", "response": {"id": "resp_close"}}
+            await asyncio.Event().wait()
+        finally:
+            closed = True
+    client = LLMClient(LLMClientConfig(name="test", model="test", api_type="openai"))
+    responses = ResponsesClient(model="test", api_type="openai", api_key="test")
+    monkeypatch.setattr(client, "responses_client", lambda: responses)
+    monkeypatch.setattr("agent.llm.responses.client.litellm.aresponses", AsyncMock(return_value=upstream()))
+    stream = client.responses_stream(input="hi")
+    await anext(stream)
+    await stream.aclose()
+    assert closed

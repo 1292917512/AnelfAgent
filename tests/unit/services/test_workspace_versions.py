@@ -82,3 +82,21 @@ def test_non_utf8_file_is_readonly(workspace: WorkspaceService, tmp_path: Path) 
     with pytest.raises(WorkspaceError) as error:
         workspace.write_file("note.txt", "draft", "workspace", initial["version"])
     assert error.value.status_code == 415
+
+
+@pytest.mark.parametrize("root", ["workspace", "project"])
+@pytest.mark.parametrize("path", ["", ".", "sub/.."])
+def test_delete_root_is_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, root: str, path: str) -> None:
+    from core.config import ConfigManager
+
+    (tmp_path / "sub").mkdir()
+    marker = tmp_path / "keep.txt"
+    marker.write_text("keep")
+    ConfigManager.set("workspace_root", str(tmp_path))
+    monkeypatch.setattr("services.workspace.project_root", lambda: str(tmp_path))
+    service = WorkspaceService()
+    with pytest.raises(WorkspaceError, match="不能删除根目录"):
+        service.delete_entry(path, root)
+    assert marker.read_text() == "keep"
+    service.delete_entry("sub", root)
+    assert not (tmp_path / "sub").exists()

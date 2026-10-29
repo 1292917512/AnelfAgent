@@ -264,3 +264,54 @@ class TestRunScript:
         result = await sandbox.run_script("   \n", workspace_root=ws)
         payload = json.loads(result)
         assert payload["cause"] == "param"
+
+
+@pytest.mark.parametrize("finish", ["timeout", "cancel", "complete"])
+async def test_execution_reaps_descendants(ws, finish):
+    import asyncio
+    from pathlib import Path
+
+    import psutil
+
+    pid_file = Path(ws) / "child.pid"
+    code = (
+        "import subprocess, sys, time\nfrom pathlib import Path\n"
+        "p = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'], "
+        "stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)\n"
+        f"pid_file = Path({str(pid_file)!r})\n"
+        "pid_file.with_suffix('.tmp').write_text(str(p.pid))\n"
+        "pid_file.with_suffix('.tmp').replace(pid_file)\n"
+        + ("" if finish == "complete" else "time.sleep(30)\n")
+    )
+    task = asyncio.create_task(sandbox.run_script(code, timeout=2, workspace_root=ws))
+    try:
+        async with asyncio.timeout(10):
+            while not pid_file.exists():
+                if task.done():
+                    pytest.fail(str(task.result()))
+                await asyncio.sleep(.01)
+            pid = int(pid_file.read_text())
+            if finish == "cancel":
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+            else:
+                result = await task
+                if finish == "timeout":
+                    assert json.loads(result)["cause"] == "timeout"
+            for _ in range(100):
+                try:
+                    process = psutil.Process(pid)
+                    if not process.is_running() or process.status() == psutil.STATUS_ZOMBIE:
+                        break
+                except psutil.NoSuchProcess:
+                    break
+                await asyncio.sleep(.01)
+            else:
+                process.kill()
+                pytest.fail("descendant survived execution cleanup")
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+    assert not list((Path(ws) / ".codebox").glob("script-*.py"))

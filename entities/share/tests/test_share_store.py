@@ -178,3 +178,113 @@ class TestListAndStats:
             f.write("x")
         with pytest.raises(ValueError, match="沙箱"):
             await s.create(file_path=outside)
+
+
+async def test_media_visit_reuses_one_atomic_quota(store, monkeypatch):
+    import asyncio
+    import html
+    import re
+    import time
+
+    import httpx
+    from fastapi import FastAPI
+
+    from entities.share import router
+
+    s, ws = store
+    (ws / "photo.png").write_bytes(b"0123456789")
+    entry = await s.create(file_path="photo.png", share_type="media", max_downloads=1)
+    token = entry["token"]
+    monkeypatch.setattr(router, "get_share_store", lambda: s)
+    app = FastAPI()
+    app.include_router(router.build_router(), prefix="/api/entity/share")
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        responses = await asyncio.gather(*(client.get(f"/api/entity/share/v/{token}") for _ in range(4)))
+        assert sorted(r.status_code for r in responses) == [200, 404, 404, 404]
+        page = next(r for r in responses if r.status_code == 200)
+        raw = html.unescape(re.search(r'(/api/entity/share/raw/[^"<> ]+)', page.text).group(1))
+        assert (await client.get(raw)).content == b"0123456789"
+        part = await client.get(raw, headers={"Range": "bytes=2-5"})
+        assert part.status_code == 206 and part.content == b"2345"
+        assert (await client.get(raw.replace("/raw/", "/d/"))).status_code == 200
+        assert (await s.get_by_token(token))["download_count"] == 1
+        assert (await s.get_download_logs(token=token))["total"] == 1
+        assert (await s.list(status="active"))["total"] == 0
+        assert (await s.list(status="expired"))["items"][0]["status"] == "expired"
+        assert (await s.stats())["expired"] == 1
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as stranger:
+            assert (await stranger.get(f"/api/entity/share/raw/{token}")).status_code == 404
+            assert (await stranger.get(raw + "tampered")).status_code == 404
+        with monkeypatch.context() as m:
+            now = time.time()
+            m.setattr("entities.share.store.time.time", lambda: now + 3601)
+            assert (await client.get(raw)).status_code == 404
+        await s.revoke(token)
+        assert (await client.get(raw)).status_code == 404
+
+
+async def test_direct_raw_claims_quota_and_reuses_ranges(store, monkeypatch):
+    import httpx
+    from fastapi import FastAPI
+
+    from entities.share import router
+
+    s, ws = store
+    (ws / "movie.mp4").write_bytes(b"0123456789")
+    entry = await s.create(file_path="movie.mp4", share_type="media", max_downloads=1)
+    monkeypatch.setattr(router, "get_share_store", lambda: s)
+    app = FastAPI()
+    app.include_router(router.build_router(), prefix="/api/entity/share")
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        url = f"/api/entity/share/raw/{entry['token']}"
+        assert (await client.get(url)).status_code == 200
+        assert (await client.get(url, headers={"Range": "bytes=0-2"})).status_code == 206
+        assert (await s.get_by_token(entry["token"]))["download_count"] == 1
+    renewed = await s.create(file_path="movie.mp4", share_type="media", max_downloads=1)
+    assert renewed["token"] != entry["token"]
+    assert not s.valid_access(renewed["token"], s.issue_access(entry["token"]))
+
+
+@pytest.mark.parametrize("invalid", ["", "bad", "123.中文", "9" * 100 + "." + "a" * 64])
+async def test_access_rejects_malformed_credentials(store, invalid):
+    s, _ = store
+    assert not s.valid_access("token", invalid)
+
+
+@pytest.mark.parametrize("kind", ["file", "link"])
+async def test_single_access_download_and_link_page(store, monkeypatch, kind):
+    import httpx
+    from fastapi import FastAPI
+
+    from entities.share import router
+
+    s, ws = store
+    (ws / "note.txt").write_text("note")
+    entry = await s.create(file_path="note.txt", share_type=kind,
+                           target_url="https://example.com" if kind == "link" else "", max_downloads=1)
+    monkeypatch.setattr(router, "get_share_store", lambda: s)
+    app = FastAPI()
+    app.include_router(router.build_router(), prefix="/api/entity/share")
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test", follow_redirects=True) as client:
+        url = f"/api/entity/share/v/{entry['token']}"
+        assert (await client.get(url)).status_code == 200
+        assert (await client.get(url)).status_code == 404
+        assert (await s.get_by_token(entry["token"]))["download_count"] == 1
+
+
+async def test_failed_audit_rolls_back_quota(store, monkeypatch):
+    s, ws = store
+    (ws / "one.txt").write_text("one")
+    entry = await s.create(file_path="one.txt", max_downloads=1)
+    db = await s._get_db()
+    execute = db.execute
+    def fail_audit(sql, *args, **kwargs):
+        if sql.startswith("INSERT INTO download_logs"):
+            raise OSError("audit storage failed")
+        return execute(sql, *args, **kwargs)
+    with monkeypatch.context() as m:
+        m.setattr(db, "execute", fail_audit)
+        with pytest.raises(OSError):
+            await s.claim_access(entry["token"])
+    assert (await s.get_by_token(entry["token"]))["download_count"] == 0
+    assert await s.claim_access(entry["token"])

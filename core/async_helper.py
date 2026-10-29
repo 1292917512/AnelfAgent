@@ -61,6 +61,20 @@ def spawn(coro: Coroutine[Any, Any, Any], *, name: str = "") -> asyncio.Task:
     return task
 
 
+async def finish_owned(task: asyncio.Future[T]) -> T:
+    """重复取消仍先收束已拥有的资源，随后向调用方传播取消。"""
+    cancelled = False
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled = True
+    result = task.result()
+    if cancelled:
+        raise asyncio.CancelledError
+    return result
+
+
 async def suppress_task(task: asyncio.Task) -> None:
     """等待已请求取消的任务终结并吞掉终态（清理路径专用）。
 

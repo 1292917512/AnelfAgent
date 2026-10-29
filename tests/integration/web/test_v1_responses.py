@@ -209,3 +209,245 @@ def test_api_key_hash_roundtrip(webui_cfg: Path) -> None:
     stored = data["auth"]["api_keys"][0]
     assert stored["key_hash"] == hash_api_key(raw)
     assert "api_key" not in stored
+
+
+@pytest.fixture()
+def responses_service(monkeypatch: pytest.MonkeyPatch):
+    from services.responses import ResponsesService
+
+    model = _mock_client()
+    manager = MagicMock()
+    manager.resolve_client.return_value = model
+    manager.get_client.return_value = model
+    monkeypatch.setattr(ResponsesService, "_manager", lambda self: manager)
+    store = ResponseSessionStore()
+    return ResponsesService(session_store=store), model, store
+
+
+@pytest.mark.parametrize("stream", [False, True])
+def test_unknown_previous_id_is_client_error(client: TestClient, api_key: str, stream: bool):
+    response = client.post("/v1/responses", headers={"Authorization": f"Bearer {api_key}"},
+                           json={"model": "MiniMax", "input": "hi", "previous_response_id": "missing", "stream": stream})
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "response_not_found"
+    response = client.post("/v1/responses/compact", headers={"Authorization": f"Bearer {api_key}"},
+                           json={"previous_response_id": "missing"})
+    assert response.status_code == 404
+
+
+def test_stream_id_supports_get_and_continuation(client: TestClient, api_key: str):
+    headers = {"Authorization": f"Bearer {api_key}"}
+    response = client.post("/v1/responses", headers=headers,
+                           json={"model": "MiniMax", "input": "hi", "stream": True})
+    events = [json.loads(line[6:]) for line in response.text.splitlines() if line.startswith("data: ")]
+    rid = events[0]["response"]["id"]
+    assert events[-1]["response"]["id"] == rid
+    assert client.get(f"/v1/responses/{rid}", headers=headers).json()["status"] == "completed"
+    # A new provider response must have its own ID.
+    from web.routers.v1_responses import _svc
+    model = _svc.resolve_client("MiniMax")
+    model.responses_create.return_value = ResponseResult(id="resp_next", status="completed")
+    assert client.post("/v1/responses", headers=headers,
+                       json={"model": "MiniMax", "input": "next", "previous_response_id": rid}).status_code == 200
+    assert model.responses_create.call_args.kwargs["previous_response_id"] == rid
+
+
+@pytest.mark.parametrize("status", ["completed", "failed", "incomplete", "cancelled"])
+async def test_stream_terminal_saved_before_delivery(responses_service, status):
+    svc, model, store = responses_service
+    async def source(**kwargs):
+        yield ResponseStreamEvent("response.created", {"response": {"id": "resp_terminal"}})
+        yield ResponseStreamEvent(f"response.{status}", {"response": {
+            "id": "resp_terminal", "status": status, "error": {"message": "reason"} if status == "failed" else None,
+            "incomplete_details": {"reason": "max_output_tokens"} if status == "incomplete" else None,
+        }}, True)
+    model.responses_stream = source
+    stream = await svc.stream(model="MiniMax", input="hi")
+    async for event in stream:
+        if event.is_terminal:
+            result = await svc.get("resp_terminal")
+            assert result["status"] == status
+            assert result["incomplete_details"] == event.data["response"]["incomplete_details"]
+    await store.fail("resp_terminal", error={"message": "late"})
+    assert (await svc.cancel("resp_terminal"))["status"] == status
+
+
+@pytest.mark.parametrize("operation", ["cancel", "disconnect", "delete"])
+@pytest.mark.parametrize("transport", ["native", "bridge"])
+async def test_stream_cancellation_closes_upstream(responses_service, operation, transport):
+    import asyncio
+
+    from agent.llm.responses.router import resolve_responses_route
+
+    svc, model, store = responses_service
+    model.responses_client.return_value.route = resolve_responses_route(api_type="openai" if transport == "native" else "anthropic")
+    closed = asyncio.Event()
+    async def source(**kwargs):
+        try:
+            yield ResponseStreamEvent("response.created", {"response": {"id": "resp_running"}})
+            await asyncio.Event().wait()
+        finally:
+            closed.set()
+    model.responses_stream = source
+    stream = await svc.stream(model="MiniMax", input="hi")
+    await anext(stream)
+    if operation == "disconnect":
+        await stream.aclose()
+    elif operation == "delete":
+        await svc.delete("resp_running")
+        await stream.aclose()
+        assert await store.get("resp_running") is None
+    else:
+        result = await asyncio.wait_for(svc.cancel("resp_running"), 2)
+        assert result["status"] == "cancelled"
+        remaining = [event async for event in stream]
+        assert remaining[-1].type == "response.cancelled"
+    assert closed.is_set()
+    if operation != "delete":
+        await store.complete("resp_running", result=ResponseResult(id="resp_running", status="completed"))
+        assert (await svc.get("resp_running"))["status"] == "cancelled"
+
+
+async def test_stream_without_terminal_is_failed(responses_service):
+    from services.responses import ResponsesServiceError
+    svc, model, store = responses_service
+    async def source(**kwargs):
+        yield ResponseStreamEvent("response.created", {"response": {"id": "resp_short"}})
+    model.responses_stream = source
+    stream = await svc.stream(model="MiniMax", input="hi")
+    with pytest.raises(ResponsesServiceError):
+        _ = [event async for event in stream]
+    assert (await store.require("resp_short")).status == "failed"
+
+
+async def test_concurrent_cancel_waits_for_one_cleanup(responses_service):
+    import asyncio
+
+    svc, model, _ = responses_service
+    closing, release = asyncio.Event(), asyncio.Event()
+    async def source(**kwargs):
+        try:
+            yield ResponseStreamEvent("response.created", {"response": {"id": "resp_cleanup"}})
+            await asyncio.Event().wait()
+        finally:
+            closing.set()
+            await release.wait()
+    model.responses_stream = source
+    stream = await svc.stream(model="MiniMax", input="hi")
+    await anext(stream)
+    first = asyncio.create_task(svc.cancel("resp_cleanup"))
+    await asyncio.wait_for(closing.wait(), 2)
+    second = asyncio.create_task(svc.cancel("resp_cleanup"))
+    await asyncio.sleep(0)
+    assert not first.done() and not second.done()
+    release.set()
+    results = await asyncio.wait_for(asyncio.gather(first, second), 2)
+    assert all(result["status"] == "cancelled" for result in results)
+    await stream.aclose()
+
+
+async def test_consumer_repeated_cancel_waits_for_upstream_close(responses_service):
+    import asyncio
+
+    svc, model, _ = responses_service
+    closing, release, ready = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    async def source(**kwargs):
+        try:
+            yield ResponseStreamEvent("response.created", {"response": {"id": "resp_disconnect"}})
+            await asyncio.Event().wait()
+        finally:
+            closing.set()
+            await release.wait()
+    model.responses_stream = source
+    async def consume():
+        async for _event in await svc.stream(model="MiniMax", input="hi"):
+            ready.set()
+    consumer = asyncio.create_task(consume())
+    await ready.wait()
+    consumer.cancel()
+    await asyncio.wait_for(closing.wait(), 2)
+    consumer.cancel()
+    await asyncio.sleep(0)
+    assert not consumer.done()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(consumer, 2)
+    assert (await svc.get("resp_disconnect"))["status"] == "cancelled"
+
+
+async def test_delete_terminal_stream_releases_backpressure(responses_service):
+    import asyncio
+
+    svc, model, store = responses_service
+    closed = asyncio.Event()
+    async def source(**kwargs):
+        try:
+            yield ResponseStreamEvent("response.created", {"response": {"id": "resp_blocked"}})
+            yield ResponseStreamEvent("response.output_text.delta", {"delta": "x"})
+            yield ResponseStreamEvent("response.completed", {"response": {"id": "resp_blocked", "status": "completed"}}, True)
+        finally:
+            closed.set()
+    model.responses_stream = source
+    stream = await svc.stream(model="MiniMax", input="hi")
+    await anext(stream)
+    async with asyncio.timeout(2):
+        while (await store.require("resp_blocked")).status != "completed":
+            await asyncio.sleep(0)
+    await asyncio.wait_for(svc.delete("resp_blocked"), 2)
+    assert closed.is_set()
+    assert await store.get("resp_blocked") is None
+    await stream.aclose()
+
+
+async def test_terminal_cleanup_survives_cancel(responses_service):
+    import asyncio
+
+    svc, model, _ = responses_service
+    closing, release, closed = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    async def source(**kwargs):
+        try:
+            yield ResponseStreamEvent("response.completed", {"response": {"id": "resp_final", "status": "completed"}}, True)
+        finally:
+            closing.set()
+            await release.wait()
+            closed.set()
+    model.responses_stream = source
+    stream = await svc.stream(model="MiniMax", input="hi")
+    await anext(stream)
+    await closing.wait()
+    cancellation = asyncio.create_task(svc.cancel("resp_final"))
+    await asyncio.sleep(0)
+    assert not cancellation.done()
+    release.set()
+    assert (await asyncio.wait_for(cancellation, 2))["status"] == "completed"
+    assert closed.is_set()
+    await stream.aclose()
+
+
+async def test_native_background_query_refreshes_cached_progress(responses_service):
+    svc, model, _ = responses_service
+    model.responses_create.return_value = ResponseResult(id="resp_background", status="in_progress")
+    await svc.create(model="MiniMax", input="hi")
+    model.responses_get.return_value = ResponseResult(id="resp_background", status="completed")
+    assert (await svc.get("resp_background"))["status"] == "completed"
+    assert model.responses_get.await_count == 1
+
+
+async def test_provider_read_cannot_overwrite_concurrent_cancel(responses_service):
+    import asyncio
+
+    svc, model, _ = responses_service
+    entered, release = asyncio.Event(), asyncio.Event()
+    model.responses_create.return_value = ResponseResult(id="resp_race", status="in_progress")
+    await svc.create(model="MiniMax", input="hi")
+    async def get_result(rid):
+        entered.set()
+        await release.wait()
+        return ResponseResult(id=rid, status="completed")
+    model.responses_get = get_result
+    model.responses_cancel.return_value = ResponseResult(id="resp_race", status="cancelled")
+    read = asyncio.create_task(svc.get("resp_race"))
+    await entered.wait()
+    assert (await svc.cancel("resp_race"))["status"] == "cancelled"
+    release.set()
+    assert (await read)["status"] == "cancelled"

@@ -6,9 +6,15 @@ import json
 from typing import Any, AsyncGenerator, Optional, Union
 
 from agent.llm.responses.router import ResponsesCapabilityError
-from agent.llm.responses.session import ResponseSessionStore, get_response_session_store
+from agent.llm.responses.session import (
+    TERMINAL_STATUSES,
+    ResponseSession,
+    ResponseSessionStore,
+    get_response_session_store,
+)
 from agent.llm.responses.types import ResponseResult, ResponseStreamEvent
 from services.model import ModelService
+from services.responses_stream import stream_response
 
 
 class ResponsesServiceError(Exception):
@@ -54,10 +60,6 @@ class ResponsesService:
         self._sessions = session_store or get_response_session_store()
         self._models = model_service or ModelService()
 
-    def new_response_id(self) -> str:
-        """分配一个新的 response_id（流式响应先注册占位）。"""
-        return self._sessions.new_response_id()
-
     def _manager(self) -> Any:
         from agent.llm import get_llm_manager
         return get_llm_manager()
@@ -80,6 +82,7 @@ class ResponsesService:
     def map_exception(self, exc: Exception, *extra_secrets: str) -> ResponsesServiceError:
         if isinstance(exc, ResponsesServiceError):
             exc.message = self.sanitize_message(exc.message, *extra_secrets)
+            exc.args = (exc.message,)
             return exc
         if isinstance(exc, ResponsesCapabilityError):
             return ResponsesServiceError(
@@ -154,11 +157,7 @@ class ResponsesService:
     ) -> dict[str, Any]:
         client = self.resolve_client(model)
         if previous_response_id:
-            await self._sessions.require(
-                previous_response_id,
-                provider_id=client.config.provider_id,
-                api_base=client.config.base_url,
-            )
+            await self._require_previous(previous_response_id, client)
         try:
             result = await client.responses_create(
                 input=input,
@@ -206,77 +205,37 @@ class ResponsesService:
         metadata: Optional[dict[str, Any]] = None,
         store: Optional[bool] = None,
         extra: Optional[dict[str, Any]] = None,
-        response_id: str = "",
     ) -> AsyncGenerator[ResponseStreamEvent, None]:
         client = self.resolve_client(model)
         if previous_response_id:
-            await self._sessions.require(
-                previous_response_id,
-                provider_id=client.config.provider_id,
-                api_base=client.config.base_url,
-            )
+            await self._require_previous(previous_response_id, client)
         route = client.responses_client().route
-        rid = response_id or self._sessions.new_response_id()
-        await self._sessions.create(
-            model_id=client.config.name,
-            provider_id=client.config.provider_id,
-            api_type=client.config.api_type,
-            api_base=client.config.base_url,
-            transport=route.transport.value,
-            response_id=rid,
+        return stream_response(
+            client.responses_stream(
+                input=input, instructions=instructions, tools=tools, tool_choice=tool_choice,
+                previous_response_id=previous_response_id, temperature=temperature, top_p=top_p,
+                max_output_tokens=max_output_tokens, metadata=metadata, store=store, extra=extra,
+            ),
+            sessions=self._sessions, model_id=client.config.name, provider_id=client.config.provider_id,
+            api_type=client.config.api_type, api_base=client.config.base_url, transport=route.transport.value,
+            map_error=lambda exc: self.map_exception(exc, client.config.api_key),
         )
-        final_result: Optional[ResponseResult] = None
+
+    async def _require_previous(self, response_id: str, client: Any = None) -> ResponseSession:
+        """统一把本地会话校验失败转换为网关客户端错误。"""
         try:
-            async for event in client.responses_stream(
-                input=input,
-                instructions=instructions,
-                tools=tools,
-                tool_choice=tool_choice,
-                previous_response_id=previous_response_id,
-                temperature=temperature,
-                top_p=top_p,
-                max_output_tokens=max_output_tokens,
-                metadata=metadata,
-                store=store,
-                extra=extra,
-            ):
-                data = dict(event.data)
-                if "response" in data and isinstance(data["response"], dict):
-                    resp = dict(data["response"])
-                    if not resp.get("id"):
-                        resp["id"] = rid
-                    data["response"] = resp
-                    if event.type == "response.completed":
-                        from agent.llm.responses.client import parse_responses_payload
-                        final_result = parse_responses_payload(
-                            resp, transport=route.transport.value,
-                        )
-                elif event.type.startswith("response.") and "id" not in data:
-                    data.setdefault("id", rid)
-                yield ResponseStreamEvent(
-                    type=event.type,
-                    data=data,
-                    is_terminal=event.is_terminal,
-                )
-            if final_result is not None:
-                await self._sessions.complete(rid, result=final_result)
-            else:
-                await self._sessions.complete(
-                    rid,
-                    result=ResponseResult(id=rid, status="completed", model=model),
-                )
-        except Exception as exc:
-            mapped = self.map_exception(exc, client.config.api_key)
-            await self._sessions.fail(
-                rid,
-                error=mapped.to_openai_error()["error"],
+            return await self._sessions.require(
+                response_id,
+                provider_id=client.config.provider_id if client is not None else "",
+                api_base=client.config.base_url if client is not None else "",
             )
-            raise mapped from exc
+        except (KeyError, PermissionError) as exc:
+            raise self.map_exception(exc) from exc
 
     async def get(self, response_id: str) -> dict[str, Any]:
         session = await self._sessions.get(response_id)
         if session is not None:
-            if session.result is not None:
+            if session.result is not None and (session.status in TERMINAL_STATUSES or session.transport != "native"):
                 return self.result_to_dict(session.result)
             if session.error is not None:
                 return {
@@ -285,13 +244,14 @@ class ResponsesService:
                     "status": session.status,
                     "error": session.error,
                 }
-            if session.transport == "native":
+            if session.transport == "native" and session.task is None and session.status != "cancelled":
                 client = self._manager().get_client(session.model_id)
                 if client is not None:
                     try:
                         result = await client.responses_get(response_id)
-                        await self._sessions.complete(response_id, result=result)
-                        return self.result_to_dict(result)
+                        session = await self._sessions.complete(response_id, result=result)
+                        if session.result is not None:
+                            return self.result_to_dict(session.result)
                     except Exception as exc:
                         raise self.map_exception(exc, client.config.api_key) from exc
             return {
@@ -314,6 +274,8 @@ class ResponsesService:
                 status_code=404,
                 code="response_not_found",
             )
+        if session.task is not None:
+            await self._sessions.cancel(response_id)
         if session.transport == "native":
             client = self._manager().get_client(session.model_id)
             if client is not None:
@@ -337,26 +299,22 @@ class ResponsesService:
                 status_code=404,
                 code="response_not_found",
             )
-        if session.transport == "native":
+        if session.status in TERMINAL_STATUSES and session.task is None:
+            return await self.get(response_id)
+        if session.task is not None:
+            await self._sessions.cancel(response_id)
+        elif session.transport == "native":
             client = self._manager().get_client(session.model_id)
-            if client is not None:
-                try:
-                    result = await client.responses_cancel(response_id)
-                    await self._sessions.complete(response_id, result=result)
-                    return self.result_to_dict(result)
-                except Exception as exc:
-                    raise self.map_exception(exc, client.config.api_key) from exc
-        cancelled = await self._sessions.cancel(response_id)
-        if cancelled.result is not None:
-            payload = self.result_to_dict(cancelled.result)
-            payload["status"] = "cancelled"
-            return payload
-        return {
-            "id": response_id,
-            "object": "response",
-            "status": "cancelled",
-            "model": cancelled.model_id,
-        }
+            if client is None:
+                raise ResponsesServiceError("响应模型不可用", status_code=503)
+            try:
+                result = await client.responses_cancel(response_id)
+                await self._sessions.complete(response_id, result=result)
+            except Exception as exc:
+                raise self.map_exception(exc, client.config.api_key) from exc
+        else:
+            await self._sessions.cancel(response_id)
+        return await self.get(response_id)
 
     async def compact(
         self,
@@ -369,7 +327,7 @@ class ResponsesService:
     ) -> dict[str, Any]:
         client = None
         if previous_response_id:
-            session = await self._sessions.require(previous_response_id)
+            session = await self._require_previous(previous_response_id)
             client = self._manager().get_client(session.model_id)
             if client is None and model:
                 client = self.resolve_client(model)

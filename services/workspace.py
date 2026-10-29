@@ -316,6 +316,8 @@ class WorkspaceService:
     def delete_entry(self, path: str, root: str) -> None:
         """删除文件或目录（目录递归删除）。"""
         fp = self.resolve(path, root)
+        if os.path.normcase(os.path.realpath(fp)) == os.path.normcase(os.path.realpath(self.resolve_root(root))):
+            raise WorkspaceError(400, "不能删除根目录")
         if not os.path.exists(fp):
             raise WorkspaceError(404, "路径不存在")
         try:

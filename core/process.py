@@ -9,11 +9,10 @@ import subprocess
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any, TypeVar
+from typing import Any
 
+from core.async_helper import finish_owned
 from core.windows_process import WindowsProcessJob
-
-T = TypeVar("T")
 
 
 async def terminate_process_tree(proc: asyncio.subprocess.Process, job: WindowsProcessJob | None = None) -> None:
@@ -47,20 +46,6 @@ async def terminate_process_tree(proc: asyncio.subprocess.Process, job: WindowsP
     await asyncio.gather(proc.wait(), discard(proc.stdout), discard(proc.stderr))
 
 
-async def _finish_owned(task: asyncio.Task[T]) -> T:
-    """重复取消仍先收束已拥有的资源，随后向调用方传播取消。"""
-    cancelled = False
-    while not task.done():
-        try:
-            await asyncio.shield(task)
-        except asyncio.CancelledError:
-            cancelled = True
-    result = task.result()
-    if cancelled:
-        raise asyncio.CancelledError
-    return result
-
-
 @asynccontextmanager
 async def managed_process(*command: str, shell: bool = False, **kwargs: Any) -> AsyncIterator[asyncio.subprocess.Process]:
     """独立进程组与隐藏窗口；创建、运行或读取被取消时均完成资源回收。"""
@@ -88,9 +73,9 @@ async def managed_process(*command: str, shell: bool = False, **kwargs: Any) -> 
             child, child_job = await creation
             await terminate_process_tree(child, child_job)
 
-        await _finish_owned(asyncio.create_task(reclaim_creation()))
+        await finish_owned(asyncio.create_task(reclaim_creation()))
         raise
     try:
         yield proc
     finally:
-        await _finish_owned(asyncio.create_task(terminate_process_tree(proc, job)))
+        await finish_owned(asyncio.create_task(terminate_process_tree(proc, job)))

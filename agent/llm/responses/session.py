@@ -11,6 +11,8 @@ from typing import Any, Optional
 from agent.llm.responses.types import ResponseResult
 from core.log import log
 
+TERMINAL_STATUSES = frozenset({"completed", "failed", "incomplete", "cancelled"})
+
 
 @dataclass(slots=True)
 class ResponseSession:
@@ -69,6 +71,8 @@ class ResponseSessionStore:
             task=task,
         )
         async with self._lock:
+            if rid in self._sessions:
+                raise ValueError("response_id 已存在")
             self._sessions[rid] = session
         return session
 
@@ -104,6 +108,8 @@ class ResponseSessionStore:
             session = self._sessions.get(response_id)
             if session is None:
                 raise KeyError(f"response 不存在: {response_id}")
+            if session.status in TERMINAL_STATUSES:
+                return session
             session.status = result.status or "completed"
             session.result = result
             session.raw = raw if raw is not None else result.raw
@@ -121,7 +127,11 @@ class ResponseSessionStore:
             session = self._sessions.get(response_id)
             if session is None:
                 return None
+            if session.status in TERMINAL_STATUSES:
+                return session
             session.status = status
+            session.result = None
+            session.raw = None
             session.error = error
             session.touch()
             return session
@@ -132,12 +142,17 @@ class ResponseSessionStore:
             if session is None:
                 raise KeyError(f"response 不存在: {response_id}")
             task = session.task
-            session.status = "cancelled"
-            session.touch()
-        if task is not None and not task.done():
-            task.cancel()
+            if session.status not in TERMINAL_STATUSES:
+                session.status = "cancelled"
+                session.result = None
+                session.raw = None
+                session.error = None
+                session.touch()
+        if task is not None and task is not asyncio.current_task() and not task.done():
+            if not task.cancelling():
+                task.cancel()
             try:
-                await task
+                await asyncio.shield(task)
             except asyncio.CancelledError:
                 # 任务响应了我们的取消属预期；若任务并未被取消，
                 # 说明取消来自当前协程自身，必须向上传播
@@ -149,6 +164,10 @@ class ResponseSessionStore:
         return session
 
     async def delete(self, response_id: str) -> bool:
+        try:
+            await self.cancel(response_id)
+        except KeyError:
+            return False
         async with self._lock:
             return self._sessions.pop(response_id, None) is not None
 
@@ -158,6 +177,7 @@ class ResponseSessionStore:
             expired = [
                 rid for rid, session in self._sessions.items()
                 if now - session.updated_at > self._ttl_seconds
+                and (session.task is None or session.task.done())
             ]
             for rid in expired:
                 self._sessions.pop(rid, None)

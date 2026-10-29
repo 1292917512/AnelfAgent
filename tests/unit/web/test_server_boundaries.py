@@ -178,3 +178,20 @@ def test_hot_module_router_import_failure_logs_warning(monkeypatch: pytest.Monke
     monkeypatch.setattr(server, "log", lambda message, level="INFO": logs.append((message, level)))
     server._mount_one_module_router(FastAPI(), "channel", "acfun")
     assert logs == [("模块路由导入失败: channels.acfun.adapter - broken dependency", "WARNING")]
+
+
+def test_strict_password_cannot_be_cleared(client: TestClient):
+    assert client.post("/api/auth/login", json={"password": "test-secret"}).status_code == 200
+    before = Path(ConfigPaths.WEBUI_CONFIG).read_bytes()
+    assert client.put("/api/auth/password", json={"new_password": ""}).status_code == 400
+    assert Path(ConfigPaths.WEBUI_CONFIG).read_bytes() == before
+    assert client.get("/api/auth/check").json()["authenticated"] is True
+    assert client.put("/api/auth/password", json={"new_password": "updated-secret"}).status_code == 200
+    assert client.get("/api/auth/check").json()["authenticated"] is True
+
+
+def test_optional_password_can_be_cleared(client: TestClient):
+    Path(ConfigPaths.WEBUI_CONFIG).write_text(json.dumps({"auth": {"password": "test-secret", "strict": False}}))
+    assert client.post("/api/auth/login", json={"password": "test-secret"}).status_code == 200
+    assert client.put("/api/auth/password", json={"new_password": ""}).status_code == 200
+    assert client.get("/api/auth/check").json() == {"required": False, "authenticated": True}

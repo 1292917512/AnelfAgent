@@ -92,6 +92,7 @@ TERMINAL_EVENT_TYPES = frozenset({
     "response.completed",
     "response.failed",
     "response.incomplete",
+    "response.cancelled",
     "error",
     "response.error",
 })

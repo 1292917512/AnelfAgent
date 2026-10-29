@@ -101,6 +101,8 @@ async def update_password(body: PasswordUpdate, request: Request) -> JSONRespons
     from web.server import _make_token
 
     cfg = load_webui_config()
+    if cfg.get("auth", {}).get("strict", False) and not body.new_password:
+        raise HTTPException(400, "严格认证模式下密码不能为空")
     cfg.setdefault("auth", {})["password"] = body.new_password
     save_webui_config(cfg)
 

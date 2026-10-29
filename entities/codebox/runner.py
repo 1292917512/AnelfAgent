@@ -121,6 +121,9 @@ class _ToolsProxy:
 
 
 def main() -> int:
+    # 宿主建立进程树归属后才允许执行脚本。
+    if json.loads(sys.stdin.readline()).get("f") != "start":
+        return 1
     _apply_limits()
     sys.stdout = _FrameWriter("out")
     sys.stderr = _FrameWriter("err")

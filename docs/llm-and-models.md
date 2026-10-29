@@ -123,6 +123,17 @@ Responses 返回 `reasoning` item 时，当前执行链保留同一响应的全�
 从完成事件的 `output` 取终态项，不使用未完成的增量项。普通 chat_completions 请求在 LLM 边界
 剥离该原生字段；执行链完成后也不写入持久会话历史。
 
+### Responses 网关会话
+
+`services/responses.py` 负责请求校验与生命周期 API，`services/responses_stream.py` 拥有流式执行任务、
+有界事件队列与上游连接；路由层只编码 HTTP/SSE。会话以供应商 response ID 为唯一键，查询、
+取消、删除和原生续接均使用该 ID，不生成另一套流式身份。无效或过期的上一轮 ID 在发送 HTTP
+响应头前返回 404，跨供应商/端点使用返回 403。
+
+终态事件先写入会话再发送给客户端，completed/failed/incomplete/cancelled 不得被后续事件覆盖。
+缺失终态属于失败。取消运行中的流与客户端断流都会取消实际读取任务、关闭上游并等待清理；
+原生后台响应继续使用供应商取消接口。活动任务不参与 TTL 淘汰，删除前先停止本地执行。
+
 ### 思考等级下发
 
 - 下发载体按 api_type 区分（litellm 行为差异）：openai 兼容通道 extra_body 由 SDK 展开进请求体顶层；

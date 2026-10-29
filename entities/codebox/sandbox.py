@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional
 
 from core.config import get_config_int
 from core.log import log
+from core.process import managed_process
 from core.tool_errors import ErrorCause, tool_error
 
 _TAG = "代码编排"
@@ -178,102 +179,103 @@ async def run_script(code: str, *, timeout: int = 0, workspace_root: str = "") -
 
     started = time.monotonic()
     deadline = started + timeout
-    proc = await asyncio.create_subprocess_exec(
-        sys.executable,
-        str(_REPO_ROOT / "entities" / "codebox" / "runner.py"),
-        str(script_path),
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        cwd=workspace_root,
-        env=env,
-        limit=1024 * 1024,
-    )
-    assert proc.stdout is not None  # stdout=PIPE 必然存在（mypy 收窄）
-
-    output_parts: List[str] = []
-    output_chars = 0
-    output_truncated = False
-    stderr_parts: List[str] = []
-    ledger: List[Dict[str, Any]] = []
-    done_info: Optional[Dict[str, Any]] = None
-    timed_out = False
-    pending_tool = ""
-
-    async def _pump_stderr() -> None:
-        assert proc.stderr is not None
-        async for raw in proc.stderr:
-            if sum(len(p) for p in stderr_parts) < 4000:
-                stderr_parts.append(raw.decode("utf-8", "replace"))
-
-    stderr_task = asyncio.ensure_future(_pump_stderr())
     try:
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                timed_out = True
-                break
+        async with managed_process(
+            sys.executable,
+            str(_REPO_ROOT / "entities" / "codebox" / "runner.py"),
+            str(script_path),
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=workspace_root,
+            env=env,
+            limit=1024 * 1024,
+        ) as proc:
+            await _reply(proc, {"f": "start"})
+            assert proc.stdout is not None  # stdout=PIPE 必然存在（mypy 收窄）
+
+            output_parts: List[str] = []
+            output_chars = 0
+            output_truncated = False
+            stderr_parts: List[str] = []
+            ledger: List[Dict[str, Any]] = []
+            done_info: Optional[Dict[str, Any]] = None
+            timed_out = False
+            pending_tool = ""
+
+            async def _pump_stderr() -> None:
+                assert proc.stderr is not None
+                async for raw in proc.stderr:
+                    if sum(len(p) for p in stderr_parts) < 4000:
+                        stderr_parts.append(raw.decode("utf-8", "replace"))
+
+            stderr_task = asyncio.ensure_future(_pump_stderr())
             try:
-                raw = await asyncio.wait_for(proc.stdout.readline(), remaining)
-            except asyncio.TimeoutError:
-                timed_out = True
-                break
-            if not raw:
-                break  # 子进程退出（EOF）
-            line = raw.decode("utf-8", "replace").strip()
-            if not line:
-                continue
-            try:
-                frame = json.loads(line)
-            except ValueError:
-                # 协议外输出按原文保留（runner 故障或脚本绕过协议直写的线索）
-                output_parts.append(line + "\n")
-                output_chars += len(line) + 1
-                continue
-            kind = frame.get("f")
-            if kind in ("out", "err"):
-                text = str(frame.get("text", ""))
-                if kind == "err":
-                    text = "[stderr] " + text
-                if output_chars < max_output:
-                    output_parts.append(text + "\n")
-                    output_chars += len(text) + 1
-                else:
-                    output_truncated = True
-            elif kind == "call":
-                if len(ledger) >= max_calls:
-                    await _reply(proc, {
-                        "f": "ret", "id": frame.get("id"), "ok": False,
-                        "error": f"单次运行工具调用上限 {max_calls} 次已达；"
-                                 "请缩小本次任务范围，剩余工作拆到下一次 run_python",
-                    })
-                    continue
-                try:
-                    pending_tool = str(frame.get("tool") or "")
-                    result = await asyncio.wait_for(
-                        _dispatch(pending_tool, frame.get("args") or {}, result_cap),
-                        timeout=max(0.0, deadline - time.monotonic()),
-                    )
-                except asyncio.TimeoutError:
-                    timed_out = True
-                    break
-                ledger.append(result["ledger"])
-                pending_tool = ""
-                payload: Dict[str, Any] = {"f": "ret", "id": frame.get("id"), "ok": result["ok"]}
-                if result["ok"]:
-                    payload["result"] = result["result"]
-                else:
-                    payload["error"] = result["error"]
-                await _reply(proc, payload)
-            elif kind == "done":
-                done_info = frame
-                break
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        timed_out = True
+                        break
+                    try:
+                        raw = await asyncio.wait_for(proc.stdout.readline(), remaining)
+                    except asyncio.TimeoutError:
+                        timed_out = True
+                        break
+                    if not raw:
+                        break  # 子进程退出（EOF）
+                    line = raw.decode("utf-8", "replace").strip()
+                    if not line:
+                        continue
+                    try:
+                        frame = json.loads(line)
+                    except ValueError:
+                        # 协议外输出按原文保留（runner 故障或脚本绕过协议直写的线索）
+                        output_parts.append(line + "\n")
+                        output_chars += len(line) + 1
+                        continue
+                    kind = frame.get("f")
+                    if kind in ("out", "err"):
+                        text = str(frame.get("text", ""))
+                        if kind == "err":
+                            text = "[stderr] " + text
+                        if output_chars < max_output:
+                            output_parts.append(text + "\n")
+                            output_chars += len(text) + 1
+                        else:
+                            output_truncated = True
+                    elif kind == "call":
+                        if len(ledger) >= max_calls:
+                            await _reply(proc, {
+                                "f": "ret", "id": frame.get("id"), "ok": False,
+                                "error": f"单次运行工具调用上限 {max_calls} 次已达；"
+                                         "请缩小本次任务范围，剩余工作拆到下一次 run_python",
+                            })
+                            continue
+                        try:
+                            pending_tool = str(frame.get("tool") or "")
+                            result = await asyncio.wait_for(
+                                _dispatch(pending_tool, frame.get("args") or {}, result_cap),
+                                timeout=max(0.0, deadline - time.monotonic()),
+                            )
+                        except asyncio.TimeoutError:
+                            timed_out = True
+                            break
+                        ledger.append(result["ledger"])
+                        pending_tool = ""
+                        payload: Dict[str, Any] = {"f": "ret", "id": frame.get("id"), "ok": result["ok"]}
+                        if result["ok"]:
+                            payload["result"] = result["result"]
+                        else:
+                            payload["error"] = result["error"]
+                        await _reply(proc, payload)
+                    elif kind == "done":
+                        done_info = frame
+                        break
+            finally:
+                stderr_task.cancel()
+                await asyncio.gather(stderr_task, return_exceptions=True)
+
     finally:
-        if proc.returncode is None:
-            proc.kill()
-        await proc.wait()
-        stderr_task.cancel()
-        await asyncio.gather(stderr_task, return_exceptions=True)
         script_path.unlink(missing_ok=True)
 
     elapsed = time.monotonic() - started

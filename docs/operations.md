@@ -164,7 +164,9 @@ CLI 会话。授权失效后暂停查询，更新凭据文件或重新扫码后�
 
 ## 代码编排实体（entities/codebox/，沉睡分组 `code`）
 
-一次性子进程跑模型写的 Python（cwd=workspace，子进程自设 rlimit 内存/CPU，墙钟超时父侧强杀）；
+一次性子进程跑模型写的 Python（cwd=workspace，子进程自设 rlimit 内存/CPU）。宿主通过
+`core.process.managed_process` 建立进程树归属后发送启动帧；正常完成、超时、取消和异常均回收整棵树
+（Windows Job Object / POSIX 进程组），停止输出读取任务后由管理器排空管道，最后删除临时脚本；
 stdin/stdout JSON 行协议桥接注册表工具（runner.py 纯 stdlib 按路径直执）；每次子调用过统一审批门
 + `EntityRegistry.execute_tool`；输出/编排/交互类工具脚本内不可用（排除即「脚本不能回复用户」）；
 子调用结果头尾截断（脚本可用 offset/limit 自行分页精读）。否决 OS 级沙箱的决策见

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
 import os
 import secrets
 import time
@@ -61,6 +62,11 @@ CREATE INDEX IF NOT EXISTS idx_dl_time ON download_logs(downloaded_at);
 # 分享类型
 SHARE_TYPE_FILE = "file"
 SHARE_TYPE_MEDIA = "media"
+ACCESS_SECONDS = 3600
+_DISPLAY_STATUS = (
+    "CASE WHEN status='active' AND max_downloads>0 AND download_count>=max_downloads "
+    "THEN 'expired' ELSE status END"
+)
 SHARE_TYPE_LINK = "link"
 _SHARE_TYPES = (SHARE_TYPE_FILE, SHARE_TYPE_MEDIA, SHARE_TYPE_LINK)
 
@@ -197,6 +203,24 @@ class ShareStore:
         get_volume_registry().mark_active("share", self._db_path)
         self._db: Optional[aiosqlite.Connection] = None
         self._lock = asyncio.Lock()
+        self._access_key = secrets.token_bytes(32)
+
+    def issue_access(self, token: str) -> str:
+        """签发一小时内复用的访问凭据；重启失效，链接撤销和过期始终优先。"""
+        expires = str(int(time.time()) + ACCESS_SECONDS)
+        signature = hmac.new(self._access_key, f"{token}:{expires}".encode(), hashlib.sha256).hexdigest()
+        return f"{expires}.{signature}"
+
+    def valid_access(self, token: str, access: str) -> bool:
+        """凭据仅适用于签发时的分享链接与有效期。"""
+        expires, separator, signature = access.partition(".")
+        if (not separator or not expires.isascii() or not expires.isdecimal() or len(expires) > 12
+                or not signature.isascii() or len(signature) != 64):
+            return False
+        if int(expires) <= time.time():
+            return False
+        expected = hmac.new(self._access_key, f"{token}:{expires}".encode(), hashlib.sha256).hexdigest()
+        return hmac.compare_digest(signature, expected)
 
     async def _get_db(self) -> aiosqlite.Connection:
         async with self._lock:
@@ -304,6 +328,8 @@ class ShareStore:
             )
             dedup_params = (file_path, content_hash, share_type)
 
+        dedup_sql += " AND (max_downloads=0 OR download_count<max_downloads) AND (expires_at=0 OR expires_at>?)"
+        dedup_params = (*dedup_params, now)
         async with self._lock:
             cursor = await db.execute(dedup_sql, dedup_params)
             existing = await cursor.fetchone()
@@ -368,7 +394,7 @@ class ShareStore:
         params: List[Any] = []
 
         if status != "all":
-            conditions.append("status=?")
+            conditions.append(f"({_DISPLAY_STATUS})=?")
             params.append(status)
         if query:
             conditions.append("(file_path LIKE ? OR file_name LIKE ? OR description LIKE ?)")
@@ -387,6 +413,9 @@ class ShareStore:
             (*params, page_size, (max(1, page) - 1) * page_size),
         )
         items = [_row_to_entry(r) for r in await cursor.fetchall()]
+        for item in items:
+            if item["status"] == "active" and self.is_exhausted(item):
+                item["status"] = "expired"
         return {"items": items, "total": total, "page": page, "page_size": page_size}
 
     async def revoke(self, token: str) -> Optional[Dict[str, Any]]:
@@ -402,52 +431,66 @@ class ShareStore:
         log(f"分享链接已撤销: {token[:8]}...", tag="分享")
         return await self.get_by_token(token)
 
-    async def touch_download(self, token: str) -> None:
+    async def claim_access(self, token: str, *, ip: str = "", user_agent: str = "") -> bool:
+        """原子领取一次访问额度并记录审计，多个并发请求不能超领。"""
+        from core.config import get_config_bool
+
         db = await self._get_db()
-        await db.execute(
-            "UPDATE share_links SET download_count=download_count+1, last_download_at=? "
-            "WHERE token=?",
-            (_now_ms(), token),
-        )
-        await db.commit()
+        now = _now_ms()
+        async with self._lock:
+            try:
+                cursor = await db.execute(
+                    "UPDATE share_links SET download_count=download_count+1, last_download_at=? "
+                    "WHERE token=? AND status='active' AND (expires_at=0 OR expires_at>?) "
+                    "AND (max_downloads=0 OR download_count<max_downloads) RETURNING file_name,file_size",
+                    (now, token, now),
+                )
+                row = await cursor.fetchone()
+                await cursor.close()
+                if row is None:
+                    await db.commit()
+                    return False
+                if get_config_bool("share_audit_enabled", True):
+                    await db.execute(
+                        "INSERT INTO download_logs(token,ip,user_agent,downloaded_at,file_name,file_size) "
+                        "VALUES(?,?,?,?,?,?)",
+                        (token, ip, user_agent, now, row["file_name"], row["file_size"]),
+                    )
+                await db.commit()
+                return True
+            except BaseException:
+                await db.rollback()
+                raise
 
     async def mark_expired(self, token: str) -> None:
         db = await self._get_db()
-        await db.execute(
-            "UPDATE share_links SET status='expired' WHERE token=? AND status='active'",
-            (token,),
-        )
-        await db.commit()
-
-    async def mark_exhausted(self, token: str) -> None:
-        """下载次数达到上限，标记为 exhausted（归入 expired 状态）。"""
-        db = await self._get_db()
-        await db.execute(
-            "UPDATE share_links SET status='expired' WHERE token=? AND status='active'",
-            (token,),
-        )
-        await db.commit()
-        log(f"分享链接下载次数已达上限: {token[:8]}...", tag="分享")
+        async with self._lock:
+            await db.execute(
+                "UPDATE share_links SET status='expired' WHERE token=? AND status='active'",
+                (token,),
+            )
+            await db.commit()
 
     async def sweep_expired(self) -> int:
         """标记所有已过期的 active 链接为 expired，返回处理数量。"""
         db = await self._get_db()
-        now = _now_ms()
-        cursor = await db.execute(
-            "UPDATE share_links SET status='expired' "
-            "WHERE status='active' AND expires_at > 0 AND expires_at < ?",
-            (now,),
-        )
-        await db.commit()
-        if cursor.rowcount:
-            log(f"过期链接清理: {cursor.rowcount} 条", "DEBUG", tag="分享")
-        return cursor.rowcount
+        async with self._lock:
+            now = _now_ms()
+            cursor = await db.execute(
+                "UPDATE share_links SET status='expired' "
+                "WHERE status='active' AND expires_at > 0 AND expires_at < ?",
+                (now,),
+            )
+            await db.commit()
+            if cursor.rowcount:
+                log(f"过期链接清理: {cursor.rowcount} 条", "DEBUG", tag="分享")
+            return cursor.rowcount
 
     async def stats(self) -> Dict[str, Any]:
         db = await self._get_db()
         cursor = await db.execute(
-            "SELECT status, COUNT(*) AS c FROM share_links GROUP BY status")
-        counts = {r["status"]: r["c"] for r in await cursor.fetchall()}
+            f"SELECT {_DISPLAY_STATUS} AS display_status, COUNT(*) AS c FROM share_links GROUP BY display_status")
+        counts = {r["display_status"]: r["c"] for r in await cursor.fetchall()}
         cursor = await db.execute(
             "SELECT COALESCE(SUM(download_count),0) AS d FROM share_links")
         total_downloads = required_row(await cursor.fetchone())["d"]
@@ -470,26 +513,6 @@ class ShareStore:
     # ------------------------------------------------------------------
     # 审计日志
     # ------------------------------------------------------------------
-
-    async def log_download(
-        self,
-        token: str,
-        ip: str = "",
-        user_agent: str = "",
-        file_name: str = "",
-        file_size: int = 0,
-    ) -> None:
-        """记录下载审计日志。"""
-        from core.config import get_config_bool
-        if not get_config_bool("share_audit_enabled", True):
-            return
-        db = await self._get_db()
-        await db.execute(
-            "INSERT INTO download_logs(token, ip, user_agent, downloaded_at, file_name, file_size) "
-            "VALUES(?,?,?,?,?,?)",
-            (token, ip, user_agent, _now_ms(), file_name, file_size),
-        )
-        await db.commit()
 
     async def get_download_logs(
         self,

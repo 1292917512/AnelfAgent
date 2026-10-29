@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import json
+from contextlib import aclosing
 from typing import Any, AsyncGenerator, Dict, List, Optional, Union
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-from core.log import log
 from services.responses import ResponsesService, ResponsesServiceError
 
 router = APIRouter(prefix="/responses", tags=["v1-responses"])
@@ -51,37 +51,23 @@ async def create_response(
     request: Request,
 ) -> Any:
     if req.stream:
-        response_id = _svc.new_response_id()
+        try:
+            stream = await _svc.stream(
+                model=req.model, input=req.input, instructions=req.instructions, tools=req.tools,
+                tool_choice=req.tool_choice, previous_response_id=req.previous_response_id,
+                temperature=req.temperature, top_p=req.top_p, max_output_tokens=req.max_output_tokens,
+                metadata=req.metadata, store=req.store, extra=req.extra,
+            )
+        except ResponsesServiceError as exc:
+            return _error_response(exc)
 
         async def event_gen() -> AsyncGenerator[str, None]:
             try:
-                async for event in _svc.stream(
-                    model=req.model,
-                    input=req.input,
-                    instructions=req.instructions,
-                    tools=req.tools,
-                    tool_choice=req.tool_choice,
-                    previous_response_id=req.previous_response_id,
-                    temperature=req.temperature,
-                    top_p=req.top_p,
-                    max_output_tokens=req.max_output_tokens,
-                    metadata=req.metadata,
-                    store=req.store,
-                    extra=req.extra,
-                    response_id=response_id,
-                ):
-                    if await request.is_disconnected():
-                        try:
-                            await _svc.cancel(response_id)
-                        except Exception:
-                            log("event_gen 异常已忽略", "DEBUG")
-                        break
-                    yield _svc.encode_sse(event)
-            except ResponsesServiceError as exc:
-                yield (
-                    "event: error\n"
-                    f"data: {json.dumps(exc.to_openai_error(), ensure_ascii=False)}\n\n"
-                )
+                async with aclosing(stream):
+                    async for event in stream:
+                        if await request.is_disconnected():
+                            break
+                        yield _svc.encode_sse(event)
             except Exception as exc:
                 mapped = _svc.map_exception(exc)
                 yield (

@@ -16,6 +16,7 @@ Token：减少简单识图的推理消耗，不缩减图片分辨率或正文预
 from __future__ import annotations
 
 import re
+from contextlib import aclosing
 from typing import Any, AsyncGenerator, Dict, List, Optional, Set
 
 import httpx
@@ -861,8 +862,9 @@ class LLMClient(BaseEntity):
     async def responses_stream(self, **kwargs: Any) -> AsyncGenerator[Any, None]:
         """流式 Responses 调用。"""
         client = self.responses_client()
-        async for event in client.stream(**kwargs):
-            yield event
+        async with aclosing(client.stream(**kwargs)) as stream:
+            async for event in stream:
+                yield event
 
     async def responses_get(self, response_id: str) -> Any:
         client = self.responses_client()

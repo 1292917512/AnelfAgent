@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import os
 from typing import Any, Dict
+from urllib.parse import urlencode
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
@@ -28,6 +29,7 @@ from .schemas import (
     ShareStats,
 )
 from .store import (
+    ACCESS_SECONDS,
     SHARE_TYPE_FILE,
     SHARE_TYPE_LINK,
     SHARE_TYPE_MEDIA,
@@ -57,7 +59,7 @@ def _attach_urls(entry: Dict[str, Any], base_url: str) -> Dict[str, Any]:
 
 
 async def _validate_entry(token: str) -> Dict[str, Any]:
-    """校验分享条目可用性（不存在/过期/次数耗尽统一 404），过期即时落库。"""
+    """校验链接存在、未撤销且未过期；额度在领取访问时原子校验。"""
     store = get_share_store()
     entry = await store.get_by_token(token)
     if not entry or entry["status"] != "active":
@@ -65,9 +67,6 @@ async def _validate_entry(token: str) -> Dict[str, Any]:
     if store.is_expired(entry):
         await store.mark_expired(token)
         raise HTTPException(status_code=404, detail="链接已过期")
-    if store.is_exhausted(entry):
-        await store.mark_exhausted(token)
-        raise HTTPException(status_code=404, detail="链接访问次数已达上限")
     return entry
 
 
@@ -83,18 +82,20 @@ def _resolve_file(entry: Dict[str, Any]) -> str:
     return fp
 
 
-async def _record_access(entry: Dict[str, Any], request: Request) -> None:
-    """记录审计日志并累加访问计数（下载与预览共用）。"""
+async def _access(entry: Dict[str, Any], request: Request, *, reuse: str = "") -> str:
+    """资源请求可复用已领取的访问；页面导航始终领取新额度。"""
     store = get_share_store()
-    client_ip = request.client.host if request.client else ""
-    await store.log_download(
-        entry["token"],
-        ip=client_ip,
+    token = entry["token"]
+    if reuse:
+        if store.valid_access(token, reuse):
+            return reuse
+        raise HTTPException(404, "访问凭据无效或已过期")
+    if not await store.claim_access(
+        token, ip=request.client.host if request.client else "",
         user_agent=request.headers.get("user-agent", ""),
-        file_name=entry["file_name"],
-        file_size=entry["file_size"],
-    )
-    await store.touch_download(entry["token"])
+    ):
+        raise HTTPException(404, "链接已失效或访问次数已达上限")
+    return store.issue_access(token)
 
 
 def build_router() -> APIRouter:
@@ -185,32 +186,35 @@ def build_router() -> APIRouter:
         entry = await _validate_entry(token)
         fp = _resolve_file(entry)
 
-        await _record_access(entry, request)
+        await _access(entry, request, reuse=request.query_params.get("access", ""))
         log(f"分享文件下载: {entry['file_name']} (token={token[:8]}...)", tag="分享")
         return FileResponse(
             fp,
             filename=entry["file_name"],
             content_disposition_type="attachment",
+            headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"},
         )
 
     @router.get("/raw/{token}")
     @self_authenticated
-    async def raw(token: str) -> FileResponse:
-        """媒体原始字节（inline + Range，供预览页内嵌引用，不重复计数）。
-
-        私有短缓存：token 即内容键（内容变更会产生新 token），5 分钟内
-        聊天卡片/预览页的重复引用直接命中浏览器缓存，减少回源。
-        """
+    async def raw(token: str, request: Request) -> FileResponse:
+        """媒体原始字节与 Range 共用短期访问凭据；直访也须领取额度。"""
         entry = await _validate_entry(token)
         fp = _resolve_file(entry)
-        headers: Dict[str, str] = {"Cache-Control": "private, max-age=300",
-                                   "Content-Security-Policy": "sandbox", "X-Content-Type-Options": "nosniff"}
-        return FileResponse(
-            fp,
-            filename=entry["file_name"],
-            content_disposition_type="inline",
-            headers=headers,
+        cookie = request.cookies.get("_share_access", "")
+        if cookie and not get_share_store().valid_access(token, cookie):
+            cookie = ""
+        access = await _access(entry, request, reuse=request.query_params.get("access", "") or cookie)
+        response = FileResponse(
+            fp, filename=entry["file_name"], content_disposition_type="inline",
+            headers={"Cache-Control": "no-store", "Content-Security-Policy": "sandbox",
+                     "X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer"},
         )
+        response.set_cookie(
+            "_share_access", access, max_age=ACCESS_SECONDS, httponly=True,
+            secure=request.url.scheme == "https", samesite="lax", path=request.url.path,
+        )
+        return response
 
     @router.get("/v/{token}", name="view_share")
     @self_authenticated
@@ -230,18 +234,25 @@ def build_router() -> APIRouter:
             return RedirectResponse(
                 url=f"/api/entity/share/d/{token}", status_code=302)
 
-        await _record_access(entry, request)
+        try:
+            if share_type == SHARE_TYPE_MEDIA:
+                _resolve_file(entry)
+            access = await _access(entry, request)
+        except HTTPException as exc:
+            return HTMLResponse(render_unavailable_page(str(exc.detail)), status_code=exc.status_code)
 
         if share_type == SHARE_TYPE_LINK:
             embed_enabled = get_config_bool("share_view_embed_enabled", True)
             log(f"分享网址访问: {entry['target_url']} (token={token[:8]}...)", tag="分享")
-            return HTMLResponse(render_link_page(entry, embed_enabled))
+            return HTMLResponse(render_link_page(entry, embed_enabled), headers={"Cache-Control": "no-store"})
 
         # media：页面本身计数一次，raw 资源请求不再重复计数
         base_url = get_public_base_url().strip()
-        raw_url = f"/api/entity/share/raw/{token}"
-        download_url = build_download_url(token, base_url)
+        query = urlencode({"access": access})
+        raw_url = f"/api/entity/share/raw/{token}?{query}"
+        download_url = f"{build_download_url(token, base_url)}?{query}"
         log(f"分享媒体预览: {entry['file_name']} (token={token[:8]}...)", tag="分享")
-        return HTMLResponse(render_media_page(entry, raw_url, download_url))
+        return HTMLResponse(render_media_page(entry, raw_url, download_url),
+                            headers={"Cache-Control": "no-store", "Referrer-Policy": "no-referrer"})
 
     return router
