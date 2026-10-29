@@ -10,6 +10,7 @@ import { ActivitySourceLabel, TaggedText } from "./ActivityReferences";
 import { SkillEvidence } from "@/components/common/SkillEvidence";
 import { activityRows } from "./activity-stream";
 import { ActivityRunOutcome, ActivityRunStatus } from "./ActivityRunStatus";
+import { ExecutionLimitNotice } from "@/components/activity/ExecutionLimitNotice";
 
 export const ActivityRunCard = memo(function ActivityRunCard({ run, parent, open, current = false, onToggle, onReveal }: { run: ActivityRun; parent?: ActivityRun; current?: boolean; open: boolean; onToggle: (id: string, open: boolean) => void; onReveal: (id: string) => void }) {
   const { t } = useTranslation("workbench");
@@ -37,6 +38,7 @@ export const ActivityRunCard = memo(function ActivityRunCard({ run, parent, open
       {rows.map(({ entry, thoughts }) => <div key={`${entry.id}:${current}`} data-activity-entry={current ? entry.id : undefined}><ActivityEntryView entry={entry} thoughts={thoughts} current={current} live={running && entry.id === run.entries[run.entries.length - 1]?.id} onReveal={onReveal} /></div>)}
       {running && <p className="activity-waiting"><span className="activity-live-dot" />{t(run.entries.some((entry) => entry.kind === "context" && entry.status === "running") ? "activity.contextPreparing" : run.entries.some((entry) => entry.kind === "tool" && entry.status === "running") ? "activity.executing" : "activity.thinking")}</p>}
       {!running && <ActivityRunOutcome run={run} />}
-    </div> : <p className="activity-run-summary">{t("activity.operationCount", { count: tools.length })}{hasError && ` · ${t("activity.needsAttention")}`}</p>}
+    </div> : <><p className="activity-run-summary">{t("activity.operationCount", { count: tools.length })}{hasError && ` · ${t("activity.needsAttention")}`}</p>
+      {run.status === "budget_exhausted" && run.limit && <ExecutionLimitNotice limit={run.limit} />}</>}
   </article>;
 });

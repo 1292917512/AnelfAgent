@@ -4,6 +4,7 @@ import { localModelsApi } from "@/lib/api";
 import type { LocalModelAsset } from "@/lib/types";
 import { Badge, Button, LoadingBlock } from "@/components/ui";
 import { Card } from "@/components/common/Card";
+import { ConfigLink } from "@/components/common/ConfigLink";
 import { formatSize } from "@/lib/utils";
 
 function statusBadge(model: LocalModelAsset, t: (k: string) => string) {
@@ -141,9 +142,9 @@ export function LocalModelsPanel() {
         title={t("localModels.title")}
         subtitle={data?.dir ? `${t("localModels.dir")}: ${data.dir}` : undefined}
         actions={
-          <a href="/webui/config?key=proxy_enabled" className="text-xs text-accent hover:underline">
+          <ConfigLink config={{ key: "proxy_enabled" }}>
             {t("localModels.proxyHint")}
-          </a>
+          </ConfigLink>
         }
       >
         {isLoading ? (

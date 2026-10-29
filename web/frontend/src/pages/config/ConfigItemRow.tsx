@@ -1,9 +1,10 @@
-import { Link } from "react-router-dom";
 import { ArrowUpRight, Check, Loader2, RotateCcw } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { ConfigMetaItem } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { ConfigSource } from "@/components/common/ConfigSource";
+import { ConfigLink } from "@/components/common/ConfigLink";
+import { configItemId } from "@/lib/config-navigation";
 import { apiErrorMessage } from "@/lib/api/client";
 import { useConfigSave } from "./useConfigSave";
 import { NumberField, ModelField, PasswordField, RangeField, SelectField, SwitchField, TextField } from "./fields";
@@ -75,7 +76,9 @@ export function ConfigItemRow({ item, highlight, onOpenDetail }: ConfigItemRowPr
 
   return (
     <div
-      id={`config-item-${item.key}`}
+      id={configItemId(item.key)}
+      tabIndex={-1}
+      data-config-highlight={highlight || undefined}
       className={cn(
         "config-item flex flex-wrap items-center gap-3 p-4 rounded-xl border bg-card transition-colors",
         highlight ? "border-accent/40 bg-accent-subtle" : "border-border",
@@ -94,7 +97,7 @@ export function ConfigItemRow({ item, highlight, onOpenDetail }: ConfigItemRowPr
         <ConfigSource item={item} />
       </button>
 
-      {item.related_key && <Link target="_blank" rel="noreferrer" to={`/config?key=${encodeURIComponent(item.related_key)}`} className="inline-flex items-center gap-1 text-xs text-accent hover:underline">{t("relatedSetting")}<ArrowUpRight size={13} /></Link>}
+      {item.related_key && <ConfigLink target="_blank" rel="noreferrer" config={{ key: item.related_key }}>{t("relatedSetting")}<ArrowUpRight size={13} /></ConfigLink>}
       <div className={cn("config-item-control flex max-w-full items-start gap-2", item.type === "text" && "w-full")}>
         {control}
         {saving && <Loader2 size={14} className="animate-spin text-muted" />}

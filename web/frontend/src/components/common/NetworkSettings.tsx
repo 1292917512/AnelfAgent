@@ -1,5 +1,5 @@
 import { useId } from "react";
-import { Link } from "react-router-dom";
+import { ConfigLink } from "./ConfigLink";
 import { ArrowUpRight } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { Select } from "@/components/ui";
@@ -7,9 +7,9 @@ import type { ProxyMode } from "@/lib/types";
 
 export function NetworkConfigLink() {
   const { t } = useTranslation("config");
-  return <Link to="/config?key=proxy_enabled" target="_blank" rel="noreferrer" className="inline-flex items-center gap-1 text-xs text-accent hover:underline">
+  return <ConfigLink config={{ key: "proxy_enabled" }} target="_blank" rel="noreferrer">
     {t("network.configure")}<ArrowUpRight size={13} />
-  </Link>;
+  </ConfigLink>;
 }
 
 export function NetworkModeField({ value, onChange }: { value: ProxyMode; onChange: (mode: ProxyMode) => void }) {

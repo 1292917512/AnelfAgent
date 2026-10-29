@@ -154,6 +154,7 @@
     "transcriptOn": "Full transcript",
     "transcriptOff": "Off",
     "iterations": "Iterations",
+    "inheritIterations": "Follow main setting",
     "concurrent": "Concurrency",
     "cooldown": "Cooldown",
     "debounce": "Debounce",

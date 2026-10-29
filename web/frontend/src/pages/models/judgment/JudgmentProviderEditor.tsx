@@ -2,7 +2,7 @@ import { useDialogSession } from "@/hooks/useDialogSession";
 import { useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { Link } from "react-router-dom";
+import { ConfigLink } from "@/components/common/ConfigLink";
 import { Plus, Trash2 } from "lucide-react";
 import type { DecisionProvider } from "@/lib/types";
 import { judgmentApi } from "@/lib/api";
@@ -53,7 +53,7 @@ export function JudgmentProviderEditor({ id = "", provider, onClose }: Props) {
             {t("judgment.useProxy")}
           </label>
           <p className="text-xs leading-relaxed text-muted">{t("judgment.proxyHint")}</p>
-          <Link to="/config?group=network%2Fproxy" target="_blank" rel="noopener noreferrer" className="inline-flex min-h-9 items-center text-xs text-accent hover:underline">{t("judgment.proxySettings")}</Link>
+          <ConfigLink config={{ group: "network/proxy" }} target="_blank" rel="noopener noreferrer" className="min-h-9">{t("judgment.proxySettings")}</ConfigLink>
         </div>
         <label className="block space-y-1.5 text-xs text-muted">{t("judgment.apiKey")}<Input type="password" autoComplete="new-password" value={key} onChange={(e) => setKey(e.target.value)} /></label>
         <p className="text-xs text-muted">{t("judgment.keyHint")}</p>

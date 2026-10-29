@@ -20,6 +20,26 @@ from services.activity_stream import ActivityStreamEncoder
 from services.workspace_activity import WorkspaceActivityService
 
 
+async def test_execution_limit_survives_terminal_event_snapshot_and_delta():
+    service = WorkspaceActivityService()
+    service.start()
+    encoder = ActivityStreamEncoder()
+    try:
+        async with activity_scope("limited", "user_webui:1", kind="conversation") as handle:
+            first = service.snapshot()["runs"][0]
+            encoder.encode({"event": "activity", "epoch": "test", "run": first})
+            handle.status = "budget_exhausted"
+            handle.limit = {"kind": "iterations", "value": 12, "config_keys": ["max_tool_iterations"]}
+        run = service.snapshot()["runs"][0]
+        assert run["status"] == "budget_exhausted" and run["limit"] == handle.limit
+        delta = encoder.encode({"event": "activity_end", "epoch": "test", "run": run})
+        assert delta["run"]["limit"] == handle.limit
+        run["limit"]["config_keys"].clear()
+        assert service.get_run("limited")["limit"]["config_keys"] == ["max_tool_iterations"]
+    finally:
+        service.stop()
+
+
 def test_activity_transport_sends_only_new_text_and_terminal_tool_changes():
     encoder = ActivityStreamEncoder()
     run = {"id": "run", "revision": 1, "status": "running", "entries": [

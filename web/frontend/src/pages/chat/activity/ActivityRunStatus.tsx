@@ -2,6 +2,7 @@ import { AlertCircle, CheckCircle2, Loader2, PauseCircle } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { hasActiveWork } from "@/lib/chat-activity";
 import type { ActivityRun } from "@/lib/types/activity";
+import { ExecutionLimitNotice } from "@/components/activity/ExecutionLimitNotice";
 
 /** 仅从执行事实区分运行、后台未收束和终态；工具异常不改写轮次结果。 */
 export function ActivityRunStatus({ run, runs = [run] }: { run: ActivityRun; runs?: readonly ActivityRun[] }) {
@@ -26,5 +27,6 @@ export function ActivityRunOutcome({ run }: { run: ActivityRun }) {
     <p>{t(active ? "activity.backgroundWorkingHint" : run.status === "completed" ? "activity.executionComplete" : "activity.executionEnded")}
       {issues && <span className="text-warn"> · {t("activity.needsAttention")}</span>}</p>
     {run.error && <p className="text-warn">{run.error}</p>}
+    {run.status === "budget_exhausted" && run.limit && <ExecutionLimitNotice limit={run.limit} />}
   </div>;
 }

@@ -1,5 +1,8 @@
 export type ProxyMode = "system" | "direct" | "proxy";
 
+/** 配置中心的稳定定位契约；调用方只提供注册键或分组。 */
+export type ConfigTarget = { key: string; group?: string } | { group: string; key?: never };
+
 export type ReasoningEffort = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 
 export interface HeartbeatConfig {

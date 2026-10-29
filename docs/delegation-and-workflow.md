@@ -21,6 +21,12 @@
 
 ## 子代理档案体系
 
+子代理默认不另设轮次上限：`delegation_default_iterations=0` 沿用主思维的
+`max_tool_iterations`（默认 `0`，不限轮次），`delegation_max_iterations_cap=0` 关闭硬上限。
+调用参数 `max_iterations` 或默认预算设为正数时限制本次执行；配置正数硬上限时，
+未设预算的执行采用该上限，已设预算取两者较小值。续跑默认沿用上次调用的预算。
+执行观测只报告实际约束的配置键；单次调用直接指定预算时明确其来源，修改全局默认不覆盖调用预算。
+
 一套档案体系（llm_clients.json 顶层 `sub_agents` 键，schema 单一权威在 `agent/delegation/profile.py`，
 存储宿主 `LLMManager._sub_agents`）：
 

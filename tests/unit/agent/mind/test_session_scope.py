@@ -16,6 +16,8 @@ import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from agent.context.assembly import ContextAssembly
 from agent.messages import parse_entity_scope
 from agent.messages.presets import MessageAssistant, MessageGroupUser, MessageUser
@@ -214,6 +216,16 @@ class TestAdaptMessagesCacheControl:
 # ==================================================================
 
 class TestSessionNotification:
+    @pytest.mark.parametrize("iteration", [0, 7, 50])
+    def test_unlimited_execution_has_no_round_budget_warning(self, iteration: int) -> None:
+        ctx = ContextAssembly(_pfc(), ToolAssembly()).build_execution_context(
+            [], time.time(), iteration, safety_limit=0,
+        )
+        assert ctx["_layer"] == "exec_context"
+        assert "最多" not in ctx["content"]
+        assert "剩余" not in ctx["content"]
+        assert "[轮次提醒]" not in ctx["content"]
+
     async def test_notification_is_in_dynamic_window_not_execution_tail(self, sqlite) -> None:
         from agent.config import MindConfig
         from agent.mind.cross_channel import build_cross_channel_narrative

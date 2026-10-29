@@ -13,10 +13,15 @@ if TYPE_CHECKING:
     from .spec import LLMHookSpec
 
 
+def hook_config_key(name: str, field: str) -> str:
+    """生成钩子治理字段的稳定配置键，声明和观测共用。"""
+    return f"llm_hook_{name}_{field}"
+
+
 def config_keys(spec: LLMHookSpec) -> dict[str, str]:
     fields = ("enabled", "mode", "cooldown_seconds", "stall_seconds") if spec.source == "task" else (
         "enabled", "mode", "context", "model", "max_iterations", "cooldown_seconds", "stall_seconds")
-    return {field: spec.config_key if field == "enabled" and spec.config_key else f"llm_hook_{spec.name}_{field}"
+    return {field: spec.config_key if field == "enabled" and spec.config_key else hook_config_key(spec.name, field)
             for field in fields}
 
 
@@ -27,7 +32,7 @@ def register_settings(spec: LLMHookSpec) -> None:
         "mode": ("执行模式：sync 等待结束；async 后台协作。同步模式不使用防抖延迟", ConfigValueType.ENUM, ["sync", "async"], None, None),
         "context": ("上下文继承：transcript 原对话完整过程；lean 人设与固定记忆；none 不继承。跨模型或工具目录变化仍可能影响缓存", ConfigValueType.ENUM, ["transcript", "lean", "none"], None, None),
         "model": ("执行模型，留空跟随默认模型", ConfigValueType.MODEL, None, None, None),
-        "max_iterations": ("单次执行的最大思考轮数；不设置整体时间截止", ConfigValueType.INTEGER, None, 1, 100),
+        "max_iterations": ("单次执行的最大思考轮数（0 = 沿用主思维配置，默认不设上限）；不设置整体时间截止", ConfigValueType.INTEGER, None, 0, None),
         "cooldown_seconds": ("同一会话两次触发的最小间隔，非执行超时", ConfigValueType.FLOAT, None, 0, 86400),
         "stall_seconds": ("连续无进展时提醒 AI；不终止任务，0 关闭提醒", ConfigValueType.FLOAT, None, 0, 86400),
     }

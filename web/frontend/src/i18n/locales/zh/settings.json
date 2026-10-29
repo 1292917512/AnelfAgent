@@ -154,6 +154,7 @@
     "transcriptOn": "完整继承",
     "transcriptOff": "关闭",
     "iterations": "轮次",
+    "inheritIterations": "沿用主思维配置",
     "concurrent": "并发",
     "cooldown": "冷却",
     "debounce": "防抖",

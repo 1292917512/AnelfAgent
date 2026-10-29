@@ -46,6 +46,10 @@
     }
   },
   "title": "配置中心",
+  "navigation": {
+    "open": "前往配置",
+    "missing": "配置项 {{key}} 未注册，请检查对应模块是否启用。"
+  },
   "subtitle": "全部运行参数一处管理，即改即存，热更生效",
   "searchPlaceholder": "搜索配置（key / 描述）",
   "searchResults": "{{count}} 项匹配",

@@ -12,6 +12,7 @@ import { groupCls, itemCls } from "./paletteStyles";
 import { DialogSurface } from "@/components/ui/DialogSurface";
 import { getNavigation } from "@/lib/navigation";
 import { configMetaApi, searchApi } from "@/lib/api";
+import { configHref } from "@/lib/config-navigation";
 import type { GlobalSearchResult } from "@/lib/types";
 
 /** 全局命令面板（⌘K / Ctrl+K）：页面导航 + 快捷操作 + 全局搜索 */
@@ -157,7 +158,7 @@ export function CommandPalette() {
                     value={`${item.description} ${item.key}`}
                     keywords={[item.key]}
                     className={itemCls}
-                    onSelect={() => go(`/config?key=${encodeURIComponent(item.key)}`)}
+                    onSelect={() => go(configHref({ key: item.key }))}
                   >
                     <SlidersHorizontal size={15} className="shrink-0 text-muted" />
                     <span>{item.description}</span>

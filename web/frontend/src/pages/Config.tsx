@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useSearchParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
@@ -12,6 +12,9 @@ import { ConfigSection } from "@/pages/config/ConfigSection";
 import { ConfigDetailDrawer } from "@/pages/config/ConfigDetailDrawer";
 import { ConversationWindowRow } from "@/pages/config/ConversationWindowRow";
 import { NetworkDiagnostics } from "@/pages/config/NetworkDiagnostics";
+import { useConfigFocus } from "@/hooks/useConfigFocus";
+import { configItemId } from "@/lib/config-navigation";
+import { cn } from "@/lib/utils";
 
 /** 对话窗口复合行收编的键（一行配置：总条数 + 保留比例滑条） */
 const WINDOW_KEYS = new Set(["max_conversation_size", "conversation_raw_keep_percent"]);
@@ -37,9 +40,15 @@ export default function Config() {
   const focusKey = searchParams.get("key");
   const activeGroup = searchParams.get("group");
   const setActiveGroup = (group: string) => setSearchParams((current) => {
-    const next = new URLSearchParams(current); next.set("group", group); next.delete("key"); return next;
+    const next = new URLSearchParams(current); next.set("group", group); next.delete("key"); next.delete("q"); return next;
   });
-  const [query, setQuery] = useState("");
+  const query = focusKey ? "" : searchParams.get("q") ?? "";
+  const setQuery = (value: string) => setSearchParams((current) => {
+    const next = new URLSearchParams(current);
+    if (value) next.set("q", value); else next.delete("q");
+    next.delete("key");
+    return next;
+  }, { replace: true });
   const [detail, setDetail] = useState<{ key: string; group: string } | null>(null);
   const { moduleOrder, sectionOrder } = useConfigOrder();
 
@@ -53,25 +62,17 @@ export default function Config() {
     [data, moduleOrder, sectionOrder],
   );
 
-  // 高亮行滚动定位
-  useEffect(() => {
-    if (!focusKey) return;
-    const raf = requestAnimationFrame(() => {
-      document
-        .getElementById(`config-item-${focusKey}`)
-        ?.scrollIntoView({ block: "center", behavior: "smooth" });
-    });
-    return () => cancelAnimationFrame(raf);
-  }, [focusKey, activeGroup, data]);
-
   const searching = query.trim().length > 0;
+  useConfigFocus(focusKey, !!data && !searching, data);
   const searchResults = useMemo(
     () => (searching ? searchConfigItems(tree, query) : []),
     [tree, query, searching],
   );
 
+  const focusGroup = focusKey ? findGroupOfKey(tree, focusKey) : null;
+  const missingKey = !!data && !!focusKey && !focusGroup;
   const currentGroup =
-    tree.flatMap((m) => m.sections).find((s) => s.group === (focusKey ? findGroupOfKey(tree, focusKey) : activeGroup)) ??
+    tree.flatMap((m) => m.sections).find((s) => s.group === (focusKey ? focusGroup : activeGroup)) ??
     tree[0]?.sections[0] ??
     null;
 
@@ -127,6 +128,8 @@ export default function Config() {
             <div className="flex justify-center py-12 text-muted">
               <Loader2 size={24} className="animate-spin" />
             </div>
+          ) : missingKey ? (
+            <p role="alert" className="py-8 text-sm text-warn">{t("navigation.missing", { key: focusKey })}</p>
           ) : searching ? (
             /* 搜索结果：按分组聚合，高级区默认展开 */
             <div className="space-y-5">
@@ -153,7 +156,11 @@ export default function Config() {
             <div className="space-y-2.5">
               {currentGroup.group === "network/proxy" && <NetworkDiagnostics />}
               {windowItems && (
-                <div id="config-item-max_conversation_size">
+                <div
+                  id={configItemId(focusKey && WINDOW_KEYS.has(focusKey) ? focusKey : "max_conversation_size")}
+                  tabIndex={-1}
+                  className={cn(focusKey && WINDOW_KEYS.has(focusKey) && "rounded-md ring-2 ring-accent/40")}
+                >
                   <ConversationWindowRow
                     sizeItem={windowItems.sizeItem}
                     percentItem={windowItems.percentItem}

@@ -76,9 +76,10 @@ _MIND_CONFIGS = {
             "unit": "条",
         },
         "max_tool_iterations": {
-            "description": "最大工具调用轮次",
-            "default": 8,
+            "description": "最大工具调用轮次（0 = 不设上限，仅正数限制轮次）",
+            "default": 0,
             "advanced": True,
+            "min": 0,
             "unit": "轮",
         },
         "force_tool_use": {
@@ -331,7 +332,7 @@ class MindConfig:
     heartbeat_busy_defer_seconds: float = 60.0
     meta_decision_temperature: float = 0.3
     conversation_analysis_threshold: int = 5
-    max_tool_iterations: int = 8
+    max_tool_iterations: int = 0
     # 纯工具模式：思维循环中 LLM 调用强制工具选择（tool_choice=required）。
     # 默认关闭，允许独立最终正文交给统一投递管道。
     force_tool_use: bool = False

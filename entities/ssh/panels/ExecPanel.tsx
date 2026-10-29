@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Play } from "lucide-react";
-import { Link } from "react-router-dom";
+import { ConfigLink } from "@/components/common/ConfigLink";
 import { sshApi } from "./api";
 import { Card } from "@/components/common/Card";
 import { NetworkConfigLink } from "@/components/common/NetworkSettings";
@@ -80,7 +80,7 @@ export function ExecPanel() {
             <div className="flex flex-wrap items-center justify-between gap-2">
               <label htmlFor="ssh-exec-proxy" className="text-xs font-medium text-muted">{t("exec.proxyMode")}</label>
               <div className="flex flex-wrap items-center gap-3">
-                <Link to="/config?key=ssh_proxy_mode" target="_blank" rel="noreferrer" className="text-xs text-accent hover:underline">{t("exec.configureDefault")}</Link>
+                <ConfigLink config={{ key: "ssh_proxy_mode" }} target="_blank" rel="noreferrer">{t("exec.configureDefault")}</ConfigLink>
                 <NetworkConfigLink />
               </div>
             </div>

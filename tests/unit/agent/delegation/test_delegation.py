@@ -47,6 +47,29 @@ class TestSubAgent:
         # reflect 被调用且禁止外发
         kwargs = mind.reflect.call_args.kwargs
         assert kwargs["allow_output_tools"] is False
+        assert kwargs["max_iterations"] == 0
+
+    @pytest.mark.parametrize(("budget", "default", "cap", "expected", "keys"), [
+        (0, 0, 0, 0, ()), (80, 0, 0, 80, ()),
+        (0, 12, 0, 12, ("delegation_default_iterations",)),
+        (0, 0, 9, 9, ("delegation_max_iterations_cap",)),
+        (80, 0, 9, 9, ("delegation_max_iterations_cap",)),
+        (4, 12, 9, 4, ()), (0, 12, 9, 9, ("delegation_max_iterations_cap",)),
+        (9, 0, 9, 9, ()),
+        (0, 9, 9, 9, ("delegation_max_iterations_cap", "delegation_default_iterations")),
+    ])
+    async def test_only_configured_iteration_limits_are_applied(
+        self, budget: int, default: int, cap: int, expected: int, keys: tuple[str, ...],
+    ) -> None:
+        from core.config import ConfigManager
+
+        ConfigManager.set("delegation_default_iterations", default)
+        ConfigManager.set("delegation_max_iterations_cap", cap)
+        mind = _FakeMind()
+        result = await SubAgent(mind, "任务", max_iterations=budget).run()
+        assert result.success
+        assert mind.reflect.call_args.kwargs["max_iterations"] == expected
+        assert mind.reflect.call_args.kwargs["iteration_config_keys"] == keys
 
     async def test_leaf_blocks_delegate(self) -> None:
         mind = _FakeMind()

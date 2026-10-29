@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ArrowUpRight, Check, CircleAlert } from "lucide-react";
-import { Link } from "react-router-dom";
+import { ConfigLink } from "@/components/common/ConfigLink";
 import type { DesktopModuleInfo } from "./types";
 
 export function NetworkDetailView({ mod }: { mod: DesktopModuleInfo }) {
@@ -13,7 +13,7 @@ export function NetworkDetailView({ mod }: { mod: DesktopModuleInfo }) {
   return <div className="space-y-2 text-xs">
     <div className="flex flex-wrap items-center gap-2 text-muted">
       <span>{t(status.enabled ? "network.enabled" : "network.disabled")}</span>
-      <Link to="/config?group=network%2Fproxy" className="ml-auto inline-flex min-h-9 items-center gap-1 text-accent">{t("network.settings")}<ArrowUpRight size={13} /></Link>
+      <ConfigLink config={{ group: "network/proxy" }} className="ml-auto min-h-9">{t("network.settings")}<ArrowUpRight size={13} /></ConfigLink>
     </div>
     {status.proxies.map((proxy) => <p key={proxy} className="break-all font-mono text-muted">{proxy}</p>)}
     <p className="text-muted">{t("network.hint")}</p>

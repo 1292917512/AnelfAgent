@@ -15,7 +15,7 @@ import { ActivityRunCard } from "./ActivityRunCard";
 function samePresentation(a: ActivityRun, b: ActivityRun): boolean {
   return a.id === b.id && a.status === b.status && a.started_at === b.started_at && a.ended_at === b.ended_at
     && a.actor === b.actor && a.label === b.label && a.kind === b.kind && a.parent_id === b.parent_id
-    && a.source === b.source && a.input === b.input && a.skills === b.skills && a.truncated === b.truncated && a.error === b.error
+    && a.source === b.source && a.input === b.input && a.skills === b.skills && a.truncated === b.truncated && a.error === b.error && a.limit === b.limit
     && hasActiveWork(a) === hasActiveWork(b);
 }
 

@@ -1,5 +1,6 @@
 import { act, render, screen } from "@testing-library/react";
 import { afterEach, expect, it, vi } from "vitest";
+import { MemoryRouter } from "react-router-dom";
 import type { ActivityRun } from "@/lib/types/activity";
 import { activitySegments } from "./activity-stream";
 import { ActivityStream } from "./ActivityStream";
@@ -42,4 +43,16 @@ it("distinguishes completed executions from pending background work and interrup
   rerender(view({ ...run, status: "interrupted" }));
   expect(screen.getByRole("status").textContent).toContain("Interrupted");
   expect(screen.getByRole("status").textContent).not.toContain("Completed");
+});
+
+it("updates limit guidance when the terminal configuration source changes", () => {
+  const run: ActivityRun = { id: "limited", revision: 1, scope: "", origin_scope: "", source: { scope: "", channel: "", kind: "", target: "", session: "" },
+    actor: "", label: "Inspect", kind: "reflection", input: "", owner_id: "", parent_id: "", started_at: 1, updated_at: 2, ended_at: 2,
+    status: "budget_exhausted", entry_count: 0, truncated: false, entries: [], limit: { kind: "iterations", value: 8, config_keys: ["max_tool_iterations"] } };
+  const view = (value: ActivityRun) => <MemoryRouter><ActivityStream runs={[value]} segments={activitySegments([value])} onReveal={() => {}} onToggle={() => {}} /></MemoryRouter>;
+  const { rerender } = render(view(run));
+  expect(screen.getByRole("alert").textContent).toContain("8-round limit");
+  rerender(view({ ...run, revision: 2, limit: { kind: "iterations", value: 12, config_keys: ["delegation_max_iterations_cap"] } }));
+  expect(screen.getByRole("alert").textContent).toContain("12-round limit");
+  expect(screen.getByRole("link").getAttribute("href")).toBe("/config?key=delegation_max_iterations_cap");
 });

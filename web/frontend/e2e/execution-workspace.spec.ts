@@ -16,6 +16,38 @@ function activity(id: string, patch: Partial<ActivityRun> = {}): ActivityRun {
   };
 }
 
+test("round limits link from the workspace to the editable advanced configuration", async ({ page }, info) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  const run = activity("round-limit", { status: "budget_exhausted", ended_at: Date.now() / 1000, entries: [], entry_count: 0,
+    limit: { kind: "iterations", value: 8, config_keys: ["max_tool_iterations"] } });
+  await page.route(/\/api\/workspace\/activity(?:\?.*)?$/, (route) => route.fulfill({ json: { epoch: "limited", revision: 1, runs: [run] } }));
+  let value = 8;
+  const field = () => ({ key: "max_tool_iterations", description: "Maximum tool rounds", type: "integer", value, default: 0,
+    editable: true, advanced: true, min: 0, max: null, step: null, unit: "", tag: "", options: null,
+    source: "mind", value_source: "configured", environment_variable: null });
+  await page.route("**/api/config/meta", (route) => route.fulfill({ json: { groups: [{ group: "mind/core", items: [field()] }] } }));
+  await page.route("**/api/config/meta/max_tool_iterations", async (route) => {
+    value = Number(route.request().postDataJSON().value);
+    await route.fulfill({ json: { status: "ok", key: "max_tool_iterations", value } });
+  });
+  await page.goto("/webui/");
+  await expect(page.getByRole("alert").filter({ hasText: "8-round limit" })).toBeVisible();
+  await page.screenshot({ path: info.outputPath("iteration-limit.png") });
+  await page.getByRole("link", { name: /Open settings.*max_tool_iterations/ }).click();
+  await expect(page).toHaveURL(/\/webui\/config\?key=max_tool_iterations$/);
+  const input = page.getByRole("spinbutton", { name: "Maximum tool rounds" });
+  await expect(input).toBeVisible();
+  await expect(page.locator('[data-config-highlight="true"]')).toBeFocused();
+  await page.screenshot({ path: info.outputPath("iteration-config.png") });
+  await input.fill("0");
+  await input.press("Tab");
+  await expect.poll(() => value).toBe(0);
+  await page.reload();
+  await expect(input).toHaveValue("0");
+  expect(errors).toEqual([]);
+});
+
 test("execution controls follow runtime capability and only Web conversations can continue", async ({ page }, info) => {
   const scope = "user_webui:web_user#control";
   const run = activity("web-control", { scope, origin_scope: scope, entries: [], entry_count: 0, can_stop: true,

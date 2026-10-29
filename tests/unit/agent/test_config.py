@@ -42,14 +42,18 @@ def test_save_mind_config_preserves_all_supported_fields(tmp_path) -> None:
     assert "tool_system_rules" in data
 
 
-def test_existing_mind_config_uses_hourly_decisions_without_changing_heartbeat(tmp_path) -> None:
+@pytest.mark.parametrize("limit", [None, 0, 12])
+def test_existing_mind_config_preserves_explicit_limits_and_heartbeat(tmp_path, limit: int | None) -> None:
     class TestProvider(BotConfigProvider):
         @property
         def mind_config_path(self) -> str:
             return str(tmp_path / "mind.json")
 
     path = tmp_path / "mind.json"
-    path.write_text(json.dumps({"heartbeat_interval": 600.0}), encoding="utf-8")
+    data = {"heartbeat_interval": 600.0}
+    if limit is not None:
+        data["max_tool_iterations"] = limit
+    path.write_text(json.dumps(data), encoding="utf-8")
     provider = object.__new__(TestProvider)
     provider._config = BotConfig()
     provider._cm_available = False
@@ -57,7 +61,8 @@ def test_existing_mind_config_uses_hourly_decisions_without_changing_heartbeat(t
 
     assert provider.mind.autonomous_decision_interval == 3600.0
     assert provider.mind.heartbeat_interval == 600.0
-    assert json.loads(path.read_text(encoding="utf-8")) == {"heartbeat_interval": 600.0}
+    assert provider.mind.max_tool_iterations == (limit or 0)
+    assert json.loads(path.read_text(encoding="utf-8")) == data
 
 
 def test_save_mind_config_rejects_unknown_field(tmp_path) -> None:
@@ -72,3 +77,29 @@ def test_save_mind_config_rejects_unknown_field(tmp_path) -> None:
 
     with pytest.raises(ValueError, match="未知 Mind 配置字段"):
         provider.save_mind_config(reasoning_effort="high")
+
+
+@pytest.mark.parametrize(("app_limit", "mind_limit", "expected"), [
+    (12, None, 12), (12, 7, 7), (12, 0, 0), (0, None, 0), (0, 12, 12),
+])
+def test_existing_iteration_configuration_preserves_precedence_on_save_and_reload(
+    tmp_path, app_limit: int, mind_limit: int | None, expected: int,
+) -> None:
+    from core.config import ConfigManager
+
+    class TestProvider(BotConfigProvider):
+        @property
+        def mind_config_path(self) -> str:
+            return str(tmp_path / "mind.json")
+
+    path = tmp_path / "mind.json"
+    if mind_limit is not None:
+        path.write_text(json.dumps({"max_tool_iterations": mind_limit}), encoding="utf-8")
+    ConfigManager.set("max_tool_iterations", app_limit)
+    provider = TestProvider()
+    assert provider.mind.max_tool_iterations == expected
+    assert path.exists() == (mind_limit is not None)
+    provider.save_mind_config(send_interim_text=True)
+    provider.reload()
+    assert provider.mind.max_tool_iterations == expected
+    assert json.loads(path.read_text(encoding="utf-8"))["max_tool_iterations"] == expected

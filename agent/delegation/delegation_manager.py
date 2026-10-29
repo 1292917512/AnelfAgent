@@ -1305,15 +1305,17 @@ _DELEGATION_CONFIGS = {
             "unit": "个",
         },
         "delegation_default_iterations": {
-            "description": "子代理默认迭代预算",
-            "default": 15,
+            "description": "子代理默认迭代预算（0 = 沿用主思维配置，默认不设上限）",
+            "default": 0,
             "advanced": True,
+            "min": 0,
             "unit": "轮",
         },
         "delegation_max_iterations_cap": {
-            "description": "子代理迭代预算硬上限",
-            "default": 50,
+            "description": "子代理迭代预算硬上限（0 = 不设上限）",
+            "default": 0,
             "advanced": True,
+            "min": 0,
             "unit": "轮",
         },
         "delegation_timeout_seconds": {

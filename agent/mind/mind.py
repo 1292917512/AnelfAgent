@@ -278,6 +278,7 @@ class Mind:
             completion: Optional[Dict] = None,
             require_output: bool = False,
             inherited_tools: Optional[List[Dict]] = None,
+            iteration_config_keys: tuple[str, ...] = (),
     ) -> str:
         """内部任务循环：正文仅内部可见，显式发送遵循任务的输出权限。
 
@@ -294,6 +295,7 @@ class Mind:
         require_output 要求结束前提交总结：空结束只在剩余预算内补一个禁止操作的总结轮。
         inherited_tools 保留触发轮的工具顺序，缺少的选择器工具追加到尾部；
         相同目录有利于复用缓存，执行权限仍由 blocked_tools 与统一门控约束。
+        iteration_config_keys 声明显式轮次预算的配置来源，仅供执行观测，不进入模型上下文。
 
         Returns:
             LLM 产出的文本内容（所有轮次输出的合并）。
@@ -308,6 +310,7 @@ class Mind:
                 options=options, tool_tags=tool_tags, allow_output_tools=allow_output_tools,
                 extra_blocked_tools=extra_blocked_tools, completion=completion,
                 require_output=require_output, inherited_tools=inherited_tools,
+                iteration_config_keys=iteration_config_keys,
             )
         finally:
             self._reflect_depth -= 1

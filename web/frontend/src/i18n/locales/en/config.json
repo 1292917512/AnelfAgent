@@ -46,6 +46,10 @@
     }
   },
   "title": "Configuration",
+  "navigation": {
+    "open": "Open settings",
+    "missing": "Configuration item {{key}} is not registered. Check whether its module is enabled."
+  },
   "subtitle": "All runtime parameters in one place, saved instantly and applied hot",
   "searchPlaceholder": "Search config (key / description)",
   "searchResults": "{{count}} matches",

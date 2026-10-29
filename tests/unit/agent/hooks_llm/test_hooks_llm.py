@@ -105,6 +105,22 @@ def test_llm_hook_decorator_registers():
     assert callable(spec.handler)
 
 
+def test_hook_rounds_follow_configuration_without_a_hidden_cap():
+    from agent.hooks_llm.settings import effective_spec, hook_config_key
+    from core.config import ConfigManager
+
+    @llm_hook("unlimited", event="after_reply")
+    async def handler(ctx: HookContext) -> Optional[str]:
+        return None
+
+    spec = HookRegistry.get("unlimited")
+    assert spec is not None and spec.max_iterations == 0
+    key = hook_config_key(spec.name, "max_iterations")
+    for value in (6, 200, 0):
+        ConfigManager.set(key, value)
+        assert effective_spec(spec).max_iterations == value
+
+
 # ==================================================================
 # 快照
 # ==================================================================

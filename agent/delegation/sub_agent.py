@@ -4,7 +4,7 @@
 - 独立的消息上下文（不污染主对话）
 - 受限工具集（默认禁止外发消息；档案执行面可收紧/放宽工具选择器）
 - 角色模型：leaf（不可再委托）/ orchestrator（可再委托，受深度限制）
-- 独立迭代预算（防止无限循环）
+- 可配置迭代预算（默认沿用主思维配置，不另设轮次上限）
 - 执行面契约（AgentFacets）：instructions 专职守则 / tool_tags 工具
   选择器 / blocked_tools 追加屏蔽 / output_schema 结构化产出
 
@@ -13,6 +13,10 @@
 产物三件套（经 delegation.journal 落盘）：进度流行（执行期间由
 DelegationManager 事件桥追加）、最终产出（追加进进度流供增量读取）、
 transcript 消息链（completion 容器带出，follow_up_agent 的续跑数据源）。
+
+模型可见：默认不附加子代理轮次限制，显式预算沿用反思动态状态提示。
+Token 影响：不新增提示词；实际用量随任务完成所需轮次增长。
+缓存影响：仅轮次执行策略变化，不改变任务前缀或工具目录。
 """
 from __future__ import annotations
 
@@ -40,7 +44,7 @@ _ROLE_LEAF = "leaf"
 _ROLE_ORCHESTRATOR = "orchestrator"
 _VALID_ROLES = frozenset({_ROLE_LEAF, _ROLE_ORCHESTRATOR})
 
-_DEFAULT_MAX_ITERATIONS = 15
+_DEFAULT_MAX_ITERATIONS = 0
 
 
 @dataclass
@@ -120,17 +124,22 @@ def max_spawn_depth() -> int:
 
 
 def default_max_iterations() -> int:
-    """子代理默认迭代预算。"""
+    """子代理默认迭代预算（0 沿用主思维配置）。"""
     from core.config import get_config_int
     return get_config_int("delegation_default_iterations", _DEFAULT_MAX_ITERATIONS)
 
 
-def clamp_iterations(value: int) -> int:
-    """钳制迭代预算到 [1, 硬上限]（<=0 时按默认预算再钳制）。"""
+def resolve_iteration_budget(value: int) -> tuple[int, tuple[str, ...]]:
+    """解析有效预算及实际约束的配置来源，0 表示沿用主思维配置。"""
     from core.config import get_config_int
-    cap = max(1, get_config_int("delegation_max_iterations_cap", 50))
-    budget = value if value > 0 else default_max_iterations()
-    return max(1, min(budget, cap))
+    cap = max(0, get_config_int("delegation_max_iterations_cap", 0))
+    budget = max(0, value if value > 0 else default_max_iterations())
+    if cap > 0 and (budget == 0 or cap < budget or (cap == budget and value <= 0)):
+        keys: tuple[str, ...] = ("delegation_max_iterations_cap",)
+        if value <= 0 and budget == cap:
+            keys += ("delegation_default_iterations",)
+        return cap, keys
+    return budget, ("delegation_default_iterations",) if value <= 0 and budget > 0 else ()
 
 
 def delegation_timeout_seconds() -> float:
@@ -239,7 +248,7 @@ class SubAgent:
         self.goal = goal
         self.context = context
         self.role = normalize_role(role)
-        self.max_iterations = clamp_iterations(max_iterations)
+        self.max_iterations, self.iteration_config_keys = resolve_iteration_budget(max_iterations)
         self.task_index = task_index
         # 命名档案/难度分级解析后的模型 ID；空串 = 使用默认模型
         self.model_id = model_id
@@ -309,9 +318,10 @@ class SubAgent:
         depth = current_depth()
         agent_tag = f", agent={self.agent_name}" if self.agent_name else ""
         continuation_tag = f", 续跑自={self.parent_delegation_id}" if self.parent_delegation_id else ""
+        budget_hint = f"{self.max_iterations}轮" if self.max_iterations > 0 else "沿用主思维配置"
         log(
             f"子代理启动 (depth={depth}, role={self.role}{agent_tag}{continuation_tag}, "
-            f"预算={self.max_iterations}轮): {self.goal[:80]}",
+            f"预算={budget_hint}): {self.goal[:80]}",
             tag="委托",
         )
 
@@ -361,6 +371,7 @@ class SubAgent:
                         self._mind.reflect(
                             messages,
                             max_iterations=self.max_iterations,
+                            iteration_config_keys=self.iteration_config_keys,
                             allow_output_tools=False,
                             extra_blocked_tools=extra_blocked or None,
                             tool_tags=tool_tags,

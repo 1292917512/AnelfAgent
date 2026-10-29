@@ -66,6 +66,29 @@ class TestGetMeta:
 
 
 class TestSaveMeta:
+    def test_iteration_limit_defaults_to_unlimited_and_can_be_restored(self, client, tmp_path, monkeypatch) -> None:
+        import json
+
+        import agent.config as config
+
+        path = tmp_path / "mind.json"
+        ConfigManager.set("mind_config_path", str(path))
+        monkeypatch.setattr(config, "_provider", None)
+        mind = config.get_config_provider().mind
+        groups = client.get("/api/config/meta").json()["groups"]
+        item = next(item for group in groups for item in group["items"] if item["key"] == "max_tool_iterations")
+        assert item["value"] == item["default"] == mind.max_tool_iterations == 0
+        assert item["min"] == 0 and item["max"] is None and item["type"] == "integer"
+        assert "0 = 不设上限" in item["description"]
+
+        for value in (12, 0):
+            response = client.put("/api/config/meta/max_tool_iterations", json={"value": value})
+            assert response.status_code == 200 and response.json()["value"] == value
+            assert mind.max_tool_iterations == value
+            assert json.loads(path.read_text(encoding="utf-8"))["max_tool_iterations"] == value
+            config.get_config_provider().reload()
+            assert mind.max_tool_iterations == value
+
     def test_autonomous_interval_is_editable_without_changing_heartbeat(self, client, tmp_path, monkeypatch) -> None:
         import json
 

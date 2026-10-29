@@ -33,6 +33,14 @@ class ActivityInitiator(TypedDict):
     name: str
 
 
+class ActivityLimit(TypedDict):
+    """实际触发的执行限制及配置键；不持有前端路由或展示文案。"""
+
+    kind: str
+    value: int
+    config_keys: list[str]
+
+
 @contextmanager
 def activity_owner(*, kind: str, label: str, owner_id: str = "", scope: str = "", trigger: str = "") -> Iterator[None]:
     """为任务及嵌套执行声明可展示的身份，随异步调用树传递。"""
@@ -50,6 +58,7 @@ class ActivityHandle:
     status: str = "completed"
     error: str = ""
     turn_id: str = ""
+    limit: ActivityLimit | None = None
 
 
 @dataclass
@@ -107,6 +116,8 @@ async def activity_scope(
         raise
     finally:
         try:
-            await event_bus.emit(EVENT_ACTIVITY_FINISHED, {"turn_id": turn_id, "status": handle.status, "error": handle.error})
+            await event_bus.emit(EVENT_ACTIVITY_FINISHED, {
+                "turn_id": turn_id, "status": handle.status, "error": handle.error, "limit": handle.limit,
+            })
         finally:
             current_activity_id.reset(token)

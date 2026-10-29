@@ -31,14 +31,18 @@ async def reflect_entry(
     allow_output_tools: bool = True, extra_blocked_tools: set[str] | None = None,
     completion: dict | None = None, require_output: bool = False,
     inherited_tools: list[dict] | None = None,
+    iteration_config_keys: tuple[str, ...] = (),
 ) -> str:
     """按内部会话的工具权限执行反思，返回收束后的文本。
 
     tool_tags 按标签或分组选择工具；inherited_tools 保留触发轮工具顺序。
+    max_iterations 为 0 时沿用主思维配置；最终上限为 0 时不限制轮次。
     completion 接收执行终态；require_output 在剩余预算内要求提交总结。
     每次执行使用独立 scope，退出时统一释放绑定及工具激活状态。
     """
     safety_limit = max_iterations or mind.config.max_tool_iterations
+    if not max_iterations:
+        iteration_config_keys = ("max_tool_iterations",)
     blocked_tools = build_reflect_blocklist(allow_output_tools)
     if extra_blocked_tools:
         blocked_tools = blocked_tools | set(extra_blocked_tools)
@@ -66,7 +70,8 @@ async def reflect_entry(
                     completion.update(reason="interrupted", turn_id=turn_id)
                 return ""
             active_tools, extra_selectors = prepared
-            log(f"反思循环开始: {len(active_tools)} 个工具可用, 策略={output_policy}, 上限 {safety_limit} 轮", tag="思维")
+            limit_hint = f"上限 {safety_limit} 轮" if safety_limit > 0 else "不设轮次上限"
+            log(f"反思循环开始: {len(active_tools)} 个工具可用, 策略={output_policy}, {limit_hint}", tag="思维")
             await think_loop(
                 mind,
                 mode=ThinkMode.REFLECT,
@@ -84,6 +89,7 @@ async def reflect_entry(
                 reflect_tool_selectors=extra_selectors,
                 require_output=require_output,
                 activity=activity,
+                iteration_config_keys=iteration_config_keys,
             )
     total = "\n".join(collected_text)
     log(f"反思循环结束: 产出 {len(total)} 字", tag="思维")

@@ -1,4 +1,9 @@
-"""思维轮次编排：准备、调用、结果处理与终态收束。"""
+"""思维轮次编排：准备、调用、结果处理与终态收束。
+
+模型可见：默认不注入轮次上限或剩余轮次提醒，显式配置正数时沿用预算提示。
+Token 影响：不新增提示词；默认允许任务继续执行，实际用量随完成所需轮次增长。
+缓存影响：轮次状态仍在动态尾部，不改变稳定前缀与工具目录。
+"""
 
 
 from __future__ import annotations
@@ -55,6 +60,7 @@ async def think_loop(
         reflect_tool_selectors: Optional[List[str]] = None,
         require_output: bool = False,
         activity: ActivityHandle | None = None,
+        iteration_config_keys: tuple[str, ...] = ("max_tool_iterations",),
 ) -> None:
     """统一思维循环：对话和反思共享同一流程。
 
@@ -64,6 +70,7 @@ async def think_loop(
 
     base_messages 仅首轮获取，后续轮次复用缓存。
     工具集由调用方构建并传入，确保模式差异在入口处理。
+    safety_limit 大于 0 时限制轮次，否则不设轮次上限。
     blocked_tools 为模式级禁用工具：schema 保留在数组中（跨调用前缀一致），
     执行侧拦截返回合成错误结果（可见性与权限分离）。
     reflect_tool_selectors 仅 REFLECT 模式使用：工具集版本变化重建
@@ -100,6 +107,9 @@ async def think_loop(
         finally:
             await recollection.close()
             activity.status = "cancelled" if state.interrupted else state.completion_reason
+            if state.completion_reason == "budget_exhausted":
+                activity.limit = {"kind": "iterations", "value": safety_limit,
+                                  "config_keys": list(iteration_config_keys)}
             # 结束原因收口（调用方传入 completion 容器时写出）：
             # 中断 > 预算耗尽标记 > 默认完成
             if ctx.completion is not None:
@@ -149,7 +159,7 @@ async def _run_think_rounds(
         EntityRegistry.version(),
     )
 
-    while state.iteration < safety_limit:
+    while safety_limit <= 0 or state.iteration < safety_limit:
         # 中断检查点（协作式）：用户/守卫请求中断时安全收束
         if await _handle_interrupt(ctx, state):
             return

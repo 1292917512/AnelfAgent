@@ -6,6 +6,10 @@
 
 本模块为纯数据 + 注册表，不依赖 mind / 事件总线，可独立测试；
 运行时装配与事件订阅在 runtime.py，执行在 executor.py。
+
+模型可见：未声明轮次预算时沿用主思维配置，不附加钩子轮次上限。
+Token 影响：不新增提示词；实际用量由任务完成轮次或显式预算决定。
+缓存影响：预算提示沿用动态尾部，不改变稳定前缀。
 """
 from __future__ import annotations
 
@@ -79,8 +83,8 @@ class LLMHookSpec:
     """产出路由：True=登记后台任务完成并经 unclaimed 回调唤醒
     主思维跟进处理；False=成功时仅留记录，失败仍通知 AI。
     通知是内部执行事实，不会自动向频道用户发送正文。"""
-    max_iterations: int = 6
-    """reflect 轮次预算。"""
+    max_iterations: int = 0
+    """reflect 轮次预算；0 沿用主思维配置，默认不设上限。"""
     model: str = ""
     """执行模型 ID（空 = 默认主模型；可指定轻量模型省成本）。"""
     max_concurrent: int = 1
@@ -130,8 +134,8 @@ class HookContext:
     """触发来源标记（event 名 / 手动 / 任务事件）。"""
     tool_tags: tuple[str, ...] = ()
     """reflect 工具选择器（空 = 复用回复级装配）。"""
-    max_iterations: int = 6
-    """reflect 轮次预算。"""
+    max_iterations: int = 0
+    """reflect 轮次预算；0 沿用主思维配置，默认不设上限。"""
     allow_output_tools: bool = False
     """是否放开外发工具（默认禁止，内部派生语义）。"""
     model: str = ""
@@ -261,7 +265,7 @@ def llm_hook(
     tool_tags: Optional[List[str]] = None,
     allow_output_tools: bool = False,
     route_output: bool = True,
-    max_iterations: int = 6,
+    max_iterations: int = 0,
     model: str = "",
     max_concurrent: int = 1,
     cooldown_seconds: float = 0.0,

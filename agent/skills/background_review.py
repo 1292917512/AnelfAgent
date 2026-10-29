@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Optional
 
 from agent.hooks_llm import HookContext, HookRegistry, llm_hook
+from agent.hooks_llm.settings import hook_config_key
 from agent.judgment.evidence import conversation_evidence
 from agent.judgment.gate import assess_optional_work
 from agent.skills.skill_index import SkillIndex
@@ -233,6 +234,7 @@ class SkillReviewer:
         output = await self._mind.reflect(
             messages,
             max_iterations=ctx.max_iterations,
+            iteration_config_keys=(hook_config_key(ctx.name, "max_iterations"),),
             tool_tags=list(ctx.tool_tags),
             allow_output_tools=ctx.allow_output_tools,
             options={"_model_id": ctx.model} if ctx.model else None,

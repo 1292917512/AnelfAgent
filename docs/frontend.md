@@ -35,6 +35,14 @@ i18n/locales/{zh,en}/         # 核心 namespace（zh/en key 一一对应；插�
 复用这份注册表，页面文案由对应 i18n namespace 提供。模块页面通过 `app.routes` 贡献点注册。
 应用先绘制启动状态，扩展清单就绪后才创建正式 Router，避免漏掉模块路由。
 
+配置跳转由公共层维护：`lib/config-navigation.ts` 生成按注册键或分组定位的站内地址，
+`components/common/ConfigLink.tsx` 提供声明式入口，命令等程序化导航使用 `configHref(target)`。
+调用方传 `{ key }` 或 `{ group }`，不拼接 `/webui`、配置路径或查询串；Router 统一处理 basename。
+配置页通过 `useConfigFocus` 在元数据加载和高级区展开后滚动、聚焦并高亮目标；再次导航、刷新和
+浏览器返回沿用 URL 定位，未注册键明确提示。配置搜索使用 `q` 参数，键定位优先。
+工作区只消费执行结果的 `limit` 事实（实际轮次和约束配置键），不推断配置归属、不维护跳转路由。
+单次调用直接指定的预算没有配置键，提示调用者调整该预算；不会误导用户修改无效的全局设置。
+
 Cognee 的“模型与配置”按抽取模型、召回查询、同步构图、存储保护分区；常用参数直接展示，
 高级参数折叠。通用字段、约束与分区来自 `CogneeConfig` 的字段元数据，由配置 API 下发，
 前端不另维护字段名单。抽取模型请求超时复用 `chat.extra_args.timeout`，留空恢复模型继承，

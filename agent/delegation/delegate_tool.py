@@ -76,7 +76,7 @@ async def delegate_task(
         role: 子代理角色：leaf（默认，不可再委托）/ orchestrator（可再委托，有深度限制）
         background: 是否后台执行（立即返回 delegation_id；完成时系统自动通知并触发新一轮回复，
             期间可用 check_background_tasks 查询进度）
-        max_iterations: 子代理迭代预算（轮次），默认 15
+        max_iterations: 子代理迭代预算（轮次）；0 沿用配置，默认不设上限，正数显式限制
         difficulty: 难度挡位，等价于指定内置档案 agent_name：1=easy（简单，检索/格式化等机械任务）
             2=medium（中等，常规分析/执行）3=hard（困难，复杂推理/多步规划）。
             0/不传=使用默认模型。只需按难度标注，无需关心具体模型。

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
+import { ConfigLink } from "@/components/common/ConfigLink";
 import { TabBar } from "@/components/common/TabBar";
 import { AsyncState } from "@/components/common/AsyncState";
 import { ConfigFormPanel } from "@/pages/config/ConfigFormPanel";
@@ -33,9 +34,9 @@ export function CogneeSettings({ status }: { status?: CogneeStatus }) {
           </div>
           <Link to="/models" className="inline-block text-xs text-muted hover:text-accent hover:underline">{t("cognee.configureModels")}</Link>
         </>}
-        {key === "recall" && <Link to="/config?key=memory_probe_timeout_seconds" className="inline-block text-sm text-accent hover:underline">
+        {key === "recall" && <ConfigLink config={{ key: "memory_probe_timeout_seconds" }} className="text-sm">
           {t("cognee.settings.recallBudgetLink")}
-        </Link>}
+        </ConfigLink>}
         {key === "storage" && <Link to="/data" className="inline-block text-sm text-accent hover:underline">
           {t("cognee.settings.storageLink")}
         </Link>}

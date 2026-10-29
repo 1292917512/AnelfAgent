@@ -256,6 +256,83 @@ class TestRequiredOutput:
 
 
 class TestCompletionReason:
+    @pytest.mark.parametrize("mode", [ThinkMode.REPLY, ThinkMode.REFLECT])
+    @pytest.mark.parametrize("limit", [0, 3])
+    async def test_iterations_are_unlimited_unless_configured(self, anything, mode: ThinkMode, limit: int) -> None:
+        from core.activity import EVENT_ACTIVITY_FINISHED
+        from core.event_bus import event_bus
+
+        rounds = [tool_result("", ["recall"], f'{{"query":"step {i}"}}') for i in range(12)]
+        mind = _reflect_mind([*rounds, end_reply_result()])
+        if limit:
+            mind.config.max_tool_iterations = limit
+        completion: dict = {}
+        events: list[dict] = []
+
+        async def observe(payload: dict) -> None:
+            events.append(payload)
+
+        event_bus.on(EVENT_ACTIVITY_FINISHED, observe)
+        try:
+            await run_think_loop(
+                mind, mode=mode, anything=anything, base_messages=_base(),
+                safety_limit=mind.config.max_tool_iterations, completion=completion,
+            )
+        finally:
+            event_bus.off(EVENT_ACTIVITY_FINISHED, observe)
+        assert mind.llm_calls == (limit or 13)
+        assert mind.executed_tools.count("recall") == (limit or 12)
+        assert completion["reason"] == ("budget_exhausted" if limit else "completed")
+        assert events[-1]["limit"] == (
+            {"kind": "iterations", "value": limit, "config_keys": ["max_tool_iterations"]} if limit else None
+        )
+
+    @pytest.mark.parametrize(("configured", "explicit", "keys", "expected_keys"), [
+        (0, 0, (), ("max_tool_iterations",)),
+        (12, 0, (), ("max_tool_iterations",)),
+        (12, 5, (), ()),
+        (12, 5, ("delegation_max_iterations_cap",), ("delegation_max_iterations_cap",)),
+    ])
+    async def test_reflection_preserves_effective_limit_source(
+        self, monkeypatch, configured: int, explicit: int, keys: tuple[str, ...], expected_keys: tuple[str, ...],
+    ) -> None:
+        from unittest.mock import AsyncMock
+
+        from agent.mind.execution import reflect
+
+        mind = _reflect_mind([])
+        mind.config.max_tool_iterations = configured
+        execute = AsyncMock()
+        monkeypatch.setattr(reflect, "select_reflect_tools", AsyncMock(return_value=([], [])))
+        monkeypatch.setattr(reflect, "think_loop", execute)
+        await reflect.reflect_entry(mind, [], max_iterations=explicit, iteration_config_keys=keys)
+        assert execute.await_args.kwargs["safety_limit"] == (explicit or configured)
+        assert execute.await_args.kwargs["iteration_config_keys"] == expected_keys
+
+    async def test_unlimited_loop_can_be_interrupted(self, anything, monkeypatch) -> None:
+        from agent.mind.interrupt import InterruptRegistry
+        from core.conversation_scope import bind_scope, reset_scope
+
+        mind = _reflect_mind([tool_result("", ["recall"])])
+        mind.interrupts = InterruptRegistry()
+        invoke = mind.model_invoker.invoke
+
+        async def interrupt_after_call(*args, **kwargs):
+            result = await invoke(*args, **kwargs)
+            mind.interrupts.request(anything.entity_scope, "用户停止")
+            return result
+
+        monkeypatch.setattr(mind.model_invoker, "invoke", interrupt_after_call)
+        completion: dict = {}
+        token = bind_scope(anything.entity_scope)
+        try:
+            await run_think_loop(mind, anything=anything, safety_limit=0, completion=completion)
+        finally:
+            reset_scope(token)
+        assert mind.llm_calls == 1
+        assert not mind.executed_tools
+        assert completion["reason"] == "interrupted"
+
     async def test_reply_budget_records_unfinished_without_delivery(self, anything, deliver_mock) -> None:
         mind = FakeMind(rounds=[tool_result("我马上去制作", ["recall"])], default_text=None)
         completion: dict = {}

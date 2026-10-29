@@ -43,6 +43,8 @@ export type ActivityEntry =
   | EntryBase & { kind: "model"; name: string; purpose?: string; call_id?: string; status: string; duration_ms?: number; ttft_ms?: number | null; error?: string; usage?: { total_input_tokens?: number; completion_tokens?: number; cache_read_input_tokens?: number; cache_observable?: boolean } }
   | EntryBase & ChatStreamingDiff & { kind: "file" };
 
+export interface ActivityLimit { kind: "iterations"; value: number; config_keys: string[] }
+
 export interface ActivityRun {
   id: string;
   scope: string;
@@ -60,6 +62,7 @@ export interface ActivityRun {
   control?: "" | "stopping" | "resuming" | "resumed";
   can_stop?: boolean;
   error?: string;
+  limit?: ActivityLimit | null;
   started_at: number;
   updated_at: number;
   ended_at: number | null;

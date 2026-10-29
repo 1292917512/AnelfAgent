@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Link } from "react-router-dom";
+import { ConfigLink } from "@/components/common/ConfigLink";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, Copy, KeyRound, RefreshCw, Shield, Trash2 } from "lucide-react";
 import { authApi } from "@/lib/api";
@@ -21,13 +21,13 @@ export function SysConfigPanel() {
       <ApiKeysCard />
       <LiteLLMCostMapCard />
       <Card title={t("sections.network")} subtitle={t("sections.networkMoved")}>
-        <Link
-          to="/config?key=proxy_enabled"
+        <ConfigLink
+          config={{ key: "proxy_enabled" }}
           className="inline-flex items-center gap-1.5 text-sm text-accent hover:underline"
         >
           {t("sections.networkMovedAction")}
           <ArrowRight size={14} />
-        </Link>
+        </ConfigLink>
       </Card>
     </div>
   );

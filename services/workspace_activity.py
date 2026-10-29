@@ -256,6 +256,7 @@ class WorkspaceActivityService:
             return
         run["status"] = str(payload["status"])
         run["error"] = sanitize_text(str(payload.get("error", "")))[:MAX_TEXT]
+        run["limit"] = deepcopy(payload.get("limit"))
         run["ended_at"] = time.time()
         run["can_stop"] = False
         for entry in run["entries"]:
