@@ -53,19 +53,21 @@ function retainedProjects(data) {
   return projects(data).filter(entry=>!entry.owned && fs.existsSync(entry.root) && comparable(fs.realpathSync(entry.root)).startsWith(root+path.sep));
 }
 /** Remove app files while retaining imported projects and their parent directories.
- * @param {string} data */
-async function removeAppData(data) {
+ * @param {string} data @param {string[]} [keepFiles] */
+async function removeAppData(data,keepFiles=[]) {
+  const keep=new Set(keepFiles);
   const retained=retainedProjects(data).map(entry=>comparable(fs.realpathSync(entry.root)));
   /** @param {string} folder */
   async function clean(folder) {
     if(retained.includes(comparable(fs.realpathSync(folder))))return;
     for(const item of await fs.promises.readdir(folder,{withFileTypes:true})) {
+      if(folder===data && keep.has(item.name))continue;
       const full=path.join(folder,item.name),real=comparable(item.isSymbolicLink()?full:fs.realpathSync(full));
       if(retained.some(root=>root===real || root.startsWith(real+path.sep))) {if(item.isDirectory())await clean(full);}
       else await fs.promises.rm(full,{recursive:true,force:true,maxRetries:4,retryDelay:300});
     }
   }
-  if(!retained.length)await fs.promises.rm(data,{recursive:true,force:true,maxRetries:8,retryDelay:500});
+  if(!retained.length && !keep.size)await fs.promises.rm(data,{recursive:true,force:true,maxRetries:8,retryDelay:500});
   else await clean(data);
 }
 module.exports = {projects,register,verifyOwnership,removeOwned,retainedProjects,removeAppData};

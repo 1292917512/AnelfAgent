@@ -106,3 +106,18 @@ for(const registered of [true,false])test('nested imported projects outside data
   await assert.rejects(prepare(data,'purge'),/inside this directory/);
   assert.equal(fs.readFileSync(path.join(imported,'user.db'),'utf8'),'keep');
 }));
+
+test('interrupted cleanup keeps retention records intact so retry cannot delete imports',()=>fixture(async(root,data)=>{
+  const imported=path.join(data,'old-project');fs.mkdirSync(imported);fs.writeFileSync(path.join(imported,'user.db'),'keep');register(data,imported);
+  fs.writeFileSync(path.join(data,'bootstrap.json'),JSON.stringify({root:imported,configured:true}));
+  const cache=path.join(data,'z-cache');fs.mkdirSync(cache);
+  await prepare(data,'purge');
+  const original=fs.promises.rm;
+  fs.promises.rm=async(full,options)=>{if(String(full)===cache)throw new Error('Fixture file is busy');await original(full,options);};
+  try {await assert.rejects(purgeData(data),/Fixture file is busy/);}finally{fs.promises.rm=original;}
+  assert.equal(projects(data)[0].root,imported);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(data,'bootstrap.json'),'utf8')).root,imported);
+  assert.ok(fs.existsSync(path.join(data,'preserved-projects.json')));
+  await prepare(data,'purge');await purgeData(data);
+  assert.equal(fs.readFileSync(path.join(imported,'user.db'),'utf8'),'keep');assert.equal(fs.existsSync(cache),false);
+}));

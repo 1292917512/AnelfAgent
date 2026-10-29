@@ -44,14 +44,13 @@ async function purgeData(data) {
   const preferences=fs.existsSync(preferenceFile)?JSON.parse(fs.readFileSync(preferenceFile,'utf8')):null;
   // Register an interrupted selection too, so the recursive cleaner protects it.
   fs.writeFileSync(path.join(root,'projects.json'),JSON.stringify(retained));
-  await removeAppData(root);
   if(retained.length) {
-    fs.mkdirSync(root,{recursive:true});
-    fs.writeFileSync(path.join(root,'projects.json'),JSON.stringify(retained));
-    fs.writeFileSync(path.join(root,'app-owner.json'),JSON.stringify(ownership));
-    if(preferences && typeof preferences.root==='string' && retained.some(entry=>key(entry.root)===key(preferences.root)))fs.writeFileSync(preferenceFile,JSON.stringify(preferences));
-    preserveProjects(root,true);
-  }
+    if(!preferences || typeof preferences.root!=='string' || !retained.some(entry=>key(entry.root)===key(preferences.root)))fs.rmSync(preferenceFile,{force:true});
+    const marker=JSON.parse(fs.readFileSync(path.join(root,'preserved-projects.json'),'utf8'));
+    // Never remove and recreate the retention records: interruption between those
+    // writes would leave imported projects unprotected on the next uninstall.
+    await removeAppData(root,['projects.json','bootstrap.json','app-owner.json','preserved-projects.json',...marker.folders.map(/** @param {string} name */ name=>'preserve-'+name+'.flag')]);
+  } else await removeAppData(root);
 }
 if(require.main===module) {
   const [mode,data]=process.argv.slice(2);
