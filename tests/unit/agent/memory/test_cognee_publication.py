@@ -8,11 +8,12 @@ import copy
 import hashlib
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import time
 import weakref
-from contextlib import asynccontextmanager, nullcontext
+from contextlib import asynccontextmanager, closing, nullcontext
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, Mock
@@ -804,6 +805,99 @@ def test_new_document_must_preserve_exact_input_bytes(tmp_path):
     stamp.source_digest = _source_digest(tmp_path, raw.as_uri())
     with pytest.raises(RuntimeError, match="实际原文"):
         plan.validate(candidate)
+
+
+@pytest.mark.parametrize("old_root", [
+    "file:///E:/old%20project/config/memory/cognee/data",
+    "file:///home/旧项目/config/memory/cognee/data",
+    "file://server/share/cognee/data",
+    r"D:\code\AnelfAgent\config\memory\cognee\data",
+])
+async def test_relocated_sources_preserve_identity_and_restore_from_unmodified_snapshot(tmp_path, monkeypatch, old_root):
+    from types import SimpleNamespace
+
+    from agent.memory.cognee import sdk_client
+    from agent.memory.cognee.relocation import relocate_sources
+    from agent.memory.cognee.sdk_client import _source_digest
+
+    root = tmp_path / "moved cognee"
+    owner = uuid4()
+    relative = f"{owner}/text_中文.txt"
+    raw = root / "data" / relative
+    raw.parent.mkdir(parents=True)
+    raw.write_bytes("完整原文\r\n第二行".encode())
+    database = root / "system/databases/cognee_db"
+    database.parent.mkdir(parents=True)
+    old = f"{old_root}/{relative}"
+    with closing(sqlite3.connect(database)) as db, db:
+        db.execute("CREATE TABLE data (id TEXT PRIMARY KEY, owner_id TEXT, raw_data_location TEXT, "
+                   "original_data_location TEXT, pipeline_status TEXT, external_metadata TEXT)")
+        db.executemany("INSERT INTO data VALUES (?, ?, ?, ?, ?, ?)", [
+            ("one", owner.hex, old, old, "COMPLETED", '{"id": 1}'),
+            ("two", owner.hex, old, "file:///external/original.txt", "PENDING", '{"id": 2}'),
+            ("remote", owner.hex, "s3://bucket/key", "https://example.org/source", "COMPLETED", "{}"),
+        ])
+    checkpoints = IndexCheckpoints(root)
+    checkpoints.load()
+    saved = checkpoints.control / checkpoints.state["committed"] / "system/databases/cognee_db"
+    before = saved.read_bytes()
+    checkpoints.mark_open()
+    assert relocate_sources(root) == 2
+    assert relocate_sources(root) == 0
+    with closing(sqlite3.connect(database)) as db:
+        assert db.execute("SELECT * FROM data WHERE id='one'").fetchone() == (
+            "one", owner.hex, raw.as_uri(), raw.as_uri(), "COMPLETED", '{"id": 1}',
+        )
+        assert db.execute("SELECT original_data_location FROM data WHERE id='two'").fetchone()[0] == (
+            "file:///external/original.txt"
+        )
+        assert db.execute("SELECT raw_data_location FROM data WHERE id='remote'").fetchone()[0] == "s3://bucket/key"
+    assert _source_digest(root / "data", raw.as_uri()) == hashlib.sha256(raw.read_bytes()).hexdigest()
+    assert saved.read_bytes() == before
+    checkpoints.restore()
+    assert database.read_bytes() == before
+    client = sdk_client.SDKClient(CogneeConfig(data_root=str(root)))
+    monkeypatch.setattr(client, "_import_cognee", lambda: SimpleNamespace(config=Mock()))
+    monkeypatch.setattr(sdk_client, "validate_embedding", lambda _root, payload: payload)
+    await client.configure_resolved({}, {})
+    assert client._configured
+    assert relocate_sources(root) == 0
+    checkpoints.commit()
+    assert relocate_sources(root) == 0
+
+
+@pytest.mark.parametrize("escape", [False, True])
+def test_relocation_rolls_back_all_paths_when_target_is_missing_or_escapes(tmp_path, escape):
+    from agent.memory.cognee.relocation import relocate_sources
+
+    root = tmp_path / "index"
+    owner = uuid4()
+    current = root / "data" / str(owner)
+    current.mkdir(parents=True)
+    (current / "one.txt").write_text("one")
+    previous = tmp_path / "old/data" / str(owner)
+    previous.mkdir(parents=True)
+    (previous / "two.txt").write_text("old copy must never be used")
+    if escape:
+        try:
+            (current / "two.txt").symlink_to(previous / "two.txt")
+        except OSError:
+            pytest.skip("symlinks require permission")
+    database = root / "system/databases/cognee_db"
+    database.parent.mkdir(parents=True)
+    with closing(sqlite3.connect(database)) as db, db:
+        db.execute("CREATE TABLE data (id TEXT PRIMARY KEY, owner_id TEXT, raw_data_location TEXT, "
+                   "original_data_location TEXT)")
+        db.executemany("INSERT INTO data VALUES (?, ?, ?, ?)", [
+            (name, owner.hex, (previous / name).as_uri(), (previous / name).as_uri())
+            for name in ("one.txt", "two.txt")
+        ])
+        before = db.execute("SELECT * FROM data ORDER BY id").fetchall()
+    with pytest.raises((RuntimeError, FileNotFoundError), match="迁移"):
+        relocate_sources(root)
+    with closing(sqlite3.connect(database)) as db:
+        assert db.execute("SELECT * FROM data ORDER BY id").fetchall() == before
+    assert (previous / "two.txt").is_file()
 
 
 async def test_inspection_batches_raw_reads_but_rechecks_bytes_on_every_inspection(tmp_path, monkeypatch):

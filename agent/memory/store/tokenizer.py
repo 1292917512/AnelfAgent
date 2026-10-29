@@ -17,8 +17,11 @@ jieba 导入失败时整体降级为 bigram 切分（与改造前行为一致）
 
 from __future__ import annotations
 
+import logging
 import re
 import threading
+import warnings
+from types import ModuleType
 from typing import Iterable, List
 
 from core.log import log
@@ -26,7 +29,7 @@ from core.log import log
 # 分词器版本：索引模式/词典策略变更时递增，触发 FTS 全量重建
 FTS_TOKENIZER_VERSION = "jieba-search-v1"
 
-_jieba = None
+_jieba: ModuleType | None = None
 _jieba_ready = False
 _init_lock = threading.Lock()
 
@@ -51,14 +54,22 @@ def _cjk_bigrams(text: str) -> List[str]:
     return out
 
 
-def _load_jieba():
+def _load_jieba() -> ModuleType | None:
     """加载 jieba 并应用待注册词典（线程安全，仅首个调用真正执行）。"""
     global _jieba, _jieba_ready
     with _init_lock:
         if _jieba_ready:
             return _jieba
         try:
-            import jieba as _mod
+            # 兼容依赖中的旧式正则字面量；过滤仅限此依赖的已知编译警告。
+            with warnings.catch_warnings():
+                warnings.filterwarnings(
+                    "ignore", message=r"invalid escape sequence '\\[.s]'$", category=SyntaxWarning,
+                    module=r"(?:jieba(?:\.|$)|.*[\\/]jieba[\\/])",
+                )
+                import jieba as _mod
+
+            _mod.setLogLevel(logging.WARNING)
 
             for word in sorted(_pending_words):
                 if word:

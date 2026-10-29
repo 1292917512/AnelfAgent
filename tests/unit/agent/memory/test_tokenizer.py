@@ -14,6 +14,69 @@ from agent.memory.store.tokenizer import (
 pytestmark = pytest.mark.skipif(not available(), reason="jieba 未安装")
 
 
+def test_loading_preserves_other_warnings_and_real_initialization_errors(monkeypatch) -> None:
+    import builtins
+    import warnings
+    from typing import Any
+
+    from agent.memory.store import tokenizer
+
+    original_import = builtins.__import__
+
+    def import_dependency(name: str, *args: Any, **kwargs: Any) -> Any:
+        if name != "jieba":
+            return original_import(name, *args, **kwargs)
+        warnings.warn_explicit("invalid escape sequence '\\s'", SyntaxWarning,
+                               filename="jieba/__init__.py", lineno=1, module="jieba")
+        warnings.warn_explicit("unexpected tokenizer diagnostic", SyntaxWarning,
+                               filename="jieba/__init__.py", lineno=2, module="jieba")
+        warnings.warn_explicit("invalid escape sequence '\\s'", SyntaxWarning,
+                               filename="other_dependency.py", lineno=1, module="other_dependency")
+        raise RuntimeError("tokenizer initialization failed")
+
+    monkeypatch.setattr(tokenizer, "_jieba_ready", False)
+    monkeypatch.setattr(builtins, "__import__", import_dependency)
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always", SyntaxWarning)
+        with pytest.raises(RuntimeError, match="tokenizer initialization failed"):
+            tokenizer.available()
+    assert [item.filename for item in recorded] == ["jieba/__init__.py", "other_dependency.py"]
+    assert not tokenizer._jieba_ready
+
+
+def test_cold_start_keeps_tokenization_without_dependency_warning_noise(tmp_path) -> None:
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    script = r'''
+import warnings
+from agent.memory.store import tokenizer
+with warnings.catch_warnings(record=True) as recorded:
+    warnings.simplefilter("always", SyntaxWarning)
+    before = warnings.filters[:]
+    assert "新家" in tokenizer.tokenize_for_index("主人上周搬到了新家")
+    assert "哪里" in tokenizer.tokenize_for_query("他搬到哪里了")
+    assert warnings.filters == before
+    assert not [item for item in recorded if issubclass(item.category, SyntaxWarning)], recorded
+    warnings.warn_explicit("invalid escape sequence '\\s'", SyntaxWarning,
+                           filename="other_dependency.py", lineno=1, module="other_dependency")
+    assert len(recorded) == 1 and recorded[0].filename == "other_dependency.py"
+print("tokenizer ready")
+'''
+    # 独立字节码目录触发真实首次编译，不删除或改写已安装依赖的缓存。
+    result = subprocess.run(
+        [sys.executable, "-X", f"pycache_prefix={tmp_path / 'bytecode'}", "-c", script],
+        cwd=Path(__file__).resolve().parents[4], env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+        capture_output=True, text=True, encoding="utf-8", timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "tokenizer ready" in result.stdout
+    assert "Building prefix dict" not in result.stderr
+    assert "Loading model from cache" not in result.stderr
+
+
 class TestTokenizer:
     def test_index_tokenizes_chinese_words(self) -> None:
         tokens = tokenize_for_index("主人上周搬到了新家")
