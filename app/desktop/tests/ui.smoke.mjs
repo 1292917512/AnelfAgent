@@ -38,13 +38,13 @@ const server=http.createServer(async(req,res)=>{
     if(url.pathname==='/api/cancel')state={...state,busy:false,phase:'cancelled',last:{ok:false,cancelled:true},operation:{...state.operation,status:'cancelled',cancellable:false}};
     res.setHeader('Content-Type','application/json');res.end(JSON.stringify(answer));return;
   }
-  const name=url.pathname==='/'?'panel.html':['/icon.svg','/theme.css'].includes(url.pathname)?'desktop'+url.pathname:'ui'+url.pathname;
-  try{res.setHeader('Content-Type',name.endsWith('.js')?'text/javascript':name.endsWith('.css')?'text/css':name.endsWith('.svg')?'image/svg+xml':'text/html');res.end(await fs.readFile(path.join(root,name)));}catch{res.writeHead(404);res.end();}
+  const name=url.pathname==='/'?'panel.html':url.pathname==='/desktop/errors.mjs'?'desktop/errors.mjs':['/icon.svg','/theme.css'].includes(url.pathname)?'desktop'+url.pathname:'ui'+url.pathname;
+  try{res.setHeader('Content-Type',/\.m?js$/.test(name)?'text/javascript':name.endsWith('.css')?'text/css':name.endsWith('.svg')?'image/svg+xml':'text/html');res.end(await fs.readFile(path.join(root,name)));}catch{res.writeHead(404);res.end();}
 });
 await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
 const browser=await chromium.launch({headless:true});
 const page=await browser.newPage({viewport:{width:640,height:618},locale:'zh-CN',timezoneId:'Asia/Shanghai'});
-await page.addInitScript(version=>{window.resizeRequests=[];window.trayStates=[];window.anelfDesktop={version:async()=>version,resize:async value=>{window.resizeRequests.push(value);},trayState:async value=>{window.trayStates.push(value);},onNavigate:callback=>{window.navigateFromTray=callback;}};},version);
+await page.addInitScript(version=>{window.resizeRequests=[];window.trayStates=[];window.exitChoices=[];window.anelfDesktop={version:async()=>version,resize:async value=>{window.resizeRequests.push(value);},trayState:async value=>{window.trayStates.push(value);},onNavigate:callback=>{window.navigateFromTray=callback;},onExitState:callback=>{window.exitState=callback;},exitChoice:async choice=>{window.exitChoices.push(choice);if(choice==='return')window.exitState({stopping:false,error:''});}};},version);
 const errors=[];page.on('pageerror',error=>errors.push(error.message));
 try{
   delayStatus=true;
@@ -160,6 +160,17 @@ try{
   await page.context().route('http://127.0.0.1:8092/**',route=>route.fulfill({body:'Fixture web console'}));
   const opened=page.context().waitForEvent('page');await page.locator('#workspace').click();
   const consolePage=await opened;await consolePage.waitForURL(state.web_url);await consolePage.close();
+  state={...state,web_ready:true,controllable:false};
+  await page.waitForFunction(()=>document.querySelector('#runtime-description').textContent.includes('控制连接待恢复'));
+  assert.equal(await page.locator('#runtime-state').textContent(),'运行中');
+  assert.equal(await page.locator('#workspace').isVisible(),true);
+  assert.equal(await page.locator('#start').isDisabled(),true);
+  assert.equal(await page.locator('#update').isDisabled(),true);
+  state={...state,phase:'web_unavailable',web_ready:false,controllable:true};
+  await page.waitForFunction(()=>document.querySelector('#runtime-state').textContent==='Web 暂不可用');
+  assert.equal(await page.locator('#workspace').isVisible(),false);
+  state={...state,phase:'running',web_ready:true,controllable:true};
+  await page.waitForFunction(()=>!document.querySelector('#start').disabled && !document.querySelector('#workspace').hidden);
   await page.locator('#lan-details summary').click();
   await page.waitForFunction(()=>document.querySelector('#lan-addresses').textContent.includes('192.168.1.20:8092'));
   await page.locator('#lan-details summary').click();
@@ -232,6 +243,51 @@ try{
   await page.emulateMedia({colorScheme:'dark'});
   await page.setViewportSize({width:640,height:Math.min(760,Math.ceil(await page.locator('main').evaluate(node=>node.getBoundingClientRect().height)))});
   await page.evaluate(()=>scrollTo(0,0));await page.screenshot({animations:'disabled',path:path.join(out,'settings-dark.png')});
+  await page.evaluate(()=>window.exitState({stopping:true,error:'',stage:'checking',root:'C:\\Apps\\AnelfAgent\\data\\project'}));
+  assert.equal(await page.locator('#configuration').isVisible(),false);
+  assert.equal(await page.locator('#page-heading').isVisible(),false);
+  assert.equal(await page.locator('#exit-title').textContent(),'正在停止服务');
+  await page.evaluate(()=>window.exitState({stopping:true,error:'',stage:'stop-service'}));
+  await page.evaluate(()=>window.exitState({stopping:true,error:'',stage:'wait-service'}));
+  assert.equal(await page.locator('#exit-stage').textContent(),'等待服务保存数据并退出');
+  assert.doesNotMatch(await page.locator('#exit-panel').textContent(),/取消安装/);
+  assert.equal(await page.locator('#exit-return').isEnabled(),true);
+  assert.equal(await page.locator('#exit-only').isEnabled(),true);
+  await page.waitForFunction(()=>window.resizeRequests.at(-1).view==='manage');
+  await page.setViewportSize({width:570,height:Math.ceil(await page.locator('main').evaluate(node=>node.getBoundingClientRect().height))});
+  await page.screenshot({animations:'disabled',path:path.join(out,'shutdown.png')});
+  await page.locator('#exit-return').click();
+  assert.equal(await page.locator('#dashboard').isVisible(),true);
+  assert.equal(await page.locator('#exit-panel').isVisible(),false);
+  await page.evaluate(()=>window.exitState({stopping:false,error:'服务控制记录不可用'}));
+  assert.equal(await page.locator('#exit-error-detail').textContent(),'服务控制记录不可用');
+  assert.match(await page.locator('#exit-error-summary').textContent(),/服务控制连接不可用/);
+  await page.locator('#language').click();
+  assert.match(await page.locator('#exit-error-summary').textContent(),/Service control is unavailable/);
+  assert.doesNotMatch(await page.locator('#exit-error-summary').textContent(),/[\u3400-\u9fff]/);
+  await page.locator('#language').click();
+  assert.equal(await page.locator('#configuration').isVisible(),false);
+  await page.locator('#exit-only').click();
+  assert.deepEqual(await page.evaluate(()=>window.exitChoices),['return','quit']);
+  await page.locator('#exit-return').click();
+  await page.evaluate(()=>window.navigateFromTray('settings'));
+  await page.evaluate(async()=>{
+    const {message}=await import('/dom.js');
+    message('Application is still shutting down; no process was killed. Check logs before retrying.\nDetails A');
+  });
+  await page.locator('#message summary').click();
+  await page.evaluate(async()=>{
+    const {message}=await import('/dom.js');
+    for(let n=0;n<4;n++){
+      message('Could not stop safely. Application is still shutting down; no process was killed.\nDetails '+n);
+      await new Promise(resolve=>setTimeout(resolve,400));
+      if(!document.querySelector('#message details').open)throw new Error('Diagnostics collapsed during refresh');
+    }
+  });
+  assert.equal(await page.locator('#message details').getAttribute('open'),'');
+  await page.locator('#message summary').click();
+  assert.equal(await page.locator('#message details').getAttribute('open'),null);
+  await page.evaluate(async()=>{(await import('/dom.js')).message('');});
   await page.locator('#settings-back').click();await page.locator('#dashboard').waitFor({state:'visible'});
   assert.equal(await page.locator('#configuration').isVisible(),false);
   assert.equal(await page.evaluate(()=>window.trayStates.at(-1).ready),true);

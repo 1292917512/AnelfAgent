@@ -30,7 +30,7 @@ async function openWebConsole(read, open, fallback) {
     const state=await read();
     if (!state || typeof state!=='object' || !('ready' in state) || state.ready!==true ||
       !('running' in state) || state.running!==true || !('phase' in state) || state.phase!=='running' ||
-      !('busy' in state) || state.busy!==false || !('web_url' in state) || typeof state.web_url!=='string') throw new Error('Not ready');
+      !('busy' in state) || state.busy!==false || 'web_ready' in state && state.web_ready===false || !('web_url' in state) || typeof state.web_url!=='string') throw new Error('Not ready');
     const url=new URL(state.web_url);
     if (!['http:','https:'].includes(url.protocol) || !['127.0.0.1','localhost','[::1]'].includes(url.hostname) || url.username || url.password) throw new Error('Invalid local console');
     await open(url.href);

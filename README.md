@@ -32,7 +32,24 @@ QQ、微信、飞书、Telegram、游戏和 Web 工作区是它的不同入口�
 
 ## 快速开始
 
-### 环境与安装
+### 下载安装包
+
+可以直接从 **[GitHub Releases](https://github.com/1292917512/AnelfAgent/releases/latest)** 下载 AnelfAgent 桌面安装包，无需先手动克隆仓库或配置 Python、Node.js。
+
+| 系统 | 下载文件 |
+|---|---|
+| Windows x64 | `.exe` 安装包 |
+| macOS（Apple Silicon / Intel） | 选择对应 `arm64` / `x64` 的 `.dmg` |
+| Ubuntu / Debian x64 | `.deb` |
+| 其他 Linux x64 | `.AppImage`，赋予执行权限后运行 |
+
+安装并打开 APP，按引导选择项目位置和下载源，即可自动获取源码、通过 uv 准备 Python 环境、安装依赖并构建 Web 前端。已有项目可选择原目录接入，也可按引导迁移。安装完成后点击「启动」，待服务就绪再点击「打开 Web 控制台」配置模型。
+
+国内与国际下载源均可选择；已有兼容工具会复用。项目所在磁盘至少预留 **5 GiB**，额外模型和数据需要更多空间。完整使用、升级与卸载说明见 [APP 文档](app/README.md)。
+
+### 从源码安装
+
+开发或使用命令行部署时，可按以下步骤安装。
 
 | 依赖 | 版本 / 用途 |
 |---|---|

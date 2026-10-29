@@ -49,7 +49,7 @@ export class WebAccessPanel {
     const state=this.state,host=state?.settings.web_host;
     let addresses=this.value?.addresses || [];
     addresses=host==='0.0.0.0' ? addresses.filter(value=>!value.includes(':')) : host==='::' ? addresses.filter(value=>value.includes(':')) : host && !['127.0.0.1','::1'].includes(host) ? [host] : [];
-    const port=state ? new URL(state.web_url).port || '80' : '';
+    const port=state?.web_url ? new URL(state.web_url).port || '80' : '';
     el('lan-details').hidden=state?.phase!=='running' || !host || ['127.0.0.1','::1'].includes(host);
     el('lan-addresses').replaceChildren(...addresses.map(host=>{
       const code=document.createElement('code');code.textContent=`http://${host.includes(':')?'['+host+']':host}:${port}/webui/`;return code;

@@ -11,7 +11,8 @@ const {inspectRepository} = require('./repository.cjs');
 const {register,projects} = require('./managed.cjs');
 const {prepare,request,drain,hasRunningServices} = require('./maintenance.cjs');
 const {inspectStorage,requireStorage} = require('./storage.cjs');
-const {createExitHandler} = require('./exit.cjs');
+const {createExitHandler,waitFor} = require('./exit.cjs');
+const {describeError}=require('./errors.mjs');
 const {showWindow,closeWindow} = require('./window.cjs');
 const {isTrayState,menuFor,openWebConsole} = require('./tray.cjs');
 const packageRoot = path.resolve(__dirname,'../..');
@@ -36,22 +37,26 @@ let quitting = false;
 let stoppingForExit = false;
 let bootstrapDone = Promise.resolve();
 /** @type {Set<string>} */ const connectedRoots = new Set();
-const chinese = app.getPreferredSystemLanguages().some(value => value.startsWith('zh'));
+let chinese = app.getPreferredSystemLanguages().some(value => value.startsWith('zh'));
 /** @type {import('./tray.cjs').TrayState} */
 let trayState={ready:false,webReady:false,settingsAvailable:false,language:chinese?'zh':'en'};
 const bootstrapFile = path.join(__dirname,'bootstrap.html'), bootstrapUrl = pathToFileURL(bootstrapFile).href;
+/** @param {string} url */
+const isBootstrapPage=url=>url.split(/[?#]/,1)[0]===bootstrapUrl;
 const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
 const backendSource = app.isPackaged ? path.join(process.resourcesPath,'backend') : packageRoot;
 const downloads = JSON.parse(fs.readFileSync(path.join(backendSource,'app/downloads.json'),'utf8'));
 const repositories = JSON.parse(fs.readFileSync(path.join(backendSource,'app/repositories.json'),'utf8'));
 const requirements = JSON.parse(fs.readFileSync(path.join(backendSource,'app/install-requirements.json'),'utf8'));
-/** @type {{root:string,source:string,downloadSource:string,pypiSource:string,configured:boolean,projectChoice?:'new'|'existing'}} */
+/** @type {{root:string,source:string,downloadSource:string,pypiSource:string,configured:boolean,projectChoice?:'new'|'existing',language?:'zh'|'en'}} */
 let preferences = {root:app.isPackaged ? path.join(data,'project') : packageRoot,source:'auto',downloadSource:'auto',pypiSource:'auto',configured:false};
 try { preferences = {...preferences,...JSON.parse(fs.readFileSync(path.join(data,'bootstrap.json'),'utf8'))}; } catch { /* A fresh installation has no selection. */ }
-/** @param {import('electron').IpcMainInvokeEvent} event */
-function trusted(event) {
-  return !stoppingForExit && !!window && event.sender === window.webContents && event.senderFrame === event.sender.mainFrame &&
-    (event.senderFrame.url === bootstrapUrl || !!connection && new URL(event.senderFrame.url).origin === connection.url);
+if(preferences.language)chinese=preferences.language==='zh';
+trayState.language=chinese?'zh':'en';
+/** @param {import('electron').IpcMainInvokeEvent} event @param {boolean} [duringExit] */
+function trusted(event,duringExit=false) {
+  return (!stoppingForExit || duringExit) && !!window && event.sender === window.webContents && event.senderFrame === event.sender.mainFrame &&
+    (isBootstrapPage(event.senderFrame.url) || !!connection && new URL(event.senderFrame.url).origin === connection.url);
 }
 function save() { fs.writeFileSync(path.join(data,'bootstrap.json'),JSON.stringify(preferences)); }
 function show() { showWindow(window); }
@@ -86,22 +91,27 @@ const requestExit = createExitHandler({
       checkboxLabel:chinese?'同时安全停止服务':'Also stop services safely',checkboxChecked:false,noLink:true};
     return window ? dialog.showMessageBox(window,options) : dialog.showMessageBox(options);
   },
-  stop: async () => {
+  stop: async signal => {
     stoppingForExit=true;
     trayState={...trayState,webReady:false,settingsAvailable:false};refreshTray();
     window?.setTitle(chinese?'AnelfAgent · 正在安全退出':'AnelfAgent · Stopping safely');
-    window?.webContents.send('anelf:exit-state',{stopping:true,error:''});
+    window?.webContents.send('anelf:exit-state',{stopping:true,error:'',stage:bootstrap?'prepare-exit':'checking',root:preferences.root});
     bootstrap?.abort();
-    await bootstrapDone;
-    for (const root of new Set([...connectedRoots,preferences.root])) await drain(root,true);
+    await waitFor(bootstrapDone,signal);
+    for (const root of new Set([...connectedRoots,preferences.root])) await drain(root,true,undefined,{signal,
+      progress:stage=>window?.webContents.send('anelf:exit-state',{stopping:true,error:'',stage,root})});
   },
   quit: () => {quitting=true;app.quit();},
+  cancelled: () => {
+    stoppingForExit=false;window?.setTitle('AnelfAgent');
+    window?.webContents.send('anelf:exit-state',{stopping:false,error:''});
+  },
   failed: error => {
     stoppingForExit=false;
     const detail=error instanceof Error ? error.message : String(error);
     window?.setTitle('AnelfAgent');
     if (window) {show();window.webContents.send('anelf:exit-state',{stopping:false,error:detail});}
-    else dialog.showErrorBox(chinese?'未能安全退出':'Could not stop safely',detail);
+    else dialog.showErrorBox(chinese?'未能安全退出':'Could not stop safely',describeError(detail,chinese?'zh':'en').message);
   },
 });
 function storage() {
@@ -161,6 +171,30 @@ async function connect(setup=false,repositorySource) {
     if (window && !quitting && !stoppingForExit) await window.loadURL(connection.url + '/' + (setup ? '?setup=1' : '') + '#' + connection.token);
   } finally { bootstrap = null; completed(); }
 }
+/** Resolve the saved project before displaying setup controls. */
+async function openProject() {
+  if(!window)return;
+  try {
+    if(fs.existsSync(path.join(data,'migration.json'))) {
+      await window.loadFile(bootstrapFile,{query:{mode:'resume'}});
+      bootstrap=new AbortController();
+      let complete=()=>{};bootstrapDone=new Promise(resolve=>{complete=resolve;});
+      try {
+        const selected=runtime();
+        await runTask({root:preferences.root,backend:selected.backend,uv:selected.uv.path,timezone,
+          profile:resolveProfile(downloads,preferences.downloadSource,preferences.pypiSource,timezone),tools:path.join(data,'tools'),signal:bootstrap.signal,
+          progress:text=>window?.webContents.send('anelf:bootstrap-progress',text)},['recover-migration','--data',data]);
+        if(fs.existsSync(path.join(data,'bootstrap.json')))preferences={...preferences,...JSON.parse(fs.readFileSync(path.join(data,'bootstrap.json'),'utf8'))};
+      } finally {bootstrap=null;complete();}
+    }
+    if(quitting || stoppingForExit || !window)return;
+    const resume=preferences.configured || !!await connectionAt(preferences.root);
+    await window.loadFile(bootstrapFile,resume?{query:{mode:'resume'}}:{});
+    if(resume)await connect();
+  } catch(error) {
+    if(!quitting && !stoppingForExit)window?.webContents.send('anelf:bootstrap-progress','Error: '+(error instanceof Error?error.message:String(error)));
+  }
+}
 async function start() {
   app.setAppUserModelId('cn.anelf.launcher');
   nativeTheme.themeSource = 'dark';
@@ -168,9 +202,10 @@ async function start() {
   session.defaultSession.setPermissionCheckHandler(() => false);
   Menu.setApplicationMenu(null);
   const area = screen.getPrimaryDisplay().workAreaSize;
-  const width = Math.min(640,area.width - 24), height = Math.min(580,area.height - 24);
-  window = new BrowserWindow({width,height,minWidth:Math.min(480,width),minHeight:Math.min(300,height),title:'AnelfAgent',backgroundColor:'#0d131e',icon:path.join(__dirname,'icon.png'),
+  const width = Math.min(preferences.configured?570:640,area.width - 24), height = Math.min(preferences.configured?370:580,area.height - 24);
+  window = new BrowserWindow({show:false,width,height,minWidth:Math.min(480,width),minHeight:Math.min(300,height),title:'AnelfAgent',backgroundColor:'#0d131e',icon:path.join(__dirname,'icon.png'),
     webPreferences:{preload:path.join(__dirname,'preload.cjs'),contextIsolation:true,nodeIntegration:false,sandbox:true,webSecurity:true,backgroundThrottling:false}});
+  window.once('ready-to-show',()=>window?.show());
   const trayImage = nativeImage.createFromPath(path.join(__dirname,process.platform === 'darwin' ? 'trayTemplate.png' : 'icon.png'));
   if (process.platform === 'darwin') trayImage.setTemplateImage(true);
   tray = new Tray(process.platform === 'darwin' ? trayImage : trayImage.resize({width:20,height:20}));
@@ -179,20 +214,30 @@ async function start() {
   tray.on('click',show);
   tray.on('double-click',show);
   window.webContents.setWindowOpenHandler(({url}) => { if (safeExternal(url)) void shell.openExternal(url); return {action:'deny'}; });
-  window.webContents.on('will-navigate',(event,url) => { if (url !== bootstrapUrl && (!connection || new URL(url).origin !== connection.url)) event.preventDefault(); });
+  window.webContents.on('will-navigate',(event,url) => { if (!isBootstrapPage(url) && (!connection || new URL(url).origin !== connection.url)) event.preventDefault(); });
   window.on('close',event => closeWindow(event,{window,quitting,trayAvailable:!!tray && !tray.isDestroyed(),exit:requestExit}));
   window.on('closed',() => {window=null;});
   ipcMain.handle('anelf:version',event => {if (!trusted(event)) throw new Error('Untrusted sender');return app.getVersion();});
+  ipcMain.handle('anelf:language',event => {if (!trusted(event,true)) throw new Error('Untrusted sender');return chinese?'zh':'en';});
+  ipcMain.handle('anelf:exit-choice',async(event,choice)=>{
+    if(!trusted(event,true) || !['return','quit'].includes(choice))throw new Error('Invalid exit choice');
+    await requestExit.cancel();
+    stoppingForExit=false;window?.setTitle('AnelfAgent');
+    if(choice==='quit'){quitting=true;app.quit();}
+    else window?.webContents.send('anelf:exit-state',{stopping:false,error:''});
+  });
   ipcMain.handle('anelf:tray-state',(event,value) => {
-    if (!trusted(event) || !isTrayState(value)) throw new Error('Invalid tray state');
+    if (!trusted(event,true) || !isTrayState(value)) throw new Error('Invalid tray state');
+    if(stoppingForExit)value={...value,webReady:false,settingsAvailable:false};
     if(JSON.stringify(value)!==JSON.stringify(trayState)){trayState=value;refreshTray();}
+    if(preferences.language!==value.language){preferences.language=value.language;chinese=value.language==='zh';save();}
   });
   window.webContents.on('did-start-navigation',(_event,_url,inPlace,isMainFrame)=>{
     if(isMainFrame && !inPlace){trayState={...trayState,ready:false,webReady:false,settingsAvailable:false};refreshTray();}
   });
   ipcMain.handle('anelf:bootstrap-storage',event => {if (!trusted(event)) throw new Error('Untrusted sender');return storage();});
   ipcMain.handle('anelf:resize',(event,value) => {
-    if (!trusted(event) || !window || !value || !['setup','manage','settings'].includes(value.view) || typeof value.logs !== 'boolean') throw new Error('Invalid window layout');
+    if (!trusted(event,true) || !window || !value || !['setup','manage','settings'].includes(value.view) || typeof value.logs !== 'boolean') throw new Error('Invalid window layout');
     if (window.isMaximized() || window.isFullScreen()) return;
     const bounds = window.getBounds(), work = screen.getDisplayMatching(bounds).workArea;
     const width = Math.min(value.view === 'manage' ? 570 : 640,work.width - 24);
@@ -211,7 +256,7 @@ async function start() {
     return inspectRepository(inspectProject(root),repositories);
   });
   ipcMain.handle('anelf:bootstrap-start',async(event,value) => {
-    if (!trusted(event) || event.senderFrame?.url !== bootstrapUrl) throw new Error('Untrusted sender');
+    if (!trusted(event) || !isBootstrapPage(event.senderFrame?.url || '')) throw new Error('Untrusted sender');
     if (bootstrap) throw new Error('Please wait for the current operation');
     if (!value || !['auto','github','gitee'].includes(value.source) || !['auto','china','global'].includes(value.downloadSource)) throw new Error('Invalid download source');
     resolveProfile(downloads,value.downloadSource,value.pypiSource,timezone);
@@ -252,12 +297,12 @@ async function start() {
       if(purpose==='existing')return inspectProject(result.filePaths[0]);
       if(purpose==='destination')return path.resolve(result.filePaths[0]);
       preferences.root=path.resolve(result.filePaths[0]);save();
-      if (event.senderFrame?.url === bootstrapUrl) return preferences.root;
+      if (isBootstrapPage(event.senderFrame?.url || '')) return preferences.root;
       await window.loadFile(bootstrapFile);
     }
     return purpose ? undefined : preferences.root;
   });
-  ipcMain.handle('anelf:reconnect',async event => { if (!trusted(event) || !window) throw new Error('Untrusted sender'); await window.loadFile(bootstrapFile); });
+  ipcMain.handle('anelf:reconnect',async event => { if (!trusted(event) || !window) throw new Error('Untrusted sender'); if(bootstrap)throw new Error('Please wait for the current operation');await openProject(); });
   ipcMain.handle('anelf:cleanup',async event => {
     if (!trusted(event) || !window || !app.isPackaged) throw new Error('Cleanup is only available in the installed app');
     const owned = projects(data).filter(entry => entry.owned).map(entry => entry.root).join('\n');
@@ -268,19 +313,7 @@ async function start() {
       child.unref();quitting=true;app.quit();
     }
   });
-  await window.loadFile(bootstrapFile);
-  if(fs.existsSync(path.join(data,'migration.json'))) {
-    bootstrap=new AbortController();
-    try {
-      const selected=runtime();
-      await runTask({root:preferences.root,backend:selected.backend,uv:selected.uv.path,timezone,
-        profile:resolveProfile(downloads,preferences.downloadSource,preferences.pypiSource,timezone),tools:path.join(data,'tools'),
-        progress:text=>window?.webContents.send('anelf:bootstrap-progress',text)},['recover-migration','--data',data]);
-      if(fs.existsSync(path.join(data,'bootstrap.json')))preferences={...preferences,...JSON.parse(fs.readFileSync(path.join(data,'bootstrap.json'),'utf8'))};
-    } finally {bootstrap=null;}
-    await window.loadFile(bootstrapFile);
-  }
-  if (preferences.configured || await connectionAt(preferences.root)) { try { await connect(); } catch(error) { window?.webContents.send('anelf:bootstrap-progress',String(error)); } }
+  await openProject();
 }
 const maintenance = process.argv.includes('--prepare-uninstall') || process.argv.includes('--prepare-upgrade');
 if (maintenance) {
@@ -288,7 +321,7 @@ if (maintenance) {
   app.whenReady().then(() => prepare(data,mode)).then(() => app.exit(0)).catch(error => {fs.writeFileSync(path.join(data,'uninstall-error.log'),String(error));app.exit(1);});
 } else if (!app.requestSingleInstanceLock()) app.quit();
 else {
-  app.on('second-instance',show);app.whenReady().then(start).catch(error => {dialog.showErrorBox('AnelfAgent',String(error));app.quit();});
+  app.on('second-instance',show);app.whenReady().then(start).catch(error => {dialog.showErrorBox('AnelfAgent',describeError(error,chinese?'zh':'en').message);app.quit();});
   app.on('before-quit',event => {if(!quitting){event.preventDefault();void requestExit();}});
   app.on('window-all-closed',() => {if(!quitting && !tray)void requestExit();});app.on('activate',show);
   app.on('will-quit',() => {tray?.destroy();tray=null;});

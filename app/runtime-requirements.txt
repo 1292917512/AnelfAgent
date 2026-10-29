@@ -2,3 +2,4 @@
 pyte==0.8.2
 wcwidth==0.2.13
 pywinpty==3.1.1; sys_platform == 'win32'
+psutil==7.2.2

@@ -1,19 +1,32 @@
 import {t, language} from './i18n.js';
+import {describeError} from '../desktop/errors.mjs';
 /** @param {string} id */ export function el(id) { const node = document.getElementById(id); if (!node) throw new Error('Missing element: ' + id); return node; }
 /** @param {string} id */ export function button(id) { const node = el(id); if (!(node instanceof HTMLButtonElement)) throw new Error(id); return node; }
 /** @param {string} id */ export function input(id) { const node = el(id); if (!(node instanceof HTMLInputElement || node instanceof HTMLSelectElement)) throw new Error(id); return node; }
 /** Keep notices brief; detailed diagnostics are opt-in and retain their expanded state. @param {string} value */
 export function message(value) {
   const notice=el('message');notice.hidden=!value;
+  delete notice.dataset.error;
   if(notice.dataset.message===value)return;
   notice.dataset.message=value;
   const preview=document.createElement('span');preview.className='notice-preview';
   if(value.includes('\n') || value.length>90){
-    const details=document.createElement('details'),summary=document.createElement('summary'),full=document.createElement('pre');
+    const existing=notice.querySelector('details');
+    const details=existing || document.createElement('details');
+    const summary=details.querySelector('summary') || document.createElement('summary');
+    const full=details.querySelector('pre') || document.createElement('pre');
     summary.textContent=value.split('\n')[0].slice(0,70)+' · '+t('details');
-    full.textContent=value;details.append(summary,full);notice.replaceChildren(details);
+    full.textContent=value;
+    if(!existing){details.append(summary,full);notice.replaceChildren(details);}
   }else{preview.textContent=value;notice.replaceChildren(preview);}
 }
+/** @param {unknown} error */
+export function showError(error) {
+  const value=describeError(error,language);
+  message(value.message+'\n'+value.detail);
+  el('message').dataset.error=value.detail;
+}
+export function translateError() {const raw=el('message').dataset.error;if(raw)showError(raw);}
 /** @param {import('./lib/types').Schema[]} schema @param {import('./lib/types').State | null} state */
 export function settingsForm(schema, state) {
   const wasOpen=el('settings').querySelector('details')?.open || false;

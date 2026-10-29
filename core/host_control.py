@@ -29,16 +29,25 @@ class HostControl:
         self.web_url = web_url
         self._task: asyncio.Task[None] | None = None
         self._started_at = time.time()
+        self._phase = "starting"
+        self._published_at = 0.0
 
     def publish(self, phase: str) -> None:
         """原子发布运行态，供 Electron 与管理网页共同观测。"""
+        self._phase = phase
         if self.connection is not None:
-            write_json(self.connection, {
+            value = {
                 "pid": os.getpid(), "token": self.token, "control_file": str(self.path),
                 "phase": phase, "updated_at": time.time(), "started_at": self._started_at,
                 "web_url": self.web_url() if self.web_url is not None else "",
-            })
+            }
+            # The PID-specific record survives another process overwriting the shared pointer.
+            record = self.connection.with_name(f"{self.connection.stem}-{os.getpid()}{self.connection.suffix}")
+            write_json(record, value)
+            record.chmod(0o600)
+            write_json(self.connection, value)
             self.connection.chmod(0o600)
+            self._published_at = time.monotonic()
 
     def start(self) -> None:
         self.publish("starting")
@@ -54,14 +63,18 @@ class HostControl:
                 await self._task
         self.publish("restarting" if Lifecycle.restart_requested() else "stopped")
         self.path.unlink(missing_ok=True)
+        if self.connection is not None:
+            self.connection.with_name(f"{self.connection.stem}-{os.getpid()}{self.connection.suffix}").unlink(missing_ok=True)
 
     async def _watch(self) -> None:
         announced = False
         while True:
             try:
-                if not announced and Lifecycle.started():
+                if not announced and self._phase == "starting" and Lifecycle.started():
                     self.publish("running")
                     announced = True
+                elif time.monotonic() - self._published_at >= 2:
+                    self.publish(self._phase)
                 if self.path.exists():
                     request = json.loads(self.path.read_text("utf-8"))
                     if (isinstance(request, dict) and request.get("token") == self.token

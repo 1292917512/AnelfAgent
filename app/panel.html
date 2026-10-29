@@ -38,6 +38,17 @@
     <div id="runtime-progress"></div><pre id="log-preview" aria-live="polite" hidden></pre>
     <dl class="runtime-facts"><div><dt data-i18n="process"></dt><dd id="pid">—</dd></div><div><dt data-i18n="address"></dt><dd id="web-address">—</dd></div></dl>
   </section>
+  <section id="exit-panel" class="dashboard exit-panel" hidden aria-labelledby="exit-title">
+    <div id="exit-mark" class="runtime-mark working"><div class="orbit"></div><img src="/icon.svg" alt=""></div>
+    <div class="runtime-heading"><h1 id="exit-title"></h1><p id="exit-stage" class="description" role="status"></p></div>
+    <div class="exit-progress"><progress id="exit-progress" aria-labelledby="exit-stage"></progress><span id="exit-elapsed" class="muted"></span></div>
+    <ol id="exit-steps" class="stage-list"></ol>
+    <details id="exit-error" class="notice" role="alert" hidden><summary id="exit-error-summary"></summary><pre id="exit-error-detail"></pre></details>
+    <pre id="exit-log-preview" class="exit-log-preview"></pre>
+    <code id="exit-root" class="exit-root"></code>
+    <div class="runtime-actions"><button id="exit-return" class="quiet" data-i18n="exitReturn"></button><button id="exit-only" class="secondary" data-i18n="exitOnly"></button></div>
+    <p class="hint exit-hint" data-i18n="exitWaitHint"></p>
+  </section>
   <section id="configuration" class="sheet configuration" hidden><div class="settings-body"><p class="description" data-i18n="settingsHint"></p><form id="settings"></form>
     <div id="password-control" class="field"><label for="access-password"><span data-i18n="passwordLabel"></span><span id="password-status" role="status"></span></label><div class="password-input"><input id="access-password" type="password" maxlength="1024" autocomplete="new-password" aria-describedby="password-status"><button id="password-clear" class="icon-button" type="button" hidden><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8"/></svg></button></div></div>
     <div id="maintenance-details" class="access-details"><div class="maintenance"><button id="repair" class="quiet" data-i18n="repair"></button><button id="cleanup" class="quiet danger" data-i18n="cleanup"></button></div><p class="hint" data-i18n="cleanupHint"></p></div></div><div class="step-actions"><button id="settings-back" class="quiet" data-i18n="backHome"></button><button id="ports" class="quiet" data-i18n="ports"></button><button id="save" class="primary" data-i18n="save"></button></div></section>

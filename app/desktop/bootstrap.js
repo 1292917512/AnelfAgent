@@ -1,9 +1,13 @@
-export {};
+import {describeError} from './errors.mjs';
 /** @type {Record<string,Record<string,string>>} */
 const words = {
   zh:{exitStopping:'正在安全退出，请稍候…',step1:'1 · 位置与来源',step2:'2 · 准备环境',step3:'3 · 完成安装',title:'开始之前，选择适合你的来源。',hint:'先确认下载位置与网络，无需预装开发工具。',path:'项目工程路径',choose:'更换',source:'项目源码',downloads:'环境下载源',auto:'按时区自动推荐',china:'国内镜像',global:'国际官方源',continue:'下一步 · 准备环境',cancel:'取消',footer:'关闭窗口收至托盘，安装会继续。',reuse:'已有兼容环境会复用，缺失项才会下载。国内：npmmirror / 清华 / 中科大；国际：各工具官方分发。',preparing:'正在准备管理环境，请稍候…',cancelled:'已取消。可修改来源后重试。',uv:'检测到 uv',bundled:'使用 APP 内置 uv',timezone:'时区',recommended:'推荐',failed:'准备失败，请查看日志并更换来源重试。'},
   en:{exitStopping:'Stopping safely…',step1:'1 · Location & source',step2:'2 · Environment',step3:'3 · Ready',title:'Choose what works for your network.',hint:'Confirm your project folder and download source. No development tools required.',path:'PROJECT DIRECTORY',choose:'Change',source:'Project repository',downloads:'Environment downloads',auto:'Recommend by timezone',china:'China mirrors',global:'International sources',continue:'Next · Prepare environment',cancel:'Cancel',footer:'Closing the window keeps setup running in the tray.',reuse:'Compatible tools are reused; only missing tools are downloaded. China: npmmirror / Tsinghua / USTC; international: official distributions.',preparing:'Preparing the management environment…',cancelled:'Cancelled. Choose a source and retry.',uv:'Existing uv',bundled:'Bundled uv',timezone:'Timezone',recommended:'Recommended',failed:'Setup failed. Check the log or select another source.'}
 };
+Object.assign(words.zh,{exitReturn:'返回界面',exitOnly:'仅退出应用',exitHint:'仅退出应用不会强制结束服务。已发送的关停请求会继续执行。'});
+Object.assign(words.en,{exitReturn:'Return to app',exitOnly:'Quit app only',exitHint:'Quitting does not force services to stop. Shutdown requests already sent will continue.'});
+Object.assign(words.zh,{connecting:'正在连接项目…',connectionFailed:'未能连接项目',reconnect:'重新连接',connectingFooter:'关闭窗口收至托盘。'});
+Object.assign(words.en,{connecting:'Connecting to your project…',connectionFailed:'Could not connect to the project',reconnect:'Reconnect',connectingFooter:'Closing the window hides the app in the tray.'});
 /** @param {string} id */
 const $ = id => {const node=document.getElementById(id);if(!node)throw new Error(id);return node;};
 /** @param {string} id */
@@ -12,8 +16,11 @@ const control = id => {const node=$(id);if(!(node instanceof HTMLButtonElement |
 const errorText = error => (error instanceof Error ? error.message : String(error)).replace(/^Error invoking remote method '[^']+':\s*(?:Error:\s*)?/,'');
 const desktop=window.anelfDesktop;
 if(!desktop)throw new Error('Desktop bridge unavailable');
-let locale = words.zh, busy = false;
+let locale = navigator.language.startsWith('zh')?words.zh:words.en, busy = false;
+const connecting=new URLSearchParams(location.search).get('mode')==='resume';
+let connectionError='';
 let stoppingForExit = false;
+let exitError='';
 let enoughSpace = false;
 /** @type {'question'|'new'|'existing'} */ let projectChoice='question';
 let existingRoot='',targetRoot='';
@@ -37,10 +44,20 @@ const migrationEnglish={'正在检查项目文件':'Checking project files','正
 Object.assign(migrationEnglish,{'正在恢复迁移进度':'Resuming the saved move','正在复用已完成的迁移文件':'Reusing completed files'});
 const resuming=()=>moving() && catalog?.migration?.source===existingRoot && catalog.migration.target===targetRoot;
 function showStep() {
+  const exiting=stoppingForExit || !!exitError;
+  $('setup-flow').hidden=connecting || !catalog || exiting;
+  $('setup-actions').hidden=connecting || !catalog || exiting;
+  $('opening').hidden=(!connecting && !!catalog) || exiting;
+  $('opening').classList.toggle('failed',!!connectionError);
+  $('opening-status').textContent=locale[connectionError?'connectionFailed':'connecting'];
+  $('connection-actions').hidden=(!connecting && !!catalog) || !connectionError || exiting;
+  control('retry-connect').disabled=busy || stoppingForExit;
+  $('bootstrap-footer').hidden=!catalog;
+  $('bootstrap-footer').textContent=connecting?locale.connectingFooter:locale.footer;
   for(const id of ['existing-yes','existing-no','choose-existing','choose-target','move-project','back-choice'])control(id).disabled=busy || stoppingForExit;
-  void desktop?.trayState?.({ready:false,webReady:false,settingsAvailable:!busy && !stoppingForExit,language:locale===words.zh?'zh':'en'}).catch(()=>{});
+  if(catalog)void desktop?.trayState?.({ready:false,webReady:false,settingsAvailable:!connecting && !busy && !stoppingForExit,language:locale===words.zh?'zh':'en'}).catch(()=>{});
   const meter=$('bootstrap-meter');
-  if(meter instanceof HTMLProgressElement){if(busy)meter.removeAttribute('value');else meter.value=0;}
+  if(meter instanceof HTMLProgressElement){if(busy || connecting)meter.removeAttribute('value');else meter.value=0;meter.hidden=connecting && !!connectionError;}
   $('project-question').hidden=busy || projectChoice!=='question';
   $('existing-options').hidden=busy || projectChoice!=='existing';
   $('setup-options').hidden=busy || projectChoice==='question';
@@ -57,6 +74,11 @@ function showStep() {
   $('existing-hint').textContent=resuming()?locale.resumeHint:moving()?locale.moveHint:locale.keepHint;
   showRepository();
   document.querySelectorAll('ol li').forEach((node,index)=>node.classList.toggle('current',index===(busy?1:0)));
+  $('exit-actions').hidden=!exiting;$('exit-hint').hidden=!exiting;
+  if(exiting){
+    for(const id of ['project-question','existing-options','setup-options','continue','back-choice','cancel'])$(id).hidden=true;
+    $('intro-title').textContent=locale.exitStopping;$('intro-hint').textContent='';
+  }
   requestAnimationFrame(fitWindow);
 }
 function showRepository() {
@@ -91,13 +113,18 @@ function renderStorage(checks) {
 const refreshStorage = async () => { renderStorage(await desktop.bootstrapStorage()); };
 desktop.onBootstrapProgress(value => {
   const first=$('progress').hidden;$('progress').hidden=false;
-  $('status').textContent=value.startsWith('Error:')?locale.failed:locale.preparing;
+  $('status').textContent=value.startsWith('Error:')?locale.failed:connecting?locale.connecting:locale.preparing;
   $('output').textContent=(($('output').textContent||'')+value).slice(-12000);
+  if(connecting && value.startsWith('Error:')) {
+    connectionError=value;
+    $('status').textContent=describeError(value,locale===words.zh?'zh':'en').message;
+    showStep();return;
+  }
   const lines=(progressBuffer+value).split('\n');progressBuffer=(lines.pop()||'').slice(-12000);
   for(const line of lines)try{
     const message=JSON.parse(line),meter=$('bootstrap-meter');
     if(typeof message.message==='string'){
-      const phase=message.message.split(' · ')[0];$('status').textContent=locale===words.en ? migrationEnglish[phase]||phase : phase;
+      const phase=message.message.split(' · ')[0];$('status').textContent=locale===words.en ? migrationEnglish[phase]||(/[\u3400-\u9fff]/.test(phase)?locale.preparing:phase) : phase;
     }
     if(meter instanceof HTMLProgressElement && message.total>0){
       meter.max=message.total;meter.value=message.received;
@@ -106,11 +133,11 @@ desktop.onBootstrapProgress(value => {
   }catch{ /* Management setup also emits plain-text tool output. */ }
   if(first)requestAnimationFrame(fitWindow);
 });
-const selectExisting=async()=>{try{const root=await desktop.chooseProject('existing');if(root){existingRoot=root;existingRepository=await desktop.projectRepository(root);control('source').value='auto';}showStep();}catch(error){$('progress').hidden=false;$('status').textContent=errorText(error);requestAnimationFrame(fitWindow);}};
+const selectExisting=async()=>{try{const root=await desktop.chooseProject('existing');if(root){existingRoot=root;existingRepository=await desktop.projectRepository(root);control('source').value='auto';}showStep();}catch(error){$('progress').hidden=false;$('status').textContent=describeError(error,locale===words.zh?'zh':'en').message;$('output').textContent=errorText(error);requestAnimationFrame(fitWindow);}};
 $('existing-yes').onclick=async()=>{projectChoice='existing';const checkbox=$('move-project');if(checkbox instanceof HTMLInputElement)checkbox.checked=true;showStep();await selectExisting();};
 $('existing-no').onclick=()=>{projectChoice='new';showStep();};
 $('choose-existing').onclick=selectExisting;
-$('choose-target').onclick=async()=>{const root=await desktop.chooseProject('destination');if(root)targetRoot=root;showStep();};
+$('choose-target').onclick=async()=>{try{const root=await desktop.chooseProject('destination');if(root)targetRoot=root;showStep();}catch(error){$('progress').hidden=false;$('status').textContent=describeError(error,locale===words.zh?'zh':'en').message;$('output').textContent=errorText(error);}};
 $('move-project').onchange=showStep;
 $('back-choice').onclick=()=>{projectChoice='question';$('progress').hidden=true;showStep();};
 $('choose').onclick = async () => { try { $('root').textContent = await desktop.chooseProject() || ''; await refreshStorage();requestAnimationFrame(fitWindow); } catch(error) { $('progress').hidden=false;$('status').textContent=locale.failed;$('output').textContent=errorText(error); } };
@@ -125,18 +152,26 @@ $('continue').onclick = async () => {
     if(result?.accepted===false){$('progress').hidden=true;$('output').textContent='';}
   }
   catch(error) {
-    if(!stoppingForExit){const detail=errorText(error);$('status').textContent=detail.includes('Cancelled')?locale.cancelled:detail;$('status').title=detail;$('output').textContent+='\n'+detail;}
-    const info=await desktop.bootstrapInfo();catalog=info;
-    if(projectChoice==='existing' && info.projectChoice==='existing' && info.root===targetRoot){
-      existingRoot=info.root;const checkbox=$('move-project');if(checkbox instanceof HTMLInputElement)checkbox.checked=false;
-    }
+    if(!stoppingForExit){const diagnostic=describeError(error,locale===words.zh?'zh':'en');$('status').textContent=diagnostic.message;$('status').title=diagnostic.message;$('output').textContent+='\n'+diagnostic.detail;}
+    if(!stoppingForExit)try{
+      const info=await desktop.bootstrapInfo();catalog=info;
+      if(projectChoice==='existing' && info.projectChoice==='existing' && info.root===targetRoot){
+        existingRoot=info.root;const checkbox=$('move-project');if(checkbox instanceof HTMLInputElement)checkbox.checked=false;
+      }
+    }catch(error){$('output').textContent+='\n'+errorText(error);}
   }
   finally {busy=false;for(const id of ['choose','source','downloads','pypi'])control(id).disabled=stoppingForExit;$('cancel').hidden=true;showStep();}
 };
-$('cancel').onclick = async () => { control('cancel').disabled=true;await desktop.bootstrapCancel(); };
+$('cancel').onclick = async () => { control('cancel').disabled=true;try{await desktop.bootstrapCancel();}catch(error){$('status').textContent=describeError(error,locale===words.zh?'zh':'en').message;$('output').textContent+='\n'+errorText(error);control('cancel').disabled=false;} };
+$('retry-connect').onclick=async()=>{
+  busy=true;connectionError='';showStep();
+  try{await desktop.reconnect();}catch(error){connectionError=errorText(error);$('status').textContent=describeError(error,locale===words.zh?'zh':'en').message;$('output').textContent=connectionError;}
+  finally{busy=false;showStep();}
+};
 (async()=>{try{const info=await desktop.bootstrapInfo();catalog=info;locale=words[info.language]||words.en;document.documentElement.lang=info.language;
 document.querySelectorAll('[data-text]').forEach(node=>{if(node instanceof HTMLElement)node.textContent=locale[node.dataset.text || ''];});
 $('bootstrap-progress-toggle').title=locale.details;
+if(connecting){showStep();return;}
 $('root').textContent=info.root;control('source').value=info.source;control('downloads').value=info.downloadSource;
 targetRoot=info.defaultTarget;
 if(info.projectChoice){projectChoice=info.projectChoice;if(projectChoice==='existing'){existingRoot=info.root;existingRepository=await desktop.projectRepository(info.root);const checkbox=$('move-project');if(checkbox instanceof HTMLInputElement)checkbox.checked=false;}}
@@ -147,19 +182,25 @@ renderStorage(info.storage);
 $('recommendation').textContent=locale.timezone+': '+info.timezone+' · '+locale.recommended+': '+(info.china?'Gitee / '+locale.china:'GitHub / '+locale.global);
 $('uv').textContent=(info.uv.bundled?locale.bundled:locale.uv)+' · '+info.uv.version+'\n'+info.uv.path;
 showStep();
-}catch(error){$('progress').hidden=false;$('status').textContent=errorText(error);}})();
-setInterval(()=>{if(!busy && !stoppingForExit)void refreshStorage().catch(()=>{enoughSpace=false;control('continue').disabled=!canContinue();$('storage').textContent=locale.diskUnknown;});},5000);
+}catch(error){connectionError=errorText(error);$('progress').hidden=false;$('status').textContent=describeError(error,locale===words.zh?'zh':'en').message;$('output').textContent=connectionError;showStep();}})();
+setInterval(()=>{if(!connecting && !busy && !stoppingForExit)void refreshStorage().catch(()=>{enoughSpace=false;control('continue').disabled=!canContinue();$('storage').textContent=locale.diskUnknown;});},5000);
 desktop.onExitState?.(value=>{
   stoppingForExit=value.stopping;
+  exitError=value.error;
   for(const id of ['continue','choose','source','downloads','pypi','cancel'])control(id).disabled=value.stopping || busy;
   $('progress').hidden=false;
-  $('status').textContent=value.stopping ? locale.exitStopping : locale.failed;
+  $('status').textContent=value.stopping ? locale.exitStopping : describeError(value.error,locale===words.zh?'zh':'en').message;
   $('output').textContent=value.error;
   if(!value.stopping)control('continue').disabled=busy || !canContinue();
   showStep();
+  if(!value.stopping && !value.error){$('status').textContent='';$('progress').hidden=true;}
 });
+for(const [id,choice] of /** @type {const} */ ([['exit-return','return'],['exit-only','quit']]))$(id).onclick=async()=>{
+  try{await desktop.exitChoice(choice);}catch(error){$('output').textContent=errorText(error);}
+};
 desktop.onNavigate?.(view=>{
-  if(view==='settings' && !busy){const options=$('source-options');if(options instanceof HTMLDetailsElement)options.open=true;}
+  if(stoppingForExit || exitError)return;
+  if(view==='settings' && !connecting && !busy){const options=$('source-options');if(options instanceof HTMLDetailsElement)options.open=true;}
   window.scrollTo(0,0);
 });
 const main=document.querySelector('main');
@@ -167,7 +208,7 @@ let previousHeight=0;
 function fitWindow() {
   if(!desktop || !main || !catalog || stoppingForExit)return;
   const height=Math.ceil(main.getBoundingClientRect().height);
-  if(Math.abs(height-previousHeight)>=2){previousHeight=height;void desktop.resize?.({view:'setup',logs:false,height}).catch(()=>{});}
+  if(Math.abs(height-previousHeight)>=2){previousHeight=height;void desktop.resize?.({view:connecting?'manage':'setup',logs:false,height}).catch(()=>{});}
 }
 document.addEventListener('toggle',()=>{requestAnimationFrame(fitWindow);},true);
 if(main)new ResizeObserver(()=>{if([...document.querySelectorAll('details[open]')].some(node=>node.getClientRects().length>0))requestAnimationFrame(fitWindow);}).observe(main);

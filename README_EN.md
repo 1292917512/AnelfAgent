@@ -31,7 +31,24 @@ This is a **personally maintained, continuously evolving MIT open-source project
 
 ## Quick Start
 
-### Requirements and Installation
+### Install the Desktop App
+
+Download an installer from **[GitHub Releases](https://github.com/1292917512/AnelfAgent/releases/latest)**. You do not need to clone the repository or configure Python and Node.js first.
+
+| Platform | Package |
+|---|---|
+| Windows x64 | `.exe` |
+| macOS, Apple Silicon / Intel | `.dmg` for `arm64` / `x64` |
+| Ubuntu / Debian x64 | `.deb` |
+| Other Linux x64 | `.AppImage`; make it executable before running |
+
+Open the app and follow the setup steps to select a project folder and download source. It retrieves the source, prepares Python and dependencies with uv, and builds the Web frontend. Existing projects can stay in their current folder or be moved through the import flow. Once setup finishes, click **Start**, then **Open Web console** when the service is ready to configure your models.
+
+China mirrors and international sources are available, and compatible existing tools are reused. Reserve at least **5 GiB** on the project drive; additional models and data need more space. See the [APP documentation](app/README.md) for usage, upgrades and uninstall options.
+
+### Install from Source
+
+For development or command-line deployment, follow the steps below.
 
 | Dependency | Version / purpose |
 |---|---|

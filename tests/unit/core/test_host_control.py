@@ -100,6 +100,29 @@ async def test_running_is_published_only_after_lifecycle_startup(tmp_path: Path,
         await service.stop()
 
 
+async def test_host_republishes_its_identity_without_resetting_shutdown(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import json
+    monkeypatch.setattr(Lifecycle, "started", lambda: True)
+    connection = tmp_path / "runtime.json"
+    service = HostControl(tmp_path / "control.json", "secret", connection=connection)
+    service.start()
+    try:
+        await asyncio.sleep(.3)
+        scoped = tmp_path / f"runtime-{os.getpid()}.json"
+        assert json.loads(scoped.read_text())["phase"] == "running"
+        write_json(connection, {"pid": 2147483647, "phase": "starting"})
+        service._published_at = 0
+        await asyncio.sleep(.3)
+        assert json.loads(connection.read_text())["pid"] == os.getpid()
+        service.publish("stopping")
+        service._published_at = 0
+        await asyncio.sleep(.3)
+        assert json.loads(connection.read_text())["phase"] == "stopping"
+    finally:
+        await service.stop()
+    assert not (tmp_path / f"runtime-{os.getpid()}.json").exists()
+
+
 def test_webui_environment_override_preserves_persisted_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from core.path import ConfigPaths
     from web.server import _load_server_config

@@ -2,12 +2,14 @@
 /** Drain managed services before an explicit shutdown, upgrade or uninstall. */
 const fs = require('node:fs');
 const path = require('node:path');
+const {setTimeout:delay}=require('node:timers/promises');
 const {connectionAt} = require('./backend.cjs');
 const {projects, removeOwned, verifyOwnership} = require('./managed.cjs');
 const {preserveProjects}=require('./preservation.cjs');
-/** @param {import('./backend.cjs').Connection} connection @param {string} endpoint @param {object} [body] */
-async function request(connection, endpoint, body) {
-  const response = await fetch(connection.url + '/api/' + endpoint,{method:body ? 'POST' : 'GET',headers:{Authorization:'Bearer ' + connection.token,'Content-Type':'application/json'},body:body ? JSON.stringify(body) : undefined,signal:AbortSignal.timeout(8000)});
+/** @param {import('./backend.cjs').Connection} connection @param {string} endpoint @param {object} [body] @param {AbortSignal} [signal] */
+async function request(connection, endpoint, body, signal) {
+  const timeout=AbortSignal.timeout(8000);
+  const response = await fetch(connection.url + '/api/' + endpoint,{method:body ? 'POST' : 'GET',headers:{Authorization:'Bearer ' + connection.token,'Content-Type':'application/json'},body:body ? JSON.stringify(body) : undefined,signal:signal ? AbortSignal.any([signal,timeout]) : timeout});
   const result = await response.json(); if (!response.ok) throw new Error(result.message || 'Manager request failed'); return result;
 }
 /** @param {number} pid */
@@ -34,9 +36,14 @@ async function hasRunningServices(roots) {
   }));
   return states.some(Boolean);
 }
-/** @param {string} root @param {boolean} stopServices @param {()=>Promise<unknown>} [stopRuntime] */
-async function drain(root, stopServices, stopRuntime) {
+/** @typedef {{signal?:AbortSignal,progress?:(stage:string)=>void}} DrainOptions */
+/** @param {string} root @param {boolean} stopServices @param {()=>Promise<unknown>} [stopRuntime] @param {DrainOptions} [options] */
+async function drain(root, stopServices, stopRuntime, options={}) {
+  const {signal}=options;
+  const progress=(/** @type {string} */ stage)=>{signal?.throwIfAborted();options.progress?.(stage);};
+  progress('checking');
   const connection = await connectionAt(root);
+  signal?.throwIfAborted();
   if (!connection) {
     if (stopServices && stopRuntime && await hasRunningServices([root])) await stopRuntime();
     // A live runtime without its manager needs its original entry point for safe shutdown.
@@ -50,19 +57,37 @@ async function drain(root, stopServices, stopRuntime) {
     } catch (error) {if (!error || typeof error !== 'object' || !('code' in error) || error.code !== 'ENOENT') throw error;}
     return;
   }
-  let status = await request(connection,'status');
-  if (status.busy && status.operation?.cancellable) await request(connection,'cancel',{});
+  const call=(/** @type {string} */ endpoint,/** @type {object | undefined} */ body=undefined)=>request(connection,endpoint,body,signal);
+  const checkControl=(/** @type {any} */ status)=>{
+    if(!stopServices)return;
+    let legacyMissing=false;
+    if(status.controllable===undefined && status.pid===null)try {
+      const pid=Number(fs.readFileSync(path.join(root,'logs/anelf.pid'),'utf8').trim());
+      legacyMissing=Number.isInteger(pid) && pid>0 && alive(pid);
+    } catch { /* No live project record. */ }
+    if(legacyMissing || status.controllable===false && status.running)
+      throw new Error('服务控制记录不可用，无法确认安全关停。请从原启动入口停止服务；也可返回或仅退出应用。 / Service control is unavailable. Stop it from its original entry point, or return / quit only the app.');
+  };
+  let status = await call('status');
+  checkControl(status);
+  if (status.busy && status.operation?.cancellable) {
+    progress(['install','setup'].includes(status.operation.action)?'cancel-install':status.operation.action==='update'?'cancel-update':'wait-operation');
+    await call('cancel',{});
+  } else if(status.busy)progress(['stop','stopping'].includes(status.phase)?'wait-service':'wait-operation');
   const deadline = Date.now() + 660000;
-  while (status.busy && Date.now() < deadline) { await new Promise(resolve => setTimeout(resolve,300)); status = await request(connection,'status'); }
+  while (status.busy && Date.now() < deadline) { await delay(300,undefined,{signal}); status = await call('status'); checkControl(status); }
   if (status.busy) throw new Error('The current operation has not stopped.');
   if (stopServices) {
-    await request(connection,'action',{action:'stop'});
-    do { await new Promise(resolve => setTimeout(resolve,300)); status = await request(connection,'status'); } while (status.busy && Date.now() < deadline);
+    progress('stop-service');
+    await call('action',{action:'stop'});
+    progress('wait-service');
+    do { await delay(300,undefined,{signal}); status = await call('status'); checkControl(status); } while (status.busy && Date.now() < deadline);
     if (status.busy || status.running || !status.last?.ok) throw new Error(status.last?.message || 'The service has not stopped.');
   }
-  await request(connection,stopServices ? 'shutdown' : 'detach',{});
+  progress('close-manager');
+  await call(stopServices ? 'shutdown' : 'detach',{});
   const exitDeadline = Date.now() + 20000;
-  while (alive(connection.pid) && Date.now() < exitDeadline) await new Promise(resolve => setTimeout(resolve,200));
+  while (alive(connection.pid) && Date.now() < exitDeadline) await delay(200,undefined,{signal});
   if (alive(connection.pid)) throw new Error('The manager has not exited. Files were preserved.');
 }
 /** Retaining data is the default; deletion always requires an explicit purge.

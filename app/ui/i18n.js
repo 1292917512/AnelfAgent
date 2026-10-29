@@ -1,12 +1,14 @@
 /** @type {Record<string, Record<string,string>>} */
 const words = {
   zh: {
+    web_unavailable:'Web 暂不可用',webUnavailableHint:'进程仍在运行，Web 服务暂不可用。',controlUnavailableHint:'服务已运行，可打开 Web 控制台；控制连接待恢复。',
     passwordLabel:'访问密码',passwordConfigured:'已设置',passwordRemovePending:'待移除',undoPasswordClear:'撤销移除密码',passwordUnknown:'状态待确认',settingsPasswordFailed:'常规配置已保存，密码未能确认保存。请重试。',
     advancedSettings:'高级设置',maintenanceOptions:'环境维护',installOptions:'调整安装选项',
     toggleProgress:'点击进度展开或收起详情',details:'展开详情',progressPaused:'已完成的内容已保留，可换源继续。',
     pypiSource:'uv / Python 包镜像',followSource:'跟随环境来源',pypiHint:'仅影响本次及后续安装，不改项目文件。取消后可换源继续。',existingPackages:'检测到现有环境已安装 {count} 个包，正在核对并补齐；不是重新创建环境。',
     lanAddresses:'局域网访问地址',lanHint:'同一网络的设备可使用以上地址；需系统防火墙允许所选端口。',lanUnavailable:'尚未检测到可用网卡地址。',accessPassword:'访问密码（可选）',newPassword:'新密码',setPassword:'设置密码',clearPassword:'移除密码',passwordSet:'已设置密码，不回显。停止服务后可更换或移除。',passwordUnset:'未设置密码。留空不会修改现有配置。',accessChecking:'正在读取访问设置…',accessUnknown:'正在等待访问设置。',accessNeedsInstall:'安装完成后可设置 Web 密码。',accessUnavailable:'无法读取访问设置，请稍后重新打开配置页。',accessSaveFailed:'未能确认密码保存结果，请重试。',
-    exitStopping:'正在取消安装并安全停止服务，请稍候…',exitFailed:'未能安全退出，请检查运行状态后重试。',moreDownloads:'展开其余 {count} 个下载项',
+    exitStopping:'正在停止服务',exitFailed:'未能完成安全关停',exitReturn:'返回界面',exitOnly:'仅退出应用',exitWaitHint:'仅退出应用不会强制结束服务。已发送的关停请求会继续执行。',
+    'exit-checking':'检查服务状态','exit-prepare-exit':'等待准备任务结束','exit-cancel-install':'取消正在进行的安装','exit-cancel-update':'取消正在进行的更新','exit-wait-operation':'等待当前操作结束','exit-stop-service':'发送安全关停请求','exit-wait-service':'等待服务保存数据并退出','exit-close-manager':'关闭本地管理器',moreDownloads:'展开其余 {count} 个下载项',
     backHome:'返回',workingHint:'正在处理，请稍候。进度与日志会自动更新。',externalHint:'检测到未接入控制的实例',unmanaged:'服务已在运行',
     diskAvailable:'磁盘可用',diskRequired:'安装至少需要',diskInsufficient:'空间不足，请清理或更换目录',diskUnknown:'无法读取可用空间，请检查目录权限',diskHint:'最低预留 5 GiB，建议 10 GiB。涵盖源码、运行环境、缓存和前端构建；模型与用户数据另计。',reusePython:'已有兼容解释器 · 直接复用',projectEnvironment:'项目虚拟环境',createVenv:'由 uv 创建 · 复用解释器，不重复下载 Python',
     continueInstall:'继续安装',resumeHint:'项目已在此目录。继续会复用现有虚拟环境、已安装依赖和可用缓存，补齐依赖并完成前端构建。',
@@ -21,12 +23,14 @@ const words = {
     stopped:'未运行',starting:'正在启动',running:'运行中',stopping:'正在关停',restarting:'正在重启',failed:'操作失败',cancelled:'已取消',interrupted:'安装已中断',unknown:'状态未知',installing:'正在安装',updating:'正在更新',done:'已完成',elapsed:'已用时',check:'检查项目',git:'准备 Git',checkout:'下载项目源码',tools:'检测并安装工具',python:'准备 Python 解释器',dependencies:'同步 Python 依赖',frontend_install:'安装前端依赖',frontend_build:'构建 Web 界面',verify:'验证安装结果',stopStage:'安全停止现有服务',noLogs:'暂无日志。',seconds:'秒',minutes:'分',port:'端口',error:'操作未完成，请查看详细日志。'
   },
   en: {
+    web_unavailable:'Web unavailable',webUnavailableHint:'The process is running, but its Web service is unavailable.',controlUnavailableHint:'The service is running. Open the Web console while the control connection recovers.',
     passwordLabel:'Web password',passwordConfigured:'Set',passwordRemovePending:'Will remove',undoPasswordClear:'Undo password removal',passwordUnknown:'Check status',settingsPasswordFailed:'General settings saved. The password change could not be confirmed. Please retry.',
     advancedSettings:'Advanced settings',maintenanceOptions:'Environment maintenance',installOptions:'Installation options',
     toggleProgress:'Expand or collapse progress details',details:'Show details',progressPaused:'Completed work is kept. Change mirrors to resume.',
     pypiSource:'uv / Python package index',followSource:'Follow environment source',pypiHint:'Applies to installations without editing project files. Cancel to change mirrors and resume.',existingPackages:'Found {count} installed packages. Checking and completing the existing environment.',
     lanAddresses:'LAN addresses',lanHint:'Devices on the same network can use these addresses if the system firewall allows the selected port.',lanUnavailable:'No available network address detected.',accessPassword:'Access password (optional)',newPassword:'New password',setPassword:'Set password',clearPassword:'Remove password',passwordSet:'Password is set and never displayed. Stop the service to change or remove it.',passwordUnset:'No password set. Leaving this empty preserves existing settings.',accessChecking:'Reading access settings…',accessUnknown:'Waiting for access settings.',accessNeedsInstall:'Complete installation before setting a Web password.',accessUnavailable:'Unable to read access settings. Reopen settings to retry.',accessSaveFailed:'Unable to confirm the password change. Please retry.',
-    exitStopping:'Cancelling installation and stopping services safely…',exitFailed:'Could not stop safely. Check the runtime and retry.',moreDownloads:'Show {count} more downloads',
+    exitStopping:'Stopping services',exitFailed:'Safe shutdown did not finish',exitReturn:'Return to app',exitOnly:'Quit app only',exitWaitHint:'Quitting the app does not force services to stop. Shutdown requests already sent will continue.',
+    'exit-checking':'Checking service status','exit-prepare-exit':'Waiting for preparation to finish','exit-cancel-install':'Cancelling the active installation','exit-cancel-update':'Cancelling the active update','exit-wait-operation':'Waiting for the current operation','exit-stop-service':'Sending a safe shutdown request','exit-wait-service':'Waiting for services to save data and exit','exit-close-manager':'Closing the local manager',moreDownloads:'Show {count} more downloads',
     backHome:'Back',workingHint:'Working on it. Progress and logs update automatically.',externalHint:'This instance has no management connection.',unmanaged:'Service is already running',
     diskAvailable:'Disk available',diskRequired:'Installation requires',diskInsufficient:'Not enough space; free space or change folder',diskUnknown:'Cannot read free space; check folder access',diskHint:'Reserve at least 5 GiB, preferably 10 GiB for source, environments, caches and frontend builds. Models and user data need additional space.',reusePython:'Compatible interpreter · reuse',projectEnvironment:'Project environment',createVenv:'Created by uv · reuses Python without downloading it again',
     continueInstall:'Continue installation',resumeHint:'The project is already here. Continue using its existing environment, installed packages and available cache to finish dependencies and the frontend build.',

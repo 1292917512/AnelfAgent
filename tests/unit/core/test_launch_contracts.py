@@ -1,6 +1,7 @@
 """组合根的启动失败传播与共享资源注册契约。"""
 
 from argparse import Namespace
+from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
@@ -9,7 +10,7 @@ from core.flow import FlowMachine
 from core.lifecycle import Lifecycle
 
 
-async def test_nested_bootstrap_failure_stops_parent(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_nested_bootstrap_failure_stops_parent(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     import launch
     from agent.runtime import bootstrap
     from agent.storage import migration
@@ -25,6 +26,9 @@ async def test_nested_bootstrap_failure_stops_parent(monkeypatch: pytest.MonkeyP
     monkeypatch.setattr(launch.ConfigManager, "initialize", lambda: None)
     monkeypatch.setattr(launch, "enable_file_logging", lambda: None)
     monkeypatch.setattr(launch, "acquire_instance", lambda *_args: None)
+    # The mocked instance lock must never publish test control state into a live checkout.
+    monkeypatch.setattr(launch, "__file__", str(tmp_path / "launch.py"))
+    monkeypatch.setattr(launch, "_PID_FILE", tmp_path / "logs/anelf.pid")
     Lifecycle.reset()
     try:
         app = launch.create_application(Namespace(no_webui=True))

@@ -21,7 +21,7 @@ async function main() {
   if (!backend.startsWith(path.join(root,'app','build') + path.sep)) throw new Error('Invalid staging path');
   await fs.rm(backend,{recursive:true,force:true});
   for (const folder of ['app','core','app/ui','app/desktop']) await fs.mkdir(path.join(backend,folder),{recursive:true});
-  for (const name of ['theme.css','icon.svg']) await fs.copyFile(path.join(__dirname,name),path.join(backend,'app/desktop',name));
+  for (const name of ['theme.css','icon.svg','errors.mjs']) await fs.copyFile(path.join(__dirname,name),path.join(backend,'app/desktop',name));
   for (const name of await fs.readdir(path.join(root,'app'))) {
     if (name.endsWith('.py') || name.endsWith('.json') || name === 'panel.html' || name === 'runtime-requirements.txt') await fs.copyFile(path.join(root,'app',name),path.join(backend,'app',name));
   }

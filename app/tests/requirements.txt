@@ -1,5 +1,4 @@
 # Native packaging tests also exercise the project's real single-instance guard.
 -r ../runtime-requirements.txt
 pytest==8.4.2
-psutil==7.2.2
 filelock==3.32.7

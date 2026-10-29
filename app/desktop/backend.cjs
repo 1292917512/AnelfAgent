@@ -4,6 +4,7 @@ const { spawn, spawnSync } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
+const {setTimeout:delay}=require('node:timers/promises');
 
 /** @typedef {{url: string, token: string, pid: number}} Connection */
 /** @typedef {{root:string, backend:string, uv:string, python?:string, timezone:string, downloadSource?:string, profile?:Record<string,string>, indexEnvironment?:string[], tools?:string, signal?:AbortSignal, progress?:(text:string)=>void}} Options */
@@ -58,10 +59,47 @@ function commandFor(options) {
       UV_PYTHON_INSTALL_BIN:'0', UV_PYTHON_INSTALL_REGISTRY:'0'} };
 }
 
+/** A new desktop build must serve its own UI and manager, while retaining the running application.
+ * @param {Options} options @returns {Promise<Connection | null>} */
+async function compatibleBackend(options) {
+  const existing = await connectionAt(options.root);
+  options.signal?.throwIfAborted();
+  if (!existing) return null;
+  const manifest=path.join(options.backend,'manifest.json');
+  if (!fs.existsSync(manifest)) return existing;
+  const expected=JSON.parse(fs.readFileSync(manifest,'utf8')).sha256;
+  if(typeof expected!=='string' || !/^[a-f0-9]{64}$/.test(expected))throw new Error('Invalid backend manifest');
+  const call=async(/** @type {string} */ endpoint,/** @type {boolean} */ post=false)=>{
+    const timeout=AbortSignal.timeout(8000);
+    const response=await fetch(existing.url+'/api/'+endpoint,{method:post?'POST':'GET',
+      headers:{Authorization:'Bearer '+existing.token,'Content-Type':'application/json'},body:post?'{}':undefined,
+      signal:options.signal?AbortSignal.any([options.signal,timeout]):timeout});
+    const result=await response.json();
+    if(!response.ok)throw new Error(result.message || 'Could not replace the previous manager safely');
+    return result;
+  };
+  const status=await call('status');
+  if(status.backend_id===expected)return existing;
+  if(status.busy)throw new Error('旧管理器仍在处理操作，请等待结束后重新连接。 / The previous manager is busy. Reconnect after its operation finishes.');
+  options.progress?.('正在更新本地管理器，保留运行中的项目 / Updating the local manager; keeping project services running');
+  await call('detach',true);
+  const deadline=Date.now()+20000;
+  while(Date.now()<deadline) {
+    options.signal?.throwIfAborted();
+    try {process.kill(existing.pid,0);} catch(error) {
+      if(error && typeof error==='object' && 'code' in error && error.code==='ESRCH')return null;
+      throw error;
+    }
+    await delay(200,undefined,{signal:options.signal});
+  }
+  throw new Error('旧管理器尚未退出，请稍后重新连接。 / The previous manager has not exited. Reconnect shortly.');
+}
+
 /** @param {Options} options @returns {Promise<Connection>} */
 async function ensureBackend(options) {
-  const existing = await connectionAt(options.root);
+  const existing = await compatibleBackend(options);
   if (existing) return existing;
+  options.signal?.throwIfAborted();
   const state = path.join(options.root, 'logs/manager');
   fs.mkdirSync(state, {recursive:true});
   const log = fs.openSync(path.join(state, 'manager.log'), 'a');
@@ -137,4 +175,4 @@ async function runTask(options,args) {
     child.on('close',code=>code===0 ? resolve(output) : reject(new Error(errors.trim().split(/\r?\n/).at(-1) || output || 'Project operation failed ('+code+')')));
   });
 }
-module.exports = { validConnection, commandFor, connectionAt, ensureBackend, findUv, findPython, resolveProfile, runTask };
+module.exports = { validConnection, commandFor, connectionAt, compatibleBackend, ensureBackend, findUv, findPython, resolveProfile, runTask };

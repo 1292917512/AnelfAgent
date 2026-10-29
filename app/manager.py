@@ -19,6 +19,7 @@ from typing import Any
 from app.environment import Environment
 from app.operation import Cancelled, Operation
 from app.processes import background_options
+from app.readiness import web_ready
 from app.repository import RepositoryInfo, change_origin, describe, origin, set_source
 from app.settings import REPOSITORY_SOURCES, Layout, Settings, download_profile, probe_port, resolve_source
 from app.storage import inspect_storage, require_storage
@@ -69,6 +70,12 @@ class Manager:
         self._events: deque[str] = deque(maxlen=150)
         self._phase = "stopped"
         self._last: dict[str, Any] | None = None
+        self._known_runtime: dict[str, Any] | None = None
+        self._web_probe: tuple[int, str, float, bool] = (0, "", 0.0, False)
+        try:
+            self._backend_id = str(json.loads((Path(__file__).resolve().parent.parent / "manifest.json").read_text("utf-8"))["sha256"])
+        except (OSError, ValueError, KeyError):
+            self._backend_id = ""
         self.operation = Operation()
         self.environment = Environment(layout, self.emit, self.operation)
         self._repository = describe("")
@@ -100,17 +107,44 @@ class Manager:
         if not detach and self._process is not None and self._process.poll() is None:
             self._stop()
 
-    def _runtime(self) -> dict[str, Any] | None:
+    def _project_pid(self) -> int:
         try:
-            value = json.loads((self.layout.state / "runtime.json").read_text("utf-8"))
-            if (isinstance(value, dict) and type(value.get("pid")) is int and value["pid"] > 0
-                    and isinstance(value.get("token"), str) and len(value["token"]) >= 16
-                    and isinstance(value.get("control_file"), str)
-                    and Path(value["control_file"]).resolve().parent == self.layout.state.resolve()):
-                return value
+            pid = int((self.layout.root / "logs/anelf.pid").read_text("utf-8").strip())
+            return pid if pid_alive(pid) else 0
         except (OSError, ValueError):
-            return None
-        return None
+            return 0
+
+    def _runtime(self) -> dict[str, Any] | None:
+        project_pid = self._project_pid()
+        stale: dict[str, Any] | None = None
+        paths = [self.layout.state / f"runtime-{project_pid}.json"] if project_pid else []
+        paths.append(self.layout.state / "runtime.json")
+        for path in paths:
+            try:
+                value = json.loads(path.read_text("utf-8"))
+                if (isinstance(value, dict) and type(value.get("pid")) is int and value["pid"] > 0
+                        and (not project_pid or value["pid"] == project_pid)
+                        and isinstance(value.get("token"), str) and len(value["token"]) >= 16
+                        and isinstance(value.get("control_file"), str)
+                        and Path(value["control_file"]).resolve().parent == self.layout.state.resolve()):
+                    if pid_alive(value["pid"]):
+                        self._known_runtime = value
+                        return value
+                    stale = value
+            except (OSError, ValueError):
+                continue
+        if self._known_runtime and pid_alive(self._known_runtime["pid"]) and (not project_pid or self._known_runtime["pid"] == project_pid):
+            return self._known_runtime
+        return stale
+
+    def _web_ready(self, pid: int) -> bool:
+        url = self.web_url
+        previous_pid, previous_url, checked, ready = self._web_probe
+        now = time.monotonic()
+        if (pid, url) != (previous_pid, previous_url) or now - checked >= 1:
+            ready = web_ready(self.layout.root, pid, url)
+            self._web_probe = (pid, url, now, ready)
+        return ready
 
     def _external_pid(self) -> int:
         try:
@@ -127,9 +161,14 @@ class Manager:
         if runtime is not None:
             if pid_alive(runtime["pid"]):
                 phase = str(runtime.get("phase", "starting"))
+                if phase in {"starting", "running"} and runtime.get("web_url"):
+                    phase = "running" if self._web_ready(runtime["pid"]) else "starting" if phase == "starting" else "web_unavailable"
                 return "stopping" if phase == "stopped" else phase, runtime["pid"], runtime
             if runtime.get("phase") == "restarting" and time.time() - float(runtime.get("updated_at", 0)) < 30:
                 return "restarting", None, runtime
+        project_pid = self._project_pid()
+        if project_pid and self._web_ready(project_pid):
+            return "running", project_pid, None
         if os.name != "nt":
             try:
                 guardian = int((self.layout.root / "logs/anelf_guardian.pid").read_text("utf-8").strip())
@@ -153,7 +192,9 @@ class Manager:
             if busy or (phase == "stopped" and self._last and not self._last["ok"]):
                 phase = self._phase
             ready = self.ready
-            return {"root": str(self.layout.root), "phase": phase, "running": pid is not None,
+            return {"root": str(self.layout.root), "backend_id": self._backend_id, "phase": phase, "running": pid is not None,
+                    "web_ready": bool(pid and self._web_ready(pid)) if phase == "running" else False,
+                    "controllable": bool(_runtime and pid and _runtime["pid"] == pid),
                     "pid": pid, "external_pid": self._external_pid(), "busy": busy,
                     "settings": asdict(self.settings), "web_url": self.web_url,
                     "resolved_source": self._repository["source"] or resolve_source(self.settings.source, self.settings.timezone),
@@ -186,7 +227,7 @@ class Manager:
     @property
     def web_url(self) -> str:
         runtime = self._runtime()
-        if runtime is not None and pid_alive(runtime["pid"]) and runtime.get("web_url"):
+        if runtime is not None and pid_alive(runtime["pid"]) and "web_url" in runtime:
             return str(runtime["web_url"])
         host = self.settings.web_host
         host = "127.0.0.1" if host == "0.0.0.0" else "::1" if host == "::" else host
@@ -455,11 +496,14 @@ class Manager:
         if self._external_pid():
             raise RuntimeError("The older instance has no local control channel; stop it through its original terminal")
         deadline = time.monotonic() + self.settings.stop_timeout
+        control_deadline = time.monotonic() + min(10, self.settings.stop_timeout)
         requested: set[int] = set()
         while time.monotonic() < deadline:
             phase, pid, _runtime = self._state()
             if phase in {"stopped", "failed"}:
                 return
+            if not requested and (_runtime is None or not pid_alive(_runtime["pid"])) and time.monotonic() >= control_deadline:
+                raise RuntimeError("Service control is unavailable. Stop the application from its original entry point; no process was killed")
             if pid is not None and pid not in requested:
                 self._host_request("stop")
                 requested.add(pid)

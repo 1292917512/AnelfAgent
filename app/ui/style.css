@@ -132,6 +132,16 @@ footer>span:first-child { display: flex; align-items: center; gap: 5px; }
 #pypi-source-field .hint { font-size: 10px; margin-bottom: 0; }
 #resume-source { margin: 10px 0; }
 #existing-packages { font-size: 10px; margin: 8px 0; }
+.exit-panel { gap: 14px; }
+.exit-panel .runtime-mark { width: 72px; height: 72px; }
+.exit-progress { width: min(100%, 320px); display: grid; gap: 6px; font-size: 10px; }
+.exit-progress progress { width: 100%; }
+.exit-panel .stage-list { justify-content: center; margin: 0; }
+.exit-root { font-size: 10px; color: var(--muted); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.exit-log-preview { width: 100%; font-size: 9px; line-height: 1.8; color: var(--muted); max-height: 52px; overflow: hidden; white-space: pre-wrap; text-align: left; margin: 0; }
+.exit-hint { max-width: 380px; font-size: 10px; margin: 0; }
+#exit-error { display: block; width: 100%; margin: 0; overflow-wrap: anywhere; text-align: left; }
+#exit-error summary { color: inherit; font-size: 11px; padding: 0 22px 0 0; }
 @keyframes breathe { 50% { transform: rotate(5deg) scale(.96); opacity: .5; } }
 @media (max-width: 520px) {
   main { padding: 16px 18px 10px; gap: 12px; }

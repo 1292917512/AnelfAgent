@@ -97,6 +97,7 @@ class Handler(BaseHTTPRequestHandler):
         assets = {"/": ("panel.html", "text/html"), "/app.js": ("ui/app.js", "text/javascript"),
                   "/style.css": ("ui/style.css", "text/css"),
                   "/theme.css": ("desktop/theme.css", "text/css"),
+                  "/desktop/errors.mjs": ("desktop/errors.mjs", "text/javascript"),
                   "/icon.svg": ("desktop/icon.svg", "image/svg+xml")}
         assets.update({"/" + name: ("ui/" + name, "text/javascript")
                        for name in ("i18n.js", "model.js", "dom.js", "progress.js", "network.js", "access.js")})

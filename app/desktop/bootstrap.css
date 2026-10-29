@@ -1,6 +1,12 @@
 @import url('theme.css');
 
 main { max-width: 640px; }
+#setup-flow { display: flex; flex-direction: column; gap: 14px; }
+#opening { display: flex; align-items: center; justify-content: center; gap: 12px; min-height: 138px; color: var(--muted); font-size: 12px; }
+.opening-indicator { width: 18px; height: 18px; border: 2px solid var(--line); border-top-color: var(--accent); border-radius: 50%; animation: opening-spin .9s linear infinite; }
+#opening.failed .opening-indicator { animation: none; border-color: var(--danger); }
+@keyframes opening-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .opening-indicator { animation: none; } }
 ol { display: flex; justify-content: space-between; gap: 15px; padding: 8px 0 14px; margin: 0; list-style: none; border-bottom: 1px solid var(--line); font-size: 11px; color: var(--muted); flex-shrink: 0; }
 .current { color: var(--accent); font-weight: 600; }
 h1 { font-size: 22px; }

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -64,8 +65,21 @@ def create_application(args):
  @app.startup.node(skip_on_error=False)
  async def register_web_service():
   from web import server
-  def started(): Path('server.json').write_text(json.dumps(server._load_server_config()))
-  Lifecycle.register('fixture_web',None,on_start=started)
+  from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+  import threading
+  class Handler(BaseHTTPRequestHandler):
+   def do_GET(self):
+    self.send_response(200);self.end_headers();self.wfile.write(b'{"status":"ok"}')
+   def log_message(self,*args): pass
+  web=None
+  def started():
+   nonlocal web
+   Path('server.json').write_text(json.dumps(server._load_server_config()))
+   web=ThreadingHTTPServer(server._load_server_config(),Handler)
+   threading.Thread(target=web.serve_forever,daemon=True).start()
+  def stop():
+   if web: web.shutdown();web.server_close()
+  Lifecycle.register('fixture_web',None,on_start=started,cleanup=stop)
  app.on_post_shutdown('release',lambda:release_instance(Path('logs/anelf.pid')))
  return app
 def main():
@@ -79,7 +93,10 @@ if __name__=='__main__': main()
     for name, content in files.items():
         file = root / name; file.parent.mkdir(parents=True, exist_ok=True); file.write_text(content, "utf-8")
     manager = Manager(layout)
-    manager.settings = Settings(web_port=18139, stop_timeout=15)
+    with socket.socket() as available:
+        available.bind(("127.0.0.1", 0))
+        port = available.getsockname()[1]
+    manager.settings = Settings(web_port=port, stop_timeout=15)
     observed_starting = False
     try:
         manager.submit("start")
@@ -92,7 +109,7 @@ if __name__=='__main__': main()
             return not state["busy"] and state["phase"] == "running"
         wait(ready, manager)
         assert observed_starting
-        assert json.loads((root / "server.json").read_text()) == ["0.0.0.0", 18139]
+        assert json.loads((root / "server.json").read_text()) == ["0.0.0.0", port]
         first_pid = manager.status()["pid"]
         manager.submit("restart")
         wait(lambda: not manager.status()["busy"] and manager.status()["phase"] == "running"

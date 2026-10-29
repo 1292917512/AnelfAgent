@@ -22,11 +22,11 @@ test('web shortcuts recheck state and reject stale or nonlocal destinations',asy
   let fallback=0;
   const open=async(/** @type {string} */ url)=>{opened.push(url);};
   const ready={ready:true,running:true,busy:false,phase:'running',web_url:'http://127.0.0.1:8092/webui/'};
-  for(const state of [null,{...ready,ready:false},{...ready,running:false},{...ready,busy:true},{...ready,phase:'restarting'},{...ready,web_url:'https://example.com'}]){
+  for(const state of [null,{...ready,ready:false},{...ready,running:false},{...ready,busy:true},{...ready,phase:'restarting'},{...ready,web_ready:false},{...ready,web_url:'https://example.com'}]){
     assert.equal(await openWebConsole(async()=>state,open,()=>{fallback++;}),false);
   }
   assert.equal(await openWebConsole(async()=>{throw new Error('offline');},open,()=>{fallback++;}),false);
-  assert.equal(fallback,7);assert.deepEqual(opened,[]);
+  assert.equal(fallback,8);assert.deepEqual(opened,[]);
   assert.equal(await openWebConsole(async()=>ready,open,()=>{fallback++;}),true);
   assert.deepEqual(opened,[ready.web_url]);
 });

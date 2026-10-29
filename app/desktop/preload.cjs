@@ -4,8 +4,10 @@ const { contextBridge, ipcRenderer } = require('electron');
 contextBridge.exposeInMainWorld('anelfDesktop', Object.freeze({
   chooseProject: (/** @type {'existing'|'destination'} */ purpose) => ipcRenderer.invoke('anelf:choose-project',purpose),
   version: () => ipcRenderer.invoke('anelf:version'),
+  language: () => ipcRenderer.invoke('anelf:language'),
   reconnect: () => ipcRenderer.invoke('anelf:reconnect'),
   cleanup: () => ipcRenderer.invoke('anelf:cleanup'),
+  exitChoice: (/** @type {'return'|'quit'} */ choice) => ipcRenderer.invoke('anelf:exit-choice',choice),
   bootstrapInfo: () => ipcRenderer.invoke('anelf:bootstrap-info'),
   projectRepository: (/** @type {string} */ root) => ipcRenderer.invoke('anelf:project-repository',root),
   bootstrapStorage: () => ipcRenderer.invoke('anelf:bootstrap-storage'),
@@ -18,8 +20,8 @@ contextBridge.exposeInMainWorld('anelfDesktop', Object.freeze({
   },
   bootstrapStart: (/** @type {import('../ui/lib/types').BootstrapSelection} */ value) => ipcRenderer.invoke('anelf:bootstrap-start',value),
   bootstrapCancel: () => ipcRenderer.invoke('anelf:bootstrap-cancel'),
-  onExitState: (/** @type {(value:{stopping:boolean,error:string})=>void} */ callback) => {
-    const listener = (/** @type {Electron.IpcRendererEvent} */ _event, /** @type {{stopping:boolean,error:string}} */ value) => callback(value);
+  onExitState: (/** @type {(value:import('../ui/lib/types').ExitState)=>void} */ callback) => {
+    const listener = (/** @type {Electron.IpcRendererEvent} */ _event, /** @type {import('../ui/lib/types').ExitState} */ value) => callback(value);
     ipcRenderer.on('anelf:exit-state',listener);
     return () => ipcRenderer.removeListener('anelf:exit-state',listener);
   },

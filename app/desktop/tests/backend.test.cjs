@@ -40,6 +40,37 @@ test('desktop version follows the project release version',()=>{
   assert.equal(require('../package.json').version,require('../version.cjs').projectVersion());
 });
 
+test('packaged backends reuse only matching builds and detach idle old managers without stopping projects',async context=>{
+  const fs=require('node:fs'),path=require('node:path'),os=require('node:os');
+  const {spawn}=require('node:child_process');
+  const {compatibleBackend}=require('../backend.cjs');
+  for(const mode of ['matching','old','busy'])await context.test(mode,async()=>{
+    const root=fs.mkdtempSync(path.join(os.tmpdir(),'anelf-manager-version-'));
+    fs.writeFileSync(path.join(root,'manifest.json'),JSON.stringify({sha256:'a'.repeat(64)}));
+    const helper=spawn(process.execPath,['-e',`
+      const fs=require('node:fs'),path=require('node:path'),http=require('node:http');
+      const [root,mode]=process.argv.slice(1),directory=path.join(root,'logs/manager');fs.mkdirSync(directory,{recursive:true});
+      const server=http.createServer((req,res)=>{
+        if(req.headers.authorization!=='Bearer '+'x'.repeat(32)){res.writeHead(401);res.end();return;}
+        if(req.method==='POST')fs.writeFileSync(path.join(root,'events'),req.url);
+        res.setHeader('Content-Type','application/json');res.end(JSON.stringify({root,running:true,busy:mode==='busy',backend_id:mode==='matching'?'a'.repeat(64):undefined}));
+        if(req.url==='/api/detach')server.close();
+      });
+      server.listen(0,'127.0.0.1',()=>fs.writeFileSync(path.join(directory,'connection.json'),JSON.stringify({url:'http://127.0.0.1:'+server.address().port,token:'x'.repeat(32),pid:process.pid})));
+    `,root,mode],{windowsHide:true,stdio:'ignore'});
+    try {
+      const file=path.join(root,'logs/manager/connection.json');
+      for(let i=0;i<100&&!fs.existsSync(file);i++)await new Promise(resolve=>setTimeout(resolve,50));
+      assert.ok(fs.existsSync(file));
+      const options={root,backend:root,uv:'must-not-spawn',timezone:'UTC'};
+      if(mode==='busy')await assert.rejects(compatibleBackend(options),/previous manager is busy/);
+      else if(mode==='matching')assert.equal((await compatibleBackend(options))?.pid,helper.pid);
+      else {assert.equal(await compatibleBackend(options),null);assert.equal(fs.readFileSync(path.join(root,'events'),'utf8'),'/api/detach');}
+      if(mode!=='old')assert.equal(fs.existsSync(path.join(root,'events')),false);
+    } finally {if(helper.exitCode===null)helper.kill();fs.rmSync(root,{recursive:true,force:true});}
+  });
+});
+
 
 test('user uv and Python discovery remain read-only and preserve explicit interpreter paths', (context) => {
   const childProcess = require('node:child_process');

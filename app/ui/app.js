@@ -1,5 +1,6 @@
 import {t, language, setLanguage, translate} from './i18n.js';
-import {el, button, input, message, settingsForm, environmentRows, storageText} from './dom.js';
+import {el, button, input, message, showError, translateError, settingsForm, environmentRows, storageText} from './dom.js';
+import {describeError} from '../desktop/errors.mjs';
 import {controls, installing} from './model.js';
 import {renderProgress} from './progress.js';
 import {renderNetwork} from './network.js';
@@ -23,6 +24,9 @@ let view = 'home', step = initialStep, wizard = initialStep === 2, sourceDirty =
 let windowMode = '';
 let trayKey = '';
 let stoppingForExit = false, exitError = '';
+let languageReady=!window.anelfDesktop?.language;
+let exitStage='checking', exitRoot='', exitStarted=0;
+/** @type {string[]} */ let exitSteps=[];
 let requestedHeight = 0;
 /** @param {unknown} error */ const errorText = error => error instanceof Error ? error.message : String(error);
 /** @param {string} path @param {object} [body] */
@@ -45,15 +49,16 @@ function sources() {
   el('pypi-url').textContent=pypi === 'auto' ? pypiDefaults[downloads === 'auto' ? chinaTimezones.includes(timezone) ? 'china' : 'global' : downloads] || '' : pypiSources[pypi]?.url || '';
 }
 function render() {
+  const exiting=stoppingForExit || !!exitError;
   const flags = controls(state, connected && !pending && !stoppingForExit);
   /** @type {import('./lib/types').TrayState} */
   const trayState={ready:!!state?.ready,webReady:!!state?.ready && flags.workspace,settingsAvailable:configured && !stoppingForExit,language:language==='zh'?'zh':'en'};
   const nextTrayKey=JSON.stringify(trayState);
-  if(window.anelfDesktop?.trayState && nextTrayKey!==trayKey){trayKey=nextTrayKey;void window.anelfDesktop.trayState(trayState).catch(()=>{trayKey='';});}
+  if(languageReady && window.anelfDesktop?.trayState && nextTrayKey!==trayKey){trayKey=nextTrayKey;void window.anelfDesktop.trayState(trayState).catch(()=>{trayKey='';});}
   const updating = !!state?.busy && state.operation.action === 'update';
-  el('connection-notice').hidden = connected || failures < 3;
+  el('connection-notice').hidden = exiting || connected || failures < 3;
   el('connection-notice-text').textContent = t(!state ? 'unavailable' : state.ready ? 'disconnected' : 'installDisconnected');
-  el('connection-loading').hidden = !!state || failures >= 3;
+  el('connection-loading').hidden = exiting || !!state || failures >= 3;
   el('connection-dot').className = 'dot ' + (connected ? 'online' : '');
   el('connection-label').textContent = t(connected ? 'connected' : failures < 3 ? 'connecting' : 'offline');
   el('nav-home').hidden = view !== 'settings'; el('nav-settings').classList.toggle('active',view === 'settings');
@@ -68,12 +73,32 @@ function render() {
   el('page-title').textContent = t(view === 'settings' ? 'settings' : wizard ? 'welcome' : 'manage');
   el('language').textContent = language === 'zh' ? 'EN' : '中文';
   el('footer-hint').textContent = t(window.anelfDesktop ? 'trayFooter' : 'footer');
-  const mode = view === 'settings' ? 'settings' : wizard || !state ? 'setup' : 'manage';
+  el('exit-panel').hidden=!exiting;
+  const mode = exiting ? 'manage' : view === 'settings' ? 'settings' : wizard || !state ? 'setup' : 'manage';
   const logs = el('log-panel').hasAttribute('open');
   const sizeKey = mode + ':' + (wizard ? step : '') + ':' + !!state?.busy;
   if (sizeKey !== windowMode || !requestedHeight) { windowMode = sizeKey; requestedHeight=0;requestAnimationFrame(fitWindow); }
   for (let n=1;n<=3;n++) el('step-' + n).hidden = step !== n;
   document.querySelectorAll('[data-step]').forEach(node => { if (node instanceof HTMLElement) { node.classList.toggle('current',Number(node.dataset.step) === step); node.classList.toggle('done',Number(node.dataset.step) < step); } });
+  if(exiting) {
+    for(const id of ['configuration','wizard','dashboard','page-heading','project-bar','message'])el(id).hidden=true;
+    el('exit-title').textContent=t(exitError?'exitFailed':'exitStopping');
+    el('exit-stage').textContent=t('exit-'+exitStage);
+    el('exit-error').hidden=!exitError;
+    const diagnostic=describeError(exitError,language);
+    el('exit-error-summary').textContent=diagnostic.message;
+    el('exit-error-detail').textContent=diagnostic.detail;
+    el('exit-mark').classList.toggle('working',stoppingForExit);
+    el('exit-progress').hidden=!stoppingForExit;
+    el('exit-elapsed').textContent=stoppingForExit ? t('elapsed')+' '+Math.floor((Date.now()-exitStarted)/1000)+t('seconds') : '';
+    el('exit-root').textContent=exitRoot || state?.root || '';el('exit-root').title=el('exit-root').textContent;
+    el('exit-steps').replaceChildren(...exitSteps.map((stage,index)=>{
+      const item=document.createElement('li');item.textContent=(index<exitSteps.length-1?'✓ ':'· ')+t('exit-'+stage);return item;
+    }));
+    el('exit-log-preview').hidden=logs || !el('exit-log-preview').textContent;
+    document.querySelectorAll('button').forEach(node=>{node.disabled=!['exit-return','exit-only','copy-log','language'].includes(node.id);});
+    return;
+  }
   if (!state) { el('dashboard').hidden = true; return; }
   const phase = !connected ? 'unknown' : installing(state) ? state.operation.action === 'update' ? 'updating' : 'installing' : ({start:'starting',stop:'stopping',restart:'restarting',setup:'installing'})[state.phase] || state.phase;
   el('phase').textContent = t(phase); el('runtime-state').textContent = t(phase);
@@ -81,7 +106,7 @@ function render() {
   el('pid').textContent = state.pid ? String(state.pid) : '—'; el('web-address').textContent = state.web_url;
   const active = state.running || ['starting','restarting','stopping'].includes(state.phase);
   const transitioning = state.busy || ['starting','restarting','stopping'].includes(state.phase);
-  el('runtime-description').textContent = t(transitioning ? 'workingHint' : state.external_pid ? 'externalHint' : state.running ? 'runningHint' : 'stoppedHint');
+  el('runtime-description').textContent = t(transitioning ? 'workingHint' : state.running && state.controllable===false ? 'controlUnavailableHint' : state.phase==='web_unavailable' ? 'webUnavailableHint' : state.external_pid ? 'externalHint' : state.running ? 'runningHint' : 'stoppedHint');
   el('runtime-mark').classList.toggle('running',state.phase === 'running' && connected);
   el('runtime-mark').classList.toggle('working',transitioning);
   button('start').disabled = active ? !flags.stop : !flags.start;
@@ -97,6 +122,7 @@ function render() {
   const space = state.storage;
   for (const id of ['next','install','update']) button(id).disabled ||= !space?.sufficient;
   button('update').disabled ||= !!state.external_pid;
+  button('update').disabled ||= state.running && state.controllable===false;
   button('update').disabled ||= transitioning;
   button('update').hidden = !state.running && !updating;
   button('update').title = space && !space.sufficient ? storageText(space) : t('updateHint');
@@ -128,25 +154,21 @@ function render() {
   if (configured && !dirty) for (const field of schema) { const control = input('setting-' + field.name); if (control instanceof HTMLInputElement && field.type === 'checkbox') control.checked = Boolean(state.settings[field.name]); else control.value = String(state.settings[field.name]); }
   sources();
   access.update(state, flags.configure && !stoppingForExit);
-  if (stoppingForExit || exitError) {
-    message(stoppingForExit ? t('exitStopping') : t('exitFailed') + ' ' + exitError);
-    if (stoppingForExit) document.querySelectorAll('button').forEach(node => {if(node.id !== 'copy-log')node.disabled=true;});
-  }
 }
 function fitWindow() {
-  if (!window.anelfDesktop || stoppingForExit || !state || !configured) return;
+  if (!window.anelfDesktop || !state || !configured) return;
   const main=document.querySelector('main');
   if (!main) return;
   const height=Math.ceil(main.getBoundingClientRect().height);
   if (Math.abs(height-requestedHeight)<2) return;
   requestedHeight=height;
-  const mode=view === 'settings' ? 'settings' : wizard || !state ? 'setup' : 'manage';
+  const mode=stoppingForExit || exitError ? 'manage' : view === 'settings' ? 'settings' : wizard || !state ? 'setup' : 'manage';
   void window.anelfDesktop.resize({view:mode,logs:el('log-panel').hasAttribute('open'),height}).catch(()=>{});
 }
 async function inspect() {
   el('environment').textContent = t('detecting'); button('inspect').disabled = true;
   try { const result = await api('environment'); environmentRows(result); }
-  catch (error) { message(errorText(error)); }
+  catch (error) { showError(error); }
   finally { button('inspect').disabled = !!state?.busy; }
 }
 async function checkNetwork() {
@@ -157,7 +179,7 @@ async function checkNetwork() {
   try {
     const result = await api('network', {download_source:selected,pypi_source:pypi,timezone});
     if (selected === input('install-download-source').value && pypi === input('install-pypi-source').value) renderNetwork(result);
-  } catch (error) { el('network-results').textContent = errorText(error); }
+  } catch (error) { el('network-results').textContent = describeError(error,language).message;showError(error); }
   finally { networkPending = false; render(); if (selected !== input('install-download-source').value || pypi !== input('install-pypi-source').value) void checkNetwork(); }
 }
 async function refresh() {
@@ -187,29 +209,29 @@ async function refresh() {
     if (installing(state)) { wizard = !updating; step = 2; if (!previous?.busy) el('environment-details').removeAttribute('open'); }
     if (!state.ready && !state.running && !updating) { wizard = true; if (step === 3) step = 2; }
     if (previous?.busy && !state.busy && state.ready && state.last?.ok && ['install','setup','update'].includes(state.operation.action || '')) { step = 3; wizard = false; view = 'home'; message(''); }
-    if (state.last && !state.last.ok) message(state.last.cancelled ? t('cancelled') : state.last.message || t('error'));
-    else if (state.external_pid) message(t('external'));
+    if (state.last && !state.last.ok) {if(state.last.cancelled)message(t('cancelled'));else showError(state.last.message || t('error'));}
+    else if (state.external_pid) message(t(state.web_ready && state.controllable===false ? 'controlUnavailableHint' : 'external'));
     else if (previous?.external_pid) message('');
     render();
-    if (el('log-panel').hasAttribute('open') || state.busy || ['starting','restarting','stopping'].includes(state.phase)) {
-      const kind = wizard ? 'commands' : 'application'; el('log-path').textContent = state.root + '/logs/manager/' + kind + '.log';
+    if (stoppingForExit || el('log-panel').hasAttribute('open') || state.busy || ['starting','restarting','stopping'].includes(state.phase)) {
+      const kind = stoppingForExit ? ['cancel-install','cancel-update','prepare-exit'].includes(exitStage)?'commands':'application' : wizard ? 'commands' : 'application'; el('log-path').textContent = state.root + '/logs/manager/' + kind + '.log';
       const log = el('logs'), atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 35;
-      try { log.textContent = (await api('logs/' + kind)).text || t('noLogs'); el('log-preview').textContent = log.textContent.trim().split('\n').slice(-3).join('\n'); if (atBottom) log.scrollTop = log.scrollHeight; }
+      try { log.textContent = (await api('logs/' + kind)).text || t('noLogs'); el('log-preview').textContent = log.textContent.trim().split('\n').slice(-3).join('\n'); el('exit-log-preview').textContent=el('log-preview').textContent;if(stoppingForExit)el('exit-log-preview').hidden=el('log-panel').hasAttribute('open'); if (atBottom) log.scrollTop = log.scrollHeight; }
       catch { log.textContent = t('logUnavailable'); }
     }
-  } catch (error) { message(errorText(error)); render(); }
+  } catch (error) { showError(error); render(); }
   finally { refreshing = false;if(beginInstallation)void act('install'); }
 }
 /** @param {string} action */
 async function act(action) {
   if (pending || stoppingForExit) return; pending = true; exitError='';message(''); render();
   try { if (['install','setup'].includes(action)) await api('settings',{source:input('install-source').value,download_source:input('install-download-source').value,pypi_source:input('install-pypi-source').value,timezone}); await api('action',{action}); }
-  catch (error) { message(errorText(error)); }
+  catch (error) { showError(error); }
   finally { pending = false; await refresh(); render(); }
 }
 for (const node of document.querySelectorAll('[data-action]')) if (node instanceof HTMLButtonElement) node.onclick = () => { void act(node.dataset.action || ''); };
 button('start').onclick = () => { void act(state?.running || ['starting','restarting','stopping'].includes(state?.phase || '') ? 'stop' : 'start'); };
-button('cancel').onclick = async () => { try { await api('cancel',{}); await refresh(); } catch (error) { message(errorText(error)); } };
+button('cancel').onclick = async () => { try { await api('cancel',{}); await refresh(); } catch (error) { showError(error); } };
 for (const id of ['nav-home','settings-back']) button(id).onclick = () => { view = 'home'; render(); };
 button('nav-settings').onclick = () => { view = view === 'settings' ? 'home' : 'settings'; render(); if(view === 'settings')void access.refresh(); };
 button('next').onclick = async () => { step = 2; await act('install'); };
@@ -221,7 +243,7 @@ button('inspect').onclick = inspect;
 input('install-source').onchange = () => { sourceDirty = true; sources(); };
 input('install-download-source').onchange = () => { sourceDirty = true; el('network-summary').textContent = t('networkTitle'); void checkNetwork(); };
 input('install-pypi-source').onchange = () => { sourceDirty = true; sources(); el('network-summary').textContent=t('networkTitle'); void checkNetwork(); };
-button('language').onclick = () => { setLanguage(language === 'zh' ? 'en' : 'zh'); translate(); pypiOptions(); settingsForm(schema,state); render(); };
+button('language').onclick = () => { setLanguage(language === 'zh' ? 'en' : 'zh'); translate();translateError(); pypiOptions(); settingsForm(schema,state); render(); };
 el('settings').oninput = () => { dirty = true; }; el('settings').onsubmit = event => event.preventDefault();
 button('save').onclick = async () => {
   if (pending || stoppingForExit) return;
@@ -230,22 +252,33 @@ button('save').onclick = async () => {
     /** @type {Record<string,string|number|boolean>} */
     const body = {}; for (const field of schema) { const control = input('setting-' + field.name); body[field.name] = control instanceof HTMLInputElement && field.type === 'checkbox' ? control.checked : field.type === 'number' ? Number(control.value) : control.value; } await api('settings',body); dirty = false; sourceDirty = false;
     message(await access.savePending() ? t('saved') : t('settingsPasswordFailed')); }
-  catch (error) { message(errorText(error)); }
+  catch (error) { showError(error); }
   finally { pending=false;await refresh();render(); }
 };
-button('ports').onclick = async () => { try { const result = await api('ports'); message(result.host + ':' + result.port + ' · ' + t(result.available ? 'available' : 'occupied')); } catch (error) { message(errorText(error)); } };
-button('choose-project').onclick = async () => { try { if (window.anelfDesktop) await window.anelfDesktop.chooseProject(); else message(t('browserProject')); } catch (error) { message(errorText(error)); } };
-button('reconnect').onclick = async () => { try { if (window.anelfDesktop) await window.anelfDesktop.reconnect(); else await refresh(); } catch (error) { message(errorText(error)); } };
-button('cleanup').onclick = async () => { try { await window.anelfDesktop?.cleanup(); } catch (error) { message(errorText(error)); } };
-button('copy-log').onclick = async () => { try { await navigator.clipboard.writeText(el('logs').textContent || ''); message(t('copied')); } catch (error) { message(errorText(error)); } };
+button('ports').onclick = async () => { try { const result = await api('ports'); message(result.host + ':' + result.port + ' · ' + t(result.available ? 'available' : 'occupied')); } catch (error) { showError(error); } };
+button('choose-project').onclick = async () => { try { if (window.anelfDesktop) await window.anelfDesktop.chooseProject(); else message(t('browserProject')); } catch (error) { showError(error); } };
+button('reconnect').onclick = async () => { try { if (window.anelfDesktop) await window.anelfDesktop.reconnect(); else await refresh(); } catch (error) { showError(error); } };
+button('cleanup').onclick = async () => { try { await window.anelfDesktop?.cleanup(); } catch (error) { showError(error); } };
+button('copy-log').onclick = async () => { try { await navigator.clipboard.writeText(el('logs').textContent || ''); message(t('copied')); } catch (error) { showError(error); } };
 el('log-panel').ontoggle = () => { render(); void refresh(); };
 translate(); render();
+if(window.anelfDesktop?.language)void window.anelfDesktop.language().then(value=>{
+  setLanguage(value);translate();translateError();languageReady=true;render();
+}).catch(()=>{languageReady=true;render();});
+for(const [id,choice] of /** @type {const} */ ([['exit-return','return'],['exit-only','quit']]))button(id).onclick=async()=>{
+  try{await window.anelfDesktop?.exitChoice(choice);}catch(error){exitError=errorText(error);render();}
+};
 window.anelfDesktop?.onExitState?.(value => {
+  if(value.stopping && !stoppingForExit){exitStarted=Date.now();exitSteps=[];el('exit-log-preview').textContent='';}
   stoppingForExit=value.stopping;exitError=value.error;
+  if(value.stage){exitStage=value.stage;if(exitSteps.at(-1)!==value.stage)exitSteps.push(value.stage);}
+  if(value.root)exitRoot=value.root;
   if (!stoppingForExit) document.querySelectorAll('button').forEach(node=>{node.disabled=false;});
-  render();
+  if(!stoppingForExit && !exitError){view='home';message('');void refresh();}
+  requestedHeight=0;render();requestAnimationFrame(fitWindow);
 });
 window.anelfDesktop?.onNavigate?.(target=>{
+  if(stoppingForExit || exitError)return;
   view=target;render();window.scrollTo(0,0);if(target==='settings')void access.refresh();
 });
 const main=document.querySelector('main');

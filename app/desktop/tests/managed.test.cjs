@@ -28,6 +28,12 @@ test('offline and stopped states cannot open a workspace; a busy installation ca
   assert.equal(controls({...state,running:true,phase:'running'},false).workspace,false);
   assert.equal(controls({...state,busy:true,operation:{cancellable:true,steps:[]}},true).cancel,true);
   assert.equal(controls({...state,busy:true,operation:{cancellable:true,cancelling:true,steps:[]}},true).cancel,false);
+  const healthy={...state,running:true,phase:'running',web_ready:true,controllable:false};
+  assert.equal(controls(healthy,true).workspace,true);
+  assert.equal(controls(healthy,true).start,false);
+  assert.equal(controls(healthy,true).stop,false);
+  assert.equal(controls(healthy,true).restart,false);
+  assert.equal(controls({...healthy,web_ready:false},true).workspace,false);
 });
 
 test('POSIX owned paths retain their original filesystem target through parent aliases',{skip:process.platform==='win32'},async()=>{

@@ -1,0 +1,21 @@
+diff --git a/templates/nsis/include/installUtil.nsh b/templates/nsis/include/installUtil.nsh
+--- a/templates/nsis/include/installUtil.nsh
++++ b/templates/nsis/include/installUtil.nsh
+@@ -206,6 +206,9 @@ Function uninstallOldVersion
+     StrCpy $0 "$0 --updated"
+   ${endif}
+ 
++  !ifmacrodef customUninstallPrevious
++    !insertmacro customUninstallPrevious
++  !else
+   StrCpy $uninstallerFileNameTemp "$PLUGINSDIR\old-uninstaller.exe"
+   !insertmacro copyFile "$uninstallerFileName" "$uninstallerFileNameTemp"
+ 
+@@ -246,6 +249,7 @@ Function uninstallOldVersion
+ 
+   DoesNotExist:
+     SetErrors
++  !endif
+ FunctionEnd
+ 
+ !macro uninstallOldVersion ROOT_KEY

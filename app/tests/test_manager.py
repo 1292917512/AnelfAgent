@@ -34,6 +34,16 @@ def wait_for(predicate: Callable[[], bool], timeout: float = 10) -> None:
         time.sleep(0.03)
 
 
+def test_stop_without_control_fails_before_full_shutdown_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    manager = Manager(Layout(tmp_path))
+    monkeypatch.setattr(manager, "_external_pid", lambda: 0)
+    monkeypatch.setattr(manager, "_state", lambda: ("starting", None, None))
+    ticks = iter([0.0, 0.0, 11.0, 11.0])
+    monkeypatch.setattr("app.manager.time.monotonic", lambda: next(ticks))
+    with pytest.raises(RuntimeError, match="Service control is unavailable"):
+        manager._stop()
+
+
 @pytest.mark.parametrize("value", [{"web_port": 0}, {"web_port": 65536}, {"web_port": True},
                                   {"web_port": "8092"}, {"web_host": "example.com"},
                                   {"stop_timeout": 1}, {"auto_start": "yes"}, {"unknown": 1}])
@@ -269,6 +279,9 @@ def test_http_requires_token_and_rejects_cross_origin(tmp_path: Path) -> None:
             with opener.open(server.base_url + "/" + asset) as response:
                 assert response.headers.get_content_type() == mime
                 assert response.read() == (Path(__file__).parents[1] / "desktop" / asset).read_bytes()
+        with opener.open(server.base_url + "/desktop/errors.mjs") as response:
+            assert response.headers.get_content_type() == "text/javascript"
+            assert response.read() == (Path(__file__).parents[1] / "desktop/errors.mjs").read_bytes()
     finally:
         server.shutdown()
         server.server_close()
