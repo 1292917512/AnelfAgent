@@ -23,6 +23,7 @@ from channels.qq.parser import (
     _parse_message_segments_sync,
 )
 from channels.qq.send import QQSender
+from channels.qq.tools import QQToolsMixin
 
 
 class TestBuildMediaSegment:
@@ -255,6 +256,51 @@ class TestExtractImagesFallback:
         assert len(images) == 1
         assert images[0].data == str(real)
         assert images[0].is_url is False
+
+
+class TestUploadGroupFile:
+    """群文件上传的本地文件编码契约。"""
+
+    class _Stub(QQToolsMixin):
+        def __init__(self, ok: bool = True) -> None:
+            self.calls: list[tuple[str, dict[str, Any]]] = []
+            self._ok = ok
+
+        async def _call_api(self, action: str, params: dict[str, Any]) -> bool:
+            self.calls.append((action, params))
+            return self._ok
+
+    async def test_local_file_uses_base64_uri(self, tmp_path) -> None:
+        real = tmp_path / "probe.txt"
+        real.write_bytes(b"mengli-upload-probe")
+        tools = self._Stub()
+
+        result = json.loads(await tools.upload_group_file(
+            "1104224649", str(real), folder="/probes", name="renamed.txt",
+        ))
+
+        assert result == {
+            "success": True, "chat_id": "1104224649", "file_name": "renamed.txt",
+        }
+        action, params = tools.calls[0]
+        assert action == "upload_group_file"
+        assert params == {
+            "group_id": 1104224649,
+            "file": "base64://bWVuZ2xpLXVwbG9hZC1wcm9iZQ==",
+            "name": "renamed.txt",
+            "folder": "/probes",
+        }
+
+    async def test_missing_local_file_does_not_call_api(self, tmp_path) -> None:
+        tools = self._Stub()
+
+        result = json.loads(await tools.upload_group_file(
+            "1104224649", str(tmp_path / "missing.zip"),
+        ))
+
+        assert result["success"] is False
+        assert "不存在" in result["error"]
+        assert tools.calls == []
 
 
 class TestDownloadFileFallback:

@@ -772,7 +772,7 @@ class QQToolsMixin:
         file_name = name or os.path.basename(file_path)
         ok = await self._call_api("upload_group_file", {
             "group_id": gid,
-            "file": file_content,
+            "file": f"base64://{file_content}",
             "name": file_name,
             "folder": folder,
         })
