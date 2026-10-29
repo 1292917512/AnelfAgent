@@ -406,7 +406,7 @@
       "scanningHint": "Scanning source pages while building projections. Pending grows as records are queued; it is not the total or duplicate memories.",
       "verifyingHint": "Checking sources, fingerprints, tags and extraction status before enabling the index.",
       "paused": "Writes paused; reassessing after cooldown",
-      "stopped": "The sync worker is stopped. The queue is preserved; check sync and model settings.",
+      "stopped": "The sync task is not running. The queue is preserved; retry sync and check Last error for the specific cause.",
       "retrying": "{{count}} previously failed items remain in the automatic retry queue.",
       "retryAfter": "Earliest eligible retry: {{time}} (processed in queue order)",
       "configPending": "New model/settings saved; waiting for the current batch to finish. This batch may still use the previous model.",

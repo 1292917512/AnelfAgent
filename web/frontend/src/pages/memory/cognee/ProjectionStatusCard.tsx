@@ -25,11 +25,14 @@ export function ProjectionStatusCard({ state, sync, updatedAt, stale, enabled, o
   const total = (state?.counts.memories ?? 0) + (state?.counts.graph_nodes ?? 0);
   const building = !!state && ["scanning", "building", "verifying"].includes(state.phase);
   const hasUpdates = !!sync && (sync.pending > 0 || sync.failed > 0);
+  const stopped = !!sync && sync.enabled && !sync.running && !sync.configuration_pending;
+  const canRetry = !!sync && (!!sync.failed || !!sync.publication?.error || !!sync.last_error
+    || (stopped && sync.pending > 0));
   return (
     <Card title={t("cognee.projectionTitle")} subtitle={phase === "ready" && hasUpdates
       ? t("cognee.queue.indexWithUpdates") : phase ? t(`cognee.projectionPhases.${phase}`) : t("cognee.queue.noProjection")}
       actions={<div className="flex flex-wrap gap-2">
-        {!!(sync?.failed || sync?.publication?.error) && <Button size="sm" loading={retrying}
+        {canRetry && <Button size="sm" loading={retrying}
           disabled={!enabled || stale} onClick={onRetry}><RefreshCw size={14} />{t("retryFailedSync")}</Button>}
         {state && <Button variant="ghost" size="sm" onClick={() => setOpen(true)}>{t("cognee.buildDetails")}</Button>}
         {sync && <SyncControl sync={sync} enabled={enabled} stale={stale} />}
@@ -59,7 +62,7 @@ export function ProjectionStatusCard({ state, sync, updatedAt, stale, enabled, o
         </p>}
         {sync && !sync.enabled && <p role="status">{t("cognee.progress.syncPaused")}</p>}
         {sync?.pause_requested && <p role="status" className="text-accent">{t("cognee.progress.pausePending")}</p>}
-        {sync?.enabled && !sync.running && sync.pending > 0 && <p role="alert" className="text-danger">{t("cognee.progress.stopped")}</p>}
+        {stopped && sync.pending > 0 && <p role="alert" className="text-danger">{t("cognee.progress.stopped")}</p>}
         {(sync?.retrying ?? 0) > 0 && <p role="status">{t("cognee.progress.retrying", { count: sync?.retrying })}
           {!!sync?.next_retry_at && ` ${t("cognee.progress.retryAfter", { time: new Date(sync.next_retry_at * 1000).toLocaleTimeString() })}`}
         </p>}

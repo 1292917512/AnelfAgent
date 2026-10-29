@@ -96,26 +96,38 @@ class CogneeCoordinator:
         )
 
     async def start(self) -> None:
+        self._require_open()
+        if self.is_running:
+            return
         self.client.projection_ready = False
         self.store.set_cognee_projection_enabled(
             self.config.enabled,
         )
         if not self.config.enabled:
             return
-        await self.rebuild.initialize(self.config)
-        availability = await self.client.initialize()
-        if availability.ready:
-            await self.client.available_datasets([])
-        if not availability.ready and not availability.configuration_required:
-            self._last_error = availability.reason
+        try:
+            await self.rebuild.initialize(self.config)
+            availability = await self.client.initialize()
+            if availability.ready:
+                await self.client.available_datasets([])
+            self._last_error = (
+                availability.reason if not availability.ready and not availability.configuration_required else ""
+            )
+        except Exception as exc:
+            self._last_error = _error_text(exc)
+            log(f"Cognee 初始化尚未完成，队列保留: {self._last_error}", "WARNING", tag="记忆")
         # 启动即预热存储统计（大库遍历数十秒，后台线程执行不阻塞启动），
         # 保证用户打开数据管理/记忆页时快照已就绪
         cognee_storage_stats.schedule_refresh(self.config.absolute_data_root)
-        if self.config.sync_enabled and self._task is None:
-            self._task = asyncio.create_task(
-                self._worker(),
-                name="memory.cognee.sync",
-            )
+        self._start_worker()
+
+    def _start_worker(self) -> None:
+        """仅在同步启用时创建唯一消费者；显式暂停或宿主关停不能被重试绕过。"""
+        if self._stopping or not (self.config.enabled and self.config.sync_enabled) or self.is_running:
+            return
+        self._closing = False
+        self._wake = asyncio.Event()
+        self._task = asyncio.create_task(self._worker(), name="memory.cognee.sync")
 
     def _stale_after_seconds(self) -> float:
         """卡死判定阈值（processing 超过该时长视为被中断）。
@@ -175,7 +187,7 @@ class CogneeCoordinator:
     async def reconfigure(self, config: CogneeConfig) -> None:
         """接纳已保存配置，在当前投影批次结束后应用最后一次修改。"""
         self._require_open()
-        self.rebuild.validate_config(config)
+        self.rebuild.validate_config(config, selected_root=self.config.absolute_data_root)
         self._pending_config = config.normalized()
         self._configuration_error = ""
         if self._configuration_task is None or self._configuration_task.done():
@@ -208,17 +220,13 @@ class CogneeCoordinator:
             self.config.enabled,
         )
         self.client.reconfigure(self.config)
-        if self.config.enabled:
-            await self.rebuild.initialize(self.config)
         self._breaker = self._build_breaker()
         self._pause_until_ns = 0
         self._pause_reason = ""
 
         should_run = self.config.enabled and self.config.sync_enabled
-        if should_run and (self._task is None or self._task.done()):
-            self._closing = False
-            self._wake = asyncio.Event()
-            self._task = asyncio.create_task(self._worker(), name="memory.cognee.sync")
+        if should_run:
+            self._start_worker()
         elif not should_run and self._task and not self._task.done():
             self._closing = True
             self._wake.set()
@@ -231,6 +239,7 @@ class CogneeCoordinator:
 
         # 立即按新配置做一次初始化，让状态接口即时反馈解析结果
         if self.config.enabled:
+            await self.rebuild.initialize(self.config)
             availability = await self.client.initialize()
             if availability.ready:
                 await self.client.list_datasets()
@@ -266,7 +275,7 @@ class CogneeCoordinator:
                 self._pending_config.enabled and self._pending_config.sync_enabled)),
             configuration_pending=self.configuration_pending,
             configuration_error=self._configuration_error,
-            last_error=activity["last_error"] or self._last_error,
+            last_error=self._last_error or activity["last_error"],
             last_compact_at=self.last_compact_at,
             last_compact_summary=self.last_compact_summary,
             maintenance=self._maintenance_status,
@@ -387,6 +396,7 @@ class CogneeCoordinator:
         self._require_open()
         self.client.reset_fault()
         count = await self.store.retry_failed_cognee_sync()
+        self._start_worker()
         self.wake()
         return count
 
@@ -500,6 +510,11 @@ class CogneeCoordinator:
                     async with self._projection_lock:
                         if self._stopping:
                             break
+                        state = self.rebuild.state
+                        if (state is None or state.root != self.config.absolute_data_root
+                                or state.base_prefix != self.config.dataset_prefix):
+                            await self.rebuild.initialize(self.config)
+                        self._last_error = ""
                         if self.rebuild.state and self.rebuild.state.rebuild_requested:
                             await self.rebuild.request(self.config)
                         await self.rebuild.advance()

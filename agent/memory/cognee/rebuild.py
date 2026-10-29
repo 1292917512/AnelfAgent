@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from agent.storage.volume_restore import backups_root
+from core.log import log
 
 from ..memory_store import MemoryStore
 from ..projection import PROJECTION_VERSION, canonical_tags, projection_dataset
@@ -49,15 +50,42 @@ class CogneeRebuild:
                 phase="required" if existing else "ready",
             )
             await self.store.projection_state.save(self.state)
+        if self.state.base_prefix == config.dataset_prefix and self.state.root != config.absolute_data_root:
+            await self._relocate_root(config)
         self.validate_config(config)
         if self.state.version != PROJECTION_VERSION:
             self.state.phase = "required"
         self.bind()
 
-    def validate_config(self, config: CogneeConfig) -> None:
-        if self.state and (self.state.root != config.absolute_data_root
-                           or self.state.base_prefix != config.dataset_prefix):
-            raise ValueError("数据目录和数据集前缀与投影映射不匹配，请使用完整存储卷迁移/恢复")
+    async def _relocate_root(self, config: CogneeConfig) -> None:
+        """迁移承接复用后端验收；空库、错库或残缺索引不能接管原生映射。"""
+        state = self.state
+        if state is None:
+            raise RuntimeError("构建状态尚未初始化")
+        mappings = await self.store.projection_state.mappings()
+        if mappings and Path(config.absolute_data_root).is_dir():
+            verified = await self.verify_backend(state, mappings)
+        elif (not mappings and state.version == PROJECTION_VERSION and state.phase == "ready"
+              and not state.verified and not state.previous_namespaces and not state.legacy_preserved):
+            # 尚无已发布投影时也需确认目标为空，不能接管未知历史文档。
+            for dataset in await self.client.list_datasets():
+                if await self.client.list_data(str(_field(dataset, "id"))):
+                    raise ValueError("数据目录与投影映射不匹配：目标含未知文档，原记忆和队列已保留")
+            verified = 0
+        else:
+            raise ValueError("数据目录与投影映射不匹配：新位置缺少可核验的已提交索引，原记忆和队列已保留")
+        relocated = state.model_copy(update={"root": config.absolute_data_root})
+        await self.store.projection_state.save(relocated)
+        self.state = relocated
+        log(f"Cognee 迁移索引验收通过，已承接 {verified} 个文档并更新数据目录", tag="记忆")
+
+    def validate_config(self, config: CogneeConfig, *, selected_root: str | None = None) -> None:
+        """配置编辑可保留启动时已选择的位置；位置承接仍须 initialize 的后端验收。"""
+        if self.state and self.state.base_prefix != config.dataset_prefix:
+            raise ValueError("数据集前缀与投影映射不匹配，请保留已有前缀或使用完整存储卷迁移/恢复")
+        if (self.state and self.state.root != config.absolute_data_root
+                and selected_root != config.absolute_data_root):
+            raise ValueError("数据目录与投影映射不匹配，请完整迁移后重启并验收原索引")
 
     def bind(self) -> None:
         if self.state:

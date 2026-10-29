@@ -817,6 +817,93 @@ async def test_worker_preserves_pending_until_models_are_ready(
         await coordinator.close()
 
 
+@pytest.mark.parametrize("failure_stage", ["projection", "catalog"])
+async def test_startup_failure_remains_observable_and_worker_resumes_without_losing_queue(
+    store: MemoryStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure_stage: str,
+) -> None:
+    store.set_cognee_projection_enabled(True)
+    memory_id = await store.add(MemoryEntry(memory_type=MemoryType.SEMANTIC, content="preserved after moving"))
+    client = _FakeCogneeClient()
+    coordinator = CogneeCoordinator(store, client, CogneeConfig(data_root=str(tmp_path)))
+    resume = asyncio.Event()
+    idle = asyncio.Event()
+    started = False
+    initialize_client = client.initialize
+    initialize_projection = coordinator.rebuild.initialize
+    projection_attempts = 0
+
+    async def initialize() -> CogneeAvailability:
+        if started:
+            await resume.wait()
+        return await initialize_client()
+
+    async def prepare_projection(config: CogneeConfig) -> None:
+        nonlocal projection_attempts
+        projection_attempts += 1
+        if failure_stage == "projection" and projection_attempts == 1:
+            raise ValueError("moved projection has not been validated")
+        await initialize_projection(config)
+
+    async def mark_idle() -> None:
+        idle.set()
+
+    monkeypatch.setattr(client, "initialize", initialize)
+    monkeypatch.setattr(coordinator.rebuild, "initialize", prepare_projection)
+    if failure_stage == "catalog":
+        monkeypatch.setattr(client, "available_datasets", AsyncMock(side_effect=OSError("moved catalog is locked")))
+    monkeypatch.setattr(coordinator, "_run_idle_job", mark_idle)
+    monkeypatch.setattr(coordinator, "_maybe_compact", AsyncMock())
+    monkeypatch.setattr("agent.memory.cognee.coordinator.cognee_storage_stats.schedule_refresh", Mock())
+    try:
+        await coordinator.start()
+        started = True
+        before = await coordinator.status()
+        assert before.running and before.pending == 1 and before.failed == 0
+        assert "moved" in before.last_error
+        assert (await store.get(memory_id)).content == "preserved after moving"
+        resume.set()
+        coordinator.wake()
+        await asyncio.wait_for(idle.wait(), timeout=5)
+        after = await coordinator.status()
+        assert after.running and after.pending == 0 and after.failed == 0 and after.last_error == ""
+        assert await store.get_cognee_mapping(memory_id) is not None
+    finally:
+        resume.set()
+        await coordinator.close()
+
+
+async def test_retry_restarts_missing_consumer_but_preserves_explicit_pause(
+    store: MemoryStore, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _FakeCogneeClient()
+    coordinator = CogneeCoordinator(store, client, CogneeConfig(data_root=str(tmp_path)))
+    entered = asyncio.Event()
+    wait = asyncio.Event()
+
+    async def consume() -> None:
+        entered.set()
+        await wait.wait()
+
+    monkeypatch.setattr(coordinator, "_worker", consume)
+    try:
+        await coordinator.retry_failed()
+        await asyncio.wait_for(entered.wait(), timeout=5)
+        task = coordinator._task
+        await coordinator.retry_failed()
+        assert coordinator._task is task
+        coordinator.config.sync_enabled = False
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await coordinator.retry_failed()
+        assert not coordinator.is_running
+        coordinator.quiesce()
+        with pytest.raises(RuntimeError, match="关停"):
+            await coordinator.start()
+    finally:
+        wait.set()
+        await coordinator.close()
+
+
 @pytest.mark.asyncio
 async def test_coordinator_projects_and_deletes_memory(tmp_path) -> None:
     from agent.memory.provenance import note_origin
