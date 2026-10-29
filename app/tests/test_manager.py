@@ -15,6 +15,7 @@ import urllib.error
 import urllib.request
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Callable
 
 import pytest
@@ -39,7 +40,7 @@ def test_stop_without_control_fails_before_full_shutdown_timeout(tmp_path: Path,
     monkeypatch.setattr(manager, "_external_pid", lambda: 0)
     monkeypatch.setattr(manager, "_state", lambda: ("starting", None, None))
     ticks = iter([0.0, 0.0, 11.0, 11.0])
-    monkeypatch.setattr("app.manager.time.monotonic", lambda: next(ticks))
+    monkeypatch.setattr("app.manager.time", SimpleNamespace(monotonic=lambda: next(ticks), sleep=time.sleep))
     with pytest.raises(RuntimeError, match="Service control is unavailable"):
         manager._stop()
 
