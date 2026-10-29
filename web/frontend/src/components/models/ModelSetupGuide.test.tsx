@@ -43,12 +43,12 @@ it.each(missingModelCases)("guides missing or disabled chat models to the config
   vi.mocked(modelsApi.priorities).mockResolvedValue(reply(priorities));
   const user = userEvent.setup();
   const { router } = open();
-  await screen.findByRole("status", { name: "Set up a chat model" });
+  await screen.findByRole("complementary", { name: "Set up a chat model" });
   const link = screen.getByRole("link", { name: "Configure models" });
   expect(link.getAttribute("href")).toBe("/webui/models");
   await user.click(link);
   expect(router.state.location.pathname).toBe("/webui/models");
-  expect(screen.queryByRole("status", { name: "Set up a chat model" })).toBeNull();
+  expect(screen.queryByRole("complementary", { name: "Set up a chat model" })).toBeNull();
   expect(screen.getByText("Model configuration")).toBeTruthy();
 });
 

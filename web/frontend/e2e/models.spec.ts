@@ -1,4 +1,5 @@
 import { test, expect } from "./fixtures";
+import AxeBuilder from "@axe-core/playwright";
 import type { ModelConfig, ModelPriorityItem, ProviderConfig } from "../src/lib/types";
 
 const provider: ProviderConfig = { id: "demo", name: "Demo provider", base_url: "https://example.test/v1",
@@ -40,8 +41,9 @@ test("missing chat models guide to setup and the guide disappears after a model 
     } else await route.fulfill({ json: configured ? [{ ...model, id: "first-chat-model" }] : [] });
   });
   await page.goto("/webui/");
-  const guide = page.getByRole("status", { name: "Set up a chat model" });
+  const guide = page.getByRole("complementary", { name: "Set up a chat model" });
   await expect(guide).toBeVisible();
+  expect((await new AxeBuilder({ page }).include("aside[aria-labelledby]").analyze()).violations).toEqual([]);
   await page.screenshot({ path: info.outputPath("model-setup-guide.png") });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await guide.getByRole("link", { name: "Configure models" }).click();

@@ -21,7 +21,7 @@ export function ModelSetupGuide() {
   if (configuring || !status.isSuccess || !status.data.ready || !priorities.isSuccess || priorities.isFetching
     || priorities.data.chat?.some((model) => model.enabled)) return null;
 
-  return <aside role="status" aria-labelledby={titleId} className="flex shrink-0 flex-wrap items-center gap-3 border-b border-accent/20 bg-accent-subtle px-4 py-3 md:px-6">
+  return <aside aria-labelledby={titleId} className="flex shrink-0 flex-wrap items-center gap-3 border-b border-accent/20 bg-accent-subtle px-4 py-3 md:px-6">
     <Cpu size={20} className="shrink-0 text-accent" aria-hidden="true" />
     <div className="min-w-0 flex-1 basis-56">
       <h2 id={titleId} className="text-sm font-semibold text-heading">{t("setupGuide.title")}</h2>
