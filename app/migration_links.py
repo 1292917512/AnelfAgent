@@ -9,6 +9,8 @@ import stat
 from pathlib import Path, PurePath, PureWindowsPath
 from typing import TypedDict
 
+from app.windows_junction import create_junction
+
 
 class Link(TypedDict):
     target: str
@@ -65,7 +67,9 @@ def environment_links(root: Path, backup: Path, links: dict[str, Link | str]) ->
 
 def plan_link(source: Path, target: Path, name: str, raw: str) -> Link:
     item = source / name
-    resolved = plain_path((item.parent / raw).resolve())
+    # Keep the direct target, including missing paths and chains; resolving would
+    # flatten junctions and can fail on cycles or temporarily unavailable targets.
+    resolved = plain_path(Path(os.path.abspath(item.parent / raw)))
     info = item.lstat()
     junction = item.is_junction()
     directory = item.is_dir() or bool(getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_DIRECTORY)
@@ -77,8 +81,7 @@ def create_link(item: Path, link: Link, *, original: bool = False) -> None:
     destination = link["original"] if original else link["target"]
     try:
         if os.name == "nt" and link["junction"]:
-            import _winapi
-            _winapi.CreateJunction(destination, str(item))
+            create_junction(item, destination)
         else:
             item.symlink_to(destination, target_is_directory=link["directory"])
     except OSError as exc:

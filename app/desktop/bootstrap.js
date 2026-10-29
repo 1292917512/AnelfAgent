@@ -28,10 +28,14 @@ Object.assign(words.zh,{title:'准备安装 AnelfAgent',hint:'确认安装位置
 Object.assign(words.en,{title:'Install AnelfAgent',hint:'Confirm the folder. We will prepare the environment.',continue:'Install',installOptions:'Installation options',preparingTitle:'Preparing your environment',preparingHint:'Reusing existing tools before continuing with the project.',preparing:'Preparing the environment…'});
 Object.assign(words.zh,{failed:'未能完成，请展开查看具体原因。',keepOrigin:'沿用原仓库',originUnknown:'暂时无法读取 origin，默认保留原仓库',customOrigin:'自定义仓库：保留当前 origin，镜像地址需通过 Git 配置。'});
 Object.assign(words.en,{failed:'Unable to complete. Expand to see the reason.',keepOrigin:'Keep current origin',originUnknown:'Origin unavailable; keep the existing repository',customOrigin:'Custom repository: keep origin; configure its mirror through Git.'});
+Object.assign(words.zh,{resumeMove:'继续迁移',resumeHint:'已完成进度已保留。关闭占用原目录的程序后继续，仅重新处理变化的文件。'});
+Object.assign(words.en,{resumeMove:'Resume move',resumeHint:'Progress is saved. Close programs using the source folder and continue; only changed files need processing again.'});
 Object.assign(words.zh,{question:'已有 AnelfAgent 项目？',questionHint:'接入之前通过 Git 下载的项目，或开始全新安装。',existingYes:'是，选择已有项目',existingNo:'否，全新安装',existingTitle:'接入已有项目',existingIntro:'以所选项目为准，保留代码、配置与数据。',oldPath:'原项目目录',moveProject:'迁移到安装目录',targetPath:'迁移目标目录',moveHint:'运行中会先询问是否停服。完整校验后移动文件，再用 uv 准备新路径的环境。',keepHint:'文件保留在原目录，直接接入管理；不会移动项目或停止服务。',selectHint:'请选择已有项目文件夹',import:'接入项目',move:'迁移并继续',back:'返回',backHint:'已返回上一步，项目文件未移动。'});
 Object.assign(words.en,{question:'Already have an AnelfAgent project?',questionHint:'Connect a checkout you already have, or start a fresh installation.',existingYes:'Yes, select project',existingNo:'No, fresh install',existingTitle:'Connect your project',existingIntro:'Keep the selected project’s code, configuration and data.',oldPath:'EXISTING PROJECT',moveProject:'Move to the installation folder',targetPath:'DESTINATION',moveHint:'Ask before stopping a running service. Verify and move files, then prepare the environment with uv.',keepHint:'Use the original folder. No files are moved and no service is stopped.',selectHint:'Choose an existing project folder',import:'Connect project',move:'Move & continue',back:'Back',backHint:'Returned to the previous step. Project files were not moved.'});
 /** @type {Record<string,string>} */
 const migrationEnglish={'正在检查项目文件':'Checking project files','正在检查目录联接与符号链接':'Checking junctions and symbolic links','同盘快速移动':'Moving on the same volume','跨盘迁移':'Moving across volumes','正在迁移':'Moving files','正在校验文件完整性':'Verifying file integrity','正在切换项目目录':'Switching project folders','快速移动完成，接下来检查运行环境':'Move complete. Checking the environment next.','项目迁移完成，接下来检查运行环境':'Move complete. Checking the environment next.'};
+Object.assign(migrationEnglish,{'正在恢复迁移进度':'Resuming the saved move','正在复用已完成的迁移文件':'Reusing completed files'});
+const resuming=()=>moving() && catalog?.migration?.source===existingRoot && catalog.migration.target===targetRoot;
 function showStep() {
   for(const id of ['existing-yes','existing-no','choose-existing','choose-target','move-project','back-choice'])control(id).disabled=busy || stoppingForExit;
   void desktop?.trayState?.({ready:false,webReady:false,settingsAvailable:!busy && !stoppingForExit,language:locale===words.zh?'zh':'en'}).catch(()=>{});
@@ -44,13 +48,13 @@ function showStep() {
   $('back-choice').hidden=busy || projectChoice==='question';
   control('continue').hidden=busy || projectChoice==='question';
   control('continue').disabled=busy || stoppingForExit || !canContinue();
-  control('continue').textContent=projectChoice==='existing' ? moving()?locale.move:locale.import : locale.continue;
+  control('continue').textContent=projectChoice==='existing' ? moving()?resuming()?locale.resumeMove:locale.move:locale.import : locale.continue;
   $('intro-title').textContent=busy ? locale.preparingTitle : projectChoice==='question'?locale.question:projectChoice==='existing'?locale.existingTitle:locale.title;
   $('intro-hint').textContent=busy ? locale.preparingHint : projectChoice==='question'?locale.questionHint:projectChoice==='existing'?locale.existingIntro:locale.hint;
   $('migration-target').hidden=!moving();
   $('existing-root').textContent=existingRoot || locale.selectHint;
   $('target-root').textContent=targetRoot;
-  $('existing-hint').textContent=moving()?locale.moveHint:locale.keepHint;
+  $('existing-hint').textContent=resuming()?locale.resumeHint:moving()?locale.moveHint:locale.keepHint;
   showRepository();
   document.querySelectorAll('ol li').forEach((node,index)=>node.classList.toggle('current',index===(busy?1:0)));
   requestAnimationFrame(fitWindow);
@@ -122,7 +126,7 @@ $('continue').onclick = async () => {
   }
   catch(error) {
     if(!stoppingForExit){const detail=errorText(error);$('status').textContent=detail.includes('Cancelled')?locale.cancelled:detail;$('status').title=detail;$('output').textContent+='\n'+detail;}
-    const info=await desktop.bootstrapInfo();
+    const info=await desktop.bootstrapInfo();catalog=info;
     if(projectChoice==='existing' && info.projectChoice==='existing' && info.root===targetRoot){
       existingRoot=info.root;const checkbox=$('move-project');if(checkbox instanceof HTMLInputElement)checkbox.checked=false;
     }
@@ -136,6 +140,7 @@ $('bootstrap-progress-toggle').title=locale.details;
 $('root').textContent=info.root;control('source').value=info.source;control('downloads').value=info.downloadSource;
 targetRoot=info.defaultTarget;
 if(info.projectChoice){projectChoice=info.projectChoice;if(projectChoice==='existing'){existingRoot=info.root;existingRepository=await desktop.projectRepository(info.root);const checkbox=$('move-project');if(checkbox instanceof HTMLInputElement)checkbox.checked=false;}}
+if(info.migration){projectChoice='existing';existingRoot=info.migration.source;targetRoot=info.migration.target;existingRepository=await desktop.projectRepository(existingRoot);const checkbox=$('move-project');if(checkbox instanceof HTMLInputElement)checkbox.checked=true;}
 control('pypi').replaceChildren(new Option(locale.followSource,'auto'),...Object.entries(info.pypiSources).map(([key,value])=>new Option(value.label[info.language] || key,key)));
 control('pypi').value=info.pypiSource;showIndex();
 renderStorage(info.storage);

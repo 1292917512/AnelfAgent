@@ -11,7 +11,7 @@ export interface WebAccess {available:boolean;password_set:boolean;addresses:str
 export interface Environment { tools: Record<string, {path: string | null; version: string}>; python: string; python_installed: boolean; python_reusable?:string|null; python_version?:string; frontend_built: boolean; project_present: boolean; }
 export interface PypiSource {url:string;label:Record<string,string>;}
 export interface TrayState {ready:boolean;webReady:boolean;settingsAvailable:boolean;language:'zh'|'en';}
-export interface BootstrapInfo {root:string;defaultTarget:string;configured?:boolean;projectChoice?:'new'|'existing';source:string;downloadSource:string;pypiSource:string;pypiSources:Record<string,PypiSource>;pypiDefaults:Record<string,string>;repositories?:Record<string,string>;timezone:string;china:boolean;language:string;storage:Storage[];uv:{bundled:boolean;version:string;path:string};}
+export interface BootstrapInfo {root:string;defaultTarget:string;configured?:boolean;projectChoice?:'new'|'existing';migration?:{source:string;target:string}|null;source:string;downloadSource:string;pypiSource:string;pypiSources:Record<string,PypiSource>;pypiDefaults:Record<string,string>;repositories?:Record<string,string>;timezone:string;china:boolean;language:string;storage:Storage[];uv:{bundled:boolean;version:string;path:string};}
 export interface BootstrapSelection {source:string;downloadSource:string;pypiSource:string;existing?:{root:string;target:string;move:boolean};}
 declare global { interface Window { anelfDesktop?: {
   trayState(value:TrayState):Promise<void>;

@@ -23,11 +23,11 @@ await page.addInitScript(catalog=>{
   window.trayStates=[];
   window.anelfDesktop={
     trayState:async value=>{window.trayStates.push(value);},onNavigate:callback=>{window.navigateFromTray=callback;},
-    bootstrapInfo:async()=>({root,defaultTarget:'E:/AnelfAgent/project',source:'auto',downloadSource:'china',pypiSource:'auto',pypiSources:catalog.pypi_sources,pypiDefaults:{china:catalog.china.pypi,global:catalog.global.pypi},timezone:'Asia/Shanghai',china:true,language:'zh',uv:{bundled:false,version:'uv 0.13.6',path:'C:/Users/test/.local/bin/uv.exe'},storage:storage()}),
+    bootstrapInfo:async()=>({root,migration:JSON.parse(sessionStorage.getItem('migration')||'null'),defaultTarget:'E:/AnelfAgent/project',source:'auto',downloadSource:'china',pypiSource:'auto',pypiSources:catalog.pypi_sources,pypiDefaults:{china:catalog.china.pypi,global:catalog.global.pypi},timezone:'Asia/Shanghai',china:true,language:'zh',uv:{bundled:false,version:'uv 0.13.6',path:'C:/Users/test/.local/bin/uv.exe'},storage:storage()}),
     bootstrapStorage:async()=>storage(),
     projectRepository:async()=>({origin:'git@github.com:1292917512/AnelfAgent.git',source:'github',switchable:true}),
     chooseProject:async purpose=>{if(purpose==='existing')return 'D:/My old project';root='E:/AnelfAgent/project';free=20*1024**3;return root;},
-    onBootstrapProgress:callback=>{window.progress=callback;},bootstrapStart:value=>{window.started.push(value);if(value.existing)return Promise.resolve({accepted:false});return new Promise((_resolve,reject)=>{window.finishBootstrap=()=>reject(new Error('Cancelled'));});},bootstrapCancel:async()=>window.finishBootstrap()
+    onBootstrapProgress:callback=>{window.progress=callback;},bootstrapStart:value=>{window.started.push(value);if(value.existing){if(window.failMove){sessionStorage.setItem('migration',JSON.stringify({source:value.existing.root,target:value.existing.target}));return Promise.reject(new Error('项目目录被占用，已完成的迁移进度已保留。'));}return Promise.resolve({accepted:false});}return new Promise((_resolve,reject)=>{window.finishBootstrap=()=>reject(new Error('Cancelled'));});},bootstrapCancel:async()=>window.finishBootstrap()
   };
 },downloads);
 try {
@@ -97,6 +97,16 @@ try {
   await page.evaluate(()=>window.progress(JSON.stringify({message:'跨盘迁移',received:512*1024**2,total:1024**3})+'\n'));
   assert.match(await page.locator('#status').textContent(),/50%.*512.0 \/ 1024.0 MiB/);
   await page.locator('#move-project').check();
+  await page.evaluate(()=>{window.failMove=true;});
+  await page.locator('#continue').click();
+  await page.waitForFunction(()=>document.querySelector('#continue').textContent==='继续迁移');
+  assert.match(await page.locator('#existing-hint').textContent(),/已完成进度已保留/);
+  await page.reload();
+  await page.waitForFunction(()=>document.querySelector('#continue').textContent==='继续迁移');
+  assert.equal(await page.locator('#existing-root').textContent(),'D:/My old project');
+  assert.equal(await page.locator('#target-root').textContent(),'E:/AnelfAgent/project');
+  assert.equal(await page.locator('#move-project').isChecked(),true);
+  assert.equal(await page.evaluate(()=>window.started.length),0);
   await page.setViewportSize({width:640,height:Math.ceil(await page.locator('main').evaluate(node=>node.getBoundingClientRect().height))});
   assert.deepEqual(errors,[]);
   console.log('First-run space checks, existing uv, folder changes and retry passed.');

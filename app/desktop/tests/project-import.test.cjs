@@ -4,7 +4,7 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const os=require('node:os');
 const path=require('node:path');
-const {importProject}=require('../project-import.cjs');
+const {importProject,pendingMigration}=require('../project-import.cjs');
 const {drain,prepare}=require('../maintenance.cjs');
 const {register}=require('../managed.cjs');
 
@@ -28,6 +28,19 @@ test('confirmed migration waits for safe shutdown; failure never moves files',as
   actions.stop=async()=>{calls.push('stopped');};
   assert.deepEqual(await importProject(selection,actions),{accepted:true,root:'new'});
   assert.deepEqual(calls,['stop','stopped','move']);
+});
+
+test('saved migration is offered for explicit resume without moving files on startup',()=>{
+  const data=fs.mkdtempSync(path.join(os.tmpdir(),'anelf-import-resume-'));
+  try {
+    const source=path.join(data,'source'),target=path.join(data,'destination');
+    fs.mkdirSync(source);fs.writeFileSync(path.join(source,'keep.txt'),'user data');
+    assert.equal(pendingMigration(data),null);
+    fs.writeFileSync(path.join(data,'migration.json'),JSON.stringify({resumable:true,source,target}));
+    assert.deepEqual(pendingMigration(data),{source,target});
+    assert.equal(fs.readFileSync(path.join(source,'keep.txt'),'utf8'),'user data');
+    assert.equal(fs.existsSync(target),false);
+  } finally {fs.rmSync(data,{recursive:true,force:true});}
 });
 
 test('migration can use the existing runtime stop channel without a manager',async()=>{

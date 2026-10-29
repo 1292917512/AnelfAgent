@@ -5,6 +5,15 @@ const path=require('node:path');
 const {hasRunningServices,drain}=require('./maintenance.cjs');
 const {runTask}=require('./backend.cjs');
 
+/** @param {string} data @returns {{source:string,target:string}|null} */
+function pendingMigration(data) {
+  const file=path.join(data,'migration.json');
+  if(!fs.existsSync(file))return null;
+  const record=JSON.parse(fs.readFileSync(file,'utf8'));
+  return record.resumable && typeof record.source==='string' && typeof record.target==='string' && fs.existsSync(record.source)
+    ? {source:record.source,target:record.target} : null;
+}
+
 /** @param {string} root */
 function inspectProject(root) {
   for(const name of ['pyproject.toml','uv.lock','launch.py']) {
@@ -58,4 +67,4 @@ async function transferProject(selection,options,data,confirm) {
     return result;
   } finally {options.signal?.removeEventListener('abort',abort);fs.rmSync(cancel,{force:true});}
 }
-module.exports={inspectProject,importProject,transferProject};
+module.exports={inspectProject,importProject,transferProject,pendingMigration};

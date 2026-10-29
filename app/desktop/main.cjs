@@ -6,7 +6,7 @@ const path = require('node:path');
 const {pathToFileURL} = require('node:url');
 const {spawn} = require('node:child_process');
 const {ensureBackend,findUv,connectionAt,resolveProfile,runTask} = require('./backend.cjs');
-const {inspectProject,transferProject} = require('./project-import.cjs');
+const {inspectProject,transferProject,pendingMigration} = require('./project-import.cjs');
 const {inspectRepository} = require('./repository.cjs');
 const {register,projects} = require('./managed.cjs');
 const {prepare,request,drain,hasRunningServices} = require('./maintenance.cjs');
@@ -21,6 +21,8 @@ const data = app.isPackaged
       : path.join(path.dirname(process.env.APPIMAGE || app.getPath('exe')),'data')
   : path.join(packageRoot,'app/data');
 fs.mkdirSync(data,{recursive:true});
+// A packaged app must not retain the directory it was launched from during a move.
+if(app.isPackaged)process.chdir(path.dirname(data));
 fs.writeFileSync(path.join(data,'app-owner.json'),JSON.stringify({app:'cn.anelf.launcher',path:path.resolve(data)}));
 app.setPath('userData',path.join(data,'profile'));
 app.setPath('sessionData',path.join(data,'profile'));
@@ -202,7 +204,7 @@ async function start() {
   ipcMain.handle('anelf:bootstrap-info',event => {
     if (!trusted(event)) throw new Error('Untrusted sender');
     const selected = runtime();
-    return {...preferences,repositories,defaultTarget:path.join(data,'project'),pypiSources:downloads.pypi_sources,pypiDefaults:{china:downloads.china.pypi,global:downloads.global.pypi},timezone,china:downloads.china_timezones.includes(timezone),uv:selected.uv,storage:storage(),language:chinese?'zh':'en'};
+    return {...preferences,repositories,migration:pendingMigration(data),defaultTarget:path.join(data,'project'),pypiSources:downloads.pypi_sources,pypiDefaults:{china:downloads.china.pypi,global:downloads.global.pypi},timezone,china:downloads.china_timezones.includes(timezone),uv:selected.uv,storage:storage(),language:chinese?'zh':'en'};
   });
   ipcMain.handle('anelf:project-repository',(event,root)=>{
     if(!trusted(event) || typeof root!=='string')throw new Error('Invalid project selection');

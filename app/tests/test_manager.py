@@ -312,7 +312,10 @@ sys.exit(42 if Lifecycle.restart_requested() else 0)
     else:
         (layout.root / "start.sh").write_text(f'#!/bin/sh\n# ANELF_LAUNCH_ENTRY fixture owns its entry\nwhile true; do "{sys.executable}" launch.py; code=$?; [ "$code" = 42 ] || exit "$code"; done\n', encoding="utf-8")
     manager = Manager(layout)
-    manager.settings = Settings(stop_timeout=5)
+    with socket.socket() as available:
+        available.bind(("127.0.0.1", 0))
+        port = available.getsockname()[1]
+    manager.settings = Settings(web_host="127.0.0.1", web_port=port, stop_timeout=5)
     manager.open()
     try:
         manager.submit("start")

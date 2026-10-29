@@ -8,18 +8,20 @@ from __future__ import annotations
 
 import configparser
 import errno
-import hashlib
 import json
 import os
 import shutil
 import stat
+import sys
 import tempfile
 import uuid
 from pathlib import Path
 from typing import Any, Callable
 
 from app.manager import pid_alive
+from app.migration_copy import CopyCheckpoint
 from app.migration_links import Link, create_link, environment_links, plan_link, restore_links
+from app.migration_windows import check_move_access
 from core.host_protocol import HostLock, write_json
 
 Report = Callable[[str, int, int], None]
@@ -82,7 +84,7 @@ def _stopped(root: Path) -> None:
                 raise RuntimeError("项目服务仍在运行，迁移未执行。请先安全关闭服务。")
 
 
-def _inventory(root: Path) -> dict[str, tuple[int, int, int, str]]:
+def _inventory(root: Path, *, validate_git: bool = True) -> dict[str, tuple[int, int, int, str]]:
     result: dict[str, tuple[int, int, int, str]] = {}
     def unreadable(error: OSError) -> None:
         raise error
@@ -93,10 +95,11 @@ def _inventory(root: Path) -> dict[str, tuple[int, int, int, str]]:
             if item.relative_to(root).as_posix() in _LOCK_FILES:
                 continue
             info = item.lstat()
-            link = item.is_symlink() or item.is_junction()
+            link = stat.S_ISLNK(info.st_mode) or (sys.platform == "win32"
+                    and getattr(info, "st_reparse_tag", 0) == stat.IO_REPARSE_TAG_MOUNT_POINT)
             if not (link or stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
                 raise ValueError(f"无法安全迁移特殊文件：{item}")
-            if name == ".git":
+            if name == ".git" and validate_git:
                 if item.is_file():
                     validate_git_link(item, root)
                 elif item.is_dir():
@@ -107,15 +110,6 @@ def _inventory(root: Path) -> dict[str, tuple[int, int, int, str]]:
             if link and name in folders:
                 folders.remove(name)
     return result
-
-
-def _digest(file: Path, check: Callable[[], None]) -> str:
-    digest = hashlib.sha256()
-    with file.open("rb") as stream:
-        while chunk := stream.read(1024 * 1024):
-            check()
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _remove_tree(root: Path) -> None:
@@ -172,6 +166,8 @@ def recover(data: Path) -> str | None:
             or staging.name != f".anelf-transfer-{token}" or backup.name != f".anelf-original-{token}"
             or source == target or source in target.parents or target in source.parents):
         raise RuntimeError("迁移记录路径异常，请保留文件并检查。")
+    if any(item.is_symlink() or item.is_junction() for item in (source, target, staging, backup)):
+        raise RuntimeError("迁移目录被链接替换，请保留文件并检查。")
     marker = target / "logs/manager/migration.json"
     published = marker.is_file() and json.loads(marker.read_text("utf-8")).get("id") == token
     if not published and (record.get("mode") == "rename" or record.get("verified")) and target.is_dir() and not source.exists():
@@ -184,16 +180,51 @@ def recover(data: Path) -> str | None:
         _preferences(data, target)
         if backup.exists():
             _remove_tree(backup)
+        (data / f".anelf-transfer-{token}.sqlite3").unlink(missing_ok=True)
         file.unlink()
         return str(target)
     if backup.exists():
         if source.exists():
             raise RuntimeError(f"原路径被重新创建；原项目保留在 {backup}，请检查后重试。")
         backup.rename(source)
+    if record.get("resumable") and source.is_dir() and staging.is_dir():
+        info = staging.stat()
+        if [info.st_dev, info.st_ino] != record.get("staging_identity"):
+            raise RuntimeError("迁移临时目录发生变化，已保留全部文件，请检查。")
+        return None
     if staging.exists():
         _remove_tree(staging)
     file.unlink()
     return None
+
+
+def _sync_tree(staging: Path, before: dict[str, tuple[int, int, int, str]],
+               links: dict[str, Link], check: Callable[[], None]) -> None:
+    """Reconcile only a journal-owned staging tree, never following directory links."""
+    previous = _inventory(staging, validate_git=False)
+    for relative, (mode, _size, _mtime, link) in reversed(previous.items()):
+        check()
+        wanted = before.get(relative)
+        if wanted and stat.S_IFMT(mode) == stat.S_IFMT(wanted[0]) and link == wanted[3]:
+            continue
+        item = staging / relative
+        if item.is_junction() or stat.S_ISDIR(mode) and not link:
+            item.rmdir()
+        else:
+            try:
+                item.unlink()
+            except PermissionError:
+                if link or not stat.S_ISREG(mode):
+                    raise
+                item.chmod(mode | stat.S_IWRITE)
+                item.unlink()
+    for relative, (mode, _size, _mtime, link) in before.items():
+        check()
+        item = staging / relative
+        if stat.S_ISDIR(mode) and not link:
+            item.mkdir(exist_ok=True)
+        elif link and not os.path.lexists(item):
+            create_link(item, links[relative], original=True)
 
 
 def migrate(source: Path, target: Path, data: Path, report: Report, cancel: Path) -> str:
@@ -210,6 +241,10 @@ def migrate(source: Path, target: Path, data: Path, report: Report, cancel: Path
     if target.exists() and (not target.is_dir() or any(target.iterdir())):
         raise ValueError("目标目录已有内容，请选择空目录；不会合并或覆盖现有文件。")
     _stopped(source)
+    # The packaged worker runs outside the checkout; direct CLI use must also leave it.
+    if Path(sys.executable).resolve().is_relative_to(source) or Path.cwd().resolve().is_relative_to(source):
+        raise RuntimeError("迁移程序正在使用原项目目录，请从独立安装的 APP 迁移，或在项目外使用独立 Python 执行。")
+    check_move_access(source)
     locks = [HostLock(source / name) for name in (
         "logs/project-operation.lock", "logs/manager/manager.lock", "logs/anelf.pid.lock",
     )]
@@ -218,10 +253,16 @@ def migrate(source: Path, target: Path, data: Path, report: Report, cancel: Path
     journal = data / "migration.json"
     record: dict[str, Any] = {"id": token, "source": str(source), "target": str(target),
                               "staging": str(staging), "backup": str(backup), "mode": "copy"}
+    resuming = journal.exists()
+    if resuming:
+        record = json.loads(journal.read_text("utf-8"))
+        if Path(record["source"]) != source or Path(record["target"]) != target or not record.get("resumable"):
+            raise RuntimeError(f"已有未完成的迁移，请选择原路径继续：{record['source']} → {record['target']}。")
+        token, staging, backup = record["id"], Path(record["staging"]), Path(record["backup"])
 
     def check() -> None:
         if cancel.exists():
-            raise RuntimeError("Cancelled: 迁移已取消，原项目保留在原目录。")
+            raise RuntimeError("Cancelled: 迁移已暂停，原项目及已完成进度保留，可继续迁移。")
 
     try:
         for lock in locks:
@@ -229,13 +270,13 @@ def migrate(source: Path, target: Path, data: Path, report: Report, cancel: Path
                 raise RuntimeError("项目正在启动或执行操作，迁移未执行。")
         _stopped(source)
         check()
-        report("正在检查项目文件", 0, 0)
+        report("正在恢复迁移进度" if resuming else "正在检查项目文件", 0, 0)
         target.parent.mkdir(parents=True, exist_ok=True)
         before = _inventory(source)
         links = {name: plan_link(source, target, name, link) for name, (_mode, _size, _time, link) in before.items() if link}
         record["links"] = links
         info = source.stat()
-        if info.st_dev == target.parent.stat().st_dev:
+        if not resuming and info.st_dev == target.parent.stat().st_dev:
             if links:
                 report("正在检查目录联接与符号链接", 0, 0)
                 with tempfile.TemporaryDirectory(prefix=".anelf-links-", dir=target.parent) as probe:
@@ -267,43 +308,48 @@ def migrate(source: Path, target: Path, data: Path, report: Report, cancel: Path
                 return str(target)
         report("跨盘迁移 · 正在统计文件大小", 0, 0)
         total = sum(size for mode, size, _mtime, link in before.values() if stat.S_ISREG(mode) and not link)
-        if shutil.disk_usage(target.parent).free < total + 512 * 1024**2:
+        existing = sum(size for mode, size, _mtime, link in _inventory(staging, validate_git=False).values()
+                       if stat.S_ISREG(mode) and not link) if resuming else 0
+        if shutil.disk_usage(target.parent).free < max(0, total - existing) + 512 * 1024**2:
             raise ValueError("目标磁盘空间不足，需要容纳完整项目并预留 512 MiB。")
         data.mkdir(parents=True, exist_ok=True)
+        if not resuming:
+            write_json(journal, record)
+            staging.mkdir()
+            info = staging.stat()
+            record.update(resumable=True, staging_identity=[info.st_dev, info.st_ino])
+        record["verified"] = False
         write_json(journal, record)
-        staging.mkdir()
-        for relative, (mode, _size, _mtime, link) in before.items():
-            check()
-            if stat.S_ISDIR(mode) and not link:
-                (staging / relative).mkdir(exist_ok=True)
         report("正在检查目录联接与符号链接", 0, 0)
-        for relative, link_plan in links.items():
-            check()
-            create_link(staging / relative, link_plan, original=True)
+        _sync_tree(staging, before, links, check)
         done = 0
-        hashes: dict[str, str] = {}
-        for relative, (mode, _size, _mtime, link) in before.items():
-            check()
-            old, new = source / relative, staging / relative
-            if not link and not stat.S_ISDIR(mode):
-                digest = hashlib.sha256()
-                with old.open("rb") as reader, new.open("xb") as writer:
-                    while chunk := reader.read(1024 * 1024):
-                        check()
-                        writer.write(chunk)
-                        digest.update(chunk)
-                        done += len(chunk)
+        checkpoint = CopyCheckpoint(data / f".anelf-transfer-{token}.sqlite3")
+        try:
+            for relative, (mode, size, _mtime, link) in before.items():
+                check()
+                old, new = source / relative, staging / relative
+                if not link and not stat.S_ISDIR(mode):
+                    if checkpoint.cached(relative, old, new):
+                        done += size
+                        report("正在复用已完成的迁移文件", done, total)
+                        continue
+
+                    def advance(count: int) -> None:
+                        nonlocal done
+                        done += count
                         report(f"正在迁移 · {relative}", done, total)
-                shutil.copystat(old, new)
-                hashes[relative] = digest.hexdigest()
-        report("正在校验文件完整性", 0, total)
-        verified = 0
-        for relative, expected in hashes.items():
-            check()
-            if _digest(staging / relative, check) != expected or _digest(source / relative, check) != expected:
-                raise RuntimeError(f"文件在迁移期间发生变化或校验失败：{relative}；原项目保持不变。")
-            verified += before[relative][1]
-            report("正在校验文件完整性", verified, total)
+
+                    checkpoint.copy(relative, old, new, check, advance)
+            report("正在校验文件完整性", 0, total)
+            verified = 0
+            for relative, (mode, size, _mtime, link) in before.items():
+                check()
+                if stat.S_ISREG(mode) and not link:
+                    checkpoint.verify(relative, source / relative, staging / relative, check)
+                    verified += size
+                    report("正在校验文件完整性", verified, total)
+        finally:
+            checkpoint.close()
         if _inventory(source) != before:
             raise RuntimeError("项目在迁移期间发生变化，已停止迁移；请关闭相关程序后重试。")
         for relative, (mode, _size, _mtime, link) in reversed(before.items()):
@@ -318,6 +364,7 @@ def migrate(source: Path, target: Path, data: Path, report: Report, cancel: Path
         for lock in locks:
             lock.release()
         report("正在切换项目目录", done, total)
+        check_move_access(source)
         source.rename(backup)
         if target.exists():
             target.rmdir()
@@ -325,11 +372,13 @@ def migrate(source: Path, target: Path, data: Path, report: Report, cancel: Path
         recover(data)
         report("项目迁移完成，接下来检查运行环境", total, total)
         return str(target)
-    except BaseException:
+    except BaseException as exc:
         for lock in locks:
             lock.release()
         if journal.exists():
             recover(data)
+        if isinstance(exc, OSError) and (getattr(exc, "winerror", None) in {5, 32, 33} or exc.errno == errno.EBUSY):
+            raise RuntimeError(f"项目目录或文件被占用，已完成的迁移进度已保留。请关闭使用原目录的编辑器、终端及开发进程，再点击继续迁移。详情：{exc}") from exc
         raise
     finally:
         for lock in locks:

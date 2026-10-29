@@ -6,14 +6,16 @@ import errno
 import json
 import os
 import subprocess
+import sys
 import tempfile
 from contextlib import ExitStack
 from pathlib import Path, PureWindowsPath
+from typing import Callable
 
 import pytest
 
 from app.migration import migrate, recover, validate_git_link, validate_project
-from app.migration_links import Link, relocated_target
+from app.migration_links import Link, plain_path, relocated_target
 from core.host_protocol import HostLock
 
 
@@ -88,7 +90,10 @@ def test_cancel_cross_volume_and_reject_live_or_locked_checkout(
         migrate(source, target, data, progress, cancel)
     assert source.exists() and not target.exists()
     assert (source / ".venv/custom-package.txt").is_file()
-    assert not list(target.parent.glob(".anelf-transfer-*"))
+    record = json.loads((data / "migration.json").read_text("utf-8"))
+    assert record["resumable"] and Path(record["staging"]).is_dir()
+    assert recover(data) is None
+    assert Path(record["staging"]).is_dir()
     cancel.unlink()
     pid = source / "logs/anelf.pid"
     pid.write_text(str(os.getpid()))
@@ -103,6 +108,9 @@ def test_cancel_cross_volume_and_reject_live_or_locked_checkout(
     finally:
         lock.release()
     assert source.exists() and not target.exists()
+    migrate(source, target, data, lambda *_: None, cancel)
+    assert (target / "config/data.db").read_bytes() == b"user-data\x00\xff"
+    assert not source.exists() and not list(data.glob(".anelf-transfer-*"))
 
 
 def test_reject_overlap_occupied_target_and_linked_checkout(checkout: tuple[Path, Path, Path]) -> None:
@@ -163,6 +171,7 @@ def test_move_preserves_internal_and_external_link_targets(
     (source / "internal").symlink_to(source / "config/data.db")
     (source / "external").symlink_to("../external.txt")
     (source / ".venv/package-link").symlink_to(source / ".venv/custom-package.txt")
+    (source / "dangling").symlink_to("missing-directory", target_is_directory=True)
     if cross:
         cross_device(monkeypatch, source, target)
     migrate(source, target, data, lambda *_: None, data / "cancel")
@@ -170,6 +179,7 @@ def test_move_preserves_internal_and_external_link_targets(
     assert (target / "external").read_text() == "outside"
     saved = json.loads((target / "logs/manager/migration.json").read_text())["environment_backup"]
     assert (target / saved / "package-link").read_text() == "preserve packages"
+    assert (target / "dangling").is_symlink() and not (target / "dangling").exists()
 
 
 @pytest.mark.parametrize("cross", [False, True])
@@ -231,6 +241,13 @@ def test_windows_junctions_preserve_internal_packages_and_external_data(
     (extra / "keep.txt").write_text("extra package")
     _winapi.CreateJunction(str(extra), str(source / ".venv/alias"))
     _winapi.CreateJunction(str(source / ".venv"), str(source / "old-environment"))
+    missing = source / "packages/axios"
+    missing.mkdir(parents=True)
+    recovery = source / "logs/frontend-pnpm-recovery/axios"
+    recovery.parent.mkdir(parents=True)
+    _winapi.CreateJunction(str(missing), str(recovery))
+    _winapi.CreateJunction(str(recovery), str(source / "recovery-chain"))
+    missing.rmdir()
     with ExitStack() as stack:
         if mode == "volume":
             candidates = [Path.home() / "AppData/Local/Temp", Path.cwd() / "app/build"]
@@ -263,6 +280,13 @@ def test_windows_junctions_preserve_internal_packages_and_external_data(
         saved = json.loads((target / "logs/manager/migration.json").read_text())["environment_backup"]
         assert (target / saved / "alias/keep.txt").read_text() == "extra package"
         assert (target / "old-environment").samefile(target / saved)
+        moved_recovery = target / recovery.relative_to(source)
+        assert moved_recovery.is_junction() and not moved_recovery.exists()
+        assert Path(plain_path(Path(os.readlink(moved_recovery)))) == target / "packages/axios"
+        assert Path(plain_path(Path(os.readlink(target / "recovery-chain")))) == moved_recovery
+        (target / "packages/axios").mkdir()
+        (target / "packages/axios/index.js").write_text("restored dependency")
+        assert (target / "recovery-chain/index.js").read_text() == "restored dependency"
         assert not source.exists()
     assert (external / "keep.txt").read_text() == "external data"
 
@@ -303,4 +327,118 @@ def test_link_creation_failure_precedes_file_copy_and_preserves_external_target(
     assert not any(message.startswith("正在迁移 ·") for message in messages)
     assert (source / "config/data.db").read_bytes() == b"user-data\x00\xff"
     assert (source / "config-link").is_junction() and not target.exists()
-    assert not list(target.parent.glob(".anelf-transfer-*"))
+    assert (data / "migration.json").is_file()
+    monkeypatch.setattr(migration, "create_link", create)
+    migrate(source, target, data, lambda *_: None, data / "cancel")
+    assert (target / "config-link/data.db").read_bytes() == b"user-data\x00\xff"
+
+
+@pytest.mark.parametrize("failure,change", [("source", "none"), ("publish", "source"), ("source", "destination"),
+                                            ("source", "source_time"), ("source", "destination_time")])
+def test_verified_move_resumes_and_only_reprocesses_changed_files(
+    checkout: tuple[Path, Path, Path], monkeypatch: pytest.MonkeyPatch, failure: str, change: str,
+) -> None:
+    import app.migration_copy as copying
+
+    source, target, data = checkout
+    cross_device(monkeypatch, source, target)
+    rename = Path.rename
+    with monkeypatch.context() as patch:
+        def occupied(self: Path, destination: Path) -> Path:
+            if (failure == "source" and self == source and destination.name.startswith(".anelf-original-")) or (
+                    failure == "publish" and self.name.startswith(".anelf-transfer-") and destination == target):
+                raise OSError(errno.EBUSY, "Directory in use")
+            return rename(self, destination)
+        patch.setattr(Path, "rename", occupied)
+        with pytest.raises(RuntimeError, match="进度已保留"):
+            migrate(source, target, data, lambda *_: None, data / "cancel")
+    record = json.loads((data / "migration.json").read_text("utf-8"))
+    staging = Path(record["staging"])
+    assert record["verified"] and source.exists() and not target.exists()
+    assert recover(data) is None and staging.is_dir()
+    inode = (staging / "config/data.db").stat().st_ino
+    expected: set[str] = set()
+    if change == "source":
+        (source / "launch.py").write_text("edit after pause")
+        (source / "new.txt").write_text("new user data")
+        (source / ".gitignore").unlink()
+        expected = {"launch.py", "new.txt"}
+    elif change == "destination":
+        (staging / "launch.py").write_text("damaged staging file")
+        expected = {"launch.py"}
+    elif change in {"source_time", "destination_time"}:
+        file = (source if change == "source_time" else staging) / "launch.py"
+        metadata = file.stat()
+        file.write_bytes(b"X" * metadata.st_size)
+        os.utime(file, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+        expected = {"launch.py"}
+    copied: set[str] = set()
+    hashed: set[str] = set()
+    copy, digest = copying.CopyCheckpoint.copy, copying.digest
+
+    def track_copy(self: copying.CopyCheckpoint, name: str, old: Path, new: Path,
+                   check: Callable[[], None], advance: Callable[[int], None]) -> None:
+        copied.add(name)
+        copy(self, name, old, new, check, advance)
+
+    def track_digest(file: Path, check: Callable[[], None]) -> str:
+        hashed.add(file.relative_to(source if file.is_relative_to(source) else staging).as_posix())
+        return digest(file, check)
+
+    monkeypatch.setattr(copying.CopyCheckpoint, "copy", track_copy)
+    monkeypatch.setattr(copying, "digest", track_digest)
+    migrate(source, target, data, lambda *_: None, data / "cancel")
+    assert copied == expected and hashed == expected
+    assert (target / "config/data.db").stat().st_ino == inode
+    assert (target / "config/data.db").read_bytes() == b"user-data\x00\xff"
+    if change == "source":
+        assert (target / "new.txt").read_text() == "new user data"
+        assert not (target / ".gitignore").exists()
+    elif change == "source_time":
+        assert set((target / "launch.py").read_bytes()) == {ord("X")}
+    elif change == "destination_time":
+        assert (target / "launch.py").read_text("utf-8") == "uncommitted edit\n"
+    assert not source.exists() and not list(data.glob(".anelf-transfer-*"))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows current-directory sharing violations")
+@pytest.mark.parametrize("late", [False, True])
+def test_directory_held_by_process_is_detected_and_late_failure_resumes(
+    checkout: tuple[Path, Path, Path], monkeypatch: pytest.MonkeyPatch, late: bool,
+) -> None:
+    source, target, data = checkout
+    cross_device(monkeypatch, source, target)
+    child: subprocess.Popen[str] | None = None
+    messages: list[str] = []
+
+    def hold() -> subprocess.Popen[str]:
+        process = subprocess.Popen([sys.executable, "-c", "import sys; print('ready', flush=True); sys.stdin.read()"],
+                                   cwd=source, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                   text=True, creationflags=subprocess.CREATE_NO_WINDOW)
+        assert process.stdout is not None and process.stdout.readline().strip() == "ready"
+        return process
+
+    def report(message: str, *_: int) -> None:
+        nonlocal child
+        messages.append(message)
+        if late and message == "正在切换项目目录":
+            child = hold()
+
+    try:
+        if not late:
+            child = hold()
+        with pytest.raises(RuntimeError, match="被占用"):
+            migrate(source, target, data, report, data / "cancel")
+        assert source.is_dir() and not target.exists()
+        if late:
+            assert json.loads((data / "migration.json").read_text())["verified"]
+        else:
+            assert not messages and not (data / "migration.json").exists()
+    finally:
+        if child:
+            child.communicate(timeout=10)
+    messages.clear()
+    migrate(source, target, data, lambda message, *_: messages.append(message), data / "cancel")
+    if late:
+        assert not any(message.startswith("正在迁移 ·") for message in messages)
+    assert (target / "config/data.db").read_bytes() == b"user-data\x00\xff"
