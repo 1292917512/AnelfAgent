@@ -809,7 +809,7 @@ class MemoryService:
         }).normalized()
         coordinator = get_cognee_coordinator()
         if coordinator:
-            coordinator.rebuild.validate_config(config)
+            coordinator.rebuild.validate_config(config, selected_root=coordinator.config.absolute_data_root)
             # 单独暂停消费不得被失效的模型配置阻止；恢复或其他编辑仍完整校验。
             if values != {"sync_enabled": False}:
                 coordinator.client.validate_configuration(config)

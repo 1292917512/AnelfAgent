@@ -1,6 +1,7 @@
 /** @type {Record<string, Record<string,string>>} */
 const words = {
   zh: {
+    updateStopped:'更新项目',cancelUpdate:'取消更新',
     web_unavailable:'Web 暂不可用',webUnavailableHint:'进程仍在运行，Web 服务暂不可用。',controlUnavailableHint:'服务已运行，可打开 Web 控制台；控制连接待恢复。',
     passwordLabel:'访问密码',passwordConfigured:'已设置',passwordRemovePending:'待移除',undoPasswordClear:'撤销移除密码',passwordUnknown:'状态待确认',settingsPasswordFailed:'常规配置已保存，密码未能确认保存。请重试。',
     advancedSettings:'高级设置',maintenanceOptions:'环境维护',installOptions:'调整安装选项',
@@ -23,6 +24,7 @@ const words = {
     stopped:'未运行',starting:'正在启动',running:'运行中',stopping:'正在关停',restarting:'正在重启',failed:'操作失败',cancelled:'已取消',interrupted:'安装已中断',unknown:'状态未知',installing:'正在安装',updating:'正在更新',done:'已完成',elapsed:'已用时',check:'检查项目',git:'准备 Git',checkout:'下载项目源码',tools:'检测并安装工具',python:'准备 Python 解释器',dependencies:'同步 Python 依赖',frontend_install:'安装前端依赖',frontend_build:'构建 Web 界面',verify:'验证安装结果',stopStage:'安全停止现有服务',noLogs:'暂无日志。',seconds:'秒',minutes:'分',port:'端口',error:'操作未完成，请查看详细日志。'
   },
   en: {
+    updateStopped:'Update project',cancelUpdate:'Cancel update',
     web_unavailable:'Web unavailable',webUnavailableHint:'The process is running, but its Web service is unavailable.',controlUnavailableHint:'The service is running. Open the Web console while the control connection recovers.',
     passwordLabel:'Web password',passwordConfigured:'Set',passwordRemovePending:'Will remove',undoPasswordClear:'Undo password removal',passwordUnknown:'Check status',settingsPasswordFailed:'General settings saved. The password change could not be confirmed. Please retry.',
     advancedSettings:'Advanced settings',maintenanceOptions:'Environment maintenance',installOptions:'Installation options',

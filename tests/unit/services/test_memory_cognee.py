@@ -122,7 +122,7 @@ async def test_save_validates_before_persisting_or_reconfiguring(monkeypatch, co
     validate = Mock(side_effect=None if compatible else CogneeConfigError("不兼容的向量模型"))
     coordinator = SimpleNamespace(
         client=SimpleNamespace(validate_configuration=validate), reconfigure=AsyncMock(),
-        rebuild=SimpleNamespace(validate_config=Mock()),
+        rebuild=SimpleNamespace(validate_config=Mock()), config=CogneeConfig(),
     )
     monkeypatch.setattr("agent.memory.cognee.config.load_cognee_config", CogneeConfig)
     monkeypatch.setattr("agent.memory.cognee.config.save_cognee_config", saved)
@@ -144,7 +144,7 @@ async def test_pause_persists_even_with_invalid_model_but_resume_requires_valida
     validate = Mock(side_effect=CogneeConfigError("invalid model"))
     coordinator = SimpleNamespace(
         client=SimpleNamespace(validate_configuration=validate), reconfigure=AsyncMock(),
-        rebuild=SimpleNamespace(validate_config=Mock()),
+        rebuild=SimpleNamespace(validate_config=Mock()), config=CogneeConfig(),
     )
     monkeypatch.setattr("agent.memory.cognee.config.load_cognee_config", CogneeConfig)
     monkeypatch.setattr("agent.memory.cognee.config.save_cognee_config", saved)
@@ -157,6 +157,49 @@ async def test_pause_persists_even_with_invalid_model_but_resume_requires_valida
     with pytest.raises(CogneeConfigError, match="invalid model"):
         await MemoryService.save_cognee_config({"sync_enabled": True})
     assert saved.call_count == 1
+
+
+async def test_pending_relocation_allows_model_edits_and_pause_but_rejects_changing_location(
+    store, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent.memory.store.projection_state import ProjectionState
+
+    config = CogneeConfig(data_root=str(tmp_path / "moved-index"))
+    state = ProjectionState(root=str(tmp_path / "old-index"), base_prefix=config.dataset_prefix,
+                            namespace=config.dataset_prefix, phase="ready")
+    await store.projection_state.save(state)
+    coordinator = CogneeCoordinator(store, CogneeClient(config), config)
+    coordinator.rebuild.state = state
+    entered = asyncio.Event()
+
+    async def consumer() -> None:
+        entered.set()
+        await asyncio.Event().wait()
+
+    coordinator._task = asyncio.create_task(consumer())
+    await entered.wait()
+    saved = Mock()
+    monkeypatch.setattr("agent.memory.cognee.config.load_cognee_config", lambda: config)
+    monkeypatch.setattr("agent.memory.cognee.config.save_cognee_config", saved)
+    monkeypatch.setattr("agent.memory.cognee.runtime.get_cognee_coordinator", lambda: coordinator)
+    monkeypatch.setattr(coordinator.client, "validate_configuration", Mock())
+    monkeypatch.setattr(coordinator.rebuild, "initialize", AsyncMock(side_effect=RuntimeError("models not ready")))
+    try:
+        result = await MemoryService.save_cognee_config({"sync_enabled": False})
+        assert not result["sync_enabled"]
+        await coordinator._configuration_task
+        assert not coordinator.is_running and not coordinator.config.sync_enabled
+        assert "models not ready" in coordinator._configuration_error
+        config.sync_enabled = False
+        await MemoryService.save_cognee_config({"chat": {"max_completion_tokens": 4096}})
+        await coordinator._configuration_task
+        assert saved.call_args.args[0].chat.max_completion_tokens == 4096
+        with pytest.raises(ValueError, match="不匹配"):
+            await MemoryService.save_cognee_config({"data_root": str(tmp_path / "unrelated-index")})
+        assert saved.call_count == 2
+        assert (await store.projection_state.load()).root == state.root
+    finally:
+        await coordinator.close()
 
 
 async def test_http_save_during_projection_returns_and_preserves_latest_config(

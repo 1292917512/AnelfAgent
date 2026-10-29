@@ -22,6 +22,7 @@ import pytest
 
 from app.environment import Environment, unpack
 from app.manager import Manager, pid_alive
+from app.processes import background_options
 from app.server import ManagerServer
 from app.settings import Layout, Settings, probe_port, resolve_source
 from core.host_protocol import HostLock
@@ -100,6 +101,73 @@ def test_dirty_update_does_not_stop_application(tmp_path: Path, monkeypatch: pyt
     assert not manager.status()["last"]["ok"]
     assert "Uncommitted" in manager.status()["last"]["message"]
     assert not stopped
+
+
+@pytest.mark.parametrize("running", [False, True])
+def test_update_pulls_local_upstream_and_preserves_run_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                                           running: bool) -> None:
+    def git(directory: Path, *args: str) -> str:
+        return subprocess.run(["git", "-C", str(directory), "-c", "user.name=Fixture",
+                               "-c", "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", *args],
+                              check=True, capture_output=True, text=True, **background_options()).stdout.strip()
+
+    upstream = tmp_path / "upstream"
+    upstream.mkdir()
+    git(upstream, "init", "-q")
+    (upstream / ".gitignore").write_text(".venv/\nlogs/\nconfig/\nweb/frontend/dist/\n")
+    (upstream / "pyproject.toml").write_text('[project]\nname="fixture"\nversion="0.1.0"\n')
+    (upstream / "launch.py").write_text("# original\n")
+    git(upstream, "add", ".")
+    git(upstream, "commit", "-qm", "Initial project")
+    root = tmp_path / "project"
+    git(tmp_path, "clone", "-q", str(upstream), str(root))
+    layout = Layout(root)
+    layout.python.parent.mkdir(parents=True)
+    layout.python.touch()
+    frontend = root / "web/frontend/dist/index.html"
+    frontend.parent.mkdir(parents=True)
+    frontend.write_text("original")
+    data = root / "config/user.json"
+    data.parent.mkdir()
+    data.write_text('{"keep":"user data"}')
+    (upstream / "launch.py").write_text("# updated\n")
+    git(upstream, "commit", "-qam", "Update project")
+    expected_head = git(upstream, "rev-parse", "HEAD")
+    manager = Manager(layout)
+    originally_running = running
+    events: list[str] = []
+    monkeypatch.setattr(manager, "_state", lambda: ("running" if running else "stopped", 123 if running else None, None))
+
+    def stop() -> None:
+        nonlocal running
+        running = False
+        events.append("stop")
+
+    def sync() -> None:
+        assert not running and not manager.ready
+        assert git(root, "rev-parse", "HEAD") == expected_head
+        frontend.write_text("rebuilt")
+        events.append("sync")
+
+    def start() -> None:
+        nonlocal running
+        assert manager.ready and frontend.read_text() == "rebuilt"
+        running = True
+        events.append("start")
+
+    monkeypatch.setattr(manager, "_stop", stop)
+    monkeypatch.setattr(manager.environment, "sync", sync)
+    monkeypatch.setattr(manager, "_start", start)
+    try:
+        manager.submit("update")
+        wait_for(lambda: not manager.status()["busy"])
+        assert manager.status()["last"]["ok"], manager.status()["last"]
+        assert manager.ready and running is originally_running
+        assert events == ["stop", "sync", *(["start"] if originally_running else [])]
+        assert git(root, "rev-parse", "HEAD") == expected_head
+        assert data.read_text() == '{"keep":"user data"}'
+    finally:
+        manager.close(detach=True)
 
 
 @pytest.mark.parametrize("source,url", [("github", "https://github.com/1292917512/AnelfAgent.git"),

@@ -9,6 +9,7 @@ import json
 import sqlite3
 import time
 from contextlib import asynccontextmanager
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, Mock
@@ -1021,6 +1022,117 @@ async def test_request_is_durable_without_waiting_for_projection(coordinator, st
     await settle(restarted_again)
     with pytest.raises(ValueError, match="不匹配"):
         restarted_again.rebuild.validate_config(CogneeConfig(data_root="other-directory"))
+
+
+@pytest.mark.parametrize("unmapped_documents", [0, 2])
+async def test_moved_index_rebinds_only_location_after_backend_verification(
+    coordinator, store, tmp_path, unmapped_documents,
+):
+    mid = await store.add(MemoryEntry(content="迁移后仍存在的记忆", memory_type=MemoryType.SEMANTIC))
+    await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
+    pending = await store.add(MemoryEntry(content="迁移后继续同步", memory_type=MemoryType.SEMANTIC))
+    before = await store.projection_state.load()
+    mappings = await store.projection_state.mappings()
+    mapping = mappings[0]
+    for index in range(unmapped_documents):
+        extra_id = f"unmapped-{index}"
+        extra = copy.deepcopy(coordinator.client.documents[mapping["dataset_id"]][mapping["data_id"]])
+        extra.update(id=extra_id, data_id=extra_id, text="原有未映射文档，迁移时必须保留")
+        coordinator.client.documents[mapping["dataset_id"]][extra_id] = extra
+    backend_before = copy.deepcopy(coordinator.client.documents)
+    activity = await store.get_cognee_sync_activity()
+    old_root = Path(coordinator.config.absolute_data_root)
+    old_root.mkdir(parents=True)
+    (old_root / "kept-index").write_bytes(b"unchanged")
+    moved = tmp_path / "moved-cognee"
+    old_root.rename(moved)
+    config = replace(coordinator.config, data_root=str(moved))
+    coordinator.client.reconfigure(config)
+    restarted = CogneeCoordinator(store, coordinator.client, config)
+
+    await restarted.rebuild.initialize(config)
+    after = await store.projection_state.load()
+    assert after.model_dump() == {**before.model_dump(), "root": str(moved)}
+    assert await store.projection_state.mappings() == mappings
+    assert await store.get_cognee_sync_activity() == activity
+    assert (await store.get(mid)).content == "迁移后仍存在的记忆"
+    assert (await store.get(pending)).content == "迁移后继续同步"
+    assert (moved / "kept-index").read_bytes() == b"unchanged"
+    assert coordinator.client.documents == backend_before
+    if unmapped_documents:
+        with pytest.raises(RuntimeError, match="后端文档数与映射不一致"):
+            await restarted.rebuild.verify_backend(restarted.rebuild.state, mappings)
+        assert coordinator.client.documents == backend_before
+    await restarted.rebuild.initialize(config)
+    assert (await store.projection_state.load()).model_dump() == after.model_dump()
+    assert restarted.rebuild.can_consume and restarted.client.projection_ready
+    await restarted._process_batch(await store.claim_cognee_sync_batch(10))
+    assert await store.get_cognee_mapping(pending) is not None
+    activity = await store.get_cognee_sync_activity()
+    assert activity["pending"] == activity["failed"] == activity["processing"] == 0
+    assert activity["synced"] == 2
+    for dataset_id, documents in backend_before.items():
+        for data_id, document in documents.items():
+            assert restarted.client.documents[dataset_id][data_id] == document
+
+
+@pytest.mark.parametrize("damage", ["missing", "replaced", "fingerprint", "graph", "prefix", "unmapped"])
+async def test_moved_index_never_rebinds_an_unverified_backend(coordinator, store, tmp_path, damage):
+    mid = await store.add(MemoryEntry(content="不能丢失的原生记忆", memory_type=MemoryType.SEMANTIC))
+    if damage != "unmapped":
+        await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
+        mapping = await store.get_cognee_mapping(mid)
+        if damage == "missing":
+            coordinator.client.documents.clear()
+        elif damage == "replaced":
+            documents = coordinator.client.documents[mapping["dataset_id"]]
+            extra = documents.pop(mapping["data_id"])
+            documents["unrelated-document"] = {**extra, "id": "unrelated-document", "data_id": "unrelated-document"}
+        elif damage == "fingerprint":
+            coordinator.client.documents[mapping["dataset_id"]][mapping["data_id"]]["external_metadata"][
+                "anelf_content_hash"
+            ] = "another-project"
+        elif damage == "graph":
+            coordinator.client.missing_graph.add(mapping["data_id"])
+    else:
+        coordinator.rebuild.state.phase = "required"
+        await store.projection_state.save(coordinator.rebuild.state)
+    before = (await store.projection_state.load()).model_dump()
+    activity = await store.get_cognee_sync_activity()
+    mappings = await store.projection_state.mappings()
+    moved = tmp_path / "unverified-index"
+    moved.mkdir()
+    config = replace(coordinator.config, data_root=str(moved),
+                     dataset_prefix="other" if damage == "prefix" else coordinator.config.dataset_prefix)
+    coordinator.client.reconfigure(config)
+    restarted = CogneeCoordinator(store, coordinator.client, config)
+    with pytest.raises((ValueError, RuntimeError)):
+        await restarted.rebuild.initialize(config)
+    assert (await store.projection_state.load()).model_dump() == before
+    assert await store.projection_state.mappings() == mappings
+    assert await store.get_cognee_sync_activity() == activity
+    assert (await store.get(mid)).content == "不能丢失的原生记忆"
+
+
+@pytest.mark.parametrize("foreign_documents", [False, True])
+async def test_unpublished_projection_moves_only_to_an_empty_backend(coordinator, store, tmp_path, foreign_documents):
+    mid = await store.add(MemoryEntry(content="尚待首次同步的记忆", memory_type=MemoryType.SEMANTIC))
+    before = (await store.projection_state.load()).model_dump()
+    activity = await store.get_cognee_sync_activity()
+    if foreign_documents:
+        coordinator.client.documents["foreign-dataset"] = {"foreign": {"id": "foreign"}}
+    config = replace(coordinator.config, data_root=str(tmp_path / "empty-moved-index"))
+    coordinator.client.reconfigure(config)
+    restarted = CogneeCoordinator(store, coordinator.client, config)
+    if foreign_documents:
+        with pytest.raises(ValueError, match="未知文档"):
+            await restarted.rebuild.initialize(config)
+        assert (await store.projection_state.load()).model_dump() == before
+    else:
+        await restarted.rebuild.initialize(config)
+        assert (await store.projection_state.load()).model_dump() == {**before, "root": config.absolute_data_root}
+    assert await store.get_cognee_sync_activity() == activity
+    assert (await store.get(mid)).content == "尚待首次同步的记忆"
 
 
 async def test_fresh_rebuild_survives_restart_and_repairs_missing_graph(coordinator, store):

@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import re
 import threading
+from types import ModuleType
 from typing import Iterable, List
 
 from core.log import log
@@ -26,7 +27,7 @@ from core.log import log
 # 分词器版本：索引模式/词典策略变更时递增，触发 FTS 全量重建
 FTS_TOKENIZER_VERSION = "jieba-search-v1"
 
-_jieba = None
+_jieba: ModuleType | None = None
 _jieba_ready = False
 _init_lock = threading.Lock()
 
@@ -51,7 +52,7 @@ def _cjk_bigrams(text: str) -> List[str]:
     return out
 
 
-def _load_jieba():
+def _load_jieba() -> ModuleType | None:
     """加载 jieba 并应用待注册词典（线程安全，仅首个调用真正执行）。"""
     global _jieba, _jieba_ready
     with _init_lock:

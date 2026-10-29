@@ -14,6 +14,32 @@ from agent.memory.store.tokenizer import (
 pytestmark = pytest.mark.skipif(not available(), reason="jieba 未安装")
 
 
+def test_cold_start_compiles_dependency_without_warnings(tmp_path) -> None:
+    import os
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    script = '''
+from pathlib import Path
+import jieba
+from agent.memory.store import tokenizer
+for source in Path(jieba.__file__).parent.rglob("*.py"):
+    compile(source.read_bytes(), str(source), "exec")
+assert "新家" in tokenizer.tokenize_for_index("主人上周搬到了新家")
+assert "哪里" in tokenizer.tokenize_for_query("他搬到哪里了")
+print("tokenizer ready")
+'''
+    # 独立字节码目录触发真实首次编译，不删除或改写已安装依赖的缓存。
+    result = subprocess.run(
+        [sys.executable, "-W", "error::SyntaxWarning", "-X", f"pycache_prefix={tmp_path / 'bytecode'}", "-c", script],
+        cwd=Path(__file__).resolve().parents[4], env={**os.environ, "PYTHONIOENCODING": "utf-8"},
+        capture_output=True, text=True, encoding="utf-8", timeout=60,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "tokenizer ready" in result.stdout
+
+
 class TestTokenizer:
     def test_index_tokenizes_chinese_words(self) -> None:
         tokens = tokenize_for_index("主人上周搬到了新家")

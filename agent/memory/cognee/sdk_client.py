@@ -27,6 +27,7 @@ from .llm_bridge import (
     summarize_resolved,
 )
 from .model_config import resolve_models, validate_models
+from .relocation import relocate_sources
 from .sdk_contract import close_engines, validate_sdk
 from .types import CogneeAvailability, CogneePipelineError, CogneePipelineProgress, CogneeRecallItem
 from .wire import InputDocument, make_document
@@ -213,6 +214,7 @@ class SDKClient:
             anthropic_env_bridge(chat_payload)
             module.config.set_llm_config(chat_payload)
             module.config.set_embedding_config(embedding_payload)
+            await asyncio.to_thread(relocate_sources, root)
             self._chat_payload = chat_payload
             self._embedding_payload = embedding_payload
             if (root / "system").exists():
@@ -231,6 +233,7 @@ class SDKClient:
         anthropic_env_bridge(chat)
         module.config.set_llm_config(chat)
         module.config.set_embedding_config(embedding)
+        await asyncio.to_thread(relocate_sources, root)
         self._chat_payload, self._embedding_payload = chat, embedding
         self._configured = True
 

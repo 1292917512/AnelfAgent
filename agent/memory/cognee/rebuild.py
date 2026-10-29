@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 from agent.storage.volume_restore import backups_root
+from core.log import log
 
 from ..memory_store import MemoryStore
 from ..projection import PROJECTION_VERSION, canonical_tags, projection_dataset
@@ -49,15 +50,47 @@ class CogneeRebuild:
                 phase="required" if existing else "ready",
             )
             await self.store.projection_state.save(self.state)
+        if self.state.base_prefix == config.dataset_prefix and self.state.root != config.absolute_data_root:
+            await self._relocate_root(config)
         self.validate_config(config)
         if self.state.version != PROJECTION_VERSION:
             self.state.phase = "required"
         self.bind()
 
-    def validate_config(self, config: CogneeConfig) -> None:
-        if self.state and (self.state.root != config.absolute_data_root
-                           or self.state.base_prefix != config.dataset_prefix):
-            raise ValueError("数据目录和数据集前缀与投影映射不匹配，请使用完整存储卷迁移/恢复")
+    async def _relocate_root(self, config: CogneeConfig) -> None:
+        """核验既有映射后承接位置；未知历史与残缺索引不能接管原生映射。"""
+        state = self.state
+        if state is None:
+            raise RuntimeError("构建状态尚未初始化")
+        mappings = await self.store.projection_state.mappings()
+        if mappings and Path(config.absolute_data_root).is_dir():
+            mapped, documents = await self._backend_documents(mappings)
+            await self._verify_mapped_documents(state, mapped, documents)
+            verified = len(mapped)
+            mapped_keys = {(str(row["dataset_id"]), str(row["data_id"])) for row in mapped}
+            if retained := len(documents.keys() - mapped_keys):
+                log(f"Cognee 迁移保留 {retained} 个未映射后端文档，未执行删除或补造映射", tag="记忆")
+        elif (not mappings and state.version == PROJECTION_VERSION and state.phase == "ready"
+              and not state.verified and not state.previous_namespaces and not state.legacy_preserved):
+            # 尚无已发布投影时也需确认目标为空，不能接管未知历史文档。
+            for dataset in await self.client.list_datasets():
+                if await self.client.list_data(str(_field(dataset, "id"))):
+                    raise ValueError("数据目录与投影映射不匹配：目标含未知文档，原记忆和队列已保留")
+            verified = 0
+        else:
+            raise ValueError("数据目录与投影映射不匹配：新位置缺少可核验的已提交索引，原记忆和队列已保留")
+        relocated = state.model_copy(update={"root": config.absolute_data_root})
+        await self.store.projection_state.save(relocated)
+        self.state = relocated
+        log(f"Cognee 迁移索引验收通过，已承接 {verified} 份文档映射并更新数据目录", tag="记忆")
+
+    def validate_config(self, config: CogneeConfig, *, selected_root: str | None = None) -> None:
+        """配置编辑可保留启动时已选择的位置；位置承接仍须 initialize 的后端验收。"""
+        if self.state and self.state.base_prefix != config.dataset_prefix:
+            raise ValueError("数据集前缀与投影映射不匹配，请保留已有前缀或使用完整存储卷迁移/恢复")
+        if (self.state and self.state.root != config.absolute_data_root
+                and selected_root != config.absolute_data_root):
+            raise ValueError("数据目录与投影映射不匹配，请完整迁移后重启并验收原索引")
 
     def bind(self) -> None:
         if self.state:
@@ -177,14 +210,28 @@ class CogneeRebuild:
             await self.store.projection_state.save(state)
 
     async def verify_backend(self, state: ProjectionState, mappings: list[dict[str, Any]]) -> int:
-        """核验内容、标签、抽取标记及实际图谱覆盖；构建与清理共用同一验收门。"""
+        """完整覆盖验收：构建与清理必须逐项一致，不能混入未确认文档。"""
+        mappings, documents = await self._backend_documents(mappings)
+        if len(documents) != len(mappings):
+            raise RuntimeError(f"后端文档数与映射不一致: {len(documents)} != {len(mappings)}")
+        await self._verify_mapped_documents(state, mappings, documents)
+        return len(mappings)
+
+    async def _backend_documents(
+        self, mappings: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], dict[tuple[str, str], Any]]:
+        """展开原生分片并按数据集各读取一次；不同验收契约共用同一份后端视图。"""
         mappings = [document for mapping in mappings for document in expand_mapping(mapping)]
         documents: dict[tuple[str, str], Any] = {}
         for dataset_id in sorted({str(row["dataset_id"]) for row in mappings}):
             for item in await self.client.list_data(dataset_id):
                 documents[(dataset_id, str(_field(item, "id", "")))] = item
-        if len(documents) != len(mappings):
-            raise RuntimeError(f"后端文档数与映射不一致: {len(documents)} != {len(mappings)}")
+        return mappings, documents
+
+    async def _verify_mapped_documents(
+        self, state: ProjectionState, mappings: list[dict[str, Any]], documents: dict[tuple[str, str], Any],
+    ) -> None:
+        """核验每个已确认映射的身份、内容、标签与图谱，缺一项也不能承接。"""
         for mapping in mappings:
             document = documents.get((str(mapping["dataset_id"]), str(mapping["data_id"])))
             if document is None:
@@ -204,4 +251,3 @@ class CogneeRebuild:
             await self.client.verify_graph_documents(dataset_id, [
                 str(row["data_id"]) for row in mappings if str(row["dataset_id"]) == dataset_id
             ])
-        return len(documents)
