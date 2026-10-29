@@ -66,7 +66,9 @@ def create_application(args):
  async def register_web_service():
   from web import server
   from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-  import threading
+  import socket, threading
+  # The fixture serves a numeric local address and needs no reverse DNS.
+  socket.getfqdn=lambda host:host
   class Handler(BaseHTTPRequestHandler):
    def do_GET(self):
     self.send_response(200);self.end_headers();self.wfile.write(b'{"status":"ok"}')

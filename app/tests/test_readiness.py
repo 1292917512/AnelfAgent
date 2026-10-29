@@ -23,9 +23,12 @@ from core.host_protocol import write_json
 @pytest.fixture
 def web_project(tmp_path: Path) -> Iterator[tuple[Path, int, int]]:
     script = tmp_path / "launch.py"
-    script.write_text('''import json,os
+    script.write_text('''import faulthandler,json,os,socket
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler,ThreadingHTTPServer
+faulthandler.dump_traceback_later(5)
+# The fixture serves a numeric loopback address and needs no reverse DNS.
+socket.getfqdn=lambda host:host
 class Handler(BaseHTTPRequestHandler):
  def do_GET(self):
   mode=Path('mode').read_text() if Path('mode').exists() else 'ok'
@@ -36,15 +39,18 @@ class Handler(BaseHTTPRequestHandler):
 server=ThreadingHTTPServer(('127.0.0.1',0),Handler)
 Path('listener.tmp').write_text(json.dumps({'pid':os.getpid(),'port':server.server_port}))
 Path('listener.tmp').replace('listener.json')
+faulthandler.cancel_dump_traceback_later()
 server.serve_forever()
 ''', encoding="utf-8")
-    child = subprocess.Popen([sys._base_executable, str(script)], cwd=tmp_path,
-                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, **background_options())
+    log = tmp_path / "listener.log"
+    with log.open("w", encoding="utf-8") as output:
+        child = subprocess.Popen([sys._base_executable, str(script)], cwd=tmp_path,
+                                 stdout=output, stderr=output, **background_options())
     try:
         deadline = time.monotonic() + 10
         while not (tmp_path / "listener.json").exists():
-            assert child.poll() is None
-            assert time.monotonic() < deadline
+            assert child.poll() is None, log.read_text("utf-8", errors="replace")
+            assert time.monotonic() < deadline, log.read_text("utf-8", errors="replace")
             time.sleep(.02)
         listener = json.loads((tmp_path / "listener.json").read_text())
         assert listener["pid"] == child.pid
