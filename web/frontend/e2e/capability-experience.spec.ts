@@ -170,6 +170,7 @@ test("Cognee queue stays visible across index phases, pause, retry and stale sta
     .screenshot({ path: info.outputPath("cognee-sync-queue.png") });
   state.sync.failed = 1;
   await expect(retry).toBeVisible({ timeout: 12000 });
+  await expect(count("Sync failed")).toHaveText("1", { timeout: 12000 });
   unavailable = true;
   await expect(page.getByText(/Status refresh failed. This is the last snapshot/)).toBeVisible({ timeout: 25000 });
   await expect(count("Queued")).toHaveText("13");
