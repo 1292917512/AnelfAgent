@@ -14,6 +14,7 @@ import sys
 import time
 import weakref
 from contextlib import asynccontextmanager, closing, nullcontext
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, Mock
@@ -812,6 +813,7 @@ def test_new_document_must_preserve_exact_input_bytes(tmp_path):
     "file:///home/旧项目/config/memory/cognee/data",
     "file://server/share/cognee/data",
     r"D:\code\AnelfAgent\config\memory\cognee\data",
+    "/home/旧 # 项目%20/config/memory/cognee/data",
 ])
 async def test_relocated_sources_preserve_identity_and_restore_from_unmodified_snapshot(tmp_path, monkeypatch, old_root):
     from types import SimpleNamespace
@@ -983,7 +985,8 @@ def offline_index_config(tmp_path, monkeypatch) -> CogneeConfig:
 
 
 @pytest.mark.timeout(180)
-async def test_real_ingestion_publishes_colliding_tags_without_changing_document_identity(offline_index_config):
+@pytest.mark.parametrize("relocated", [False, True])
+async def test_real_ingestion_publishes_colliding_tags_without_changing_document_identity(offline_index_config, relocated):
     config = offline_index_config
     client = CogneeClient(config)
     tags = ["topic:WOL", "topic:WoL", "topic:two words", "topic:two_words"]
@@ -996,6 +999,26 @@ async def test_real_ingestion_publishes_colliding_tags_without_changing_document
         assert len(rows) == 1 and rows[0]["id"] == item.data_id
         assert rows[0]["external_metadata"]["anelf_attribution"]["tags"] == tags
         assert json.loads(rows[0]["node_set"]) == ["topic:WOL", "topic:two words"]
+        if relocated:
+            from agent.memory.cognee.sdk_client import _source_digest
+
+            await client.close()
+            original = Path(config.absolute_data_root)
+            moved = original.with_name("moved index")
+            original.rename(moved)
+            config = replace(config, data_root=str(moved))
+            client = CogneeClient(config)
+            reopened = await client.list_data(result["dataset_id"])
+            assert len(reopened) == 1 and not original.exists()
+            locations = {"raw_data_location", "original_data_location"}
+            assert {key: value for key, value in reopened[0].items() if key not in locations} == {
+                key: value for key, value in rows[0].items() if key not in locations
+            }
+            for key in locations:
+                assert reopened[0][key].startswith((moved / "data").as_uri() + "/")
+            assert _source_digest(moved / "data", reopened[0]["raw_data_location"]) == hashlib.sha256(
+                item.data.encode("utf-8"),
+            ).hexdigest()
         # 使用同一个稳定 ID 重试，已提交文档及来源不能重复或缩减。
         await client.add([item], dataset_name="anelf_global", incremental_loading=True)
         assert len(await client.list_data(result["dataset_id"])) == 1
