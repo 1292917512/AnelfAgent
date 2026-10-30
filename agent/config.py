@@ -104,11 +104,11 @@ _MIND_CONFIGS = {
             "default": True,
         },
         "send_interim_text": {
-            "description": "自动投递中间正文：工具调用前或等待后台任务时发送给当前会话；Jev 明确拒绝才拦截，优先使用 send_message",
+            "description": "自动投递中间正文：仅 Jev 明确确认是当前用户需要的进度才补投；不确定或审核不可用不投递，优先使用 send_message",
             "default": False,
         },
         "send_final_text": {
-            "description": "自动投递最终正文：默认发送独立最终回复，Jev 明确拒绝才拦截；关闭不影响 send_message，结束备注和内部任务不自动投递",
+            "description": "自动投递最终正文：为漏用发送工具的模型保留兜底，仅 Jev 明确确认应发给当前用户才补投；不确定或审核不可用不投递，关闭不影响 send_message",
             "default": True,
         },
     },

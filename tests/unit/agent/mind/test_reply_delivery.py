@@ -17,6 +17,9 @@ _SCOPE = "user_qq:1"
 
 @pytest.fixture
 def sender(monkeypatch):
+    """隔离原生审核；投递编排用例默认获得明确允许的回执。"""
+    monkeypatch.setattr("agent.mind.execution.reply_delivery.assess_reply",
+                        AsyncMock(return_value=ReplyAssessment(True, "Jev 明确允许投递")))
     async def send(channel_id, target_id, content, **kwargs):
         return json.dumps({"success": True, "delivery": delivery_tags("auto", "sent", target_id)})
     mock = AsyncMock(side_effect=send)
@@ -59,9 +62,9 @@ async def test_explicit_end_never_sends_or_recovers(anything, sender, ending):
 
 async def test_end_reply_text_fallback_delivers_and_corrects(anything, sender):
     """纯收束批次正文零送达时经 Jev 兜底：补投 + 纠偏提示，不写常规投递回执。"""
-    mind, completion = await _run([tool_result("内部收束说明", ["end_reply"])], anything)
+    mind, completion = await _run([tool_result("答案是 42。", ["end_reply"])], anything)
     sender.assert_awaited_once()
-    assert sender.await_args.args[2] == "内部收束说明"
+    assert sender.await_args.args[2] == "答案是 42。"
     msgs = completion["messages"]
     assert any(m.get("role") == "system" and "必须调用 send_message" in m.get("content", "") for m in msgs)
     assert not any("按普通会话回复投递" in m.get("content", "") for m in msgs)

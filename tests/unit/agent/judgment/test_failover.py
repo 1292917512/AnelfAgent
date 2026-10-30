@@ -95,11 +95,11 @@ async def test_explicit_model_does_not_use_other_native_models_and_manual_check_
     assert requests[-1].method == "HEAD"
 
 
-async def test_unavailable_chain_preserves_default_delivery_and_total_timeout(chain, monkeypatch):
+async def test_unavailable_chain_skips_delivery_and_preserves_total_timeout(chain, monkeypatch):
     requests, offline = chain
     offline.add("cloud")
-    assert (await assess_reply("answer", "user_qq:1", [])).approved
-    assert (await assess_reply("answer", "user_qq:1", [])).approved
+    assert not (await assess_reply("answer", "user_qq:1", [])).approved
+    assert not (await assess_reply("answer", "user_qq:1", [])).approved
     assert len(requests) == 2
     await judgment_health.close()
     called = []

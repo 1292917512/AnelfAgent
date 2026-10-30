@@ -10,6 +10,7 @@ from helpers.think_loop_fakes import FakeMind, run_think_loop, text_result, tool
 
 from agent.channel import output_tools
 from agent.channel.channel_types import ChannelStatus
+from agent.channel.delivery import delivery_tags
 from agent.judgment.engine import JudgmentConfig
 from agent.judgment.types import ChoiceAnswer, JudgmentReport, JudgmentSource, NoulAnswer
 from agent.mind.execution.reply_delivery import ReplyAssessment
@@ -99,41 +100,51 @@ async def test_only_confirmed_body_enters_persistent_conversation(pipeline, sqli
 
 
 @pytest.mark.parametrize("scope_id", ["qq:1", "webui:1#chat_1"])
-@pytest.mark.parametrize("outcome", ["timeout", "borderline", "internal", "disabled"])
-async def test_real_review_fallback_delivers_once_to_bound_channel(pipeline, sqlite, anything, monkeypatch, scope_id, outcome):
+@pytest.mark.parametrize("outcome", ["approved", "timeout", "borderline", "internal", "internal_after_work", "uncertain", "disabled"])
+async def test_real_review_only_explicit_approval_delivers_to_bound_channel(pipeline, sqlite, anything, monkeypatch, scope_id, outcome):
     from agent.messages import build_entity_scope
     from agent.mind.execution import reply_delivery
 
     data, channels = pipeline
     cfg = JudgmentConfig(True, "", "http://localhost:9000", "local", 30, False, "", "low")
     monkeypatch.setattr(reply_delivery, "load_config", lambda: cfg)
-    intent = "internal" if outcome == "internal" else "reply"
+    intent = "internal" if outcome.startswith("internal") else "uncertain" if outcome == "uncertain" else "reply"
     probabilities = {name: 0.0 for name in ("reply", "internal", "duplicate", "wrong_target", "uncertain")}
-    probabilities.update({intent: 0.82, "uncertain": 0.18})
+    probabilities.update({intent: 0.82, "reply" if intent == "uncertain" else "uncertain": 0.18})
     answer = JudgmentReport(source=JudgmentSource.TYPESAFE, model="local", answers={
-        "appropriate": NoulAnswer(noul=0 if intent == "internal" else 0.79),
+        "appropriate": NoulAnswer(noul=0.79 if outcome == "borderline" else 0.9),
         "intent": ChoiceAnswer(choice=intent, confidence=0.82, probabilities=probabilities),
     })
     judge = AsyncMock(side_effect=TimeoutError() if outcome == "timeout" else None, return_value=answer)
     monkeypatch.setattr(reply_delivery, "get_judgment_engine", lambda: SimpleNamespace(judge=judge))
     ConfigManager.set("send_final_text", outcome != "disabled")
     anything.scope_type, anything.scope_id = "user", scope_id
-    mind = FakeMind(rounds=[text_result("这条回复应投递到当前频道。")], default_text=None)
-    mind.conversation_data = data
-    completion = {}
     adapter, _, target = scope_id.partition(":")
     identity, _, session = target.partition("#")
     scope = build_entity_scope("user", adapter, identity, session)
+    candidate = (
+        "本轮任务已全部闭环：私信已通过 API 回复送达（msg_key=123），其他账号已回应；"
+        "组件 bug 已挂账 pending_replies 并向主人报备，流水已记 activity-log。"
+        "当前会话不再重复调用 send_message，避免同一内容双发。"
+        if intent == "internal" else "这条回复应投递到当前频道。"
+    )
+    rounds = ([tool_result("", ["send_message"]), tool_result("", ["recall"])]
+              if outcome == "internal_after_work" else []) + [text_result(candidate)]
+    mind = FakeMind(rounds=rounds, default_text=None, tool_results={
+        "send_message": json.dumps({"success": True, "delivery": delivery_tags("channel", "sent", scope)}),
+    })
+    mind.conversation_data = data
+    completion = {}
     token = bind_scope(scope)
     try:
         await run_think_loop(mind, anything=anything, completion=completion)
     finally:
         reset_scope(token)
-    sent = outcome in {"timeout", "borderline"}
+    sent = outcome == "approved"
     assert channels[adapter].send_text.await_count == int(sent)
     assert all(channel.send_text.await_count == 0 for key, channel in channels.items() if key != adapter)
     rows = await sqlite.fetch_live_conversation(scope_type="user", scope_id=scope_id, limit=10)
-    assert [row["content"] for row in rows if row["role"] == "assistant"] == (["这条回复应投递到当前频道。"] if sent else [])
+    assert [row["content"] for row in rows if row["role"] == "assistant"] == ([candidate] if sent else [])
     if outcome == "disabled":
         assert "delivery_status:" not in str(completion["messages"])
     else:

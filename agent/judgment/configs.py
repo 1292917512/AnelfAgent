@@ -26,7 +26,7 @@ _JUDGMENT_CONFIGS = {
             "default": True,
         },
         "judgment_gate_timeout": {
-            "description": "自动回复审核、可选工作与工具恢复判断的等待预算；到期保留各自原规则，不扩大前台等待",
+            "description": "自动回复审核、可选工作与工具恢复判断的等待预算；到期正文不自动投递，可选工作照常，工具恢复沿用守卫规则，不扩大前台等待",
             "default": 5.0, "min": 0.1, "max": 30.0, "unit": "秒", "advanced": True,
         },
         "judgment_evidence_max_chars": {
@@ -34,7 +34,7 @@ _JUDGMENT_CONFIGS = {
             "default": 3000, "min": 600, "max": 12000, "unit": "字符", "advanced": True,
         },
         "judgment_auto_max_chars": {
-            "description": "自动审核与可选工作预判的事实总预算；超限不调用模型，正文按投递开关正常发送，可选工作照常执行。不限制显式 judge 或 SDK 输入",
+            "description": "自动审核与可选工作预判的事实总预算；超限不调用模型，正文不自动投递，可选工作照常执行。不限制显式 judge 或 SDK 输入",
             "default": 8000, "min": 2000, "max": 32000, "unit": "字符", "advanced": True,
         },
         "judgment_connect_timeout": {
@@ -50,7 +50,7 @@ _JUDGMENT_CONFIGS = {
             "default": 300.0, "min": 30.0, "max": 3600.0, "unit": "秒",
         },
         "judgment_delivery_confidence": {
-            "description": "自动回复拦截置信阈值；只有不适合投递与内部/重复/错目标类别均达到此置信度才拦截，不可用或不确定按投递开关正常发送",
+            "description": "自动回复放行置信阈值；只有适合投递与当前用户有效回复类别均达到此置信度才补投，不可用或不确定不自动投递",
             "default": 0.8, "min": 0.5, "max": 1.0, "advanced": True,
         },
         "judgment_gate_skip_threshold": {
