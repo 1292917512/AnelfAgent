@@ -124,6 +124,15 @@ scheduled/heartbeat。写入侧 `validate_schedules` 强校验全局仅一条 id
 
 ## 规划系统（agent/planning/）
 
+- **归档可见性与清理留痕**：`get_goal` 可直接查看历史归档目标；`list_goals` 和 Web
+  `GET /memory/goals` 通过 `include_archived=true` 显式纳入归档并标注时间与原因。
+  归档目标不进入活动态势，更新/删除须先恢复，不因查询自动激活。记忆侧保护活动规划载体及其
+  goal 标签关联材料，详见[记忆分册](memory-system.md)。
+  AI 与 Web 的终态收口和显式删除共用 tracker：按读取版本删除，原子写一行既有
+  `memory_audit`（goal_id、标题、completed/cancelled/deleted 状态、deleted 去向及 actor）；
+  留痕失败回滚删除，版本冲突不报成功、不发移除事件。终态工具回执附 memory_id，可经
+  `memory_timeline` 或 Web timeline 查询；沿用审计的 30 天保留策略，不新建可召回记忆。
+  循环目标完成仍重置为 active，不产生删除记录。
 - 目标 CRUD（create_goal/update_goal/delete_goal）：**终态即清**——update_goal 终态即删、全部
   步骤完成后自动收口、delete_goal 显式删除；目标关闭只由完成事实驱动，系统不做基于时间的自动
   清理；update_goal 越界 step_index/非法 step_status 返回 PARAM 错误（不静默 no-op）；

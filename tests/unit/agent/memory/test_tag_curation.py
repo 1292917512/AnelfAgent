@@ -92,6 +92,34 @@ class TestExemptionStore:
 
 
 class TestExemptTool:
+    async def test_explicit_archive_query_has_status_and_stable_pagination(self, store: MemoryStore) -> None:
+        ids = []
+        for i in range(23):
+            ids.append(await store.add(MemoryEntry(
+                content=f"fact {i}", tags=["goal:history"], memory_type=MemoryType.SEMANTIC,
+            )))
+        for mid in ids[::2]:
+            assert await store.archive_memory(mid, reason="governance")
+        mem_tools.memory_tools_port.set(mem_tools.MemoryToolDeps(store, None))
+        try:
+            active = json.loads(await mem_tools.memory_index("goal:history"))
+            assert active["total"] == 11
+            first = json.loads(await mem_tools.memory_index("goal:history", include_archived=True))
+            second = json.loads(await mem_tools.memory_index(
+                "goal:history", include_archived=True, before_id=first["next_before_id"],
+            ))
+            items = first["memories"] + second["memories"]
+            assert first["total"] == 23
+            assert [item["id"] for item in items] == list(reversed(ids))
+            assert second["next_before_id"] is None
+            archived = [item for item in items if item["status"] == "archived"]
+            assert len(archived) == 12
+            assert all(item["archive_reason"] == "governance" and item["archived_at"] > 0 for item in archived)
+            assert {entry.id for entry in await store.search_by_tags(["goal:history"], limit=50)} == set(ids[1::2])
+            assert json.loads(await mem_tools.memory_index(include_archived=True))["cause"] == "param"
+        finally:
+            mem_tools.memory_tools_port.unbind()
+
     async def test_tag_pages_survive_retagging_and_new_insertions(self, store: MemoryStore) -> None:
         mem_tools.memory_tools_port.set(mem_tools.MemoryToolDeps(store, None))
         try:

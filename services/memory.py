@@ -6,13 +6,17 @@ import time
 from dataclasses import asdict
 from difflib import unified_diff
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.memory.profiles import ProfileWriter
 from agent.memory.provenance import visible_provenance
 from agent.storage.profile_store import ProfileConflict as ProfileConflict
 from core.log import log
 from services._runtime import require_runtime
+
+if TYPE_CHECKING:
+    from agent.memory.memory_store import MemoryStore
+    from agent.memory.memory_types import MemoryEntry
 
 _DOC_PREFIX = "uploads/docs/"
 _DOC_MAX_SIZE = 20 * 1024 * 1024
@@ -887,32 +891,46 @@ class MemoryService:
             return result.model_dump(mode="json")
         return result
 
-    async def _goal_entries(self, store: Any) -> List[tuple]:
+    async def _goal_entries(
+        self, store: MemoryStore, *, include_archived: bool = False,
+    ) -> List[tuple[MemoryEntry, Dict[str, Any]]]:
         """查询并解析全部目标条目，返回 [(MemoryEntry, goal_dict)]（单次操作内复用）。"""
         import json
 
         from agent.memory.memory_types import GOAL_SOURCE, MemoryType
-        entries = await store.list_recent(limit=100, memory_type=MemoryType.SEMANTIC, source=GOAL_SOURCE)
-        parsed: List[tuple] = []
-        for entry in entries:
-            try:
-                goal = json.loads(entry.content)
-            except (json.JSONDecodeError, AttributeError):
-                continue
-            if isinstance(goal, dict):
-                parsed.append((entry, goal))
+        parsed: List[tuple[MemoryEntry, Dict[str, Any]]] = []
+        offset = 0
+        while True:
+            entries = await store.list_by_source(
+                GOAL_SOURCE, limit=100, offset=offset, memory_type=MemoryType.SEMANTIC,
+                include_archived=include_archived,
+            )
+            for entry in entries:
+                try:
+                    goal = json.loads(entry.content)
+                except (json.JSONDecodeError, AttributeError):
+                    continue
+                if isinstance(goal, dict):
+                    parsed.append((entry, goal))
+            if len(entries) < 100:
+                break
+            offset += 100
         return parsed
 
-    async def list_goals(self, status: str = "all") -> List[Dict[str, Any]]:
+    async def list_goals(self, status: str = "all", include_archived: bool = False) -> List[Dict[str, Any]]:
         """列出所有目标计划。"""
         rt = require_runtime()
         store = rt.memory_store
         if not store:
             return []
         goals: List[Dict[str, Any]] = []
-        for entry, goal in await self._goal_entries(store):
+        for entry, goal in await self._goal_entries(store, include_archived=include_archived):
             goal["memory_id"] = entry.id
             goal["created_ts"] = entry.timestamp
+            if include_archived:
+                goal["archived"] = bool(entry.archived_at)
+                if entry.archived_at:
+                    goal.update(archived_at=entry.archived_at, archive_reason=entry.archive_reason)
             if status == "all" or goal.get("status") == status:
                 goals.append(goal)
         return goals
@@ -923,9 +941,11 @@ class MemoryService:
         store = rt.memory_store
         if not store:
             return None
-        for entry, goal in await self._goal_entries(store):
+        for entry, goal in await self._goal_entries(store, include_archived=True):
             if goal.get("goal_id") == goal_id:
                 goal["memory_id"] = entry.id
+                if entry.archived_at:
+                    goal.update(archived=True, archived_at=entry.archived_at, archive_reason=entry.archive_reason)
                 return goal
         return None
 
@@ -963,6 +983,7 @@ class MemoryService:
             content=json.dumps(goal, ensure_ascii=False),
             source=GOAL_SOURCE,
             importance=0.8,
+            tags=[f"goal:{goal['goal_id']}"],
             metadata={"goal_id": goal["goal_id"], "status": "active", "kind": GOAL_KIND},
         )
         entry_id = await store.add(entry, actor="web")
@@ -1010,9 +1031,9 @@ class MemoryService:
                     s["note"] = ""
                 target_goal["status"] = "active"
             elif status in ("completed", "cancelled"):
-                # 终态即清（与 AI 工具面同步语义）：不保留终态条目，直接删除
-                if target_entry.id:
-                    await store.delete(target_entry.id, actor="web")
+                from agent.planning.tracker import remove_goal
+                if not await remove_goal(target_entry, store=store, goal=target_goal, status=status, actor="web"):
+                    return None
                 target_goal["status"] = status
                 target_goal["memory_id"] = target_entry.id
                 return target_goal
@@ -1029,8 +1050,12 @@ class MemoryService:
                 and target_goal.get("status") == "active"
                 and all(s.get("status") in ("completed", "skipped") for s in steps)
             ):
-                if target_entry.id:
-                    await store.delete(target_entry.id, actor="web")
+                from agent.planning.tracker import remove_goal
+                if not await remove_goal(
+                    target_entry, store=store, goal=target_goal, status="completed", actor="web",
+                ):
+                    return None
+                target_goal["status"] = "completed"
                 target_goal["memory_id"] = target_entry.id
                 return target_goal
         target_goal["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -1058,6 +1083,6 @@ class MemoryService:
             return False
         for entry, goal in await self._goal_entries(store):
             if goal.get("goal_id") == goal_id and entry.id:
-                await store.delete(entry.id, actor="web")
-                return True
+                from agent.planning.tracker import remove_goal
+                return await remove_goal(entry, store=store, goal=goal, actor="web")
         return False

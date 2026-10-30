@@ -34,6 +34,7 @@ from ._shared import (
     frequency_boost,
     get_memory_config_value,
     idf_tag_score,
+    memory_query_source,
     projection_content_hash,
     row_to_entry,
     temporal_weight,
@@ -155,7 +156,7 @@ class SearchEngine:
         return [row_to_entry(r) for r in rows]
 
     async def list_tag_page(
-        self, tag: str, *, before_id: int = 0, limit: int = 20,
+        self, tag: str, *, before_id: int = 0, limit: int = 20, include_archived: bool = False,
     ) -> tuple[list[MemoryEntry], int, int | None]:
         """按 ID 倒序浏览精确标签，返回条目、当前总数与续页游标。
 
@@ -165,13 +166,15 @@ class SearchEngine:
         if before_id < 0 or not 1 <= limit <= 200:
             raise ValueError("标签分页游标不能为负数，页大小须在 1-200 之间")
         db = await self._conn.get_db()
-        predicate = "importance>0 AND EXISTS (SELECT 1 FROM json_each(memories.tags_json) WHERE value=?)"
+        source = memory_query_source(include_archived=include_archived)
+        columns = MEM_COLUMNS_NO_EMB + (", archived_at_ns, archive_reason" if include_archived else "")
+        predicate = "importance>0 AND EXISTS (SELECT 1 FROM json_each(items.tags_json) WHERE value=?)"
         cursor_sql = " AND id<?" if before_id else ""
         params: list[Any] = [tag, before_id] if before_id else [tag]
         async with self._conn.write_lock:
-            total = await fetch_count(db, f"SELECT COUNT(*) FROM memories WHERE {predicate}", (tag,))
+            total = await fetch_count(db, f"SELECT COUNT(*) FROM {source} AS items WHERE {predicate}", (tag,))
             rows = list(await (await db.execute(
-                f"SELECT {MEM_COLUMNS_NO_EMB} FROM memories WHERE {predicate}{cursor_sql} ORDER BY id DESC LIMIT ?",
+                f"SELECT {columns} FROM {source} AS items WHERE {predicate}{cursor_sql} ORDER BY id DESC LIMIT ?",
                 (*params, limit + 1),
             )).fetchall())
         entries = [row_to_entry(row, with_embedding=False) for row in rows[:limit]]

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 
 import pytest
@@ -376,9 +377,88 @@ class TestSearchForgotten:
 
 
 class TestManualForgetArchived:
-    async def test_forget_archives_and_restorable(self, store: MemoryStore) -> None:
-        import json
+    @pytest.mark.parametrize("path", ["manual", "weak", "limit", "low"])
+    async def test_goals_and_live_goal_links_survive_all_archive_paths(
+        self, store: MemoryStore, path: str,
+    ) -> None:
+        goal = _entry(json.dumps({"goal_id": "g1", "status": "active"}), importance=0.01, age_hours=2400)
+        goal.source = "goal"
+        # 兼容旧条目：没有 metadata.goal_id 时仍从 JSON 文档定位关联。
+        goal_id = await store.add(goal)
+        linked = _entry("目标依据", importance=0.01, age_hours=2400)
+        linked.tags = ["goal:g1"]
+        linked_id = await store.add(linked)
+        ordinary = linked.model_copy(deep=True, update={"id": None, "content": "相似但无关的标签", "tags": ["goal:g10"]})
+        ordinary_id = await store.add(ordinary)
 
+        if path == "manual":
+            from agent.memory import tools as mem_tools
+            mem_tools.memory_tools_port.set(mem_tools.MemoryToolDeps(store, None))
+            try:
+                for mid in (goal_id, linked_id):
+                    result = json.loads(await mem_tools.forget(mid))
+                    assert result["cause"] == "state"
+                    assert "get_goal" in result["hint"]
+                assert json.loads(await mem_tools.forget(ordinary_id))["ok"]
+            finally:
+                mem_tools.memory_tools_port.unbind()
+        elif path == "weak":
+            report = await store.forget_weak_memories(min_keep_per_type=0)
+            assert [item["id"] for item in report["forgotten"]] == [ordinary_id]
+        elif path == "limit":
+            assert await store.enforce_type_limits(max_per_type=1) == {"semantic": 1}
+        else:
+            assert await store.cleanup_low_importance() == 1
+
+        assert await store.get(goal_id) is not None
+        assert await store.get(linked_id) is not None
+        assert (await store.resolve(ordinary_id))["status"] == "archived"
+        # 目标清理后解除关联保护；不存在的 goal 标签不会造成永久保留。
+        assert await store.delete(goal_id)
+        assert await store.archive_memory(linked_id)
+
+    async def test_archive_rechecks_current_version_and_goal_links(self, store: MemoryStore) -> None:
+        mid = await store.add(_entry("将被修改的材料"))
+        stale = await store.get(mid)
+        assert stale is not None
+        current = stale.model_copy(deep=True, update={"content": "新增事实"})
+        assert await store.update(current)
+        db = await store._get_db()
+        async with store._tx(db):
+            assert not await store._archive_entry(db, stale, "stale decision")
+        goal = _entry(json.dumps({"goal_id": "g1", "status": "active"}))
+        goal.source = "goal"
+        await store.add(goal)
+        current.tags = ["goal:g1"]
+        assert await store.update(current)
+        assert not await store.archive_memory(mid)
+        assert (await store.get(mid)).content == "新增事实"
+
+    @pytest.mark.parametrize("status", ["completed", "cancelled"])
+    async def test_terminal_plan_and_its_links_can_still_be_archived(
+        self, store: MemoryStore, status: str,
+    ) -> None:
+        plan = _entry(json.dumps({"goal_id": "plan1", "status": status}))
+        plan.source = "goal"
+        plan.metadata = {"kind": "present_plan"}
+        mid = await store.add(plan)
+        linked = _entry("已结束计划的材料")
+        linked.tags = ["goal:plan1"]
+        linked_id = await store.add(linked)
+        assert await store.archive_memory(mid)
+        assert await store.archive_memory(linked_id)
+
+    async def test_new_access_invalidates_automatic_archive_snapshot(self, store: MemoryStore) -> None:
+        mid = await store.add(_entry("已重新使用的记忆", importance=0.01, age_hours=2400))
+        stale = await store.get(mid)
+        assert stale is not None
+        await store.record_access([mid])
+        db = await store._get_db()
+        async with store._tx(db):
+            assert not await store._archive_entry(db, stale, "outdated score")
+        assert await store.get(mid) is not None
+
+    async def test_forget_archives_and_restorable(self, store: MemoryStore) -> None:
         from agent.memory import tools as mem_tools
 
         mem_tools.memory_tools_port.set(mem_tools.MemoryToolDeps(store, None))

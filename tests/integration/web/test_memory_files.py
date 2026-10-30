@@ -51,3 +51,29 @@ def test_document_index_failure_is_reported_and_upload_removed(
     assert response.status_code == 200
     assert "error" in response.json()
     assert not list(docs.iterdir())
+
+
+def test_goal_terminal_cleanup_exposes_auditable_destination(
+    client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent.memory.memory_store import MemoryStore
+
+    store = MemoryStore(str(tmp_path / "goals.sqlite3"))
+    monkeypatch.setattr("services.memory.require_runtime", lambda: SimpleNamespace(memory_store=store))
+    assert client.portal is not None
+    try:
+        created = client.post("/api/memory/goals", json={"title": "API 目标", "steps": ["执行"]})
+        assert created.status_code == 200
+        goal = created.json()
+        response = client.put(f"/api/memory/goals/{goal['goal_id']}", json={"status": "completed"})
+        assert response.status_code == 200 and response.json()["status"] == "completed"
+        assert client.get("/api/memory/goals", params={"include_archived": True}).json()["total"] == 0
+        timeline = client.get("/api/memory/timeline", params={"memory_id": goal["memory_id"]})
+        assert timeline.status_code == 200
+        events = timeline.json()["items"]
+        deletion = next(item for item in events if item["action"] == "delete")
+        assert deletion["data"]["goal_id"] == goal["goal_id"]
+        assert deletion["data"]["destination"] == "deleted"
+        assert deletion["data"]["status"] == "completed"
+    finally:
+        client.portal.call(store.close)

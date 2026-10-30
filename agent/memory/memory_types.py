@@ -53,6 +53,9 @@ class MemoryEntry(BaseModel):
     """内容修订版本号：update/合并演进时 +1，审计与冲突排查用。"""
     metadata: Dict[str, Any] = Field(default_factory=dict)
     embedding: Optional[List[float]] = None
+    archived_at: float = 0.0
+    """显式穿透查询的归档时间；0 表示活跃条目，不改变持久化内容。"""
+    archive_reason: str = ""
 
     def to_message(self) -> Dict[str, str]:
         """转换为 LLM messages 格式。"""

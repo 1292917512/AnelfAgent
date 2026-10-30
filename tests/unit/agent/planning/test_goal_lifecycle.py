@@ -11,6 +11,8 @@ from __future__ import annotations
 import json
 import time
 
+import pytest
+
 from core.event_bus import EVENT_PLAN_DELETED, event_bus
 
 SCOPE = "user_webui:test#chat1"
@@ -67,6 +69,16 @@ class TestTerminalCleanup:
 
             assert await tracker.find_goal_by_id(goal_id) == (None, None)
             assert any(p.get("plan_id") == goal_id for p in captured)
+            audit = await store.list_audit(memory_id=created["goal"]["memory_id"])
+            deletes = [row for row in audit if row["action"] == "delete"]
+            assert len(deletes) == 1
+            assert deletes[0]["actor"] == "planning"
+            assert deletes[0]["data"] == {
+                "goal_id": goal_id, "title": "临时目标", "status": "completed", "destination": "deleted",
+            }
+            assert goal_id in deletes[0]["detail"]
+            assert result["memory_id"] == created["goal"]["memory_id"]
+            assert await store.count() == 0
         finally:
             event_bus.off(EVENT_PLAN_DELETED, _capture)
             await _teardown(store)
@@ -98,6 +110,7 @@ class TestTerminalCleanup:
             assert goal is not None
             assert goal["status"] == "active"
             assert all(s["status"] == "pending" for s in goal["steps"])
+            assert not any(row["action"] == "delete" for row in await store.list_audit())
         finally:
             await _teardown(store)
 
@@ -134,6 +147,8 @@ class TestAllStepsAutoClose:
             assert result["success"] is True
             assert "自动收口" in result["message"]
             assert await tracker.find_goal_by_id(goal_id) == (None, None)
+            audit = await store.list_audit(memory_id=result["memory_id"])
+            assert audit[0]["data"]["status"] == "completed"
         finally:
             await _teardown(store)
 
@@ -198,6 +213,97 @@ class TestAllStepsAutoClose:
             await tools.update_goal(goal_id, step_index=0, step_status="completed")
             _, goal = await tracker.find_goal_by_id(goal_id)
             assert goal is not None and goal["status"] == "active"
+        finally:
+            await _teardown(store)
+
+
+class TestGoalIntegrity:
+    async def test_archived_goal_can_be_inspected_but_not_mutated(self, tmp_path):
+        from agent.memory.memory_types import MemoryEntry, MemoryType
+        from agent.planning import situation, tools
+
+        store, tracker = await _setup(tmp_path)
+        try:
+            goal = {"goal_id": "legacy", "title": "历史目标", "status": "active", "steps": []}
+            mid = await store.add(MemoryEntry(
+                content=json.dumps(goal), memory_type=MemoryType.SEMANTIC, tags=["goal:legacy"],
+            ))
+            assert await store.archive_memory(mid, reason="old governance")
+            # 模拟保护机制启用前误归档的规划载体。
+            db = await store._get_db()
+            async with store._tx(db):
+                await db.execute("UPDATE memories_archive SET source='goal' WHERE id=?", (mid,))
+            assert await tracker.find_goal_by_id("legacy") == (None, None)
+            result = json.loads(await tools.get_goal("legacy"))
+            assert result["archived"] and result["goal"]["memory_id"] == mid
+            assert result["archive_reason"] == "old governance"
+            assert json.loads(await tools.list_goals())["total"] == 0
+            assert json.loads(await tools.list_goals(include_archived=True))["goals"][0]["archived"]
+            assert (await situation.active_goal_briefs()) == []
+            rejected = json.loads(await tools.update_goal("legacy", goal_status="completed"))
+            assert rejected["cause"] == "state" and rejected["memory_id"] == mid
+            assert json.loads(await tools.delete_goal("legacy"))["cause"] == "state"
+            linked_id = await store.add(MemoryEntry(
+                content="历史目标的依据", memory_type=MemoryType.SEMANTIC, tags=["goal:legacy"],
+            ))
+            assert not await store.archive_memory(linked_id)
+            assert await store.restore_memory(mid)
+            assert json.loads(await tools.update_goal("legacy", goal_status="completed"))["success"]
+            assert await store.archive_memory(linked_id)
+        finally:
+            await _teardown(store)
+
+    @pytest.mark.parametrize("by_steps", [False, True])
+    async def test_concurrent_change_prevents_terminal_cleanup(self, tmp_path, monkeypatch, by_steps):
+        from agent.planning import tools
+
+        store, tracker = await _setup(tmp_path)
+        captured: list[dict] = []
+
+        async def capture(payload):
+            captured.append(payload)
+
+        event_bus.on(EVENT_PLAN_DELETED, capture)
+        try:
+            created = json.loads(await tools.create_goal("目标", steps="a"))["goal"]
+            original_find = tools._find_goal
+
+            async def concurrent_find(goal_id):
+                entry, goal = await original_find(goal_id)
+                latest = entry.model_copy(deep=True)
+                latest.content = latest.content.replace("目标", "更新后的目标")
+                assert await store.update(latest)
+                return entry, goal
+
+            monkeypatch.setattr(tools, "_find_goal", concurrent_find)
+            result = json.loads(await tools.update_goal(
+                created["goal_id"], **({"step_index": 0, "step_status": "completed"} if by_steps else {"goal_status": "completed"}),
+            ))
+            assert result["cause"] == "state"
+            assert not captured
+            assert "更新后的目标" in (await store.get(created["memory_id"])).content
+            assert not any(row["action"] == "delete" for row in await store.list_audit())
+        finally:
+            event_bus.off(EVENT_PLAN_DELETED, capture)
+            await _teardown(store)
+
+    async def test_required_audit_failure_rolls_back_goal_deletion(self, tmp_path):
+        from agent.planning import tools
+
+        store, tracker = await _setup(tmp_path)
+        try:
+            goal = json.loads(await tools.create_goal("必须留痕"))["goal"]
+            entry, data = await tracker.find_goal_by_id(goal["goal_id"])
+            db = await store._get_db()
+            async with store._tx(db):
+                await db.execute(
+                    "CREATE TRIGGER reject_delete_audit BEFORE INSERT ON memory_audit "
+                    "WHEN NEW.action='delete' BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END",
+                )
+            with pytest.raises(Exception, match="audit unavailable"):
+                await tracker.remove_goal(entry, goal=data, status="completed")
+            assert await store.get(goal["memory_id"]) is not None
+            assert not any(row["action"] == "delete" for row in await store.list_audit())
         finally:
             await _teardown(store)
 

@@ -6,7 +6,7 @@
 本类为组合门面：连接/schema/vec 索引由 store.connection.MemoryConnectionManager 承担，
 cognee 投影队列、文件/chunks 索引、工具错误追踪、搜索管线分别委托
 store.cognee_queue / store.file_index / store.tool_errors / store.search 子模块；
-公开方法签名与返回结构保持不变。
+新增管理查询能力通过显式选项开启，默认保持活跃库语义。
 """
 
 from __future__ import annotations
@@ -36,6 +36,7 @@ from .store._shared import (
 )
 from .store._shared import (
     entry_projection_payload,
+    memory_query_source,
     merged_redirect_target,
     parse_metadata_json,
     row_to_entry,
@@ -438,28 +439,34 @@ class MemoryStore(BaseEntity):
         log(f"📝 记忆更新 [{entry.memory_type.value}] id={entry.id}: {entry.content[:50]}", tag="思维")
         return True
 
-    async def delete(self, memory_id: int, *, actor: str = "") -> bool:
+    async def delete(
+        self, memory_id: int, *, actor: str = "", detail: str = "",
+        audit_data: dict[str, Any] | None = None, expected_version: int | None = None,
+    ) -> bool:
         db = await self._get_db()
         async with self._tx(db):
-            cursor = await db.execute("DELETE FROM memories WHERE id=?", (memory_id,))
+            predicate = "id=?" + (" AND version=?" if expected_version is not None else "")
+            params = (memory_id, expected_version) if expected_version is not None else (memory_id,)
+            cursor = await db.execute(f"DELETE FROM memories WHERE {predicate}", params)
             if (cursor.rowcount or 0) > 0:
                 await self._conn.vec_delete_memories(db, [memory_id])
                 await self._conn.fts_delete_memories(db, [memory_id])
-                await self._record_audit(db, memory_id, "delete", actor=actor)
+                await self._record_audit(
+                    db, memory_id, "delete", detail, actor=actor, data=audit_data, required=audit_data is not None,
+                )
                 await self._cognee.enqueue_sync(db, memory_id, "delete")
         return (cursor.rowcount or 0) > 0
 
     async def archive_memory(
         self, memory_id: int, reason: str = "manual_forget", *, actor: str = "", expected_version: int | None = None,
     ) -> bool:
-        """软删除：将记忆移入归档表（不参与召回，可 restore_memory 恢复）。"""
+        """软归档；活动目标保护或快照失效时返回 False，可 restore_memory 恢复归档。"""
         db = await self._get_db()
         async with self._tx(db):
             entry = await self._fetch_entry(db, memory_id)
             if entry is None or (expected_version is not None and entry.version != expected_version):
                 return False
-            await self._archive_entry(db, entry, reason, actor=actor)
-        return True
+            return await self._archive_entry(db, entry, reason, actor=actor)
 
     async def clear(
         self,
@@ -506,8 +513,9 @@ class MemoryStore(BaseEntity):
         *,
         actor: str = "",
         data: dict[str, Any] | None = None,
+        required: bool = False,
     ) -> None:
-        """追加一条记忆审计事件（失败不影响主流程）。
+        """追加记忆审计；默认失败不阻塞，required 用于必须留痕的事务。
 
         actor 标识触发子系统（tool:*/auto_capture/consolidator/web 等），
         任何变更可回答"谁改的"；detail 语义随 action：add=新内容摘要、
@@ -519,6 +527,8 @@ class MemoryStore(BaseEntity):
                 (memory_id, action, detail[:200], actor[:40], int(time.time() * 1e9), json.dumps(data or {}, ensure_ascii=False)),
             )
         except Exception as exc:
+            if required:
+                raise
             log(f"记忆审计写入失败: {exc}", "DEBUG")
 
     async def get_audit_summary(self, hours: float = 24.0) -> Dict[str, int]:
@@ -722,6 +732,42 @@ class MemoryStore(BaseEntity):
         """
         return _compute_effective_score(entry, now)
 
+    async def goal_archive_blockers(self, memory_id: int) -> list[str]:
+        """返回阻止归档的目标标识，供工具解释；提交时仍在事务内重新检查。"""
+        db = await self._get_db()
+        async with self._conn.write_lock:
+            entry = await self._fetch_entry(db, memory_id)
+            return await self._goal_archive_blockers(db, entry) if entry is not None else []
+
+    @staticmethod
+    async def _goal_archive_blockers(db: aiosqlite.Connection, entry: MemoryEntry) -> list[str]:
+        """活动规划载体及其关联记忆受保护；终态计划仍可按既有策略归档。"""
+        if entry.source == GOAL_SOURCE:
+            try:
+                parsed = json.loads(entry.content)
+            except (json.JSONDecodeError, TypeError):
+                parsed = {}
+            goal = parsed if isinstance(parsed, dict) else {}
+            status = goal.get("status") or entry.metadata.get("status")
+            if status in ("completed", "cancelled"):
+                return []
+            return [str(goal.get("goal_id") or entry.metadata.get("goal_id") or f"mem:{entry.id}")]
+        goal_ids = [tag[5:] for tag in entry.tags if tag.startswith("goal:") and tag[5:]]
+        if not goal_ids:
+            return []
+        placeholders = ",".join("?" for _ in goal_ids)
+        source = memory_query_source(include_archived=True)
+        cursor = await db.execute(
+            "SELECT DISTINCT COALESCE(json_extract(metadata_json, '$.goal_id'), "
+            "json_extract(CASE WHEN json_valid(content) THEN content ELSE '{}' END, '$.goal_id')) AS goal_id "
+            f"FROM {source} WHERE source=? AND "
+            "COALESCE(json_extract(CASE WHEN json_valid(content) THEN content ELSE '{}' END, '$.status'), "
+            "json_extract(metadata_json, '$.status'))='active' "
+            f"AND goal_id IN ({placeholders})",
+            (GOAL_SOURCE, *goal_ids),
+        )
+        return [str(row["goal_id"]) for row in await cursor.fetchall()]
+
     async def _archive_entry(
         self,
         db: aiosqlite.Connection,
@@ -729,14 +775,25 @@ class MemoryStore(BaseEntity):
         reason: str,
         *,
         actor: str = "",
-    ) -> None:
-        """将记忆移入归档表（软遗忘：不参与召回，可恢复，向量随档保留）。
+    ) -> bool:
+        """事务内复核快照与目标保护后归档，返回是否实际提交（向量随档保留）。
 
         db 由调用方（tx 持有者）传入——tx 内嵌套 _get_db 在连接重建分支会
         二次获取 write_lock（不可重入），同一协程自锁死。
         """
         if entry.id is None:
-            return
+            return False
+        current = await self._fetch_entry(db, entry.id)
+        if (
+            current is None or current.id is None or current.version != entry.version
+            or current.importance != entry.importance or current.access_count != entry.access_count
+            or current.last_accessed != entry.last_accessed
+        ):
+            return False
+        if await self._goal_archive_blockers(db, current):
+            return False
+        entry = current
+        memory_id = current.id
         await db.execute(
             "INSERT OR REPLACE INTO memories_archive "
             "(id, type, content, source, importance, ts_ns, metadata_json, "
@@ -761,10 +818,11 @@ class MemoryStore(BaseEntity):
             ),
         )
         await db.execute("DELETE FROM memories WHERE id = ?", (entry.id,))
-        await self._conn.vec_delete_memories(db, [entry.id])
-        await self._conn.fts_delete_memories(db, [entry.id])
-        await self._record_audit(db, entry.id, "archive", reason, actor=actor)
-        await self._cognee.enqueue_sync(db, entry.id, "delete")
+        await self._conn.vec_delete_memories(db, [memory_id])
+        await self._conn.fts_delete_memories(db, [memory_id])
+        await self._record_audit(db, memory_id, "archive", reason, actor=actor)
+        await self._cognee.enqueue_sync(db, memory_id, "delete")
+        return True
 
     async def restore_memory(self, memory_id: int, *, actor: str = "") -> bool:
         """从归档恢复记忆（回到活跃记忆库，向量与最近访问时间原样回填）。"""
@@ -963,7 +1021,6 @@ class MemoryStore(BaseEntity):
         rows = await cursor.fetchall()
 
         forgotten: list[Dict[str, Any]] = []
-        to_archive: list[tuple[MemoryEntry, float]] = []
         # 最小保留护栏：每类活跃记忆低于下限后不再遗忘（防极端清理掏空小类）
         min_keep = (
             min_keep_per_type
@@ -972,46 +1029,24 @@ class MemoryStore(BaseEntity):
             else int(get_config_int("memory_forget_min_keep_per_type", 20))
         )
         type_counts = await self.get_type_counts()
-        for row in rows:
-            entry = row_to_entry(row, with_embedding=False)
-            score = self.compute_effective_score(entry, now)
-            if score < score_threshold and entry.id is not None:
+        async with self._tx(db):
+            for row in rows:
+                entry = row_to_entry(row, with_embedding=False)
+                score = self.compute_effective_score(entry, now)
                 remaining = type_counts.get(entry.memory_type.value, 0)
-                if remaining <= min_keep:
+                if score >= score_threshold or remaining <= min_keep:
+                    continue
+                if not await self._archive_entry(
+                    db, entry, f"低有效分遗忘 (score={round(score, 4)})", actor="consolidator",
+                ):
                     continue
                 type_counts[entry.memory_type.value] = remaining - 1
-                forgotten.append(
-                    {
-                        "id": entry.id,
-                        "type": entry.memory_type.value,
-                        "score": round(score, 4),
-                        "preview": entry.content[:50],
-                    }
-                )
-                to_archive.append((entry, score))
+                forgotten.append({
+                    "id": entry.id, "type": entry.memory_type.value,
+                    "score": round(score, 4), "preview": entry.content[:50],
+                })
                 if len(forgotten) >= limit:
                     break
-
-        # 归档保留向量（恢复时无需重嵌）：仅对待归档子集批量取向量
-        if to_archive:
-            from .memory_utils import unpack_embedding
-
-            archive_ids = [e.id for e, _ in to_archive if e.id is not None]
-            placeholders = ",".join("?" for _ in archive_ids)
-            emb_cursor = await db.execute(
-                f"SELECT id, embedding_blob FROM memories WHERE id IN ({placeholders})",
-                archive_ids,
-            )
-            emb_map = {int(r["id"]): r["embedding_blob"] for r in await emb_cursor.fetchall()}
-            for entry, _ in to_archive:
-                blob = emb_map.get(entry.id or 0)
-                if blob:
-                    entry.embedding = unpack_embedding(blob)
-
-        # 复用第一轮已取出的行，不再逐条 get()
-        async with self._tx(db):
-            for entry, score in to_archive:
-                await self._archive_entry(db, entry, f"低有效分遗忘 (score={round(score, 4)})")
         return {"forgotten": forgotten, "count": len(forgotten)}
 
     async def enforce_type_limits(
@@ -1044,11 +1079,14 @@ class MemoryStore(BaseEntity):
             )
             entries = [row_to_entry(r) for r in await cursor2.fetchall()]
             entries.sort(key=lambda e: self.compute_effective_score(e, now))
+            archived = 0
             async with self._tx(db):
-                for entry in entries[:excess]:
-                    if entry.id is not None:
-                        await self._archive_entry(db, entry, "类型上限清理")
-            removed[mem_type] = excess
+                for entry in entries:
+                    if await self._archive_entry(db, entry, "类型上限清理", actor="consolidator"):
+                        archived += 1
+                    if archived >= excess:
+                        break
+            removed[mem_type] = archived
 
         return removed
 
@@ -1385,18 +1423,22 @@ class MemoryStore(BaseEntity):
         memory_type: Optional[MemoryType] = None,
         limit: int = 100,
         offset: int = 0,
+        include_archived: bool = False,
     ) -> list[MemoryEntry]:
         """按 source 分页查询记忆（按 ts_ns 降序，返回序稳定，适合翻页遍历）。
 
         与 list_recent 不同：不做 reverse，保证 OFFSET 翻页时各页衔接无重叠。
+        include_archived 显式穿透归档，并在只读条目上携带 archived_at/archive_reason。
         """
         db = await self._get_db()
-        sql = f"SELECT {_MEM_COLUMNS} FROM memories WHERE source=?"
+        table = memory_query_source(include_archived=include_archived)
+        columns = _MEM_COLUMNS + (", archived_at_ns, archive_reason" if include_archived else "")
+        sql = f"SELECT {columns} FROM {table} WHERE source=?"
         params: list[Any] = [source]
         if memory_type:
             sql += " AND type=?"
             params.append(memory_type.value)
-        sql += " ORDER BY ts_ns DESC LIMIT ? OFFSET ?"
+        sql += " ORDER BY ts_ns DESC, id DESC LIMIT ? OFFSET ?"
         params.append(limit)
         params.append(max(0, offset))
         cursor = await db.execute(sql, params)
@@ -1507,10 +1549,12 @@ class MemoryStore(BaseEntity):
         return await self._search.search_by_tags(tags, limit)
 
     async def list_tag_page(
-        self, tag: str, *, before_id: int = 0, limit: int = 20,
+        self, tag: str, *, before_id: int = 0, limit: int = 20, include_archived: bool = False,
     ) -> tuple[list[MemoryEntry], int, int | None]:
         """精确标签目录：ID 游标分页，返回条目、当前总数、续页游标。"""
-        return await self._search.list_tag_page(tag, before_id=before_id, limit=limit)
+        return await self._search.list_tag_page(
+            tag, before_id=before_id, limit=limit, include_archived=include_archived,
+        )
 
     async def search_associative(
         self,
@@ -1741,10 +1785,12 @@ class MemoryStore(BaseEntity):
             (threshold, cutoff_ts, MemoryType.PERMANENT.value),
         )
         entries = [row_to_entry(row) for row in await ids_cursor.fetchall()]
+        archived = 0
         async with self._tx(db):
             for entry in entries:
-                await self._archive_entry(db, entry, "极低重要性清理")
-        return len(entries)
+                if await self._archive_entry(db, entry, "极低重要性清理", actor="consolidator"):
+                    archived += 1
+        return archived
 
     # ------------------------------------------------------------------
     # 健康状态

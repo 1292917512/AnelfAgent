@@ -32,6 +32,23 @@ def _make_goal(goal_id: str = "g1", title: str = "测试目标") -> dict:
 
 
 class TestListGoals:
+    async def test_archived_goal_is_explicit_and_read_only(self, svc: MemoryService, store: MemoryStore) -> None:
+        mid = await store.add(MemoryEntry(
+            memory_type=MemoryType.SEMANTIC, content=json.dumps(_make_goal()),
+        ))
+        assert await store.archive_memory(mid, reason="legacy")
+        db = await store._get_db()
+        async with store._tx(db):
+            await db.execute("UPDATE memories_archive SET source='goal' WHERE id=?", (mid,))
+        assert await svc.list_goals() == []
+        archived = await svc.list_goals(include_archived=True)
+        assert len(archived) == 1 and archived[0]["archived"]
+        assert archived[0]["archive_reason"] == "legacy"
+        assert (await svc.get_goal("g1"))["archived"]
+        assert await svc.update_goal("g1", status="completed") is None
+        assert not await svc.delete_goal("g1")
+        assert (await store.resolve(mid))["status"] == "archived"
+
     async def test_list_returns_goals_with_created_ts(self, svc: MemoryService, store: MemoryStore) -> None:
         await store.add(MemoryEntry(
             memory_type=MemoryType.SEMANTIC,
@@ -55,18 +72,23 @@ class TestListGoals:
 
 
 class TestUpdateGoal:
-    async def test_update_status(self, svc: MemoryService, store: MemoryStore) -> None:
+    @pytest.mark.parametrize("status", ["completed", "cancelled"])
+    async def test_update_status(self, svc: MemoryService, store: MemoryStore, status: str) -> None:
         await store.add(MemoryEntry(
             memory_type=MemoryType.SEMANTIC,
             content=json.dumps(_make_goal(), ensure_ascii=False),
             source="goal", importance=0.8,
         ))
-        updated = await svc.update_goal("g1", status="completed")
+        updated = await svc.update_goal("g1", status=status)
         assert updated is not None
-        assert updated["status"] == "completed"
+        assert updated["status"] == status
 
         # 终态即清（与 AI 工具面同步语义）：条目不保留
         assert await svc.list_goals() == []
+        audit = await store.list_audit(memory_id=updated["memory_id"])
+        assert audit[0]["actor"] == "web"
+        assert audit[0]["data"]["goal_id"] == "g1"
+        assert audit[0]["data"]["status"] == status
 
     async def test_update_steps_all_done_autocloses(self, svc: MemoryService, store: MemoryStore) -> None:
         """全部步骤 done 的 steps 替换触发自动收口（与 AI 工具面同步语义）。"""
@@ -81,6 +103,9 @@ class TestUpdateGoal:
         ])
         assert updated is not None
         assert await svc.list_goals() == []
+        assert updated["status"] == "completed"
+        audit = await store.list_audit(memory_id=updated["memory_id"])
+        assert audit[0]["data"]["status"] == "completed"
 
     async def test_update_steps_partial_keeps(self, svc: MemoryService, store: MemoryStore) -> None:
         """步骤未全部 done 时正常写回。"""

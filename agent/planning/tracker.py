@@ -385,8 +385,9 @@ async def cancel_plan(scope: str, plan_id: str, reason: str = "用户取消") ->
 
 async def find_goal_by_id(
     goal_id: str,
+    *, include_archived: bool = False,
 ) -> Tuple[Optional[MemoryEntry], Optional[Dict[str, Any]]]:
-    """按 goal_id 定位记忆条目与目标数据（分页扫描）。"""
+    """按 goal_id 分页定位；只读管理查询可显式包含归档，写路径默认只读活跃库。"""
     store = _bound_store()
     if store is None:
         return None, None
@@ -396,6 +397,7 @@ async def find_goal_by_id(
         entries = await store.list_by_source(
             GOAL_SOURCE, memory_type=MemoryType.SEMANTIC,
             limit=page_size, offset=offset,
+            include_archived=include_archived,
         )
         if not entries:
             break
@@ -404,7 +406,7 @@ async def find_goal_by_id(
                 goal = json.loads(entry.content)
             except (json.JSONDecodeError, AttributeError):
                 continue
-            if goal.get("goal_id") == goal_id:
+            if isinstance(goal, dict) and goal.get("goal_id") == goal_id:
                 return entry, goal
         if len(entries) < page_size:
             break
@@ -416,18 +418,33 @@ async def find_goal_by_id(
 # 条目移除（显式删除 / 终态收敛共用；系统不做任何基于时间的自动清理）
 # ------------------------------------------------------------------
 
-async def remove_goal(entry: MemoryEntry) -> bool:
+async def remove_goal(
+    entry: MemoryEntry, *, store: MemoryStore | None = None,
+    goal: Dict[str, Any] | None = None, status: str = "deleted", actor: str = "planning",
+) -> bool:
     """删除目标条目并同步前端（EVENT_PLAN_DELETED 移除卡片）与态势快照。
 
-    仅由 AI 显式操作触发（delete_goal / update_goal 终态收敛）。
+    AI/Web 显式操作共用；删除、去向审计原子提交，之后刷新态势与前端卡片。
+    store 由服务层构造注入，工具 import 时注册则复用 planning_store_port。
 
     Returns:
         是否实际删除。
     """
-    store = _bound_store()
-    if store is None or not entry.id:
+    store = store if store is not None else _bound_store()
+    if store is None or not entry.id or entry.archived_at:
         return False
-    await store.delete(entry.id, actor="planning")
+    if goal is None:
+        parsed = json.loads(entry.content)
+        goal = parsed if isinstance(parsed, dict) else {}
+    goal_id = str(goal.get("goal_id") or entry.metadata.get("goal_id") or "")
+    title = str(goal.get("title") or "")
+    deleted = await store.delete(
+        entry.id, actor=actor, expected_version=entry.version,
+        detail=f"goal:{goal_id} → {status}: {title}",
+        audit_data={"goal_id": goal_id, "title": title, "status": status, "destination": "deleted"},
+    )
+    if not deleted:
+        return False
     from agent.planning import situation
     situation.invalidate()
     scope = current_scope()
@@ -435,7 +452,7 @@ async def remove_goal(entry: MemoryEntry) -> bool:
     try:
         await event_bus.emit(EVENT_PLAN_DELETED, {
             "scope": scope, "chat_id": chat_id,
-            "plan_id": (entry.metadata or {}).get("goal_id", ""),
+            "plan_id": goal_id,
         })
     except Exception as exc:
         log(f"目标删除事件发射失败（不影响结果）: {exc}", "DEBUG", tag="规划")

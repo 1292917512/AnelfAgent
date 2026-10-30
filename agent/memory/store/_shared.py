@@ -31,6 +31,18 @@ MEM_COLUMNS_NO_EMB = (
 )
 
 
+def memory_query_source(*, include_archived: bool = False) -> str:
+    """显式管理查询可穿透归档；普通召回仍只读取活跃表。"""
+    if not include_archived:
+        return "memories"
+    # 归档表没有 migrated 列，补齐现有读取投影，不扩散存储迁移。
+    archived_columns = MEM_COLUMNS.replace("migrated, version", "0 AS migrated, version")
+    return (
+        f"(SELECT {MEM_COLUMNS}, 0 AS archived_at_ns, '' AS archive_reason FROM memories "
+        f"UNION ALL SELECT {archived_columns}, archived_at_ns, archive_reason FROM memories_archive)"
+    )
+
+
 def get_memory_config_value(field: str, default: Any = None) -> Any:
     """从 MindConfig 安全读取配置值。"""
     try:
@@ -218,6 +230,8 @@ def row_to_entry(row: Any, *, with_embedding: bool = True) -> MemoryEntry:
         access_count=access_count,
         last_accessed=last_accessed,
         version=version,
+        archived_at=float(row["archived_at_ns"] or 0) / 1e9 if "archived_at_ns" in row.keys() else 0.0,
+        archive_reason=str(row["archive_reason"] or "") if "archive_reason" in row.keys() else "",
     )
 
 

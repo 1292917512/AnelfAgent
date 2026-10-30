@@ -9,6 +9,9 @@ Model Experience：召回和联想统一返回出处、时间语义与材料指�
 数据集目录工具读取最近确认的观测值及忙碌状态，增加几十 token，不调用模型、不改变前缀。
 标签治理建议及每页最多 20 条豁免按需进入工具结果，不新增调用、不改变稳定前缀。
 标签目录每页最多 20 条并附版本与续页游标；更新冲突通过工具错误要求重读，增量为几十 token。
+Model Experience：指定标签可显式穿透归档并查看状态；forget 返回活动目标保护原因。
+Token effect：每条归档结果增加时间与原因，拒绝归档时增加短提示，无新增模型调用。
+Cache effect：只进入工具结果，不改变召回范围或稳定前缀。
 """
 
 from __future__ import annotations
@@ -798,13 +801,16 @@ async def _recall_associations_deep(
     source="mind.memory",
     description="浏览记忆索引。不传 tag 返回标签统计；传 tag 返回该标签下的记忆列表。",
 )
-async def memory_index(tag: str = "", exemptions_offset: int = 0, before_id: int = 0) -> str:
+async def memory_index(
+    tag: str = "", exemptions_offset: int = 0, before_id: int = 0, include_archived: bool = False,
+) -> str:
     """浏览记忆索引（包含 memories 表和文件索引统计）。
 
     Args:
         tag: 可选，指定标签查看其下的记忆（如 user:qq:123）
         exemptions_offset: 未指定 tag 时的豁免分页偏移；续页使用返回的 tag_exemptions_next_offset
         before_id: 指定 tag 时的续页游标，首屏传 0，续页使用 next_before_id；新写入从首屏查看
+        include_archived: 指定 tag 时同时查询归档，返回状态与归档原因；默认仅活跃条目
     """
     try:
         deps = _deps()
@@ -814,6 +820,8 @@ async def memory_index(tag: str = "", exemptions_offset: int = 0, before_id: int
 
         if before_id < 0 or (before_id and not tag):
             return tool_error("before_id 须为非负数，且仅用于指定 tag 的分页", cause=ErrorCause.PARAM, retryable=False)
+        if include_archived and not tag:
+            return tool_error("穿透归档须指定 tag", cause=ErrorCause.PARAM, retryable=False)
 
         if not tag:
             if exemptions_offset < 0:
@@ -846,7 +854,9 @@ async def memory_index(tag: str = "", exemptions_offset: int = 0, before_id: int
                 ensure_ascii=False,
             )
 
-        entries, total, next_id = await store.list_tag_page(tag, before_id=before_id)
+        entries, total, next_id = await store.list_tag_page(
+            tag, before_id=before_id, include_archived=include_archived,
+        )
         items = [
             {
                 "id": e.id,
@@ -854,6 +864,10 @@ async def memory_index(tag: str = "", exemptions_offset: int = 0, before_id: int
                 "summary": e.content[:80],
                 "tags": e.tags,
                 "importance": round(e.importance, 2),
+                **({
+                    "status": "archived" if e.archived_at else "active",
+                    **({"archived_at": e.archived_at, "archive_reason": e.archive_reason} if e.archived_at else {}),
+                } if include_archived else {}),
             }
             for e in entries
         ]
@@ -1219,11 +1233,21 @@ async def forget(memory_id: int) -> str:
                 retryable=False,
                 hint="需要更新其内容时，用 memorize 携带 type:permanent + main:hub 标签整段覆写",
             )
-        ok = await deps.store.archive_memory(memory_id, reason="manual_forget", actor="tool:forget")
+        blockers = await deps.store.goal_archive_blockers(memory_id)
+        if blockers:
+            return tool_error(
+                "记忆承载目标或关联仍活动的目标，禁止归档", cause=ErrorCause.STATE, retryable=False,
+                hint="先用 get_goal 核实目标；完成或废弃目标经 update_goal/delete_goal 处理，再重新评估关联记忆",
+                goal_ids=blockers,
+            )
+        ok = await deps.store.archive_memory(
+            memory_id, reason="manual_forget", actor="tool:forget",
+            expected_version=entry.version if entry is not None else None,
+        )
         return json.dumps(
             {
                 "ok": ok,
-                "message": f"记忆 {memory_id} {'已遗忘（归档，可恢复）' if ok else '不存在'}",
+                "message": f"记忆 {memory_id} {'已遗忘（归档，可恢复）' if ok else '未归档，已变更、受目标保护或不存在，请重读核实'}",
             },
             ensure_ascii=False,
         )

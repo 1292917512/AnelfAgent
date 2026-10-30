@@ -20,6 +20,9 @@
 Model Experience: update_goal 永驻，计划步骤须依据结果显式更新；调用次数不代表进度。
 Token effect: 未召回规划工具的会话增加一个工具 schema，约数百 token。
 Cache effect: 常驻 schema 在会话内冻结，不向稳定消息前缀注入实时进度。
+Model Experience: 显式查询可查看归档目标状态；终态清理回执可在记忆审计中追溯。
+Token effect: 归档目标按需增加时间与原因字段，不新增模型调用。
+Cache effect: 归档仅进入工具结果，清理留痕不写稳定前缀或新增记忆。
 """
 
 from __future__ import annotations
@@ -64,6 +67,14 @@ def _store_not_ready() -> str:
     )
 
 
+def _goal_cleanup_conflict() -> str:
+    """基于旧目标快照的删除未提交，要求重读再决策。"""
+    return tool_error(
+        "目标已发生变更或不再存在，本次清理未执行", cause=ErrorCause.STATE, retryable=False,
+        hint="先用 get_goal 读取当前目标，再按实际结果更新",
+    )
+
+
 async def _find_goal(
     goal_id: str,
 ) -> tuple[Optional[MemoryEntry], Optional[Dict[str, Any]]]:
@@ -74,6 +85,13 @@ async def _find_goal(
 async def _goal_not_found(goal_id: str) -> str:
     """目标不存在的统一错误：附活跃目标简报供 AI 立即自纠（换用存在的
     goal_id），而非对着过期 id 反复重试。"""
+    archived, goal = await tracker.find_goal_by_id(goal_id, include_archived=True)
+    if archived is not None and goal is not None and archived.archived_at:
+        return tool_error(
+            f"目标 '{goal_id}' 已归档", cause=ErrorCause.STATE, retryable=False,
+            hint=f"先 get_goal 查看，再 restore_memory(memory_id={archived.id}) 恢复后操作",
+            memory_id=archived.id, archive_reason=archived.archive_reason,
+        )
     briefs = await situation.active_goal_briefs()
     hint = (
         "目标可能已被删除或收敛；请改用活跃目标列表中的 goal_id，或 list_goals 确认全貌"
@@ -158,23 +176,32 @@ async def create_goal(title: str, description: str = "", steps: str = "", recurr
     group=_GROUP, tags=["planning", "heartbeat"],
     description="列出目标计划。检查 active 状态的目标，废弃的用 delete_goal 删除。",
 )
-async def list_goals(status: str = "active") -> str:
+async def list_goals(status: str = "active", include_archived: bool = False) -> str:
     """列出目标计划。
 
     Args:
         status: 筛选状态，active（默认）/ all
+        include_archived: 显式包含已归档目标并标注归档时间与原因，默认仅活跃库
     """
     store = _bound_store()
     if store is None:
         return _store_not_ready()
 
-    entries = await store.list_recent(limit=50, memory_type=MemoryType.SEMANTIC, source=GOAL_SOURCE)
+    entries = await store.list_by_source(
+        GOAL_SOURCE, limit=50, memory_type=MemoryType.SEMANTIC, include_archived=include_archived,
+    )
 
     goals: List[Dict[str, Any]] = []
     for entry in entries:
         try:
             goal = json.loads(entry.content)
+            if not isinstance(goal, dict):
+                continue
             goal["memory_id"] = entry.id
+            if include_archived:
+                goal["archived"] = bool(entry.archived_at)
+                if entry.archived_at:
+                    goal.update(archived_at=entry.archived_at, archive_reason=entry.archive_reason)
             if status == "all" or goal.get("status") == status:
                 goals.append(goal)
         except (json.JSONDecodeError, AttributeError):
@@ -281,11 +308,13 @@ async def update_goal(
         target_goal["status"] = "active"
     elif goal_status in ("completed", "cancelled"):
         # 终态即清：不保留终态条目（删除 + 前端卡片移除 + 态势同步）
-        await tracker.remove_goal(target_entry)
+        if not await tracker.remove_goal(target_entry, goal=target_goal, status=goal_status):
+            return _goal_cleanup_conflict()
         return json.dumps({
             "success": True,
             "message": f"目标 '{goal_id}' 已标记为 {goal_status} 并自动清理",
             "goal_id": goal_id,
+            "memory_id": target_entry.id,
             "title": target_goal.get("title", ""),
         }, ensure_ascii=False)
     elif goal_status:
@@ -302,6 +331,8 @@ async def update_goal(
         and target_goal.get("status") == "active"
         and all(s.get("status") in ("completed", "skipped") for s in steps)
     ):
+        if not await tracker.remove_goal(target_entry, goal=target_goal, status="completed"):
+            return _goal_cleanup_conflict()
         try:
             if 0 <= step_index < len(steps):
                 await tracker._emit_step(
@@ -310,11 +341,11 @@ async def update_goal(
                 )
         except Exception as exc:
             log(f"update_goal 事件发射失败（不影响结果）: {exc}", "DEBUG", tag="规划")
-        await tracker.remove_goal(target_entry)
         return json.dumps({
             "success": True,
             "message": f"目标 '{goal_id}' 全部步骤已完成，自动收口清理",
             "goal_id": goal_id,
+            "memory_id": target_entry.id,
             "title": target_goal.get("title", ""),
         }, ensure_ascii=False)
 
@@ -383,7 +414,8 @@ async def delete_goal(goal_id: str) -> str:
     target_entry, target_goal = await _find_goal(goal_id)
     if target_entry is not None and target_goal is not None and target_entry.id:
         # 删除 + 前端卡片移除（EVENT_PLAN_DELETED）+ 态势同步统一走 tracker
-        await tracker.remove_goal(target_entry)
+        if not await tracker.remove_goal(target_entry, goal=target_goal):
+            return _goal_cleanup_conflict()
         return json.dumps({
             "success": True,
             "message": f"目标 '{goal_id}' 已删除",
@@ -404,9 +436,15 @@ async def get_goal(goal_id: str) -> str:
     if store is None:
         return _store_not_ready()
 
-    target_entry, target_goal = await _find_goal(goal_id)
+    target_entry, target_goal = await tracker.find_goal_by_id(goal_id, include_archived=True)
     if target_entry is not None and target_goal is not None:
         target_goal["memory_id"] = target_entry.id
+        if target_entry.archived_at:
+            return json.dumps({
+                "success": True, "goal": target_goal, "archived": True,
+                "archived_at": target_entry.archived_at, "archive_reason": target_entry.archive_reason,
+                "hint": "目标已归档；先 restore_memory 恢复后才能更新，不会自动恢复",
+            }, ensure_ascii=False)
         # 反查关联记忆（goal:{id} 标签双链），让 AI 看到目标下已沉淀的内容
         related = await store.search_by_tags([f"goal:{goal_id}"], limit=20)
         related_count = sum(1 for e in related if e.id != target_entry.id)

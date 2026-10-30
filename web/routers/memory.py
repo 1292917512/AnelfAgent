@@ -664,11 +664,12 @@ async def delete_memory_file(path: str = Query(...)) -> Dict[str, str]:
 # ── 目标计划 ─────────────────────────────────────────────────────────
 
 @router.get("/goals")
-@_runtime_fallback(lambda status="all": {"goals": [], "total": 0, "filter": status})
+@_runtime_fallback(lambda status="all", include_archived=False: {"goals": [], "total": 0, "filter": status})
 async def list_goals(
     status: str = Query("all", description="筛选状态: active / all（终态目标即删不保留）"),
+    include_archived: bool = Query(False, description="显式包含归档目标并标注归档状态"),
 ) -> Dict[str, Any]:
-    goals = await _mem_svc.list_goals(status=status)
+    goals = await _mem_svc.list_goals(status=status, include_archived=include_archived)
     return {"goals": goals, "total": len(goals), "filter": status}
 
 
