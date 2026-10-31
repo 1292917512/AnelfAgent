@@ -174,15 +174,16 @@ test('a deliberate fall may break a support held at the stand edge', async () =>
   assert.throws(() => safety.assertFloorSafe(bot, block), /support/)
 })
 
-test('collision-less litter in the corridor plan is cleared, player markers stay protected', async () => {
-  // Pale-garden leaf litter covering the descent used to abort the whole mine
-  // with MINING_PROTECTED_BLOCK before the first dig.
+test('collision-less litter is ignored everywhere in the corridor, player markers stay protected', async () => {
+  // Pale-garden leaf litter has no collision: it neither blocks the return
+  // passage nor needs digging — planning and validation simply look through
+  // it, while a real container still refuses before any dig.
   const f = await fixture({ depth: 2, length: 0, count: 2 })
   f.set(new Vec3(3, 31, 4), 'leaf_litter')
   await f.task.excavate({ x: 3, y: 29, z: 4 })
-  assert.ok(f.digs.some(p => p.y === 31), 'The litter column is excavated')
+  assert.ok(!f.digs.some(p => p.y === 31), 'Collision-less litter is never dug')
+  assert.ok(f.digs.some(p => p.y === 30 || p.y === 29), 'The solid column still excavates')
 
-  // A real container still refuses before any dig.
   const f2 = await fixture({ depth: 2, length: 0, count: 2 })
   f2.set(new Vec3(3, 31, 4), 'crafting_table')
   await assert.rejects(f2.task.excavate({ x: 3, y: 29, z: 4 }), /Unexpected crafting_table/)

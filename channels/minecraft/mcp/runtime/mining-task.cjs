@@ -224,7 +224,9 @@ class MineTask {
       this.inspectColumn(p)
       for (let y = 0; y < 3; y++) {
         const block = this.block(vec(p).offset(0, y, 0))
-        if (!air.has(block.name)) {
+        // Collision-less covers (leaf litter, ground plants) cannot block a
+        // walker; only solid blocks obstruct the passage.
+        if (!air.has(block.name) && block.boundingBox !== 'empty') {
           throw new MiningError('MINING_RETURN_BLOCKED', `Return passage obstructed by ${block.name} at ${key(block.position)}. Excavation stopped.`)
         }
       }
@@ -307,7 +309,9 @@ class MineTask {
       this.check()
       this.inspectColumn(p)
       const block = this.block(vec(p).offset(0, y, 0))
-      if (air.has(block.name)) continue
+      // Collision-less covers neither block walking nor sight — digging them
+      // is pointless churn.
+      if (air.has(block.name) || block.boundingBox === 'empty') continue
       await this.action(() => digVerified(this.bot, block, {
         watchdogMs: 20000,
         // Re-assert after equipping: the bot can drift while the tool loads.
@@ -316,7 +320,16 @@ class MineTask {
       this.record.dug++
     }
     const route = [...this.record.route, plain(p)]
-    await this.verifyPath(p, this.record.entry, route)
+    try {
+      await this.verifyPath(p, this.record.entry, route)
+    } catch (error) {
+      // Foliage drops into the opened passage behind the dig: clear it as
+      // bounded maintenance and re-verify once before surfacing the block.
+      const message = error instanceof Error ? error.message : String(error)
+      if (!/Return passage obstructed/.test(message)) throw error
+      await this.clearFoliageObstructions()
+      await this.verifyPath(p, this.record.entry, route)
+    }
     protectFloor(this.bot, vec(p).offset(0, -1, 0))
     // Save before moving: a disconnect during movement still retains the new safe step.
     this.record.route = route
@@ -326,6 +339,36 @@ class MineTask {
     await sleep(600, undefined, { signal: this.controller.signal })
     if (this.record.steps % 4 === 0 && (this.record.requireTorches !== false || inventoryCount(this.bot, 'torch') > 0)) await this.light()
     await this.checkpoint()
+  }
+
+  /** Leaves and leaf litter drop or grow into an opened corridor; the return
+   * rule never digs, so foliage inside the saved passage is cleared here as
+   * bounded maintenance before the route is validated. Nothing but foliage
+   * is ever touched.
+   */
+  async clearFoliageObstructions () {
+    let cleared = 0
+    for (const p of this.record.route) {
+      if (cleared >= 12) break
+      for (let y = 0; y < 3; y++) {
+        if (cleared >= 12) break
+        const at = vec(p).offset(0, y, 0)
+        const block = this.bot.blockAt(at)
+        // Only solid foliage (leaves) blocks a corridor; collision-less
+        // litter never needed clearing.
+        if (block == null || air.has(block.name) || block.boundingBox === 'empty' ||
+            !/(?:^|_)leaves$/.test(block.name)) continue
+        this.check()
+        try {
+          await digVerified(this.bot, block, { watchdogMs: 5000 })
+          cleared++
+        } catch (error) {
+          if (error instanceof MiningError && error.code === 'MINING_PROTECTED_FLOOR') throw error
+          break
+        }
+      }
+    }
+    if (cleared > 0) await this.checkpoint()
   }
 
   async light () {
@@ -343,6 +386,7 @@ class MineTask {
     this.returnRequested = true
     this.record.phase = 'returning'
     await this.checkpoint()
+    await this.clearFoliageObstructions()
     this.validateRoute(this.record.route)
     // Visit recorded steps, so the returned result is backed by actual traversal.
     let nearest = 0

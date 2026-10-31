@@ -129,11 +129,26 @@ async function start (ctx, args) {
     // from its persisted steps, so a stair that stopped halfway is progress
     // kept, not a dead entrance the bot can never restart beside. A fully
     // walked partial/completed corridor extends its horizontal run instead.
+    // But the saved route must still match the live terrain: overlapping
+    // corridors can carve each other's floors away, and resuscitating such a
+    // corpse corridor only locks the bot at its own diggings.
     const walked = s.record.steps === s.record.depth + s.record.length
-    if (!s.record || !s.record.returned || !['completed', 'partial', 'blocked'].includes(s.record.phase) ||
-        !(s.record.steps < s.record.depth + s.record.length || (walked && s.record.phase !== 'blocked'))) {
+    const routeIntact = s.record.route.every(p => {
+      const cell = s.bot.blockAt(new Vec3(p.x, p.y, p.z))
+      const floor = s.bot.blockAt(new Vec3(p.x, p.y - 1, p.z))
+      return cell != null && cell.boundingBox === 'empty' && floor != null && floor.boundingBox === 'block'
+    })
+    const eligible = s.record.returned && ['completed', 'partial', 'blocked'].includes(s.record.phase) &&
+      (s.record.steps < s.record.depth + s.record.length || (walked && s.record.phase !== 'blocked'))
+    if (!s.record || !eligible) {
       throw new ToolError('NOT_FOUND', 'No returned mine corridor is available for continuation.')
     }
+    if (!routeIntact) {
+      console.error('[anelf] saved corridor', s.record.id, 'no longer matches the terrain; starting fresh')
+      s.record = null
+    }
+  }
+  if (args.extend && s.record) {
     if (directionValue !== s.record.direction) {
       throw new ToolError('FORBIDDEN', 'Mine extensions must keep the saved corridor direction.')
     }
@@ -194,12 +209,29 @@ async function resumeSaved (ctx, returnOnly) {
   }
   if (ctx.locks.isBusy()) throw new ToolError('BUSY', 'Stop the current action first.')
   if (!s.record) throw new ToolError('NOT_FOUND', 'There is no saved mine in this world.')
+  const abandon = async why => {
+    // Returning is impossible from here and the route no longer holds: the
+    // corridor is a corpse. Holding its checkpoint only BUSY-locks every
+    // future order — mark it abandoned so fresh mining can proceed.
+    s.record.returned = true
+    s.record.phase = 'cancelled'
+    s.record.reason = `Abandoned: ${why}`
+    await s.store.save(s.record)
+    console.error('[anelf] abandoning unreachable mine', s.record.id, '-', why)
+    return s.record
+  }
   if (Math.min(...s.record.route.map(p => s.bot.entity.position.distanceTo(new Vec3(p.x + 0.5, p.y, p.z + 0.5)))) > 2) {
+    if (returnOnly) return abandon('the bot left the corridor and cannot return')
     throw new ToolError('FORBIDDEN', 'Bot is outside the saved mine corridor; locate its entrance before resuming.')
   }
   const task = new tasks.MineTask(ctx, s.bot, s.record, s.store)
   task.returnRequested = returnOnly
-  task.validateRoute(s.record.route)
+  try {
+    task.validateRoute(s.record.route)
+  } catch (error) {
+    if (!returnOnly) throw error
+    return abandon(`the saved route no longer matches the terrain (${error?.message ?? error})`)
+  }
   if (!returnOnly) task.resources()
   s.task = task
   bindContinuation(ctx, task, s.world)

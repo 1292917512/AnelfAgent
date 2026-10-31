@@ -55,6 +55,12 @@ _NO_TARGET_MARKER = "GATHER_NO_TARGET"
 _POSITION_FIGHT_MARKER = "GATHER_POSITION_FIGHT"
 # 支架路线无法确认（作业面不可达、无法立足延伸）：换区即可绕开，走 relocate 通道。
 _NO_ROUTE_MARKER = "GATHER_NO_ROUTE"
+# 矿口无稳定整块地板：脚下地形（自挖口/雪盖）不可开工，原地重试无意义，
+# 立即换区找新地面。
+_UNSTABLE_FLOOR_MARKER = "No stable full-block floor"
+# 返程通道被挡：通道上方常有正在枯萎的树不停掉叶（自己的挖掘切断了树干），
+# 清不胜清，该井口直接弃置换区。
+_RETURN_BLOCKED_MARKER = "Return passage obstructed"
 # 同因快速重复受阻的汇报抑制窗口：秒级失败循环只报首次，
 # 防止汇报旁路被放大成裁决轮 LLM 调用风暴（曾打到供应商 Token Plan 限流）。
 _RAPID_REBLOCK_SECONDS = 15.0
@@ -100,7 +106,8 @@ def _needs_relocate(reason: str) -> bool:
     """受阻原因是否指向「换区即可绕开」的环境性阻塞
     （无目标 / 位置拉锯 / 支架路线不可达）。"""
     return (_NO_TARGET_MARKER in reason or _POSITION_FIGHT_MARKER in reason
-            or _NO_ROUTE_MARKER in reason)
+            or _NO_ROUTE_MARKER in reason or _UNSTABLE_FLOOR_MARKER in reason
+            or _RETURN_BLOCKED_MARKER in reason)
 
 # 裁决快车道墙钟上限：供应商回退链整体卡死时兜底；健康链路数秒内返回，
 # 超时只发生在异常网络下，等价 continue（裁决是旁路，无回应不阻塞作业）。
@@ -534,11 +541,15 @@ class MinecraftWorker:
                             f"({here['x'] + dx * distance}, {here['z'] + dz * distance}) 离开残破地带",
                             "INFO", tag="Minecraft")
                         return
-            # 四向寻路全败的最后手段：立柱上攀爬出深坑——深坑里探测高差带
-            # 可能连「上方目标」都没有，不能只靠探测触发；没有垫材时快速
-            # 拒绝，落回冷却。
+            # 四向寻路全败的最后手段：先垫柱爬出深坑；仍不行就朝当前轮换
+            # 方向「破壁走」——行进寻路不挖地，被挖烂的台地上只有允许挖
+            # 自然地形的逃生配置能走出去。
             if await self._ascend():
                 log("Minecraft 自主作业四向跳区不可达，立柱上攀爬出深坑后重新探测", "INFO", tag="Minecraft")
+                return
+            dx, dz = _RELOCATE_DIRECTIONS[self._relocate_heading % len(_RELOCATE_DIRECTIONS)]
+            if await self._ascend(None, here["x"] + dx * _RELOCATE_DISTANCE, here["z"] + dz * _RELOCATE_DISTANCE):
+                log("Minecraft 自主作业四向跳区不可达，破壁走出被挖烂地带后重新探测", "INFO", tag="Minecraft")
                 return
             self._relocate_cooldown_until = self._clock() + _RELOCATE_FAIL_COOLDOWN_SECONDS
             log("Minecraft 自主作业残破地带四向跳区全部不可达，进入冷却", "WARNING", tag="Minecraft")
@@ -592,11 +603,15 @@ class MinecraftWorker:
                 raise RuntimeError(f"MINING_STUCK_UNRETURNED: 旧矿道无法返程 ({inner})") from exc
             return await self._call("mine_resources", order)
 
-    async def _ascend(self, target_y: int | None = None) -> bool:
-        """立柱上攀：随身泥土/圆石垫脚跳爬出深坑（只放置、绝不下挖）。"""
+    async def _ascend(self, target_y: int | None = None, target_x: int | None = None,
+                      target_z: int | None = None) -> bool:
+        """逃生：垫柱爬出深坑，或带目标列「破壁走」穿过被挖烂的地带。"""
         args: dict[str, Any] = {}
         if target_y is not None:
             args["targetY"] = int(target_y)
+        if target_x is not None and target_z is not None:
+            args["targetX"] = int(target_x)
+            args["targetZ"] = int(target_z)
         try:
             result = await asyncio.wait_for(self._call("ascend", args), timeout=120)
         except asyncio.CancelledError:
@@ -842,6 +857,11 @@ class MinecraftWorker:
             raise
         except Exception as exc:
             log(f"Minecraft 自主作业汇报记录失败: {exc}", "DEBUG", tag="Minecraft")
+        if self._relocate_pending or self._clock() < self._relocate_cooldown_until:
+            # 换区自治已接管：换区类受阻是本循环自己处理的信号，此时让
+            # 模型裁决只会在自救中途收到 stop。事实已记录，跳过裁决轮。
+            log("Minecraft 自主作业换区自治中，跳过本轮裁决", "DEBUG", tag="Minecraft")
+            return
         await self._verdict_turn(report_line)
 
     async def _verdict_turn(self, report_line: str) -> None:

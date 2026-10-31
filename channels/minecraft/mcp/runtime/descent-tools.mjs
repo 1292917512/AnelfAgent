@@ -32,13 +32,16 @@ function fallDamage (blocks, landing) {
 /** @param {import('./registry.js').Registrar} reg */
 export function registerAscend (reg) {
   reg({ name: 'ascend', group: 'movement',
-    description: 'Autonomous routine only: pillar straight up on carried dirt or cobblestone to escape a pit the bot dug itself. Placement-only — never digs — and every placed block is verified. Stops at targetY, or earlier when headroom or materials run out.',
-    inputSchema: { targetY: z.number().int().optional() }, annotations: { title: 'Pillar escape' },
+    description: 'Autonomous routine only: escape dug terrain. With targetY, pillar up on carried dirt or cobblestone. With targetX/targetZ, break-out walk to that column — carving through natural terrain only, placing scaffold blocks where a step needs one; buildings, containers and floor protection stay untouchable. Every placed block is verified.',
+    inputSchema: { targetY: z.number().int().optional(),
+      targetX: z.number().int().optional().describe('Break-out walk target column; requires targetZ.'),
+      targetZ: z.number().int().optional().describe('Break-out walk target column; requires targetX.') },
+    annotations: { title: 'Escape dug terrain' },
     handler: (args, ctx) => {
       const bot = ctx.manager.requireBot()
       if (!(ctx.locks instanceof ActionController)) throw new ToolError('INTERNAL', 'Ascend requires the installed action controller.')
       const handle = ctx.locks.begin('ascend')
-      const promise = (async () => ascend(bot, handle.signal, args.targetY))()
+      const promise = (async () => ascend(bot, handle.signal, args.targetY, args.targetX, args.targetZ))()
       promise.then(() => handle.release('completed', ''), error => {
         handle.release(error instanceof ToolError ? error.code : 'blocked', String(error?.message ?? error))
       }).catch(() => {})
@@ -46,8 +49,9 @@ export function registerAscend (reg) {
     } })
 }
 
-/** @param {Bot} bot @param {AbortSignal} signal @param {number} [targetY] */
-export async function ascend (bot, signal, targetY) {
+/** @param {Bot} bot @param {AbortSignal} signal @param {number} [targetY]
+ * @param {number} [targetX] @param {number} [targetZ] */
+export async function ascend (bot, signal, targetY, targetX, targetZ) {
   signal.throwIfAborted()
   const pathfinder = bot.pathfinder
   if (!pathfinder?.goto || typeof pathfinder?.setMovements !== 'function') {
@@ -70,6 +74,20 @@ export async function ascend (bot, signal, targetY) {
   movements.scafoldingBlocks = placeable
   const start = bot.entity.position.floored()
   const from = start.y
+  if (targetX != null && targetZ != null) {
+    // Break-out walk: same escape profile (carve natural terrain, place
+    // scaffold steps), aimed at a far column instead of a height.
+    pathfinder.setMovements(movements)
+    const timer = setTimeout(() => pathfinder.stop(), 90000)
+    try {
+      await pathfinder.goto(new goals.GoalNear(targetX, from, targetZ, 4))
+    } finally {
+      clearTimeout(timer)
+    }
+    const to = Math.floor(bot.entity.position.y)
+    const reached = Math.hypot(bot.entity.position.x - targetX - 0.5, bot.entity.position.z - targetZ - 0.5) <= 6
+    return { completed: reached, from, to, position: { x: bot.entity.position.x, y: to, z: bot.entity.position.z } }
+  }
   // Surrounding terrain top (standing height) from a ring scan: in a dug pit
   // the ring is the rim, and pillaring exactly to it ends standing on the
   // surface. An "adjacent standable cell" check is useless here — the pit

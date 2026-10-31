@@ -85,9 +85,17 @@ async function digVerified (bot, block, options = {}) {
     }
   }
   options.beforeDig?.()
-  const timer = setTimeout(() => bot.stopDigging(), options.watchdogMs ?? 15000)
+  // mineflayer's dig promise never settles after stopDigging — the watchdog
+  // must be able to break the await itself, or one dead dig hangs the task
+  // forever.
+  let bail
+  const watchdog = new Promise((_, reject) => { bail = reject })
+  const timer = setTimeout(() => {
+    bot.stopDigging()
+    bail(new MiningError('MINING_DIG_TIMEOUT', 'Dig did not confirm in time; aborting.'))
+  }, options.watchdogMs ?? 15000)
   try {
-    await (options.dig ? options.dig(block) : bot.dig(block, true, 'raycast'))
+    await Promise.race([options.dig ? options.dig(block) : bot.dig(block, true, 'raycast'), watchdog])
   } finally { clearTimeout(timer) }
   const after = bot.blockAt(block.position)
   if (after != null && after.boundingBox !== 'empty' && after.name === block.name) {
