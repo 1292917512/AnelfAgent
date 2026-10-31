@@ -11,7 +11,7 @@ import pytest
 from app.environment import Environment
 from app.manager import Manager
 from app.repository import describe, origin, selected_origin
-from app.settings import DOWNLOADS, Layout, Settings, download_profile
+from app.settings import DOWNLOADS, PROXY_VARIABLES, Layout, Settings, apply_proxy_env, download_profile
 
 
 @pytest.mark.parametrize("source", list(DOWNLOADS["pypi_sources"]))
@@ -77,3 +77,35 @@ def test_manager_detects_and_switches_origin_without_changing_worktree(tmp_path:
     assert origin(tmp_path, manager.environment.tool("git")) == "https://github.com/1292917512/AnelfAgent.git"
     manager.configure_repository("auto")
     assert manager.settings.source == "auto"
+
+
+def test_proxy_settings_validation() -> None:
+    assert Settings.parse({}).proxy == ""
+    assert Settings.parse({"proxy": "http://127.0.0.1:7890"}).proxy == "http://127.0.0.1:7890"
+    assert Settings.parse({"proxy": "https://proxy.example:8080"}).proxy
+    for invalid in ("ftp://127.0.0.1:21", "127.0.0.1:7890", "http://a b", 5, " http://x"):
+        with pytest.raises(ValueError):
+            Settings.parse({"proxy": invalid})
+
+
+def test_proxy_environment_scoped_to_installer_children(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    layout = Layout(tmp_path)
+    layout.save_settings(Settings(proxy="http://127.0.0.1:7890"))
+    environment = Environment(layout, lambda _: None)
+    env = environment.environ()
+    assert all(env[key] == "http://127.0.0.1:7890" for key in PROXY_VARIABLES)
+    assert env["NO_PROXY"] == "localhost,127.0.0.1,::1"
+    # 运行态应用入口不继承安装代理，也不被宿主环境残留变量污染。
+    runtime = environment.environ(proxy=False)
+    assert all(key not in runtime for key in (*PROXY_VARIABLES, "NO_PROXY"))
+    monkeypatch.setenv("HTTPS_PROXY", "http://ambient:1")
+    layout.save_settings(Settings())
+    assert all(key not in environment.environ() for key in PROXY_VARIABLES)
+
+
+def test_apply_proxy_env_updates_process_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ALL_PROXY", "http://stale:1")
+    apply_proxy_env(Settings(proxy="http://127.0.0.1:7890"))
+    assert os.environ["HTTPS_PROXY"] == "http://127.0.0.1:7890"
+    apply_proxy_env(Settings())
+    assert all(key not in os.environ for key in (*PROXY_VARIABLES, "NO_PROXY"))

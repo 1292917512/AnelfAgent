@@ -26,6 +26,8 @@ SETTINGS_SCHEMA = [
      "option_labels": {"auto": {"zh": "跟随环境来源", "en": "Follow environment source"},
                        **{key: value["label"] for key, value in DOWNLOADS["pypi_sources"].items()}},
      "label": {"zh": "uv / Python 包镜像", "en": "uv / Python package index"}},
+    {"name": "proxy", "type": "text", "advanced": True, "placeholder": "http://127.0.0.1:7890",
+     "label": {"zh": "下载代理（安装用，可选）", "en": "Download proxy (install only, optional)"}},
     {"name": "web_host", "type": "select", "options": ["0.0.0.0", "127.0.0.1"],
      "option_labels": {"0.0.0.0": {"zh": "允许局域网访问", "en": "Allow LAN access"},
                        "127.0.0.1": {"zh": "仅本机访问", "en": "This device only"}},

@@ -48,8 +48,8 @@ const backendSource = app.isPackaged ? path.join(process.resourcesPath,'backend'
 const downloads = JSON.parse(fs.readFileSync(path.join(backendSource,'app/downloads.json'),'utf8'));
 const repositories = JSON.parse(fs.readFileSync(path.join(backendSource,'app/repositories.json'),'utf8'));
 const requirements = JSON.parse(fs.readFileSync(path.join(backendSource,'app/install-requirements.json'),'utf8'));
-/** @type {{root:string,source:string,downloadSource:string,pypiSource:string,configured:boolean,projectChoice?:'new'|'existing',language?:'zh'|'en'}} */
-let preferences = {root:app.isPackaged ? path.join(data,'project') : packageRoot,source:'auto',downloadSource:'auto',pypiSource:'auto',configured:false};
+/** @type {{root:string,source:string,downloadSource:string,pypiSource:string,proxy?:string,configured:boolean,projectChoice?:'new'|'existing',language?:'zh'|'en'}} */
+let preferences = {root:app.isPackaged ? path.join(data,'project') : packageRoot,source:'auto',downloadSource:'auto',pypiSource:'auto',proxy:'',configured:false};
 try { preferences = {...preferences,...JSON.parse(fs.readFileSync(path.join(data,'bootstrap.json'),'utf8'))}; } catch { /* A fresh installation has no selection. */ }
 if(preferences.language)chinese=preferences.language==='zh';
 trayState.language=chinese?'zh':'en';
@@ -149,7 +149,7 @@ async function connect(setup=false,repositorySource) {
     const settingsFile = path.join(state,'settings.json');
     const existing = fs.existsSync(settingsFile) ? JSON.parse(fs.readFileSync(settingsFile,'utf8')) : {};
     if (setup) {
-      fs.writeFileSync(settingsFile,JSON.stringify({...existing,source:preferences.source,download_source:preferences.downloadSource,pypi_source:preferences.pypiSource,timezone}));
+      fs.writeFileSync(settingsFile,JSON.stringify({...existing,source:preferences.source,download_source:preferences.downloadSource,pypi_source:preferences.pypiSource,proxy:preferences.proxy || '',timezone}));
     }
     const selected = runtime();
     const profile=resolveProfile(downloads,setup ? preferences.downloadSource : existing.download_source || preferences.downloadSource,
@@ -259,6 +259,8 @@ async function start() {
     if (!trusted(event) || !isBootstrapPage(event.senderFrame?.url || '')) throw new Error('Untrusted sender');
     if (bootstrap) throw new Error('Please wait for the current operation');
     if (!value || !['auto','github','gitee'].includes(value.source) || !['auto','china','global'].includes(value.downloadSource)) throw new Error('Invalid download source');
+    const proxy = typeof value.proxy === 'string' ? value.proxy.trim() : '';
+    if (proxy.length > 300 || (proxy && !/^https?:\/\/\S+$/.test(proxy))) throw new Error('Invalid proxy');
     resolveProfile(downloads,value.downloadSource,value.pypiSource,timezone);
     if (value.existing) {
       if(typeof value.existing.root!=='string' || typeof value.existing.target!=='string' || typeof value.existing.move!=='boolean')throw new Error('Invalid project selection');
@@ -284,7 +286,7 @@ async function start() {
         throw error;
       } finally {bootstrap=null;complete();}
     } else preferences.projectChoice='new';
-    preferences.source=value.source;preferences.downloadSource=value.downloadSource;preferences.pypiSource=value.pypiSource;save();
+    preferences.source=value.source;preferences.downloadSource=value.downloadSource;preferences.pypiSource=value.pypiSource;preferences.proxy=proxy;save();
     await connect(!value.existing || value.existing.move,value.existing?value.source:undefined);
     return {accepted:true};
   });

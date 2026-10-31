@@ -23,7 +23,7 @@ test('uninstall removes owned clones but preserves existing projects and rejects
 test('offline and stopped states cannot open a workspace; a busy installation can still cancel',async()=>{
   const {controls}=await import('../../ui/model.js');
   /** @type {import('../../ui/lib/types').State} */
-  const state={root:'project',phase:'stopped',busy:false,ready:true,running:false,pid:null,external_pid:0,web_url:'http://127.0.0.1:8092',resolved_source:'github',storage:{path:'project',free:10e9,required:5e9,sufficient:true,error:''},settings:{source:'auto',download_source:'auto',pypi_source:'auto',timezone:'UTC',web_host:'127.0.0.1',web_port:8092,auto_start:false,stop_timeout:600},operation:{steps:[]},last:null,events:[]};
+  const state={root:'project',phase:'stopped',busy:false,ready:true,running:false,pid:null,external_pid:0,web_url:'http://127.0.0.1:8092',resolved_source:'github',storage:{path:'project',free:10e9,required:5e9,sufficient:true,error:''},settings:{source:'auto',download_source:'auto',pypi_source:'auto',proxy:'',timezone:'UTC',web_host:'127.0.0.1',web_port:8092,auto_start:false,stop_timeout:600},operation:{steps:[]},last:null,events:[]};
   assert.equal(controls(state,true).workspace,false);assert.equal(controls(state,true).start,true);
   assert.equal(controls({...state,running:true,phase:'running'},false).workspace,false);
   assert.equal(controls({...state,busy:true,operation:{cancellable:true,steps:[]}},true).cancel,true);

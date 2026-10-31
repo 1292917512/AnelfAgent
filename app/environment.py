@@ -24,7 +24,7 @@ from typing import Any, Callable
 from app import terminal
 from app.operation import Operation
 from app.processes import background_options
-from app.settings import DOWNLOADS, Layout, download_profile
+from app.settings import DOWNLOADS, PROXY_VARIABLES, Layout, download_profile
 from app.uv_progress import UvProgress
 
 _HEADERS = {"User-Agent": "AnelfAgent/1", "Accept": "application/json"}
@@ -106,11 +106,14 @@ class Environment:
             return found if result.returncode == 0 else None
         return found
 
-    def environ(self, *, isolated_index: bool = False) -> dict[str, str]:
+    def environ(self, *, isolated_index: bool = False, proxy: bool = True) -> dict[str, str]:
+        """proxy=False 供运行态应用入口使用：代理只覆盖安装下载，不接管应用自身的网络策略。"""
         env = dict(os.environ)
         if isolated_index:
             for key in DOWNLOADS["uv_index_environment"]:
                 env.pop(key, None)
+        for key in (*PROXY_VARIABLES, "NO_PROXY", "no_proxy"):
+            env.pop(key, None)
         dirs = [str(self.layout.tools), str(self.layout.tools / "node"),
                 str(self.layout.tools / "node" / "bin"), str(self.layout.tools / "posix" / "bin"),
                 str(self.layout.tools / "git" / "cmd"), str(self.layout.tools / "git" / "bin")]
@@ -124,7 +127,12 @@ class Environment:
         env.pop("VIRTUAL_ENV", None)
         env["UV_PYTHON_INSTALL_DIR"] = str(self.layout.tools / "python")
         env["npm_config_cache"] = str(self.layout.tools / "npm-cache")
-        profile = download_profile(self.layout.load_settings())
+        settings = self.layout.load_settings()
+        if proxy and settings.proxy:
+            for key in PROXY_VARIABLES:
+                env[key] = settings.proxy
+            env["NO_PROXY"] = "localhost,127.0.0.1,::1"
+        profile = download_profile(settings)
         env["UV_PYTHON_INSTALL_MIRROR"] = profile["python"]
         env["UV_PYTHON_INSTALL_BIN"] = "0"
         env["UV_PYTHON_INSTALL_REGISTRY"] = "0"

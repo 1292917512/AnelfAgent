@@ -29,8 +29,8 @@ let progressBuffer='';
 const moving=()=>{const node=$('move-project');return node instanceof HTMLInputElement && node.checked;};
 const canContinue=()=>projectChoice==='existing' ? !!existingRoot : projectChoice==='new' && enoughSpace;
 /** @type {import('../ui/lib/types').BootstrapInfo | null} */ let catalog=null;
-Object.assign(words.zh,{pypi:'uv / Python 包镜像',followSource:'跟随环境来源',details:'点击进度展开或收起详情'});
-Object.assign(words.en,{pypi:'uv / Python package index',followSource:'Follow environment source',details:'Expand or collapse progress details'});
+Object.assign(words.zh,{pypi:'uv / Python 包镜像',followSource:'跟随环境来源',details:'点击进度展开或收起详情',proxy:'下载代理（安装用，可选）'});
+Object.assign(words.en,{pypi:'uv / Python package index',followSource:'Follow environment source',details:'Expand or collapse progress details',proxy:'Download proxy (optional)'});
 Object.assign(words.zh,{title:'准备安装 AnelfAgent',hint:'确认安装位置，其余环境自动准备。',continue:'开始安装',installOptions:'调整安装选项',preparingTitle:'正在准备环境',preparingHint:'自动复用现有工具，准备好后继续安装项目。',preparing:'正在准备基础环境…'});
 Object.assign(words.en,{title:'Install AnelfAgent',hint:'Confirm the folder. We will prepare the environment.',continue:'Install',installOptions:'Installation options',preparingTitle:'Preparing your environment',preparingHint:'Reusing existing tools before continuing with the project.',preparing:'Preparing the environment…'});
 Object.assign(words.zh,{failed:'未能完成，请展开查看具体原因。',keepOrigin:'沿用原仓库',originUnknown:'暂时无法读取 origin，默认保留原仓库',customOrigin:'自定义仓库：保留当前 origin，镜像地址需通过 Git 配置。'});
@@ -143,11 +143,11 @@ $('back-choice').onclick=()=>{projectChoice='question';$('progress').hidden=true
 $('choose').onclick = async () => { try { $('root').textContent = await desktop.chooseProject() || ''; await refreshStorage();requestAnimationFrame(fitWindow); } catch(error) { $('progress').hidden=false;$('status').textContent=locale.failed;$('output').textContent=errorText(error); } };
 $('continue').onclick = async () => {
   if (busy || stoppingForExit || !canContinue()) return; busy=true;
-  for (const id of ['continue','choose','source','downloads','pypi']) control(id).disabled=true;
+  for (const id of ['continue','choose','source','downloads','pypi','proxy']) control(id).disabled=true;
   $('cancel').hidden=false;control('cancel').disabled=false;$('progress').hidden=false;$('status').textContent=locale.preparing;$('output').textContent=locale.preparing;
   showStep();
   try {
-    const result=await desktop.bootstrapStart({source:control('source').value,downloadSource:control('downloads').value,pypiSource:control('pypi').value,
+    const result=await desktop.bootstrapStart({source:control('source').value,downloadSource:control('downloads').value,pypiSource:control('pypi').value,proxy:control('proxy').value.trim(),
       ...(projectChoice==='existing'?{existing:{root:existingRoot,target:targetRoot,move:moving()}}:{})});
     if(result?.accepted===false){$('progress').hidden=true;$('output').textContent='';}
   }
@@ -160,7 +160,7 @@ $('continue').onclick = async () => {
       }
     }catch(error){$('output').textContent+='\n'+errorText(error);}
   }
-  finally {busy=false;for(const id of ['choose','source','downloads','pypi'])control(id).disabled=stoppingForExit;$('cancel').hidden=true;showStep();}
+  finally {busy=false;for(const id of ['choose','source','downloads','pypi','proxy'])control(id).disabled=stoppingForExit;$('cancel').hidden=true;showStep();}
 };
 $('cancel').onclick = async () => { control('cancel').disabled=true;try{await desktop.bootstrapCancel();}catch(error){$('status').textContent=describeError(error,locale===words.zh?'zh':'en').message;$('output').textContent+='\n'+errorText(error);control('cancel').disabled=false;} };
 $('retry-connect').onclick=async()=>{
@@ -172,7 +172,8 @@ $('retry-connect').onclick=async()=>{
 document.querySelectorAll('[data-text]').forEach(node=>{if(node instanceof HTMLElement)node.textContent=locale[node.dataset.text || ''];});
 $('bootstrap-progress-toggle').title=locale.details;
 if(connecting){showStep();return;}
-$('root').textContent=info.root;control('source').value=info.source;control('downloads').value=info.downloadSource;
+  $('root').textContent=info.root;control('source').value=info.source;control('downloads').value=info.downloadSource;
+  control('proxy').value=info.proxy || '';
 targetRoot=info.defaultTarget;
 if(info.projectChoice){projectChoice=info.projectChoice;if(projectChoice==='existing'){existingRoot=info.root;existingRepository=await desktop.projectRepository(info.root);const checkbox=$('move-project');if(checkbox instanceof HTMLInputElement)checkbox.checked=false;}}
 if(info.migration){projectChoice='existing';existingRoot=info.migration.source;targetRoot=info.migration.target;existingRepository=await desktop.projectRepository(existingRoot);const checkbox=$('move-project');if(checkbox instanceof HTMLInputElement)checkbox.checked=true;}
@@ -187,7 +188,7 @@ setInterval(()=>{if(!connecting && !busy && !stoppingForExit)void refreshStorage
 desktop.onExitState?.(value=>{
   stoppingForExit=value.stopping;
   exitError=value.error;
-  for(const id of ['continue','choose','source','downloads','pypi','cancel'])control(id).disabled=value.stopping || busy;
+  for(const id of ['continue','choose','source','downloads','pypi','proxy','cancel'])control(id).disabled=value.stopping || busy;
   $('progress').hidden=false;
   $('status').textContent=value.stopping ? locale.exitStopping : describeError(value.error,locale===words.zh?'zh':'en').message;
   $('output').textContent=value.error;

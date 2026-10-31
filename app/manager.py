@@ -21,7 +21,15 @@ from app.operation import Cancelled, Operation
 from app.processes import background_options
 from app.readiness import web_ready
 from app.repository import RepositoryInfo, change_origin, describe, origin, set_source
-from app.settings import REPOSITORY_SOURCES, Layout, Settings, download_profile, probe_port, resolve_source
+from app.settings import (
+    REPOSITORY_SOURCES,
+    Layout,
+    Settings,
+    apply_proxy_env,
+    download_profile,
+    probe_port,
+    resolve_source,
+)
 from app.storage import inspect_storage, require_storage
 from core.host_protocol import HostLock, write_json
 
@@ -62,6 +70,7 @@ class Manager:
     def __init__(self, layout: Layout) -> None:
         self.layout = layout
         self.settings = layout.load_settings()
+        apply_proxy_env(self.settings)
         self._mutex = threading.RLock()
         self._operation = threading.Lock()
         self._project = HostLock(layout.root / "logs" / "project-operation.lock")
@@ -270,6 +279,7 @@ class Manager:
                     change_origin(self.layout.root, git, origin(self.layout.root, git), old)
                 raise
             self.settings = settings
+            apply_proxy_env(settings)
             self._repository = selected
         finally:
             self._project.release()
@@ -316,6 +326,7 @@ class Manager:
             try:
                 self.layout.save_settings(settings)
                 self.settings = settings
+                apply_proxy_env(settings)
                 # 重启转交既有 devops 服务，由它取得同一项目锁。
                 if action in {"restart", "stop"}:
                     self._project.release()
@@ -446,7 +457,7 @@ class Manager:
             if not script.is_file():
                 raise RuntimeError("The compatible start entry is missing; reinstall the desktop app")
         command = [os.environ.get("COMSPEC", "cmd.exe"), "/d", "/c", str(script)] if os.name == "nt" else ["bash", str(script)]
-        env = self.environment.environ()
+        env = self.environment.environ(proxy=False)
         env.update(ANELF_WEBUI_HOST=self.settings.web_host, ANELF_WEBUI_PORT=str(self.settings.web_port),
                    ANELF_ENV_READY="1", ANELF_PROJECT_ROOT=str(self.layout.root),
                    ANELF_LAUNCH_ENTRY=str(backend / "app/runtime_entry.py"))

@@ -63,6 +63,7 @@ class Settings:
     source: str = "auto"
     download_source: str = "auto"
     pypi_source: str = "auto"
+    proxy: str = ""
     timezone: str = field(default_factory=local_timezone)
 
     @classmethod
@@ -83,9 +84,26 @@ class Settings:
             raise ValueError("Download source must be auto, china or global")
         if setting.pypi_source not in {"auto", *DOWNLOADS["pypi_sources"]}:
             raise ValueError("Unknown uv package source")
+        if not isinstance(setting.proxy, str) or len(setting.proxy) > 300 or any(c.isspace() for c in setting.proxy):
+            raise ValueError("Invalid proxy")
+        if setting.proxy and not setting.proxy.startswith(("http://", "https://")):
+            raise ValueError("Proxy must use http:// or https://")
         if not isinstance(setting.timezone, str) or not 1 <= len(setting.timezone) <= 100:
             raise ValueError("Invalid timezone")
         return setting
+
+
+PROXY_VARIABLES = ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy")
+
+
+def apply_proxy_env(settings: Settings) -> None:
+    """把代理同步进管理进程环境，供进程内下载使用；空值清空旧变量保持行为确定。"""
+    for key in (*PROXY_VARIABLES, "NO_PROXY", "no_proxy"):
+        os.environ.pop(key, None)
+    if settings.proxy:
+        for key in PROXY_VARIABLES:
+            os.environ[key] = settings.proxy
+        os.environ["NO_PROXY"] = "localhost,127.0.0.1,::1"
 
 
 class Layout:

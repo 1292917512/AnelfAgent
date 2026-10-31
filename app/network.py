@@ -11,19 +11,22 @@ from app.settings import Settings, download_profile
 
 
 def inspect_network(settings: Settings) -> dict[str, Any]:
-    """并发检测索引和分发入口；入口可达不能替代每个实际资源的下载验证。"""
+    """并发检测索引和分发入口；配置代理时按同一代理探测，入口可达不能替代实际下载验证。"""
     profile = download_profile(settings)
     targets = {"pypi": profile["pypi"].rstrip("/") + "/packaging/",
                "npm": profile["npm"].rstrip("/") + "/-/ping",
                "node": profile["node"] + "index.json",
                "python": profile["python"].replace("/releases/download", "").rstrip("/") + "/"}
+    opener = (urllib.request.build_opener(urllib.request.ProxyHandler(
+        {"http": settings.proxy, "https": settings.proxy})) if settings.proxy else None)
 
     def probe(item: tuple[str, str]) -> dict[str, Any]:
         name, url = item
         started = time.monotonic()
         try:
             request = urllib.request.Request(url, headers={"User-Agent": "AnelfAgent/1"})
-            with urllib.request.urlopen(request, timeout=5) as response:
+            response = opener.open(request, timeout=5) if opener else urllib.request.urlopen(request, timeout=5)
+            with response:
                 if not response.url.startswith("https://"):
                     raise ValueError("Insecure redirect")
                 response.read(1)

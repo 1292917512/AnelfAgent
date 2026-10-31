@@ -132,7 +132,7 @@ function render() {
   el('storage').title = t('diskHint') + (space?.error ? '\n' + space.error : '');
   el('storage').classList.toggle('danger',!space?.sufficient);
   input('install-source').disabled = state.busy || pending; input('install-download-source').disabled = state.busy || pending;
-  input('install-pypi-source').disabled = state.busy || pending;
+  input('install-pypi-source').disabled = state.busy || pending; input('install-proxy').disabled = state.busy || pending;
   const resumeSource=!!state.resumable && !state.busy && step === 2;
   const sourceTarget=el(resumeSource ? 'resume-source' : 'initial-pypi-source');
   if(el('pypi-source-field').parentElement!==sourceTarget)sourceTarget.append(el('pypi-source-field'));
@@ -176,12 +176,12 @@ async function checkNetwork() {
   if (networkPending) return;
   networkPending = true; button('network-check').disabled = true;
   el('network-results').textContent = t('networkChecking');
-  const selected = input('install-download-source').value,pypi=input('install-pypi-source').value;
+  const selected = input('install-download-source').value,pypi=input('install-pypi-source').value,proxy=input('install-proxy').value.trim();
   try {
-    const result = await api('network', {download_source:selected,pypi_source:pypi,timezone});
-    if (selected === input('install-download-source').value && pypi === input('install-pypi-source').value) renderNetwork(result);
+    const result = await api('network', {download_source:selected,pypi_source:pypi,proxy,timezone});
+    if (selected === input('install-download-source').value && pypi === input('install-pypi-source').value && proxy === input('install-proxy').value.trim()) renderNetwork(result);
   } catch (error) { el('network-results').textContent = describeError(error,language).message;showError(error); }
-  finally { networkPending = false; render(); if (selected !== input('install-download-source').value || pypi !== input('install-pypi-source').value) void checkNetwork(); }
+  finally { networkPending = false; render(); if (selected !== input('install-download-source').value || pypi !== input('install-pypi-source').value || proxy !== input('install-proxy').value.trim()) void checkNetwork(); }
 }
 async function refresh() {
   if (refreshing) return; refreshing = true;
@@ -204,7 +204,7 @@ async function refresh() {
       if (wizard && state.resumable) step = 2;
       if (wizard && step === 2 && !beginInstallation && !state.busy) void inspect();
     }
-    if (!sourceDirty) { input('install-source').value = state.settings.source; input('install-download-source').value = state.settings.download_source; input('install-pypi-source').value = state.settings.pypi_source; }
+    if (!sourceDirty) { input('install-source').value = state.settings.source; input('install-download-source').value = state.settings.download_source; input('install-pypi-source').value = state.settings.pypi_source; input('install-proxy').value = state.settings.proxy || ''; }
     if (!previous) void checkNetwork();
     const updating = state.busy && state.operation.action === 'update';
     if (installing(state)) { wizard = !updating; step = 2; if (!previous?.busy) el('environment-details').removeAttribute('open'); }
@@ -226,7 +226,7 @@ async function refresh() {
 /** @param {string} action */
 async function act(action) {
   if (pending || stoppingForExit) return; pending = true; exitError='';message(''); render();
-  try { if (['install','setup'].includes(action)) await api('settings',{source:input('install-source').value,download_source:input('install-download-source').value,pypi_source:input('install-pypi-source').value,timezone}); await api('action',{action}); }
+  try { if (['install','setup'].includes(action)) await api('settings',{source:input('install-source').value,download_source:input('install-download-source').value,pypi_source:input('install-pypi-source').value,proxy:input('install-proxy').value.trim(),timezone}); await api('action',{action}); }
   catch (error) { showError(error); }
   finally { pending = false; await refresh(); render(); }
 }
@@ -244,6 +244,7 @@ button('inspect').onclick = inspect;
 input('install-source').onchange = () => { sourceDirty = true; sources(); };
 input('install-download-source').onchange = () => { sourceDirty = true; el('network-summary').textContent = t('networkTitle'); void checkNetwork(); };
 input('install-pypi-source').onchange = () => { sourceDirty = true; sources(); el('network-summary').textContent=t('networkTitle'); void checkNetwork(); };
+input('install-proxy').onchange = () => { sourceDirty = true; el('network-summary').textContent = t('networkTitle'); void checkNetwork(); };
 button('language').onclick = () => { setLanguage(language === 'zh' ? 'en' : 'zh'); translate();translateError(); pypiOptions(); settingsForm(schema,state); render(); };
 el('settings').oninput = () => { dirty = true; }; el('settings').onsubmit = event => event.preventDefault();
 button('save').onclick = async () => {

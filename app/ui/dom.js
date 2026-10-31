@@ -45,7 +45,7 @@ export function settingsForm(schema, state) {
       if (current && !options.includes(current)) options.push(current);
       for (const value of options) { const option = document.createElement('option'); option.value = value; option.textContent = field.option_labels?.[value]?.[language] || (value === 'auto' ? t('auto') : value === 'github' ? 'GitHub' : value === 'gitee' ? 'Gitee' : t(value)); control.append(option); }
     }
-    else { control.type = field.type; if (field.min) control.min = String(field.min); if (field.max) control.max = String(field.max); }
+    else { control.type = field.type; if (field.min) control.min = String(field.min); if (field.max) control.max = String(field.max); if (field.placeholder) control.placeholder = field.placeholder; }
     if (state) { if (control instanceof HTMLInputElement && field.type === 'checkbox') control.checked = Boolean(state.settings[field.name]); else control.value = String(state.settings[field.name]); }
     label.append(title, control); (field.advanced ? fields : el('settings')).append(label);
   }
