@@ -6,9 +6,12 @@
  */
 import { z } from 'zod'
 import { Vec3 } from 'vec3'
+import pathfinderPkg from 'mineflayer-pathfinder'
 import safety from 'mineflayer/lib/anelf_mining/mining-safety.cjs'
 import { ActionController } from '../bot/anelf-actions.mjs'
 import { ToolError } from '../util/errors.js'
+
+const { Movements, goals } = pathfinderPkg
 
 /** @typedef {import('mineflayer').Bot} Bot */
 
@@ -24,6 +27,93 @@ const SETTLE_MS = 3000
 function fallDamage (blocks, landing) {
   if (landing === 'water') return 0
   return Math.max(0, blocks - 3)
+}
+
+/** @param {import('./registry.js').Registrar} reg */
+export function registerAscend (reg) {
+  reg({ name: 'ascend', group: 'movement',
+    description: 'Autonomous routine only: pillar straight up on carried dirt or cobblestone to escape a pit the bot dug itself. Placement-only — never digs — and every placed block is verified. Stops at targetY, or earlier when headroom or materials run out.',
+    inputSchema: { targetY: z.number().int().optional() }, annotations: { title: 'Pillar escape' },
+    handler: (args, ctx) => {
+      const bot = ctx.manager.requireBot()
+      if (!(ctx.locks instanceof ActionController)) throw new ToolError('INTERNAL', 'Ascend requires the installed action controller.')
+      const handle = ctx.locks.begin('ascend')
+      const promise = (async () => ascend(bot, handle.signal, args.targetY))()
+      promise.then(() => handle.release('completed', ''), error => {
+        handle.release(error instanceof ToolError ? error.code : 'blocked', String(error?.message ?? error))
+      }).catch(() => {})
+      return promise
+    } })
+}
+
+/** @param {Bot} bot @param {AbortSignal} signal @param {number} [targetY] */
+export async function ascend (bot, signal, targetY) {
+  signal.throwIfAborted()
+  const pathfinder = bot.pathfinder
+  if (!pathfinder?.goto || typeof pathfinder?.setMovements !== 'function') {
+    throw new ToolError('PLUGIN_MISSING', 'The pathfinder plugin is required to pillar out.')
+  }
+  const placeable = ['dirt', 'cobblestone']
+    .map(name => bot.registry.itemsByName[name]?.id)
+    .filter(Number.isInteger)
+  const carried = bot.inventory?.items?.().find(entry => placeable.includes(entry.type))
+  if (!carried) throw new ToolError('NO_MATERIAL', 'No carried dirt or cobblestone to pillar with; refusing the climb.')
+  // Escape profile: pillar with carried blocks and, armed by the safety
+  // wrapper, carve through natural terrain only — buildings, containers and
+  // floor protection stay untouchable. Wide dug basins have no standable rim
+  // to walk to, so digging an ascending exit is the only way out.
+  const movements = new Movements(bot)
+  movements.anelfEscape = true
+  movements.canDig = true
+  movements.allow1by1towers = true
+  movements.allowParkour = false
+  movements.scafoldingBlocks = placeable
+  const start = bot.entity.position.floored()
+  const from = start.y
+  // Surrounding terrain top (standing height) from a ring scan: in a dug pit
+  // the ring is the rim, and pillaring exactly to it ends standing on the
+  // surface. An "adjacent standable cell" check is useless here — the pit
+  // floor itself is standable.
+  const isTreePart = name => /(?:^|_)leaves$/.test(name) || name === 'leaf_litter' || /_log$/.test(name)
+  const rimTop = () => {
+    let top = -Infinity
+    // Chunk pits are up to 16x16: a tight ring would still be inside one.
+    // Tree crowns are walkable for the pathfinder but they are not terrain:
+    // targeting them sends the escape up a tree instead of out of the pit.
+    for (let dx = -8; dx <= 8; dx++) for (let dz = -8; dz <= 8; dz++) {
+      if (Math.abs(dx) <= 1 && Math.abs(dz) <= 1) continue
+      for (let y = from + 24; y >= from - 4; y--) {
+        const block = bot.blockAt(new Vec3(start.x + dx, y, start.z + dz))
+        if (block != null && block.boundingBox !== 'empty') {
+          if (!isTreePart(block.name)) top = Math.max(top, y + 1)
+          break
+        }
+      }
+    }
+    return top
+  }
+  const rim = rimTop()
+  const maxY = Math.min(targetY ?? rim, from + 24)
+  if (maxY <= from + 1) {
+    // Nothing to climb: the surroundings do not rise above the feet. Reporting
+    // failure lets the caller fall back to its cooldown instead of livelocking
+    // on no-op climbs.
+    return { completed: false, from, to: from, rim: from,
+      position: { x: start.x, y: from, z: start.z } }
+  }
+  const goal = new goals.Goal()
+  goal.isEnd = node => node.y >= maxY
+  goal.heuristic = node => Math.max(0, maxY - node.y)
+  pathfinder.setMovements(movements)
+  // pathfinder.goto has no wall-clock bound of its own; stop it hard.
+  const timer = setTimeout(() => pathfinder.stop(), 90000)
+  try {
+    await pathfinder.goto(goal)
+  } finally {
+    clearTimeout(timer)
+  }
+  const to = Math.floor(bot.entity.position.y)
+  return { completed: to >= maxY, from, to, rim, position: { x: bot.entity.position.x, y: to, z: bot.entity.position.z } }
 }
 
 /** @param {import('./registry.js').Registrar} reg */

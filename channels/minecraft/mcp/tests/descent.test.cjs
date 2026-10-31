@@ -154,6 +154,51 @@ test('a fall whose physics lands late still settles before the next step', async
   assert.equal(Math.floor(bot.entity.position.y), 64)
 })
 
+test('the pillar escape builds a placement-only tower profile', async () => {
+  const { ascend } = await load('tools/anelf-descent-tools.mjs')
+  const { Movements, goals } = deps('mineflayer-pathfinder')
+  const bot = new EventEmitter()
+  bot.registry = deps('prismarine-registry')('26.1')
+  bot.entity = { position: new Vec3(0.5, 60, 0.5) }
+  bot.inventory = { items: () => [{ name: 'dirt', count: 12, type: bot.registry.itemsByName.dirt.id }] }
+  // A dug pit: open around the feet, ring terrain standing at y=64.
+  bot.blockAt = p => ({ boundingBox: p.y === 63 && Math.abs(p.x) >= 2 ? 'block' : 'empty',
+    position: new Vec3(p.x, p.y, p.z) })
+  const seen = []
+  bot.pathfinder = {
+    setMovements: movements => seen.push(movements),
+    goto: async goal => {
+      assert.ok(goal instanceof goals.Goal)
+      assert.equal(goal.heuristic({ y: 60 }), 4)
+      bot.entity.position = new Vec3(0.5, 64, 0.5)
+    },
+    stop: () => {},
+  }
+  const result = await ascend(bot, new AbortController().signal, 64)
+  assert.equal(result.completed, true)
+  assert.equal(result.from, 60)
+  assert.equal(result.to, 64)
+  assert.equal(seen.length, 1)
+  assert.equal(seen[0].anelfEscape, true)
+  assert.equal(seen[0].canDig, true, 'The escape may carve natural terrain')
+  assert.equal(seen[0].allow1by1towers, true)
+  assert.deepEqual(seen[0].scafoldingBlocks, [bot.registry.itemsByName.dirt.id, bot.registry.itemsByName.cobblestone.id])
+
+  // Flat surroundings rise nothing above the feet: a no-op climb reports
+  // failure so the caller can fall back to its cooldown.
+  bot.entity.position = new Vec3(0.5, 60, 0.5)
+  bot.blockAt = p => ({ boundingBox: p.y === 59 ? 'block' : 'empty', position: new Vec3(p.x, p.y, p.z) })
+  bot.pathfinder.goto = async () => { throw new Error('no climb expected') }
+  const flat = await ascend(bot, new AbortController().signal)
+  assert.equal(flat.completed, false)
+  assert.equal(flat.to, 60)
+
+  // No carried material refuses before any movement.
+  bot.blockAt = p => ({ boundingBox: p.y === 70 && Math.abs(p.x) >= 2 ? 'block' : 'empty', position: new Vec3(p.x, p.y, p.z) })
+  bot.inventory = { items: () => [] }
+  await assert.rejects(ascend(bot, new AbortController().signal, 64), /No carried dirt/)
+})
+
 async function loadInternal () {
   const { descend } = await load('tools/anelf-descent-tools.mjs')
   return { descend }

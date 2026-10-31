@@ -12,7 +12,7 @@ const { MiningError, key, equipHarvestTool, protectFloor, restrictMovements } = 
 /** @typedef {{locks:{begin:(name:string,onCancel:()=>void)=>{signal:AbortSignal,actionId?:string,origin?:MineRecord['origin'],release:(outcome?:MineRecord['phase'],reason?:string)=>void}},
  * events:{push:(type:string,data:unknown)=>unknown}}} Context */
 /** @typedef {{x:number,y:number,z:number}} Position */
-/** @typedef {{direction:MineRecord['direction'],depth:number,length:number,item:string,count:number,minY?:number,requireTorches?:boolean}} MineOptions */
+/** @typedef {{direction:MineRecord['direction'],depth:number,length:number,item:string,count:number,minY?:number,requireTorches?:boolean,stairWidth?:number}} MineOptions */
 const natural = new Set(['stone', 'deepslate', 'dirt', 'grass_block', 'granite', 'diorite', 'andesite', 'tuff',
   'calcite', 'coal_ore', 'iron_ore', 'copper_ore', 'gold_ore', 'redstone_ore', 'lapis_ore', 'diamond_ore',
   'emerald_ore', 'deepslate_coal_ore', 'deepslate_iron_ore', 'deepslate_copper_ore', 'deepslate_gold_ore',
@@ -20,6 +20,16 @@ const natural = new Set(['stone', 'deepslate', 'dirt', 'grass_block', 'granite',
 const air = new Set(['air', 'cave_air', 'void_air', 'torch', 'wall_torch'])
 const hazards = new Set(['water', 'lava', 'sand', 'red_sand', 'gravel', 'powder_snow', 'fire', 'soul_fire'])
 const directions = { north: [0, -1], south: [0, 1], east: [1, 0], west: [-1, 0] }
+
+/** Collision-less ground decoration (leaf litter, grass, petals) can never
+ * hide a building or container, so corridor planning clears it like air.
+ * Player markers — signs, item frames, paintings, banners — stay protected.
+ * @param {import('prismarine-block').Block} block @returns {boolean}
+ */
+function clearableLitter (block) {
+  return block.boundingBox === 'empty' &&
+    !/(?:^|_)sign$|item_frame|painting|(?:^|_)banner$/.test(block.name)
+}
 
 /** @param {Position} p */
 function vec (p) { return new Vec3(p.x, p.y, p.z) }
@@ -39,9 +49,29 @@ function minimumMiningY (bot, requested) {
 /** @param {MineRecord} record @returns {Position[]} */
 function plan (record) {
   const [dx, dz] = directions[record.direction]
-  return Array.from({ length: record.depth + record.length + 1 }, (_, i) => ({
-    x: record.entry.x + dx * i, y: record.entry.y - Math.min(i, record.depth), z: record.entry.z + dz * i
-  }))
+  const perp = [-dz, dx]
+  // The staircase descent is a wide, walkable stair (stairWidth columns,
+  // persisted with the corridor); the flat run stays a single column. Each
+  // step sweeps its columns alternating direction, so the digger ends beside
+  // the next step's first column — digging across to the far side of an
+  // undug step would have no visible face.
+  const wide = record.stairWidth ?? 1
+  const cells = []
+  for (let i = 0; i <= record.depth + record.length; i++) {
+    const y = record.entry.y - Math.min(i, record.depth)
+    const x = record.entry.x + dx * i
+    const z = record.entry.z + dz * i
+    const sides = i <= record.depth && wide >= 3
+      ? (i === 0 ? [0, -1, 1] : i % 2 === 0 ? [-1, 0, 1] : [1, 0, -1])
+      : [0]
+    for (const side of sides) cells.push({ x: x + perp[0] * side, y, z: z + perp[1] * side })
+    if (i === record.depth && wide >= 3) {
+      // The sweep ends on a side column; re-visit the centre so the flat run
+      // starts digging straight ahead instead of across a corner.
+      cells.push({ x, y, z })
+    }
+  }
+  return cells
 }
 /** @param {Bot} bot @param {string} item */
 function inventoryCount (bot, item) {
@@ -172,7 +202,7 @@ class MineTask {
       const at = vec(p).offset(0, y, 0)
       const block = this.block(at)
       if (hazards.has(block.name)) throw new MiningError('MINING_HAZARD', `Hazard ${block.name} at ${at}.`)
-      if (y < 3 && !air.has(block.name) && !natural.has(block.name)) {
+      if (y < 3 && !air.has(block.name) && !natural.has(block.name) && !clearableLitter(block)) {
         throw new MiningError('MINING_PROTECTED_BLOCK', `Unexpected ${block.name} at ${at}; do not excavate buildings or containers.`)
       }
       if (y < 3) {
@@ -367,7 +397,7 @@ class MineTask {
       }
       this.checkPause()
       await this.returnToEntry()
-      const complete = this.record.count === 0 ? this.record.steps === this.record.depth + this.record.length
+      const complete = this.record.count === 0 ? this.record.steps === plan(this.record).length - 1
         : this.record.steps >= this.record.depth && this.record.gained >= this.record.count
       this.record.phase = complete ? 'completed' : 'partial'
       this.record.reason = this.record.phase === 'partial' ? 'Passage limit or early return reached before collecting the requested inventory gain.' : ''

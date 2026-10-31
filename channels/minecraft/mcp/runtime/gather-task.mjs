@@ -1046,16 +1046,21 @@ export class GatherTask {
             break
           } catch (error) { lastError = error }
         }
-        if (!returned) throw lastError ?? new Error('GATHER_RETURN_NO_ROUTE: No safe return route.')
-        try {
-          await navigation.cleanupScaffolding()
-        } catch (error) {
-          // Same stale-record policy as startup cleanup: a record without a
-          // safe approach right now stays persisted for a later task instead
-          // of failing an otherwise completed order.
+        // Same stale-record policy as startup cleanup: a record without a safe
+        // approach right now stays persisted for a later task instead of
+        // failing an otherwise completed order.
+        const cleanupBestEffort = () => navigation.cleanupScaffolding().catch(error => {
           console.error('[anelf] return scaffold cleanup deferred:',
             String(error?.message ?? error))
+        })
+        if (!returned) {
+          // A failed return still owes its scaffolds a bounded dismantle
+          // attempt: skipping cleanup exactly when the terrain is hardest
+          // litters dirt pillars no later order comes back for.
+          await cleanupBestEffort()
+          throw lastError ?? new Error('GATHER_RETURN_NO_ROUTE: No safe return route.')
         }
+        await cleanupBestEffort()
         this.recordScaffoldDrops()
         this.returned = true
         await this.collectDeferredDrops(navigation, handle.signal)

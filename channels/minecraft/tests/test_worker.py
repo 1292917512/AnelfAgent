@@ -1114,6 +1114,34 @@ async def test_escalated_relocate_descends_to_resource_below_first(
 
 
 @pytest.mark.asyncio
+async def test_escalated_relocate_ascends_out_of_a_pit_first(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """坑底被困：探测目标在上方时先立柱上攀——行进寻路不垫方块，坑里四向
+    寻路必然 NO_PATH，垫脚塔是唯一出路。"""
+    monkeypatch.setattr("agent.runtime.singleton.get_runtime", lambda: None)
+    game = FakeGame()
+    worker, _flag, _records, _announces = _make_worker(game)
+    worker._relocate_fails = 2
+
+    async def above_probe(here: dict[str, int]) -> list[dict[str, Any]]:
+        return [{"x": here["x"] + 2, "y": here["y"] + 7, "z": here["z"]}]
+
+    ascended: list[int | None] = []
+
+    async def fake_ascend(target_y: int | None = None) -> bool:
+        ascended.append(target_y)
+        return True
+
+    worker._probe_targets = above_probe
+    worker._ascend = fake_ascend
+    await worker._relocate()
+
+    assert ascended == [64 + 7]
+    assert _goto_orders(game) == []  # 上攀成功即完成换区，绝不寻路
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("started_at", [0.0, 1000.0])
 async def test_cooldown_announcements_are_throttled(
     monkeypatch: pytest.MonkeyPatch, started_at: float,

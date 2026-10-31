@@ -533,10 +533,16 @@ class MinecraftWorker:
         # 站在树冠/悬空树叶上时四向寻路全是 NO_PATH，脚下的资源才是唯一
         # 可达的出路。探测列表按环距/块距排序，最近命中常是同层或更高，
         # 必须扫出真正低于脚下 3 格以上的目标，不能只看第一个。
-        below = next((target for target in await self._probe_targets(here)
-                      if target["y"] <= here["y"] - 3), None)
+        probe = await self._probe_targets(here)
+        below = next((target for target in probe if target["y"] <= here["y"] - 3), None)
         if below is not None and await self._descend(below["y"]):
             log(f"Minecraft 自主作业目标在下方 {here['y'] - below['y']} 格，受控下撤后重新探测", "INFO", tag="Minecraft")
+            return
+        # 目标明显在上方（坑底被困）：立柱上攀爬出——行进寻路不垫方块，
+        # 四向寻路在坑里必然 NO_PATH，垫脚塔是唯一出路。
+        above = next((target for target in probe if target["y"] >= here["y"] + 3), None)
+        if above is not None and await self._ascend(above["y"]):
+            log(f"Minecraft 自主作业目标在上方 {above['y'] - here['y']} 格，立柱上攀后重新探测", "INFO", tag="Minecraft")
             return
         if self._relocate_fails >= _RELOCATE_FAIL_ESCALATION:
             # 近距换区连续无产出：探测命中互相指向残破区内部，直接远程跳区
@@ -552,6 +558,12 @@ class MinecraftWorker:
                             f"({here['x'] + dx * distance}, {here['z'] + dz * distance}) 离开残破地带",
                             "INFO", tag="Minecraft")
                         return
+            # 四向寻路全败的最后手段：立柱上攀爬出深坑——深坑里探测高差带
+            # 可能连「上方目标」都没有，不能只靠探测触发；没有垫材时快速
+            # 拒绝，落回冷却。
+            if await self._ascend():
+                log("Minecraft 自主作业四向跳区不可达，立柱上攀爬出深坑后重新探测", "INFO", tag="Minecraft")
+                return
             self._relocate_cooldown_until = self._clock() + _RELOCATE_FAIL_COOLDOWN_SECONDS
             log("Minecraft 自主作业残破地带四向跳区全部不可达，进入冷却", "WARNING", tag="Minecraft")
             await self._announce_cooldown("这一带的地形我走不出去也挖不动，先歇一会儿；带我到平缓些的地方我马上继续。")
@@ -589,6 +601,22 @@ class MinecraftWorker:
             await self._announce(text)
         except Exception as exc:
             log(f"Minecraft 自主作业冷却播报失败: {exc}", "DEBUG", tag="Minecraft")
+
+    async def _ascend(self, target_y: int | None = None) -> bool:
+        """立柱上攀：随身泥土/圆石垫脚跳爬出深坑（只放置、绝不下挖）。"""
+        args: dict[str, Any] = {}
+        if target_y is not None:
+            args["targetY"] = int(target_y)
+        try:
+            result = await asyncio.wait_for(self._call("ascend", args), timeout=120)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log(f"Minecraft 自主作业立柱上攀失败: {exc}", "DEBUG", tag="Minecraft")
+            return False
+        ok = bool(result.get("completed"))
+        log(f"Minecraft 自主作业立柱上攀: from={result.get('from')} to={result.get('to')}", "DEBUG", tag="Minecraft")
+        return ok
 
     async def _descend(self, target_y: int | None = None) -> bool:
         """受控下撤：优先掉血落地（不摔死），否则逐格垂直下挖到安全高度。"""

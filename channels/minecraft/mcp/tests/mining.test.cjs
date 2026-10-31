@@ -63,8 +63,10 @@ async function fixture (options = {}, gain = true, { surfaceY = 30, minY = -64 }
   }
   const digs = [], walks = [], placed = []
   bot.dig = async block => {
-    assert.equal(block.name, 'stone')
-    assert.equal(bot.heldItem.name, 'iron_pickaxe')
+    assert.ok(block.name === 'stone' || block.name === 'leaf_litter',
+      `unexpected dig material ${block.name}`)
+    // Hand-clearable litter unequips the pickaxe; stone keeps it equipped.
+    if (block.name === 'stone') assert.equal(bot.heldItem?.name, 'iron_pickaxe')
     const eye = bot.entity.position.offset(0, 1.62, 0)
     // First-hit raycast from the real eye position must see the target.
     const delta = block.position.offset(0.5, 0.5, 0.5).minus(eye)
@@ -170,6 +172,66 @@ test('a deliberate fall may break a support held at the stand edge', async () =>
   assert.ok(safety.recentDeliberateFall(bot))
   // Outside a planned fall the same own-support block stays protected.
   assert.throws(() => safety.assertFloorSafe(bot, block), /support/)
+})
+
+test('collision-less litter in the corridor plan is cleared, player markers stay protected', async () => {
+  // Pale-garden leaf litter covering the descent used to abort the whole mine
+  // with MINING_PROTECTED_BLOCK before the first dig.
+  const f = await fixture({ depth: 2, length: 0, count: 2 })
+  f.set(new Vec3(3, 31, 4), 'leaf_litter')
+  await f.task.excavate({ x: 3, y: 29, z: 4 })
+  assert.ok(f.digs.some(p => p.y === 31), 'The litter column is excavated')
+
+  // A real container still refuses before any dig.
+  const f2 = await fixture({ depth: 2, length: 0, count: 2 })
+  f2.set(new Vec3(3, 31, 4), 'crafting_table')
+  await assert.rejects(f2.task.excavate({ x: 3, y: 29, z: 4 }), /Unexpected crafting_table/)
+})
+
+test('a three-column staircase sweeps each step and keeps the flat run single', async () => {
+  const f = await fixture({ depth: 2, length: 2, count: 0, stairWidth: 3 }, true)
+  f.task.start()
+  await f.task.done
+  assert.equal(f.record.phase, 'completed', f.record.reason)
+  // 12 route cells: three per descent step (i=0..2), the centre re-visit at
+  // the stair foot, then one per flat step.
+  assert.equal(f.record.steps, 11)
+  assert.equal(f.record.route.length, 12)
+  const byStep = i => f.record.route.slice(i * 3, i * 3 + 3).map(p => p.z).sort()
+  assert.deepEqual(byStep(0), [3, 4, 5], 'The entry platform is three columns wide')
+  assert.deepEqual(byStep(1), [3, 4, 5])
+  assert.deepEqual(f.record.route[9], f.record.route[7], 'The stair foot re-visits its centre column')
+  assert.deepEqual(f.record.route.slice(10).map(p => p.z), [4, 4], 'The flat run stays one column')
+  // Every lateral column of the descent was actually excavated through
+  // stone (entry-platform laterals sit in open air and need no dig).
+  const lateralDigs = f.digs.filter(d => d.z !== 4 && d.y < 30)
+  assert.ok(lateralDigs.length >= 6, `lateral stone digs: ${lateralDigs.length}`)
+})
+
+test('saved corridors keep their own stair width across store round-trips', async () => {
+  const f = await fixture({ depth: 1, length: 1, count: 0, stairWidth: 3 })
+  assert.equal(f.record.stairWidth, 3)
+  const store = new MiningStore(await fs.mkdtemp(path.join(os.tmpdir(), 'mine-width-')))
+  await store.save(f.record)
+  assert.equal((await store.load('test-world')).stairWidth, 3)
+  // Legacy records without the field fall back to the original single column.
+  const legacy = JSON.parse(JSON.stringify(f.record))
+  delete legacy.stairWidth
+  await fs.writeFile(store.file('test-world'), JSON.stringify(legacy), 'utf8')
+  assert.equal((await store.load('test-world')).stairWidth, 1)
+  await fs.rm(store.directory, { recursive: true, force: true })
+})
+
+test('the escape profile keeps towers allowed and digging armed', () => {
+  const { Movements } = dependencies('mineflayer-pathfinder')
+  const movements = new Movements({ registry })
+  movements.anelfEscape = true
+  movements.canDig = true
+  movements.allow1by1towers = true
+  const restricted = safety.restrictMovements(movements)
+  assert.equal(restricted.allow1by1towers, true, 'Pillar towers survive the safety wrapper')
+  assert.equal(restricted.canDig, true, 'The escape may carve natural terrain')
+  assert.ok(safety.naturalTerrain.has('dirt') && safety.naturalTerrain.has('stone'))
 })
 
 for (const hazard of ['lava', 'water', 'gravel', 'sand', 'chest', 'bedrock']) {
@@ -407,11 +469,11 @@ test('a fully excavated returned corridor may extend when its item goal was only
       do { await new Promise(resolve => setTimeout(resolve, 20)); status = await run('mining_status') } while (status.active)
       return status
     }
-    await run('mine_resources', { direction: 'east', depth: 1, length: 0, count: 16 })
+    await run('mine_resources', { direction: 'east', depth: 1, length: 0, count: 16, stairWidth: 1 })
     const initial = await settle()
     assert.equal(initial.phase, 'partial')
     assert.equal(initial.returned, true)
-    await run('mine_resources', { direction: 'east', depth: 1, length: 1, count: 1, extend: true, requireTorches: false })
+    await run('mine_resources', { direction: 'east', depth: 1, length: 1, count: 1, extend: true, requireTorches: false, stairWidth: 1 })
     const extended = await settle()
     assert.equal(extended.phase, 'completed', extended.reason)
     assert.equal(extended.returned, true)
@@ -479,7 +541,7 @@ test('actual MCP server registers mining schemas and completes a protocol handsh
     const prepareSchema = tools.find(t => t.name === 'prepare_build_site').inputSchema
     assert.deepEqual(Object.keys(prepareSchema.properties), ['home', 'footprint', 'maxFillDepth'])
     const schema = tools.find(t => t.name === 'mine_resources').inputSchema
-    assert.deepEqual(Object.keys(schema.properties), ['direction', 'depth', 'minY', 'length', 'item', 'count', 'requireTorches', 'extend'])
+    assert.deepEqual(Object.keys(schema.properties), ['direction', 'depth', 'minY', 'length', 'item', 'count', 'requireTorches', 'extend', 'stairWidth'])
     const status = await client.callTool({ name: 'get_connection_status', arguments: {} })
     assert.equal(status.isError, undefined)
     assert.equal(JSON.parse(status.content[0].text).survival.version, 1)
@@ -529,7 +591,7 @@ for (const operation of ['resume_action', 'return_from_mine']) {
         await dig(...args)
         if (!asked) { asked = true; locks.requests.run(metadata(1), () => locks.pause()) }
       }
-      const started = await run('mine_resources', { direction: 'east', depth: 2, length: 0, count: 2 })
+      const started = await run('mine_resources', { direction: 'east', depth: 2, length: 0, count: 2, stairWidth: 1 })
       await locks.action?.done
       const paused = await run('mining_status', {}, 1)
       assert.equal(paused.phase, 'paused')

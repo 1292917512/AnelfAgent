@@ -1321,6 +1321,26 @@ test('a pickup strand with no route back reports returned honestly', async t => 
   assert.equal(task.returned, false, 'The bot stayed away from the entry; the snapshot must not claim the return')
 })
 
+test('a failed return still attempts its scaffold cleanup', async t => {
+  const { task, execute } = await mixedScenario(t, { soil: [[4, 64, 2], [5, 64, 3]], order: { count: 2 } })
+  // Work blocks; every return mode fails — the old flow threw straight out of
+  // the return leg and skipped the dismantling, littering the pillars.
+  task.collectOne = async () => { throw new Error('GATHER_NO_TARGET: none in reach') }
+  const { GatherNavigation } = await load('tools/anelf-gather-navigation.mjs')
+  const previousWalk = GatherNavigation.prototype.walk
+  const previousCleanup = GatherNavigation.prototype.cleanupScaffolding
+  let cleanups = 0
+  GatherNavigation.prototype.walk = async () => { throw new Error('GATHER_NO_ROUTE: test') }
+  GatherNavigation.prototype.cleanupScaffolding = async () => { cleanups++ }
+  try { await execute() } finally {
+    GatherNavigation.prototype.walk = previousWalk
+    GatherNavigation.prototype.cleanupScaffolding = previousCleanup
+  }
+  assert.equal(task.phase, 'blocked')
+  assert.match(task.returnReason, /GATHER_NO_ROUTE/)
+  assert.equal(cleanups, 1, 'The bounded dismantle runs before the return failure surfaces')
+})
+
 test('a deferred scaffold cleanup failure stays visible without failing the order', async t => {
   const { task, execute } = await mixedScenario(t, { soil: [[4, 64, 2]], order: { count: 1 } })
   const { GatherNavigation } = await load('tools/anelf-gather-navigation.mjs')

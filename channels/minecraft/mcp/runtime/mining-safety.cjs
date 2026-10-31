@@ -7,6 +7,13 @@ const { Movements } = require('mineflayer-pathfinder')
 /** @type {WeakMap<Bot, Set<string>>} */
 const floors = new WeakMap()
 /** @type {WeakSet<Bot>} */
+/** Natural terrain a corridor plan may excavate; shared with the escape
+ * profile, which may carve through exactly these and nothing man-made. */
+const naturalTerrain = new Set(['stone', 'deepslate', 'dirt', 'grass_block', 'granite', 'diorite', 'andesite', 'tuff',
+  'calcite', 'coal_ore', 'iron_ore', 'copper_ore', 'gold_ore', 'redstone_ore', 'lapis_ore', 'diamond_ore',
+  'emerald_ore', 'deepslate_coal_ore', 'deepslate_iron_ore', 'deepslate_copper_ore', 'deepslate_gold_ore',
+  'deepslate_redstone_ore', 'deepslate_lapis_ore', 'deepslate_diamond_ore', 'deepslate_emerald_ore'])
+
 const installed = new WeakSet()
 /** @type {WeakSet<Movements>} */
 const restricted = new WeakSet()
@@ -44,9 +51,9 @@ function restrictMovements (movements) {
   // Foliage-only digging is the one universal travel exception (see
   // installSafety): without it a canopy is a one-way trap — leaves are solid
   // to stand on but were undiggable during plain travel.
-  movements.canDig = movements.anelfTravelDig === true ||
+  movements.canDig = movements.anelfTravelDig === true || movements.anelfEscape === true ||
     gatherMode === 'leaf' || gatherMode === 'high' || gatherMode === 'scaffold'
-  movements.allow1by1towers = gatherMode === 'scaffold'
+  movements.allow1by1towers = gatherMode === 'scaffold' || movements.anelfEscape === true
   movements.allowParkour = false
   movements.allowFreeMotion = false
   movements.allowSprinting = false
@@ -182,7 +189,15 @@ function installSafety (bot) {
   const setMovements = bot.pathfinder.setMovements.bind(bot.pathfinder)
   bot.pathfinder.setMovements = movements => {
     if (movements == null) return setMovements(movements)
-    if (movements.anelfGatherMode == null) {
+    if (movements.anelfEscape === true) {
+      // Escape may carve through natural terrain only: every solid block
+      // outside the natural list becomes unbreakable (buildings, containers,
+      // fixtures), matching the mine corridor's own protection.
+      movements.blocksCantBreak = new Set([...solidIds].filter(id => {
+        const entry = Object.values(bot.registry.blocksByName).find(block => block.id === id)
+        return entry != null && !naturalTerrain.has(entry.name)
+      }))
+    } else if (movements.anelfGatherMode == null) {
       movements.anelfTravelDig = true
       movements.blocksCantBreak = new Set(solidIds)
     }
@@ -198,4 +213,4 @@ function installSafety (bot) {
   }
 }
 
-module.exports = { MiningError, key, equipHarvestTool, restrictMovements, protectFloor, assertFloorSafe, isOwnSupport, canHarvestBlock, installSafety, descendTemporarySupport, breakForFall, recentDeliberateFall }
+module.exports = { MiningError, key, equipHarvestTool, restrictMovements, protectFloor, assertFloorSafe, isOwnSupport, canHarvestBlock, installSafety, descendTemporarySupport, breakForFall, recentDeliberateFall, naturalTerrain }

@@ -27,7 +27,8 @@ const input = {
   item: z.string().default('cobblestone').describe('Inventory item to gather; gains are measured against the starting inventory.'),
   count: z.number().int().min(1).max(256).default(16),
   requireTorches: z.boolean().default(true).describe('Require torches before passages of four or more steps. Explicitly set false for initial unlit mining; carried torches are still placed when available. Health, tools, floor protection and confirmed return remain required.'),
-  extend: z.boolean().default(false).describe('Continue the saved mine corridor from its fixed entrance instead of creating a new corridor.')
+  extend: z.boolean().default(false).describe('Continue the saved mine corridor from its fixed entrance instead of creating a new corridor.'),
+  stairWidth: z.number().int().min(1).max(3).default(3).describe('Staircase descent width in columns; the flat run stays one column. Saved corridors keep their original width when extended.'),
 }
 const options = z.object(input)
 
@@ -92,6 +93,9 @@ async function start (ctx, args) {
       depth: s.record.depth,
       minY: s.record.minY,
       length: s.record.length + args.length,
+      // Extensions follow the saved corridor's own geometry, never the
+      // order's default width.
+      stairWidth: s.record.stairWidth ?? 1,
     }, s.world)
     record.entry = s.record.entry
     record.depth = s.record.depth
@@ -148,7 +152,7 @@ async function resumeSaved (ctx, returnOnly) {
 /** @param {Registrar} reg */
 export function registerMining (reg) {
   reg({ name: 'mine_resources', group: 'build',
-    description: 'Start a BACKGROUND mine task at the fixed mine entrance. Builds a 1-wide, 3-high stair passage, optionally extends the saved corridor, verifies walking return routes, then actually returns to the entrance. Bring a suitable pickaxe, food and 8 spare blocks; torches are required by default, or explicitly set requireTorches=false for initial unlit work. Excavates natural terrain only. Use extend=true to continue a completed corridor, or a fully excavated partial corridor with confirmed return; never start a new random corridor for the same site. Returns a task id, not completed work. Inspect mining_status; use cancel_task to stop immediately or return_from_mine to return safely.',
+    description: 'Start a BACKGROUND mine task at the fixed mine entrance. Builds a 3-high stair passage whose descent is three columns wide by default (stairWidth; the flat run stays one column), optionally extends the saved corridor, verifies walking return routes, then actually returns to the entrance. Bring a suitable pickaxe, food and 8 spare blocks; torches are required by default, or explicitly set requireTorches=false for initial unlit work. Excavates natural terrain only. Use extend=true to continue a completed corridor, or a fully excavated partial corridor with confirmed return; never start a new random corridor for the same site. Returns a task id, not completed work. Inspect mining_status; use cancel_task to stop immediately or return_from_mine to return safely.',
     inputSchema: input, annotations: { title: 'Mine and return', destructiveHint: true },
     handler: (args, ctx) => start(ctx, options.parse(args)) })
   reg({ name: 'mining_status', group: 'build', description: 'Read the current/last mine task, actual inventory gains, entrance and confirmed return status. A saved interrupted task requires explicit resume or return.',
@@ -167,7 +171,7 @@ export function registerMining (reg) {
 export function wrapMiningTools (def) {
   const original = def.handler
   const legacy = def.name === 'dig_staircase' || def.name === 'dig_tunnel'
-  const description = legacy ? 'Starts a background 1-wide, 3-high mine passage with protected floors and verified walking return. Depth <=16, length <=32. Always returns to the entrance. Read mining_status for actual completion; cancel_task stops immediately.'
+  const description = legacy ? 'Starts a background 3-high mine passage (three-column stair descent) with protected floors and verified walking return. Depth <=16, length <=32. Always returns to the entrance. Read mining_status for actual completion; cancel_task stops immediately.'
     : def.name === 'goto' ? def.description + ' Travel never digs or scaffolds; underground targets require mine_resources.'
       : def.name === 'collect_block' ? def.description + ' Travel never digs a path. Results report actual inventory gains; buried targets require mine_resources.' : def.description
   return { ...def, description, handler: async (args, ctx) => {
