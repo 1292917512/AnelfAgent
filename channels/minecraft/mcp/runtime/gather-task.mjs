@@ -94,6 +94,9 @@ export class GatherTask {
     this.itemGains = new Map()
     /** Digs below the bot whose item fell out of reach; collected after the return. @type {{position:Vec3,item:string}[]} */
     this.deferredDrops = []
+    /** Feet level below which no target is offered: set when a below-entry dig
+     * broke the no-dig walk-home route (shaft without a ramp). @type {number|null} */
+    this.descentFloor = null
     this.dirtReserveReady = false
     this.stage = 'planned'; this.reason = ''; this.returnReason = ''
     /** @type {Set<string>} */
@@ -187,6 +190,18 @@ export class GatherTask {
     if (result.phase !== 'completed') throw new Error(`GATHER_SUPPLY_FAILED: ${result.reason}`)
   }
 
+  /** The chunk pit keeps a permanent stair along its east edge: a strict
+   * diagonal of undug soil cells (x0+15, entry.y-d, z0+d) for d = 1..16.
+   * Consecutive cells differ by one down and one across, so the staircase is
+   * walkable in both directions at every depth — the pit is exitable by
+   * construction, no scaffold dance on the way out. Soil-family cells only.
+   * @param {Vec3} p */
+  rampReserved (p) {
+    if (!this.chunk || p.x !== this.chunk.x * 16 + 15) return false
+    const depth = this.entry.y - p.y
+    return depth >= 1 && depth <= 16 && p.z === this.chunk.z * 16 + depth
+  }
+
   /** Chunk-clamped orders keep every dig inside one 16×16 chunk column. */
   inChunk (position) {
     if (!this.chunk) return true
@@ -277,6 +292,15 @@ export class GatherTask {
       const feet = this.bot.entity.position
       positions = [...positions].sort((a, b) => a.distanceTo(feet) - b.distanceTo(feet))
     }
+    if (!allowed && this.chunk) {
+      // The reserved ramp column keeps the pit exitable; soil there is not a
+      // candidate at any layer.
+      positions = positions.filter(p => {
+        if (!this.rampReserved(p)) return true
+        const block = this.bot.blockAt(p)
+        return block != null && !soilSet.has(block.name)
+      })
+    }
     // Single-resource chunk orders clamp the whole authorized face to the
     // chunk column, producing chunk-aligned square clearing.
     if (!allowed && this.chunk && !this.mixed) positions = positions.filter(p => this.inChunk(p))
@@ -348,6 +372,9 @@ export class GatherTask {
       // then descends only after the current level is fully cleared.
       const minY = this.stoneSurface ? Math.floor(this.bot.entity.position.y)
         : soil ? Math.floor(this.bot.entity.position.y) - 1 : this.entry.y - 3
+      // Iron rule: below the last level whose walk-home route verified, no
+      // target is offered at all.
+      if (this.descentFloor != null && p.y < this.descentFloor) continue
       if (p.y < minY || (p.y > this.entry.y + scaffoldHeight && !(allowed && allowed.has(safety.key(p))))) continue
       if (!this.canHarvestTarget(block)) continue
       const modes = p.y > this.entry.y + 2 ? ['scaffold', 'high'] : ['leaf', 'high', 'scaffold']
@@ -719,6 +746,16 @@ export class GatherTask {
     } finally { clearTimeout(timer) }
     if (this.bot.blockAt(block.position)?.type === block.type) throw new Error('GATHER_UNCONFIRMED: Server did not confirm block removal.')
     this.dug++
+    if (block.position.y < this.entry.y) {
+      // Return iron rule: a below-entry dig only commits while a walk-home
+      // route that breaks nothing and places nothing exists. A shaft without
+      // a ramp fails here and freezes the descent at this level.
+      const stand = this.bot.entity.position.floored()
+      if (!await navigation.reachableNoDig(stand, this.entry, 'leaf')) {
+        this.descentFloor = Math.max(this.descentFloor ?? -Infinity, Math.floor(this.bot.entity.position.y))
+        this.reason = 'GATHER_RETURN_UNVERIFIED: Below-entry digging paused — no walkable way back (dig a ramp or stairs first).'
+      }
+    }
     try {
       this.check(signal); this.stage = 'collecting'
       const pickups = []

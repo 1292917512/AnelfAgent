@@ -1,6 +1,23 @@
 // @ts-check
 /** Shared movement and floor protection for every mining entry point. */
+const { createHash } = require('node:crypto')
+const fs = require('node:fs/promises')
+const nodePath = require('node:path')
 const { Movements } = require('mineflayer-pathfinder')
+
+/** State file for a world key: both stores share the hashed-name convention.
+ * @param {string} directory @param {string} world */
+function worldStateFile (directory, world) {
+  return nodePath.join(directory, createHash('sha256').update(world).digest('hex') + '.json')
+}
+
+/** Atomic tmp+rename JSON write for world-persisted state.
+ * @param {string} file @param {unknown} data */
+async function atomicWriteJson (file, data) {
+  const temporary = `${file}.tmp`
+  await fs.writeFile(temporary, JSON.stringify(data), 'utf8')
+  await fs.rename(temporary, file)
+}
 
 /** @typedef {import('mineflayer').Bot} Bot */
 /** @typedef {import('prismarine-block').Block} Block */
@@ -12,7 +29,9 @@ const floors = new WeakMap()
 const naturalTerrain = new Set(['stone', 'deepslate', 'dirt', 'grass_block', 'granite', 'diorite', 'andesite', 'tuff',
   'calcite', 'coal_ore', 'iron_ore', 'copper_ore', 'gold_ore', 'redstone_ore', 'lapis_ore', 'diamond_ore',
   'emerald_ore', 'deepslate_coal_ore', 'deepslate_iron_ore', 'deepslate_copper_ore', 'deepslate_gold_ore',
-  'deepslate_redstone_ore', 'deepslate_lapis_ore', 'deepslate_diamond_ore', 'deepslate_emerald_ore'])
+  'deepslate_redstone_ore', 'deepslate_lapis_ore', 'deepslate_diamond_ore', 'deepslate_emerald_ore',
+  'oak_log', 'birch_log', 'spruce_log', 'jungle_log', 'acacia_log', 'dark_oak_log', 'cherry_log',
+  'mangrove_log', 'pale_oak_log'])
 
 const installed = new WeakSet()
 /** @type {WeakSet<Movements>} */
@@ -42,6 +61,37 @@ async function equipHarvestTool (bot, block) {
   if (bot.heldItem && block.canHarvest(null) && typeof block.digTime === 'function' &&
       block.digTime(null, false, false, false) <= block.digTime(bot.heldItem.type, false, false, false, bot.heldItem.enchants)) {
     await bot.unequip('hand')
+  }
+}
+
+/** Total count of one inventory item across slots. @param {Bot} bot @param {string} item */
+function itemCount (bot, item) {
+  return bot.inventory.items().filter(i => i.name === item).reduce((total, i) => total + i.count, 0)
+}
+
+/** Equip, dig under a watchdog and confirm the server removed the block —
+ * the shared receipt both executors previously duplicated. Rejects a worn
+ * tool below the durability reserve.
+ * @param {Bot & {tool: import('mineflayer-tool').Tool}} bot @param {Block} block
+ * @param {{watchdogMs?: number, dig?: (block: Block) => Promise<void>, beforeDig?: () => void}} [options]
+ */
+async function digVerified (bot, block, options = {}) {
+  await equipHarvestTool(bot, block)
+  const held = bot.heldItem
+  if (held) {
+    const maximum = bot.registry.itemsByName[held.name]?.maxDurability
+    if (maximum && maximum - held.durabilityUsed < 12) {
+      throw new MiningError('MINING_TOOL_LOW', 'Tool durability is low; keep a reserve and return for a replacement.')
+    }
+  }
+  options.beforeDig?.()
+  const timer = setTimeout(() => bot.stopDigging(), options.watchdogMs ?? 15000)
+  try {
+    await (options.dig ? options.dig(block) : bot.dig(block, true, 'raycast'))
+  } finally { clearTimeout(timer) }
+  const after = bot.blockAt(block.position)
+  if (after != null && after.boundingBox !== 'empty' && after.name === block.name) {
+    throw new MiningError('MINING_UNCONFIRMED', `Removal not confirmed at ${block.position}.`)
   }
 }
 
@@ -213,4 +263,4 @@ function installSafety (bot) {
   }
 }
 
-module.exports = { MiningError, key, equipHarvestTool, restrictMovements, protectFloor, assertFloorSafe, isOwnSupport, canHarvestBlock, installSafety, descendTemporarySupport, breakForFall, recentDeliberateFall, naturalTerrain }
+module.exports = { MiningError, key, equipHarvestTool, restrictMovements, protectFloor, assertFloorSafe, isOwnSupport, canHarvestBlock, installSafety, descendTemporarySupport, breakForFall, recentDeliberateFall, naturalTerrain, itemCount, digVerified, worldStateFile, atomicWriteJson }

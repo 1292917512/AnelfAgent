@@ -16,12 +16,7 @@ from channels.minecraft.worker import (
     StackOutcome,
 )
 from channels.minecraft.worker_crafting import prepare_pickaxe
-from channels.minecraft.worker_mining import (
-    approach_shallow_face,
-    blocked_tree_order,
-    shallow_stone_order,
-    start_stone_mining,
-)
+from channels.minecraft.worker_mining import stone_corridor_order
 
 
 class FakeGame:
@@ -506,7 +501,9 @@ async def test_low_durability_pickaxe_is_replaced_before_continuing(pickaxe: str
 
 
 @pytest.mark.asyncio
-async def test_buried_stone_opens_bounded_stairs_and_preserves_mining_gains() -> None:
+async def test_buried_stone_opens_a_blind_corridor_and_preserves_mining_gains() -> None:
+    """表面无石料时盲开浅走廊：石头总在几格之下，不再依赖先看见石头。"""
+
     class ShallowGame(ProgressionGame):
         mining = False
         saved: dict[str, Any] = {"active": False, "task": None}
@@ -519,9 +516,6 @@ async def test_buried_stone_opens_bounded_stairs_and_preserves_mining_gains() ->
                     self.saved = {"id": "mine1", "active": False, "phase": "partial", "item": "cobblestone",
                                   "count": 16, "gained": 6, "dug": 10, "returned": True}
                 return self.saved
-            if name == "find_blocks":
-                self.calls.append((name, dict(args)))
-                return {"positions": [{"x": 12, "y": 62, "z": -5}]}
             if name == "mine_resources":
                 self.calls.append((name, dict(args)))
                 self.mining = True
@@ -536,25 +530,10 @@ async def test_buried_stone_opens_bounded_stairs_and_preserves_mining_gains() ->
     assert outcome is not None and outcome.phase == "partial"
     assert outcome.gained == 6 and outcome.dug == 10 and outcome.items == (("cobblestone", 6),)
     orders = [args for name, args in game.calls if name == "mine_resources"]
-    assert orders == [{"direction": "east", "depth": 3, "length": 8, "minY": 61,
+    assert orders == [{"direction": "east", "depth": 8, "length": 8, "minY": 56,
                        "item": "cobblestone", "count": 64, "extend": False, "requireTorches": False}]
-    assert await shallow_stone_order(game, {"x": 10, "y": 64, "z": -5}, 10) is None
-    assert len([name for name, _args in game.calls if name == "mine_resources"]) == 1
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("stone_y,depth", [(60, 4), (58, 6), (57, None)])
-async def test_starter_mine_reaches_thicker_soil_without_exceeding_depth_limit(stone_y: int, depth: int | None) -> None:
-    async def call(name: str, _args: dict[str, Any]) -> dict[str, Any]:
-        if name == "find_blocks":
-            return {"positions": [{"x": 12, "y": stone_y, "z": -5}]}
-        return {}
-
-    order = await shallow_stone_order(call, {"x": 10, "y": 64, "z": -5}, 3)
-    if depth is None:
-        assert order is None
-    else:
-        assert order is not None and order["depth"] == depth and order["minY"] == 64 - depth
+    assert not any(name == "find_blocks" for name, _args in game.calls), "盲开不再探测先看见石头"
+    assert worker._relocate_heading == 1, "新开走廊消耗一个轮换方向"
 
 
 @pytest.mark.asyncio
@@ -583,119 +562,28 @@ async def test_returned_starter_mine_continues_without_repeating_surface_search(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("returned,phase,steps,allowed", [
-    (True, "partial", 3, True), (True, "partial", 2, False),
+@pytest.mark.parametrize("returned,phase,steps,extendable", [
+    (True, "partial", 3, True), (True, "partial", 2, True), (True, "blocked", 1, True),
     (False, "partial", 3, False), (True, "interrupted", 3, False),
 ])
-async def test_starter_mine_only_extends_a_fully_walked_returned_corridor(
-    returned: bool, phase: str, steps: int, allowed: bool,
+async def test_corridor_preference_continues_any_returned_terminal_corridor(
+    returned: bool, phase: str, steps: int, extendable: bool,
 ) -> None:
+    """已返程的终态走廊（含半途受阻）一律延续：半途阶梯是留存进度，
+    作废它只会让 bot 站在自己挖出的廊口上开不了新口。"""
     async def call(_name: str, _args: dict[str, Any]) -> dict[str, Any]:
         return {"id": "mine1", "returned": returned, "phase": phase, "steps": steps,
                 "depth": 3, "length": 0, "item": "cobblestone", "direction": "north"}
 
-    order = await shallow_stone_order(call, {"x": 0, "y": 63, "z": 0}, 13)
-    if allowed:
-        assert order == {"direction": "north", "depth": 3, "length": 8, "item": "cobblestone",
-                         "count": 13, "extend": True, "requireTorches": False}
+    extension = await stone_corridor_order(call, {"x": 0, "y": 63, "z": 0}, 13, 0)
+    if extendable:
+        assert extension == {"direction": "north", "depth": 3, "length": 8, "item": "cobblestone",
+                             "count": 13, "extend": True, "requireTorches": False}
     else:
-        assert order is None
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("actual_name,visible,inside,repair", [
-    ("grass_block", True, True, True), ("chest", True, True, False),
-    ("grass_block", False, True, False), ("grass_block", True, False, False),
-])
-async def test_stone_mine_repairs_only_visible_soil_inside_its_saved_passage(
-    actual_name: str, visible: bool, inside: bool, repair: bool,
-) -> None:
-    calls: list[str] = []
-    cleared = False
-
-    async def call(name: str, _args: dict[str, Any]) -> dict[str, Any]:
-        nonlocal cleared
-        calls.append(name)
-        if name == "mine_resources":
-            if not cleared:
-                raise RuntimeError("MINING_RETURN_BLOCKED: Return passage obstructed by grass_block at -38,66,6.")
-            return {"id": "mine2", "active": True}
-        if name == "mining_status":
-            return {"entry": {"x": -38 if inside else -48, "y": 66, "z": 6}, "direction": "north",
-                    "steps": 3, "depth": 3, "returned": True, "phase": "partial"}
-        if name == "get_block_at":
-            return {"name": actual_name, "canSee": visible, "canDig": True}
-        if name == "dig":
-            cleared = True
-            return {"serverConfirmed": True}
-        return {}
-
-    if repair:
-        result = await start_stone_mining(call, {"extend": True})
-        assert result["active"] is True
-        assert calls == ["mine_resources", "mining_status", "get_block_at", "dig", "mine_resources"]
-    else:
-        with pytest.raises(RuntimeError, match="MINING_RETURN_BLOCKED"):
-            await start_stone_mining(call, {"extend": True})
-        assert "dig" not in calls
-
-
-@pytest.mark.asyncio
-async def test_blocking_tree_is_cleared_whole_before_same_mine_resumes() -> None:
-    class TreeGame(ProgressionGame):
-        cleared = False
-        resumed = False
-
-        async def __call__(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
-            if name == "mining_status":
-                self.calls.append((name, args))
-                if self.resumed:
-                    self.inventory["cobblestone"] = 16
-                    return {"id": "mine1", "phase": "completed", "active": False, "item": "cobblestone",
-                            "count": 13, "gained": 13, "dug": 13, "returned": True}
-                return {"id": "mine1", "phase": "blocked", "returned": True, "item": "cobblestone",
-                        "entry": {"x": 10, "y": 64, "z": -5}, "direction": "east", "steps": 2, "depth": 0,
-                        "reason": "Unexpected birch_log at (13, 65, -5); do not excavate buildings or containers."}
-            if name == "get_block_at":
-                self.calls.append((name, args))
-                return {"name": "air" if self.cleared else "birch_log"}
-            if name == "gathering_status":
-                self.calls.append((name, args))
-                self.cleared = True
-                return {"phase": "completed", "active": False, "gained": 5, "dug": 5, "requested": 64,
-                        "items": [{"item": "birch_log", "gained": 5}]}
-            if name == "resume_mining":
-                self.calls.append((name, args))
-                assert self.cleared
-                self.resumed = True
-                return {"active": True, "id": "mine1"}
-            return await super().__call__(name, args)
-
-    game = TreeGame({"stone_pickaxe": 1, "cobblestone": 3})
-    worker, _flag, _records, _announces = _make_worker(game, item="auto")
-    outcome = await worker._work_one_stack()
-    assert game.gather_orders() == [{"block": "birch_log", "count": 64, "mode": "tree", "radius": 8,
-                                    "x": 13, "y": 65, "z": -5}]
-    assert outcome is not None and outcome.phase == "completed"
-    assert dict(outcome.items) == {"birch_log": 5, "cobblestone": 13}
-    assert await blocked_tree_order(game) is None
-
-
-@pytest.mark.asyncio
-async def test_shallow_mine_uses_exact_bottom_goal_instead_of_horizontal_near_goal() -> None:
-    calls: list[tuple[str, dict[str, Any]]] = []
-
-    async def call(name: str, args: dict[str, Any]) -> dict[str, Any]:
-        calls.append((name, args))
-        if name == "mining_status":
-            return {"entry": {"x": -38, "y": 66, "z": 6}, "direction": "north", "steps": 3,
-                    "depth": 3, "length": 0, "returned": True, "phase": "partial", "active": False}
-        if name == "get_state":
-            return {"position": {"x": -37.5, "y": 66, "z": 6.5}}
-        return {}
-
-    await approach_shallow_face(call)
-    assert calls[-1] == ("goto", {"goalType": "block", "x": -38, "y": 63, "z": 3, "timeout": 30000})
+        assert extension == {"direction": "east", "depth": 8, "length": 8, "minY": 55,
+                             "item": "cobblestone", "count": 13, "extend": False, "requireTorches": False}
+    extend_only_order = await stone_corridor_order(call, {"x": 0, "y": 63, "z": 0}, 13, 0, extend_only=True)
+    assert extend_only_order == (None if not extendable else extension)
 
 
 @pytest.mark.asyncio

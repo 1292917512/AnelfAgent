@@ -6,11 +6,14 @@
 import path from 'node:path'
 import { z } from 'zod'
 import { Vec3 } from 'vec3'
+import pathfinder from 'mineflayer-pathfinder'
 import safety from 'mineflayer/lib/anelf_mining/mining-safety.cjs'
 import tasks from 'mineflayer/lib/anelf_mining/mining-task.cjs'
 import stores from 'mineflayer/lib/anelf_mining/mining-store.cjs'
 import { ToolError } from '../util/errors.js'
 import { ActionController } from '../bot/anelf-actions.mjs'
+
+const { goals } = pathfinder
 
 /** @typedef {import('../context.js').ToolContext} Context */
 /** @typedef {import('./registry.js').Registrar} Registrar */
@@ -67,19 +70,69 @@ function resolveDirection (bot, value) {
 }
 
 /** @param {Context} ctx @param {z.infer<typeof options>} args */
+/** Highland floors of snow layers, dirt paths or slabs are not a stable
+ * mining entrance: the nearest standable full-block cell becomes the entry
+ * instead of refusing outright — a player simply steps aside and digs.
+ * @param {import('mineflayer').Bot} bot @returns {Promise<import('mineflayer').Bot['entity']['position']>}
+ */
+async function stableEntry (bot) {
+  const here = bot.entity.position.floored()
+  const fullCube = shapes => shapes != null && shapes.length === 1 &&
+    shapes[0].every((v, i) => v === [0, 0, 0, 1, 1, 1][i])
+  const clear = block => block == null || block.boundingBox !== 'block'
+  for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, -1], [1, -1], [-1, 1], [2, 0], [-2, 0], [0, 2], [0, -2], [0, 0]]) {
+    const cell = here.offset(dx, 0, dz)
+    let floor = bot.blockAt(cell.offset(0, -1, 0))
+    if (!floor || floor.boundingBox !== 'block') continue
+    if (!fullCube(floor.shapes)) {
+      // A thin cover (snow blanket) over stable ground: kick it aside from
+      // the current stand — never the block under the bot's own feet.
+      const beneath = bot.blockAt(cell.offset(0, -2, 0))
+      if (!beneath || beneath.boundingBox !== 'block' || !fullCube(beneath.shapes)) continue
+      if (cell.x === here.x && cell.z === here.z) continue
+      try { await bot.dig(floor) } catch { continue }
+      floor = bot.blockAt(cell.offset(0, -1, 0))
+      if (!floor || floor.boundingBox !== 'block' || !fullCube(floor.shapes)) continue
+    }
+    if (!clear(bot.blockAt(cell)) || !clear(bot.blockAt(cell.offset(0, 1, 0)))) continue
+    if (cell.x === here.x && cell.z === here.z) return here
+    try {
+      await bot.pathfinder.goto(new goals.GoalBlock(cell.x, cell.y, cell.z))
+    } catch { continue }
+    return bot.entity.position.floored()
+  }
+  return here
+}
+
 async function start (ctx, args) {
   const s = await session(ctx)
   if (s.task?.active || ctx.locks.isBusy()) throw new ToolError('BUSY', 'Stop the current action before starting another mine task.')
-  if (s.record && !s.record.returned) throw new ToolError('BUSY', 'The previous mine has not confirmed a return. Use return_from_mine or resume_mining before replacing its checkpoint.')
+  if (s.record && !s.record.returned) {
+    const entry = s.record.entry
+    const far = typeof s.bot.entity?.position?.distanceTo === 'function' && entry &&
+      s.bot.entity.position.distanceTo(new Vec3(entry.x, entry.y, entry.z)) > 32
+    if (far) {
+      // An unreturned corridor the bot has long left is abandoned terrain,
+      // not a lock: a fresh corridor may replace its checkpoint.
+      console.error('[anelf] abandoning unreturned mine', s.record.id, 'entry', JSON.stringify(entry))
+    } else {
+      throw new ToolError('BUSY', 'The previous mine has not confirmed a return. Use return_from_mine or resume_mining before replacing its checkpoint.')
+    }
+  }
   if (!s.bot.registry.itemsByName[args.item]) throw new ToolError('INVALID_ARGS', `Unknown inventory item: ${args.item}`)
   if (args.depth + args.length === 0) throw new ToolError('INVALID_ARGS', 'Specify a non-empty mine passage.')
   const directionValue = resolveDirection(s.bot, args.direction)
   const { extend: _extend, ...mineArgs } = args
   let record
   if (args.extend) {
-    if (!s.record || !s.record.returned || !(s.record.phase === 'completed' ||
-        (s.record.phase === 'partial' && s.record.steps === s.record.depth + s.record.length))) {
-      throw new ToolError('NOT_FOUND', 'No completed or fully excavated, returned mine corridor is available for extension.')
+    // Any returned terminal corridor continues: the task resumes digging
+    // from its persisted steps, so a stair that stopped halfway is progress
+    // kept, not a dead entrance the bot can never restart beside. A fully
+    // walked partial/completed corridor extends its horizontal run instead.
+    const walked = s.record.steps === s.record.depth + s.record.length
+    if (!s.record || !s.record.returned || !['completed', 'partial', 'blocked'].includes(s.record.phase) ||
+        !(s.record.steps < s.record.depth + s.record.length || (walked && s.record.phase !== 'blocked'))) {
+      throw new ToolError('NOT_FOUND', 'No returned mine corridor is available for continuation.')
     }
     if (directionValue !== s.record.direction) {
       throw new ToolError('FORBIDDEN', 'Mine extensions must keep the saved corridor direction.')
@@ -103,9 +156,13 @@ async function start (ctx, args) {
     record.route = s.record.route.map(p => ({ ...p }))
     record.steps = s.record.steps
   } else {
+    if (s.bot.pathfinder?.goto) await stableEntry(s.bot)
     record = tasks.newRecord(s.bot, { ...mineArgs, direction: directionValue }, s.world)
   }
-  if (s.record) {
+  if (args.extend && s.record) {
+    // Floor protection carries over only along the same corridor. A fresh
+    // corridor inherits nothing: floors accumulated by earlier failed
+    // attempts would poison its very first columns.
     const floors = [...s.record.protectedFloors, ...s.record.route.map(p => ({ ...p, y: p.y - 1 }))]
     record.protectedFloors = Array.from(new Map(floors.map(p => [safety.key(p), p])).values())
   }

@@ -4,7 +4,7 @@ const { randomUUID } = require('node:crypto')
 const { setTimeout: sleep, setImmediate: yieldFrame } = require('node:timers/promises')
 const { Vec3 } = require('vec3')
 const { Movements, goals } = require('mineflayer-pathfinder')
-const { MiningError, key, equipHarvestTool, protectFloor, restrictMovements } = require('./mining-safety.cjs')
+const { MiningError, key, digVerified, protectFloor, restrictMovements, naturalTerrain, itemCount } = require('./mining-safety.cjs')
 
 /** @typedef {import('mineflayer').Bot & {tool: import('mineflayer-tool').Tool}} Bot */
 /** @typedef {import('./mining-store.cjs').MineRecord} MineRecord */
@@ -13,10 +13,7 @@ const { MiningError, key, equipHarvestTool, protectFloor, restrictMovements } = 
  * events:{push:(type:string,data:unknown)=>unknown}}} Context */
 /** @typedef {{x:number,y:number,z:number}} Position */
 /** @typedef {{direction:MineRecord['direction'],depth:number,length:number,item:string,count:number,minY?:number,requireTorches?:boolean,stairWidth?:number}} MineOptions */
-const natural = new Set(['stone', 'deepslate', 'dirt', 'grass_block', 'granite', 'diorite', 'andesite', 'tuff',
-  'calcite', 'coal_ore', 'iron_ore', 'copper_ore', 'gold_ore', 'redstone_ore', 'lapis_ore', 'diamond_ore',
-  'emerald_ore', 'deepslate_coal_ore', 'deepslate_iron_ore', 'deepslate_copper_ore', 'deepslate_gold_ore',
-  'deepslate_redstone_ore', 'deepslate_lapis_ore', 'deepslate_diamond_ore', 'deepslate_emerald_ore'])
+const natural = naturalTerrain
 const air = new Set(['air', 'cave_air', 'void_air', 'torch', 'wall_torch'])
 const hazards = new Set(['water', 'lava', 'sand', 'red_sand', 'gravel', 'powder_snow', 'fire', 'soul_fire'])
 const directions = { north: [0, -1], south: [0, 1], east: [1, 0], west: [-1, 0] }
@@ -27,8 +24,10 @@ const directions = { north: [0, -1], south: [0, 1], east: [1, 0], west: [-1, 0] 
  * @param {import('prismarine-block').Block} block @returns {boolean}
  */
 function clearableLitter (block) {
-  return block.boundingBox === 'empty' &&
-    !/(?:^|_)sign$|item_frame|painting|(?:^|_)banner$/.test(block.name)
+  if (/(?:^|_)sign$|item_frame|painting|(?:^|_)banner$/.test(block.name)) return false
+  // Leaves are solid enough to stand on but they are foliage, not fabric:
+  // every other movement profile already clears them.
+  return block.boundingBox === 'empty' || /(?:^|_)leaves$/.test(block.name)
 }
 
 /** @param {Position} p */
@@ -73,10 +72,7 @@ function plan (record) {
   }
   return cells
 }
-/** @param {Bot} bot @param {string} item */
-function inventoryCount (bot, item) {
-  return bot.inventory.items().filter(i => i.name === item).reduce((total, i) => total + i.count, 0)
-}
+const inventoryCount = itemCount
 /** @param {Bot} bot @param {MineOptions} options @param {string} world @returns {MineRecord} */
 function newRecord (bot, options, world) {
   const entry = plain(bot.entity.position.floored())
@@ -194,8 +190,14 @@ class MineTask {
   /** @param {Position} p */
   inspectColumn (p) {
     const floor = this.block(vec(p).offset(0, -1, 0))
-    if (hazards.has(floor.name) || floor.boundingBox !== 'block' || floor.shapes.length !== 1 ||
-        floor.shapes[0].some((v, i) => v !== [0, 0, 0, 1, 1, 1][i])) {
+    const fullCube = shapes => shapes.length === 1 && shapes[0].every((v, i) => v === [0, 0, 0, 1, 1, 1][i])
+    const standable = floor.boundingBox === 'block' && (fullCube(floor.shapes) || (() => {
+      // A thin cover (snow blanket) over solid ground stands fine; the
+      // blanket stays as the corridor floor and the return path walks it.
+      const beneath = this.bot.blockAt(floor.position.offset(0, -1, 0))
+      return beneath != null && beneath.boundingBox === 'block' && fullCube(beneath.shapes)
+    })())
+    if (hazards.has(floor.name) || !standable) {
       throw new MiningError('MINING_UNSAFE_FLOOR', `No stable full-block floor at ${floor.position}; stop before the drop.`)
     }
     for (let y = 0; y < 4; y++) {
@@ -306,17 +308,11 @@ class MineTask {
       this.inspectColumn(p)
       const block = this.block(vec(p).offset(0, y, 0))
       if (air.has(block.name)) continue
-      await this.action(() => equipHarvestTool(this.bot, block))
-      const item = this.bot.heldItem
-      if (item) {
-        const maximum = this.bot.registry.itemsByName[item.name]?.maxDurability
-        if (maximum && maximum - item.durabilityUsed < 12) throw new MiningError('MINING_TOOL_LOW', 'Tool durability is low; keep a reserve and return for a replacement.')
-      }
-      await this.action(() => {
-        this.assertMiningHeight(p)
-        return this.bot.dig(block, true, 'raycast')
-      })
-      if (!air.has(this.block(block.position).name)) throw new MiningError('MINING_UNCONFIRMED', `Removal not confirmed at ${block.position}.`)
+      await this.action(() => digVerified(this.bot, block, {
+        watchdogMs: 20000,
+        // Re-assert after equipping: the bot can drift while the tool loads.
+        beforeDig: () => this.assertMiningHeight(p),
+      }))
       this.record.dug++
     }
     const route = [...this.record.route, plain(p)]

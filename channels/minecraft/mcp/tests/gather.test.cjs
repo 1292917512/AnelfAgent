@@ -1341,6 +1341,59 @@ test('a failed return still attempts its scaffold cleanup', async t => {
   assert.equal(cleanups, 1, 'The bounded dismantle runs before the return failure surfaces')
 })
 
+test('the chunk pit reserves its permanent ramp column', async t => {
+  const { task, world, execute } = await mixedScenario(t, {
+    soilName: 'grass_block',
+    soil: [[2, 64, 1], [2, 64, 2], [15, 63, 1]],
+    order: { count: 2, chunk: { x: 0, z: 0 } },
+  })
+  await execute()
+  assert.equal(task.phase, 'completed', task.reason)
+  // Depth 1 ramp cell at the east edge: (x0+15, entry.y-1, z0+1).
+  const ramp = world.getBlock(new Vec3(15, 63, 1))
+  assert.equal(ramp?.name, 'grass_block', 'The reserved ramp cell stays undug')
+  assert.equal(task.dug, 2)
+})
+
+test('a stone order runs the same engine loop end to end', async t => {
+  const { task, dugOrder, execute } = await mixedScenario(t, {
+    soil: [[1, 64, 0], [2, 64, 1]],
+    soilName: 'stone',
+    order: { block: 'stone', count: 2 },
+  })
+  await execute()
+  assert.equal(task.phase, 'completed', task.reason)
+  assert.deepEqual(dugOrder, ['stone@1,64,0', 'stone@2,64,1'],
+    'Stone and soil are one code path — only the target family differs')
+  assert.deepEqual(task.snapshot().items, [{ item: 'cobblestone', gained: 2, available: 2 }])
+})
+
+test('a below-entry dig without a walk-home route freezes the descent', async t => {
+  const { task, bot, nav, world } = await mixedScenario(t, {
+    soil: [[4, 63, 2]],
+    order: { count: 1, chunk: { x: 0, z: 0 } },
+  })
+  // Minimal dig support so the real collectOne runs: the fake pick-up ledger
+  // cannot book the drop, so the dig ends in NO_PICKUP after the iron rule.
+  delete task.collectOne
+  bot.tool = { equipForBlock: async () => {} }
+  bot.inventory.emptySlotCount = () => 36
+  bot.dig = async block => { world.setBlockStateId(block.position, 0) }
+  // Stand beside the below-entry soil so the real sightline checks pass.
+  bot.entity.position = new Vec3(3.5, 64, 1.5)
+  const { GatherNavigation } = await load('tools/anelf-gather-navigation.mjs')
+  const previous = GatherNavigation.prototype.reachableNoDig
+  GatherNavigation.prototype.reachableNoDig = async () => false
+  try {
+    await assert.rejects(task.collectOne(nav, new AbortController().signal), /GATHER_NO_PICKUP/)
+  } finally {
+    GatherNavigation.prototype.reachableNoDig = previous
+  }
+  assert.equal(task.descentFloor, Math.floor(bot.entity.position.y),
+    'The descent floor is pinned at the last verified level')
+  assert.match(task.reason, /GATHER_RETURN_UNVERIFIED/)
+})
+
 test('a deferred scaffold cleanup failure stays visible without failing the order', async t => {
   const { task, execute } = await mixedScenario(t, { soil: [[4, 64, 2]], order: { count: 1 } })
   const { GatherNavigation } = await load('tools/anelf-gather-navigation.mjs')

@@ -232,6 +232,35 @@ test('the escape profile keeps towers allowed and digging armed', () => {
   assert.equal(restricted.allow1by1towers, true, 'Pillar towers survive the safety wrapper')
   assert.equal(restricted.canDig, true, 'The escape may carve natural terrain')
   assert.ok(safety.naturalTerrain.has('dirt') && safety.naturalTerrain.has('stone'))
+  assert.ok(safety.naturalTerrain.has('oak_log') && safety.naturalTerrain.has('pale_oak_log'),
+    'Trunk logs are natural corridor material — one brain excavates them everywhere')
+})
+
+test('an unstable entrance floor steps aside to the nearest full-block cell', async t => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'anelf-entry-shift-'))
+  const previous = process.env.AWESOME_MINEFLAYER_MCP_HOME
+  process.env.AWESOME_MINEFLAYER_MCP_HOME = home
+  try {
+    const runtime = await import(pathToFileURL(path.join(root, 'node_modules/awesome-mineflayer-mcp/dist/tools/anelf-mining.mjs')).href)
+    const f = await fixture()
+    // Snow-layer floor under the bot, plain stone under the neighbour.
+    f.set(new Vec3(2, 29, 4), 'snow')
+    const defs = new Map()
+    runtime.registerMining(def => defs.set(def.name, def))
+    await defs.get('mine_resources').handler(
+      { direction: 'east', depth: 1, length: 0, count: 1, stairWidth: 1, requireTorches: false }, f.ctx)
+    let status
+    do {
+      await new Promise(resolve => setTimeout(resolve, 20))
+      status = await defs.get('mining_status').handler({}, f.ctx)
+    } while (status.active)
+    assert.equal(status.phase, 'completed', status.reason)
+    assert.notDeepEqual(status.entry, { x: 2, y: 30, z: 4 }, 'The entrance moved off the snow layer')
+  } finally {
+    if (previous === undefined) delete process.env.AWESOME_MINEFLAYER_MCP_HOME
+    else process.env.AWESOME_MINEFLAYER_MCP_HOME = previous
+    await fs.rm(home, { recursive: true, force: true })
+  }
 })
 
 for (const hazard of ['lava', 'water', 'gravel', 'sand', 'chest', 'bedrock']) {
