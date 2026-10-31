@@ -8,6 +8,7 @@ import { z } from 'zod'
 import { Vec3 } from 'vec3'
 import pathfinderPkg from 'mineflayer-pathfinder'
 import safety from 'mineflayer/lib/anelf_mining/mining-safety.cjs'
+import { appendScaffolds } from './anelf-gather-navigation.mjs'
 import { ActionController } from '../bot/anelf-actions.mjs'
 import { ToolError } from '../util/errors.js'
 
@@ -41,7 +42,9 @@ export function registerAscend (reg) {
       const bot = ctx.manager.requireBot()
       if (!(ctx.locks instanceof ActionController)) throw new ToolError('INTERNAL', 'Ascend requires the installed action controller.')
       const handle = ctx.locks.begin('ascend')
-      const promise = (async () => ascend(bot, handle.signal, args.targetY, args.targetX, args.targetZ))()
+      const report = ctx.manager.statusReport()
+      const world = JSON.stringify([report.host, report.port, bot.username, bot.game.dimension])
+      const promise = (async () => ascend(bot, handle.signal, args.targetY, args.targetX, args.targetZ, world))()
       promise.then(() => handle.release('completed', ''), error => {
         handle.release(error instanceof ToolError ? error.code : 'blocked', String(error?.message ?? error))
       }).catch(() => {})
@@ -49,9 +52,50 @@ export function registerAscend (reg) {
     } })
 }
 
+/** Record placements that still exist in the world so the persisted
+ * scaffold ledger owns their cleanup; blocks already consumed by the descent
+ * itself are skipped.
+ * @param {Bot} bot @param {string} [world] @param {{position:import('vec3').Vec3,type:number}[]} placed */
+async function ledgerPlacements (bot, world, placed) {
+  if (!world || !placed.length) return
+  const surviving = placed.filter(record => {
+    const block = bot.blockAt(record.position)
+    return block != null && block.boundingBox !== 'empty' && block.type === record.type
+  })
+  if (surviving.length) await appendScaffolds(world, surviving)
+}
+
 /** @param {Bot} bot @param {AbortSignal} signal @param {number} [targetY]
- * @param {number} [targetX] @param {number} [targetZ] */
-export async function ascend (bot, signal, targetY, targetX, targetZ) {
+ * @param {number} [targetX] @param {number} [targetZ] @param {string} [world] */
+export async function ascend (bot, signal, targetY, targetX, targetZ, world) {
+  /** Every block the escape places (pillar towers, breakout steps) joins the
+   * same cleanup ledger as gather scaffolds. @type {{position:import('vec3').Vec3,type:number}[]} */
+  const placedBlocks = []
+  const originalPlace = bot.placeBlock
+  if (typeof originalPlace === 'function') {
+    bot.placeBlock = async (reference, face) => {
+      const result = await originalPlace(reference, face)
+      try {
+        const at = reference.position.plus(face).floored()
+        const block = bot.blockAt(at)
+        if (block != null && block.boundingBox !== 'empty') {
+          placedBlocks.push({ position: at.clone(), type: block.type })
+        }
+      } catch { /* recording is best effort */ }
+      return result
+    }
+  }
+  try {
+    return await ascendInner(bot, signal, targetY, targetX, targetZ, world, placedBlocks)
+  } finally {
+    if (typeof originalPlace === 'function') bot.placeBlock = originalPlace
+  }
+}
+
+/** @param {Bot} bot @param {AbortSignal} signal @param {number} [targetY]
+ * @param {number} [targetX] @param {number} [targetZ] @param {string} [world]
+ * @param {{position:import('vec3').Vec3,type:number}[]} placedBlocks */
+async function ascendInner (bot, signal, targetY, targetX, targetZ, world, placedBlocks) {
   signal.throwIfAborted()
   const pathfinder = bot.pathfinder
   if (!pathfinder?.goto || typeof pathfinder?.setMovements !== 'function') {
@@ -131,6 +175,7 @@ export async function ascend (bot, signal, targetY, targetX, targetZ) {
     clearTimeout(timer)
   }
   const to = Math.floor(bot.entity.position.y)
+  await ledgerPlacements(bot, world, placedBlocks)
   return { completed: to >= maxY, from, to, rim, position: { x: bot.entity.position.x, y: to, z: bot.entity.position.z } }
 }
 
@@ -149,7 +194,9 @@ export function registerDescent (reg) {
       const bot = ctx.manager.requireBot()
       if (!(ctx.locks instanceof ActionController)) throw new ToolError('INTERNAL', 'Descent requires the installed action controller.')
       const handle = ctx.locks.begin('descend')
-      const promise = (async () => descend(bot, handle.signal, args.targetY))()
+      const report = ctx.manager.statusReport()
+      const world = JSON.stringify([report.host, report.port, bot.username, bot.game.dimension])
+      const promise = (async () => descend(bot, handle.signal, args.targetY, world))()
       promise.then(() => handle.release('completed', ''), error => {
         handle.release(error instanceof ToolError ? error.code : 'blocked', String(error?.message ?? error))
       }).catch(() => {})
@@ -157,8 +204,10 @@ export function registerDescent (reg) {
     } })
 }
 
-/** @param {Bot} bot @param {AbortSignal} signal @param {number} [targetY] */
-export async function descend (bot, signal, targetY) {
+/** @param {Bot} bot @param {AbortSignal} signal @param {number} [targetY] @param {string} [world] */
+export async function descend (bot, signal, targetY, world) {
+  /** @type {{position:import('vec3').Vec3,type:number}[]} */
+  const placedBlocks = []
   signal.throwIfAborted()
   const start = bot.entity.position.floored()
   /** First non-empty cell below the feet, skipping the immediate support:
@@ -205,6 +254,7 @@ export async function descend (bot, signal, targetY) {
     const feet = bot.entity.position.floored()
     if (targetY != null && feet.y <= targetY + 2) {
       // Target height reached: ordinary work can take it from here.
+      await ledgerPlacements(bot, world, placedBlocks)
       return { completed: true, fallen: fell, dug, from: start.y, to: feet.y,
         expectedDamage: 0, position: { x: feet.x, y: feet.y, z: feet.z } }
     }
@@ -216,6 +266,7 @@ export async function descend (bot, signal, targetY) {
       // standable cell. Without a target that is a complete descent; with an
       // unreachable target it is an honest refusal.
       if (targetY == null) {
+        await ledgerPlacements(bot, world, placedBlocks)
         return { completed: true, fallen: fell, dug, from: start.y, to: feet.y,
           expectedDamage: 0, position: { x: feet.x, y: feet.y, z: feet.z } }
       }
@@ -253,6 +304,7 @@ export async function descend (bot, signal, targetY) {
       signal.throwIfAborted()
       await bot.placeBlock(support, new Vec3(0, -1, 0))
       const bridged = bot.blockAt(feet.offset(0, -2, 0))
+      if (bridged?.boundingBox === 'block') placedBlocks.push({ position: bridged.position.clone(), type: bridged.type })
       if (!bridged || bridged.boundingBox !== 'block') {
         throw new ToolError('BRIDGE_FAILED', 'Placing the bridging block under the support was not confirmed.')
       }

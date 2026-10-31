@@ -1,5 +1,7 @@
 // Controlled descent policy: fall when survivable, dig only when lethal.
 const assert = require('node:assert/strict')
+const fs = require('node:fs/promises')
+const os = require('node:os')
 const { EventEmitter } = require('node:events')
 const { createRequire } = require('node:module')
 const path = require('node:path')
@@ -120,6 +122,68 @@ test('an edge stand finds its real support in a neighbouring cell', async () => 
   assert.equal(result.fallen, true)
   assert.equal(result.dug, 1)
   assert.equal(Math.floor(bot.entity.position.y), 65)
+})
+
+test('escape and descent placements join the scaffold cleanup ledger', async t => {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), 'anelf-escape-ledger-'))
+  const previous = process.env.AWESOME_MINEFLAYER_MCP_HOME
+  process.env.AWESOME_MINEFLAYER_MCP_HOME = home
+  const { ascend, descend } = await load('tools/anelf-descent-tools.mjs')
+  const { appendScaffolds } = await load('tools/anelf-gather-navigation.mjs')
+  const crypto = await import('node:crypto')
+  try {
+    // Ascend: the fake pathfinder places one pillar block through the wrapped
+    // bot.placeBlock; the record must land in the ledger file.
+    const solid = new Set(['0,63,0'])
+    const bot = new EventEmitter()
+    bot.entity = { position: new Vec3(0.5, 60, 0.5), onGround: true, velocity: new Vec3(0, 0, 0) }
+    bot.health = 20
+    bot.registry = deps('prismarine-registry')('26.1')
+    bot.inventory = { items: () => [{ name: 'dirt', count: 12, type: bot.registry.itemsByName.dirt.id }] }
+    bot.blockAt = p => ({ name: solid.has(`${p.x},${p.y},${p.z}`) ? 'stone' : 'air',
+      boundingBox: solid.has(`${p.x},${p.y},${p.z}`) ? 'block' : 'empty', type: 1,
+      position: new Vec3(p.x, p.y, p.z) })
+    const placed = []
+    bot.placeBlock = async (reference, face) => {
+      const at = reference.position.plus(face).floored()
+      solid.add(`${at.x},${at.y},${at.z}`)
+      placed.push(`${at.x},${at.y},${at.z}`)
+    }
+    bot.pathfinder = {
+      setMovements: () => {},
+      goto: async () => {
+        // Simulate pillaring three blocks under the bot.
+        for (const y of [60, 61, 62]) {
+          await bot.placeBlock({ position: new Vec3(0, y, 0) }, new Vec3(0, 1, 0))
+        }
+        bot.entity.position = new Vec3(0.5, 63, 0.5)
+      },
+      stop: () => {},
+    }
+    // Rim at y63 ring so the climb target is 63.
+    const result = await ascend(bot, new AbortController().signal, 63, undefined, undefined, '["t",1,"B","overworld"]')
+    assert.equal(result.completed, true)
+    assert.equal(placed.length, 3)
+    const key = crypto.createHash('sha256').update('["t",1,"B","overworld"]').digest('hex')
+    const ledger = JSON.parse(await fs.readFile(path.join(home, 'scaffolds', `${key}.json`), 'utf8'))
+    assert.equal(ledger.scaffolds.length, 3, 'Every pillar block joins the cleanup ledger')
+
+    // Descend bridge: a shaft with one bridging placement records it too.
+    const column = new Map([[69, 'oak_leaves'], [25, 'stone']])
+    const bot2 = descentBot({ feetY: 70, column })
+    bot2.placeBlock = async (reference, face) => {
+      const at = reference.position.plus(face).floored()
+      column.set(Math.floor(at.y), 'dirt')
+    }
+    await descend(bot2, new AbortController().signal, 30, '["t",1,"B","overworld"]')
+    const ledger2 = JSON.parse(await fs.readFile(path.join(home, 'scaffolds', `${key}.json`), 'utf8'))
+    assert.equal(ledger2.scaffolds.length, 3,
+      'Descent bridges self-consume on the way down; nothing is left behind to ledger')
+  } finally {
+    if (previous === undefined) delete process.env.AWESOME_MINEFLAYER_MCP_HOME
+    else process.env.AWESOME_MINEFLAYER_MCP_HOME = previous
+    await fs.rm(home, { recursive: true, force: true })
+  }
 })
 
 test('a fluid hazard above the pool floor is never fallen through', async () => {

@@ -18,6 +18,32 @@ const routeModes = /** @type {const} */ (['leaf', 'high', 'scaffold'])
 export const scaffoldHeight = 16
 /** @typedef {{position:Vec3,type:number,entry?:{x:number,y:number,z:number}}} Support */
 
+/** Append placement records to the persisted scaffold ledger for a world,
+ * merging with any existing records: escape pillars (ascend), descent
+ * bridges and gather scaffolds share one cleanup contract — the next task
+ * near them restores and dismantles them.
+ * @param {string} world @param {{position:{x:number,y:number,z:number},type:number}[]} records */
+export async function appendScaffolds (world, records) {
+  if (!world || !records.length) return
+  const root = process.env.AWESOME_MINEFLAYER_MCP_HOME || path.resolve('state')
+  const key = createHash('sha256').update(world).digest('hex')
+  const file = path.join(root, 'scaffolds', `${key}.json`)
+  let value = { version: 1, world, scaffolds: [] }
+  try {
+    value = JSON.parse(await fs.readFile(file, 'utf8'))
+  } catch { /* a fresh ledger */ }
+  const known = new Map((value.scaffolds ?? []).map(record => [`${record.position.x},${record.position.y},${record.position.z}`, record]))
+  for (const record of records) {
+    known.set(`${record.position.x},${record.position.y},${record.position.z}`,
+      { position: record.position, type: record.type, entry: record.position })
+  }
+  value.scaffolds = [...known.values()]
+  await fs.mkdir(path.dirname(file), { recursive: true })
+  const temporary = `${file}.tmp`
+  await fs.writeFile(temporary, JSON.stringify(value), 'utf8')
+  await fs.rename(temporary, file)
+}
+
 /** @param {unknown} name */
 export function isLeafBlockName (name) {
   return typeof name === 'string' && /^[a-z0-9]+(?:_[a-z0-9]+)*_leaves$/.test(name)
