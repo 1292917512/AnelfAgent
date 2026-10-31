@@ -169,3 +169,57 @@ class TestFoldService:
             scope_id=_SCOPE[1], from_message_id=ids[0])
         assert await ChatService().restore_conversation_fold(result["fold_id"]) is True
         assert await sqlite.list_conversation_folds(*_SCOPE) == []
+
+
+class TestRefoldLegalBreak:
+    """换向折叠/恢复向 PrefixGuard 登记 refold 合法断裂。
+
+    折叠与恢复都会原位改写 conversation 层（历史段替换/还原），不登记会被
+    误报为前缀断裂；登记 scope 必须与 LLM 调用的 entity_scope 一致。
+    """
+
+    def _runtime(self, sqlite, monkeypatch) -> None:
+        import services.chat as chat_mod
+
+        async def _summarize(prompt: str) -> str:
+            return "换方向前的尝试摘要"
+
+        rt = SimpleNamespace(
+            data_center=SimpleNamespace(sqlite=sqlite),
+            mind=SimpleNamespace(model_invoker=SimpleNamespace(summarize_text=_summarize)),
+        )
+        monkeypatch.setattr(chat_mod, "get_runtime", lambda: rt)
+        monkeypatch.setattr(chat_mod, "is_ready", lambda: True)
+
+    async def test_fold_and_restore_register_legal_break(self, sqlite, monkeypatch) -> None:
+        from agent.context import prefix_guard as pg_mod
+        from services.chat import ChatService
+
+        self._runtime(sqlite, monkeypatch)
+        ids = await _seed(sqlite, ["u1", "a1", "u2"])
+        calls: list = []
+        monkeypatch.setattr(
+            pg_mod.prefix_guard, "note_legal_break",
+            lambda scope, reason: calls.append((scope, reason)),
+        )
+
+        result = await ChatService().fold_conversation(
+            scope_id=_SCOPE[1], from_message_id=ids[0])
+        # scope 与 entity_scope 同构（user_ 前缀 + adapter:base#session）
+        assert calls == [("user_webui:web_user#c1", "refold")]
+
+        assert await ChatService().restore_conversation_fold(result["fold_id"]) is True
+        assert calls == [("user_webui:web_user#c1", "refold")] * 2
+
+    async def test_restore_unknown_fold_no_registration(self, sqlite, monkeypatch) -> None:
+        from agent.context import prefix_guard as pg_mod
+        from services.chat import ChatService
+
+        self._runtime(sqlite, monkeypatch)
+        calls: list = []
+        monkeypatch.setattr(
+            pg_mod.prefix_guard, "note_legal_break",
+            lambda scope, reason: calls.append((scope, reason)),
+        )
+        assert await ChatService().restore_conversation_fold(999999) is False
+        assert calls == []

@@ -228,6 +228,14 @@ _TOOL_GATE_CONFIGS = {
             "advanced": True,
             "unit": "轮",
         },
+        "tool_sleep_groups": {
+            "description": (
+                "配置驱动沉睡的工具分组名单（逗号分隔）：名单内分组默认沉睡"
+                "（目录仅展示简介，activate_tool_group 按需唤醒），用于收缩 wire 工具"
+                " schema 体量；带 always 标签的工具不受影响"
+            ),
+            "default": "",
+        },
     },
 }
 

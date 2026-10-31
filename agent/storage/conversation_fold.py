@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections import OrderedDict, deque
 from typing import TYPE_CHECKING, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from core.latebind import LateBinding
@@ -42,6 +43,12 @@ if TYPE_CHECKING:
 
 # 折叠失败后的重试退避（秒）：避免 LLM 故障时每条消息都重试
 _FAILURE_BACKOFF = 60.0
+
+# 折叠风暴观测：同 scope 短窗内高频成功折叠意味着消息速率与窗口参数失配
+# 或上游异常（实测事故日 4 分钟 7 折伴随缓存前缀连环重写），仅告警不阻断
+_FOLD_STORM_WINDOW = 600.0
+_FOLD_STORM_THRESHOLD = 5
+_STORM_SCOPE_CAP = 256
 
 # DB 段看门狗（秒）：sqlite 读写无自身超时，短护栏防锁等待悬挂占用 scope 锁
 _DB_OP_TIMEOUT = 60.0
@@ -164,6 +171,9 @@ class ConversationFolder:
         self._tasks: set[asyncio.Task[None]] = set()
         self._scheduled: set[str] = set()
         self._closing = False
+        # 折叠风暴观测：scope → 成功折叠时刻队列 / scope → 上次告警时刻
+        self._fold_success_times: "OrderedDict[str, deque[float]]" = OrderedDict()
+        self._fold_storm_warned: Dict[str, float] = {}
         # 折后预热钩子（mind 层注册：用新前缀发一次轻调用写热缓存；
         # storage 层不反向依赖 mind，经注入解耦）
         self._prewarm_hook: Optional[Callable[[str, str], Awaitable[None]]] = None
@@ -368,21 +378,37 @@ class ConversationFolder:
                 tag="存储",
             )
             self._note_prefix_legal_break(scope_type, scope_id)
+            self._note_fold_success(scope_type, scope_id)
             self._dispatch_prewarm(scope_type, scope_id)
 
     @staticmethod
     def _note_prefix_legal_break(scope_type: str, scope_id: str) -> None:
-        """向 PrefixGuard 登记合法断裂：折叠重写摘要 = 已知的前缀重写，
-        折后首轮校验不误报断裂，快照/命中率列表可据因标识"折叠"，
-        与供应商侧波动区分（观测性登记，fail-open 不影响折叠主流程）。"""
-        try:
-            from agent.context.prefix_guard import prefix_guard
-            from agent.messages import build_entity_scope
-            adapter, _, base_id = scope_id.partition(":")
-            prefix_guard.note_legal_break(
-                build_entity_scope(scope_type, adapter, base_id), "fold")
-        except Exception:
-            pass
+        """向 PrefixGuard 登记折叠合法断裂（统一换算见 note_scope_legal_break）。"""
+        from agent.context.prefix_guard import note_scope_legal_break
+        note_scope_legal_break(scope_type, scope_id, "fold")
+
+    def _note_fold_success(self, scope_type: str, scope_id: str) -> None:
+        """记录一次成功折叠；同 scope 短窗高频折叠时 WARNING 一次（窗口内不重复）。"""
+        key = f"{scope_type}:{scope_id}"
+        now = time.monotonic()
+        q = self._fold_success_times.setdefault(key, deque())
+        q.append(now)
+        while q and now - q[0] > _FOLD_STORM_WINDOW:
+            q.popleft()
+        self._fold_success_times.move_to_end(key)
+        while len(self._fold_success_times) > _STORM_SCOPE_CAP:
+            oldest_key, _ = self._fold_success_times.popitem(last=False)
+            self._fold_storm_warned.pop(oldest_key, None)
+        if len(q) < _FOLD_STORM_THRESHOLD:
+            return
+        if now - self._fold_storm_warned.get(key, 0.0) < _FOLD_STORM_WINDOW:
+            return
+        self._fold_storm_warned[key] = now
+        log(
+            f"折叠风暴告警: {key} 在 {_FOLD_STORM_WINDOW / 60:.0f} 分钟内成功折叠 {len(q)} 次"
+            "——检查消息速率与窗口参数（每次折叠都会重写缓存前缀）",
+            "WARNING", tag="存储",
+        )
 
     def _dispatch_prewarm(self, scope_type: str, scope_id: str) -> None:
         """折叠成功后异步预热新前缀（把缓存断点代价转移到空闲后台）。"""

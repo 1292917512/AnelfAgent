@@ -88,6 +88,60 @@ class TestPrewarmHook:
             ConfigManager.set("conversation_fold_prewarm", True)
 
 
+class TestFoldStorm:
+    """折叠风暴观测：短窗高频成功折叠 WARNING 一次，风暴窗口内不重复。"""
+
+    def test_storm_warns_once_per_window(self, monkeypatch) -> None:
+        fake = {"t": 1000.0}
+        monkeypatch.setattr(
+            conversation_fold, "time",
+            SimpleNamespace(monotonic=lambda: fake["t"]),
+        )
+        logs: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            conversation_fold, "log",
+            lambda msg, level="INFO", tag="": logs.append((level, msg)),
+        )
+        folder = ConversationFolder()
+        for _ in range(4):  # 阈值之下不告警
+            folder._note_fold_success("user", "storm:1")
+            fake["t"] += 30.0
+        assert not logs
+        folder._note_fold_success("user", "storm:1")  # 第 5 次触发
+        assert len(logs) == 1 and logs[0][0] == "WARNING"
+        fake["t"] += 60.0
+        folder._note_fold_success("user", "storm:1")  # 窗口内不重复
+        assert len(logs) == 1
+        fake["t"] += conversation_fold._FOLD_STORM_WINDOW + 1  # 出窗清队后需重新攒满阈值
+        for _ in range(4):
+            folder._note_fold_success("user", "storm:1")
+        assert len(logs) == 1
+        folder._note_fold_success("user", "storm:1")
+        assert len(logs) == 2
+
+    async def test_fold_success_recorded(self, conv_data, monkeypatch) -> None:
+        """成功折叠计入风暴观测状态。"""
+        monkeypatch.setattr(conversation_fold, "raw_min_messages", lambda: 2)
+        monkeypatch.setattr(conversation_fold, "fold_hysteresis", lambda: 0)
+        calls: list[tuple[str, str]] = []
+        monkeypatch.setattr(
+            ConversationFolder, "_note_fold_success",
+            lambda self, st, sid: calls.append((st, sid)),
+        )
+        async def fake_summarizer(prompt: str) -> str:
+            return "摘要"
+
+        monkeypatch.setattr(
+            ConversationFolder, "_resolve_summarizer",
+            staticmethod(lambda: asyncio.sleep(0, result=fake_summarizer)),
+        )
+        await _append(conv_data, [f"s{i}" for i in range(6)])
+        folder = ConversationFolder()
+        await folder._fold(conv_data, "user", "1", [("user", "1")], {})
+        await asyncio.sleep(0)
+        assert calls == [("user", "1")]
+
+
 class TestIdleSweep:
     def _engine(self, conv_data) -> object:
         from agent.heartbeat.engine import HeartbeatEngine

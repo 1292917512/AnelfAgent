@@ -218,5 +218,20 @@ class PrefixGuard:
         }
 
 
+def note_scope_legal_break(scope_type: str, scope_id: str, reason: str) -> None:
+    """按存储层 (scope_type, scope_id) 登记合法断裂（fold/compress/refold 共用）。
+
+    换算为与 LLM 调用一致的 entity_scope 后登记；观测性登记 fail-open，
+    任何异常静默吞掉，不影响调用方主流程。
+    """
+    try:
+        from agent.messages import build_entity_scope
+        adapter, _, base_id = scope_id.partition(":")
+        prefix_guard.note_legal_break(
+            build_entity_scope(scope_type, adapter, base_id), reason)
+    except Exception:
+        pass
+
+
 # 全局单例
 prefix_guard = PrefixGuard()

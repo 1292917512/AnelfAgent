@@ -795,6 +795,21 @@ class SqliteBackend:
             for r in await cursor.fetchall()
         ]
 
+    async def fetch_conversation_fold(self, fold_id: int) -> Optional[dict]:
+        """按 id 取折叠段行（scope 归属查询，恢复路径登记合法断裂用）。"""
+        db = await self._get_db()
+        cursor = await db.execute(
+            "SELECT id, scope_type, scope_id, active FROM conversation_folds WHERE id=?",
+            (int(fold_id),),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        return {
+            "id": int(row[0]), "scope_type": row[1] or "user",
+            "scope_id": row[2] or "", "active": bool(row[3]),
+        }
+
     async def deactivate_conversation_fold(self, fold_id: int) -> bool:
         """恢复折叠段（active=0，消息重新进入上下文），返回是否有行被更新。"""
         async with self._write_tx() as db:

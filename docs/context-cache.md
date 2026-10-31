@@ -12,9 +12,9 @@ LLM 前缀缓存命中率是本项目的核心成本/性能指标。缓存工程
    快照 section 哈希 diff + **PrefixGuard 运行时哈希链**（records.jsonl 的 `prefix_drift` 字段定位
    首个断裂消息）
 2. **供应商缓存行为**（不可控）：磁盘缓存传播延迟/驱逐/节点亲和。判读特征 = prefix_stable=True 而
-   read 浮动、1~2 轮自愈（「平台波动」）。**合法断裂单独标识**：折叠/压缩是已知的前缀整体重写，
-   完成点经 `prefix_guard.note_legal_break(scope, reason)` 登记（fold/compress）——清空该 scope
-   全部基线，并在 120s 窗口内让快照记录携带 `legal_break`，与「平台波动」区分
+   read 浮动、1~2 轮自愈（「平台波动」）。**合法断裂单独标识**：折叠/压缩/换向折叠是已知的前缀
+   整体重写，完成点经 `prefix_guard.note_legal_break(scope, reason)` 登记（fold/compress/refold）
+   ——清空该 scope 全部基线，并在 120s 窗口内让快照记录携带 `legal_break`，与「平台波动」区分
 3. **统计与展示口径**：kind 分桶 / age_sec 回声 / unobservable / 单次钳制率平均；缓存命中率使用
    归一化的 `cache_read / total_input_tokens`，不把不同供应商是否把缓存读写计入 prompt 的口径混算
 

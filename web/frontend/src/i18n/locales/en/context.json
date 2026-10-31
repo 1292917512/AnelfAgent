@@ -34,11 +34,13 @@
     "jitterDesc": "Prefix bytes unchanged but hit dropped — provider-side cache write propagation delay/jitter; self-recovers in 1-2 rounds, no action needed",
     "legalBreak": {
       "fold": "folded",
-      "compress": "compacted"
+      "compress": "compacted",
+      "refold": "redirected"
     },
     "legalBreakDesc": {
       "fold": "Conversation fold just rewrote the summary prefix — low hit on the first post-fold round is expected and self-recovers next round",
-      "compress": "Context compaction just rewrote the prefix — low hit on the first post-compaction round is expected and self-recovers next round"
+      "compress": "Context compaction just rewrote the prefix — low hit on the first post-compaction round is expected and self-recovers next round",
+      "refold": "Direction-change fold just rewrote the history segment in place — low hit on the first post-fold round is expected and self-recovers next round"
     }
   },
   "providers": {

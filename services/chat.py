@@ -398,6 +398,8 @@ class ChatService:
             summary=summary, folded_count=len(foldable),
         )
         log(f"会话 {scope} 换向折叠 #{fold_id}：{len(foldable)} 条消息", tag="聊天")
+        from agent.context.prefix_guard import note_scope_legal_break
+        note_scope_legal_break("user", scope, "refold")
         return {"fold_id": fold_id, "folded_count": len(foldable), "summary": summary}
 
     async def restore_conversation_fold(self, fold_id: int) -> bool:
@@ -405,7 +407,15 @@ class ChatService:
         rt = get_runtime()
         if rt is None or not is_ready():
             raise RuntimeError("服务尚未就绪")
-        return await rt.data_center.sqlite.deactivate_conversation_fold(fold_id)
+        sqlite = rt.data_center.sqlite
+        fold = await sqlite.fetch_conversation_fold(fold_id)
+        if fold is None:
+            return False
+        ok = await sqlite.deactivate_conversation_fold(fold_id)
+        if ok:
+            from agent.context.prefix_guard import note_scope_legal_break
+            note_scope_legal_break(fold["scope_type"], fold["scope_id"], "refold")
+        return ok
 
     async def list_conversation_folds(self, *, scope_id: str) -> List[Dict[str, Any]]:
         """列出该会话生效中的折叠段（前端折叠 chip 渲染数据源）。"""

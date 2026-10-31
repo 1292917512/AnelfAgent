@@ -511,6 +511,20 @@ _JSON_ERROR_PREVIEW_LEN = 200
 # 实体目录中未注册排序权重分组的兜底权重（按字母序排在已注册分组之后）
 _UNREGISTERED_GROUP_WEIGHT = 1000
 
+# 配置名单（tool_sleep_groups）强制沉睡分组的通用简介文案
+_CONFIG_SLEEP_BRIEF = "低频工具分组，默认沉睡；需要时 activate_tool_group 唤醒"
+
+
+def _sleep_groups_config_raw() -> str:
+    """读取 tool_sleep_groups 原始配置串（空 = 未启用名单）。"""
+    from core.config import get_config
+    return str(get_config("tool_sleep_groups", "") or "")
+
+
+def _configured_sleep_groups(config_raw: str) -> set:
+    """解析名单配置串为分组集合（逗号分隔，去空白）。"""
+    return {g.strip() for g in config_raw.split(",") if g.strip()}
+
 
 # ======================================================================
 # EntityRegistry —— 中央注册枢纽
@@ -567,6 +581,8 @@ class EntityRegistry:
     _tag_index_cache: Optional[Dict[str, List[str]]] = None
     _catalog_cache: Optional[List[Dict[str, Any]]] = None
     _sleepable_cache: Optional[Dict[str, Dict[str, Any]]] = None
+    # 沉睡分组缓存对应的名单配置串（tool_sleep_groups）；配置热变更时重算
+    _sleepable_cache_config: str = ""
     _schema_cache: Dict[str, Dict[str, Any]] = {}
     # 写操作（注册/注销/启停/版本递增）互斥锁；读路径不加锁保持高性能
     _lock = threading.RLock()
@@ -584,6 +600,7 @@ class EntityRegistry:
             cls._tag_index_cache = None
             cls._catalog_cache = None
             cls._sleepable_cache = None
+            cls._sleepable_cache_config = ""
             cls._schema_cache.clear()
 
     @classmethod
@@ -1046,20 +1063,42 @@ class EntityRegistry:
         """返回可沉睡的工具分组信息 {group: {"brief": ..., "tool_count": ...}}。
 
         分组内任一工具声明 allow_sleep=True 且带 sleep_brief 时，
-        该分组视为可沉睡分组，沉睡期间以 brief 代替完整 schema 展示。
-        结果按注册表版本缓存，返回拷贝供调用方安全使用。
+        该分组视为可沉睡分组，沉睡期间以 brief 代替完整 schema 展示；
+        配置名单 tool_sleep_groups 内的分组同样视为可沉睡（always 标签
+        工具除外），brief 取通用文案。结果按注册表版本 + 名单配置串缓存，
+        返回拷贝供调用方安全使用。
         """
-        if cls._sleepable_cache is None:
+        config_raw = _sleep_groups_config_raw()
+        if cls._sleepable_cache is None or cls._sleepable_cache_config != config_raw:
+            config_groups = _configured_sleep_groups(config_raw)
             result: Dict[str, Dict[str, Any]] = {}
             for e in cls._entities.values():
                 if e.entity_type != EntityType.TOOL or not e.enabled or not e.func:
                     continue
-                if not (e.allow_sleep and e.sleep_brief):
+                if not cls.is_sleepable(e, config_groups):
                     continue
-                entry = result.setdefault(e.group, {"brief": e.sleep_brief, "tool_count": 0})
+                brief = e.sleep_brief if (e.allow_sleep and e.sleep_brief) else _CONFIG_SLEEP_BRIEF
+                entry = result.setdefault(e.group, {"brief": brief, "tool_count": 0})
                 entry["tool_count"] += 1
             cls._sleepable_cache = result
+            cls._sleepable_cache_config = config_raw
         return {g: dict(info) for g, info in cls._sleepable_cache.items()}
+
+    @classmethod
+    def is_sleepable(cls, entity: EntityMetadata, config_groups: Optional[set] = None) -> bool:
+        """工具是否属于可沉睡分组（沉睡过滤与目录展示的单一判定源）。
+
+        代码声明 allow_sleep 优先；配置名单 tool_sleep_groups 强制沉睡的
+        分组中，always 标签工具豁免——回复必需工具不能被配置误沉睡。
+        config_groups 传入预解析名单（热路径复用，缺省自行读取配置）。
+        """
+        if entity.allow_sleep and entity.sleep_brief:
+            return True
+        if "always" in entity.tags:
+            return False
+        groups = config_groups if config_groups is not None else _configured_sleep_groups(
+            _sleep_groups_config_raw())
+        return entity.group in groups
 
     @classmethod
     def _get_tool_schema(cls, entity: EntityMetadata) -> Dict[str, Any]:

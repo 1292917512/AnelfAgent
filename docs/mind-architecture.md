@@ -303,7 +303,8 @@ exec_context 本轮执行状态（每轮全量重建）
 - **换向折叠**（web 域会话分支）：用户从某条消息换方向，其后消息段（id 区间）装配时过滤出上下文，
   原位插入含摘要的 system 标记（摘要走 `ModelInvoker.summarize_text`，失败降级确定性摘要）；DB 保留可
   检索（recall 不受影响）可恢复（active=0 即回）；过滤在 `_fetch_window_rows` 统一收口
-  （装配/压缩/折叠调度计数同口径）
+  （装配/压缩/折叠调度计数同口径）。折叠与恢复都会原位改写 conversation 层，经
+  `ChatService` 登记 `refold` 合法断裂（PrefixGuard 不误报，快照命中率按因归因）
 
 ## 四、工具集合如何形成
 
@@ -324,7 +325,9 @@ exec_context 本轮执行状态（每轮全量重建）
 1. **check_fn 门控**：工具声明的前置条件检查（30s TTL 缓存 + 60s 瞬态故障宽限），不通过则不出现在 schema
 2. **沉睡/激活**：`allow_sleep=True` + `sleep_brief` 的工具默认沉睡（目录中仅展示 brief），AI 调用
    `activate_tool_group` 唤醒，`deactivate_tool_group` 显式关闭（双向阀；关闭重构 tools 数组，缓存
-   前缀重写一次），按 scope 隔离、按轮次消耗
+   前缀重写一次），按 scope 隔离、按轮次消耗。配置名单 `tool_sleep_groups`（逗号分隔分组）可让
+   未声明 allow_sleep 的分组同样默认沉睡（always 标签工具豁免）——收缩 wire 工具 schema 体量的
+   配置面杠杆，判定单一来源 `EntityRegistry.is_sleepable`
 
 - 工具集合版本元组 = (assembly, activation, EntityRegistry.version())——热同步/reload/WebUI 开关等
   注册表增删后，**回复进行中**的下一轮即重建 active_tools；重建经追加式冻结保持前缀字节稳定

@@ -5,6 +5,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Dict, List
 
+import pytest
+
 from agent.context.compressor import ContextCompressor
 from agent.context.message_schema import normalize_for_send
 from agent.mind.execution.reply_finalize import _build_execution_summary
@@ -437,6 +439,78 @@ class TestMcpSleepPolicy:
         ConfigManager.set("mcp_sleep_excludes", "git, excel")
         assert not _mcp_sleep_enabled("git")
         assert _mcp_sleep_enabled("mind-map")
+
+
+class TestConfigSleepGroups:
+    """配置驱动沉睡名单（tool_sleep_groups）：
+
+    名单内分组默认沉睡（wire schema 移除、目录留简介），activate_tool_group
+    唤醒；always 标签工具豁免；名单热变更即时生效（缓存键含配置串）。
+    """
+
+    @pytest.fixture(autouse=True)
+    def _tools(self):
+        import core.tool_gate  # noqa: F401  确保配置项已注册
+        from core.config import ConfigManager
+        from core.entity import EntityRegistry
+
+        ConfigManager.initialize()
+        EntityRegistry.register_tool(name="cfg_plain", func=lambda: "ok", group="cfg_ent")
+        EntityRegistry.register_tool(
+            name="cfg_always", func=lambda: "ok", group="cfg_ent", tags=["always"])
+        EntityRegistry.register_tool(
+            name="cfg_other", func=lambda: "ok", group="cfg_free")
+        ConfigManager.set("tool_sleep_groups", "cfg_ent")
+        yield
+        ConfigManager.set("tool_sleep_groups", "")
+        for n in ("cfg_plain", "cfg_always", "cfg_other"):
+            EntityRegistry.unregister(n)
+
+    def test_group_listed_with_generic_brief(self) -> None:
+        from core.entity import _CONFIG_SLEEP_BRIEF, EntityRegistry
+
+        groups = EntityRegistry.get_sleepable_groups()
+        assert groups["cfg_ent"]["brief"] == _CONFIG_SLEEP_BRIEF
+        # always 工具豁免名单沉睡，不计入分组的沉睡工具数
+        assert groups["cfg_ent"]["tool_count"] == 1
+        assert "cfg_free" not in groups
+
+    def test_is_sleepable_semantics(self) -> None:
+        from core.entity import EntityRegistry
+
+        assert EntityRegistry.is_sleepable(EntityRegistry.get("cfg_plain"))
+        assert not EntityRegistry.is_sleepable(EntityRegistry.get("cfg_always"))
+        assert not EntityRegistry.is_sleepable(EntityRegistry.get("cfg_other"))
+
+    async def test_gate_sleeps_until_activated(self) -> None:
+        from agent.mind.tool_activation import tool_activation
+        from agent.mind.tool_assembly import ToolAssembly
+
+        scope = "t_cfg_sleep"
+        ta = ToolAssembly()
+        ta._tool_recall["cfg_plain"] = 5  # 热召回入口引入名单分组工具
+        try:
+            names = {s["function"]["name"] for s in await ta.get_active_tool_schemas(scope=scope)}
+            assert "cfg_always" in names   # always 入口进入且不被名单沉睡
+            assert "cfg_plain" not in names  # 名单分组默认沉睡
+            tool_activation.activate("cfg_ent", rounds=1, scope=scope)
+            woke = {s["function"]["name"] for s in await ta.get_active_tool_schemas(scope=scope)}
+            assert "cfg_plain" in woke     # 激活后唤醒（能力无损）
+        finally:
+            ta._tool_recall.pop("cfg_plain", None)
+            tool_activation.clear_scope(scope)
+
+    def test_config_change_invalidates_cache(self) -> None:
+        """名单热变更不依赖注册表版本也能重算（防目录过期）。"""
+        from core.config import ConfigManager
+        from core.entity import EntityRegistry
+
+        ConfigManager.set("tool_sleep_groups", "cfg_free")
+        groups = EntityRegistry.get_sleepable_groups()
+        assert "cfg_ent" not in groups
+        assert "cfg_free" in groups
+        ConfigManager.set("tool_sleep_groups", "cfg_ent")
+        assert "cfg_ent" in EntityRegistry.get_sleepable_groups()
 
 
 class TestStickyActivation:

@@ -552,10 +552,17 @@ class ToolAssembly:
 
     @staticmethod
     def _is_sleeping_tool(tool_name: str, sleepable_groups: dict, scope: str) -> bool:
-        """判断工具当前是否处于沉睡状态（可沉睡且所属分组未激活）。"""
+        """判断工具当前是否处于沉睡状态（可沉睡且所属分组未激活）。
+
+        sleepable_groups（get_sleepable_groups 产物，已含配置名单分组）做
+        组级快筛；组内细分（always 豁免/代码声明）走 EntityRegistry.is_sleepable
+        单一判定源，与目录展示、activate_tool_group 校验同源。
+        """
         from agent.mind.tool_activation import tool_activation
         entity = EntityRegistry.get(tool_name)
-        if entity is None or not (entity.allow_sleep and entity.sleep_brief):
+        if entity is None or entity.group not in sleepable_groups:
+            return False
+        if not EntityRegistry.is_sleepable(entity):
             return False
         return not tool_activation.is_active(entity.group, scope)
 
