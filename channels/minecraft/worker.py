@@ -40,7 +40,7 @@ from core.tool_context import tool_request
 from .judgment_gate import verdict_needed
 from .protocol import GATHER_ITEM_LABELS
 from .worker_crafting import prepare_pickaxe
-from .worker_mining import approach_shallow_face, blocked_tree_order, shallow_stone_order, start_stone_mining
+from .worker_mining import stone_corridor_order
 
 ToolCall = Callable[[str, dict[str, Any]], Awaitable[dict[str, Any]]]
 
@@ -55,6 +55,12 @@ _NO_TARGET_MARKER = "GATHER_NO_TARGET"
 _POSITION_FIGHT_MARKER = "GATHER_POSITION_FIGHT"
 # 支架路线无法确认（作业面不可达、无法立足延伸）：换区即可绕开，走 relocate 通道。
 _NO_ROUTE_MARKER = "GATHER_NO_ROUTE"
+# 矿口无稳定整块地板：脚下地形（自挖口/雪盖）不可开工，原地重试无意义，
+# 立即换区找新地面。
+_UNSTABLE_FLOOR_MARKER = "No stable full-block floor"
+# 返程通道被挡：通道上方常有正在枯萎的树不停掉叶（自己的挖掘切断了树干），
+# 清不胜清，该井口直接弃置换区。
+_RETURN_BLOCKED_MARKER = "Return passage obstructed"
 # 同因快速重复受阻的汇报抑制窗口：秒级失败循环只报首次，
 # 防止汇报旁路被放大成裁决轮 LLM 调用风暴（曾打到供应商 Token Plan 限流）。
 _RAPID_REBLOCK_SECONDS = 15.0
@@ -100,7 +106,8 @@ def _needs_relocate(reason: str) -> bool:
     """受阻原因是否指向「换区即可绕开」的环境性阻塞
     （无目标 / 位置拉锯 / 支架路线不可达）。"""
     return (_NO_TARGET_MARKER in reason or _POSITION_FIGHT_MARKER in reason
-            or _NO_ROUTE_MARKER in reason)
+            or _NO_ROUTE_MARKER in reason or _UNSTABLE_FLOOR_MARKER in reason
+            or _RETURN_BLOCKED_MARKER in reason)
 
 # 裁决快车道墙钟上限：供应商回退链整体卡死时兜底；健康链路数秒内返回，
 # 超时只发生在异常网络下，等价 continue（裁决是旁路，无回应不阻塞作业）。
@@ -353,45 +360,16 @@ class MinecraftWorker:
         stone_work = self._stone_work()
         stone_target = _WORK_GOAL_STONE if self._has_strong_pickaxe() else _STONE_UPGRADE_COST
         if stone_work:
-            obstacle = await blocked_tree_order(self._call)
-            if obstacle is not None:
-                clearing, target, mine_id = obstacle
-                await self._call("gather_resources", clearing)
-                trees = await self._watch_stack()
-                if trees.phase != "completed":
-                    return trees
-                actual = await self._call("get_block_at", target)
-                saved = await self._call("mining_status", {})
-                name = actual.get("name")
-                if not isinstance(name, str) or name.endswith("_log") or saved.get("id") != mine_id:
-                    return StackOutcome(phase="blocked", reason="MINING_TREE_NOT_CLEARED: 矿道原木仍在或任务已变更",
-                                        dug=trees.dug, gained=trees.gained, requested=trees.requested, items=trees.items)
-                await self._call("resume_mining", {})
-                mined = await self._watch_stack("mining_status")
-                gains = dict(trees.items)
-                for name, gained in mined.items:
-                    gains[name] = gains.get(name, 0) + gained
-                return StackOutcome(phase=mined.phase, reason=mined.reason, dug=trees.dug + mined.dug,
-                                    gained=trees.gained + mined.gained, requested=mined.requested,
-                                    items=tuple(gains.items()), entry=trees.entry)
-            opening = await shallow_stone_order(
+            # 统一脑的石头流：既定矿道延续优先（确定性几何目标，与表面
+            # 采集共用同一套安全与挖掘原语），其余交给引擎表面单——阻塞
+            # 原木、通道堵塞都由执行器按同一规则原生处理，不再有桥。
+            opening = await stone_corridor_order(
                 self._call, await self._entry_point(), min(self._stack_size(), stone_target - self._inv_stone),
-                extend_only=True,
+                self._relocate_heading, extend_only=True,
             )
             if opening is not None:
-                try:
-                    await start_stone_mining(self._call, opening)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    return StackOutcome(phase="blocked", reason=str(exc), dug=0, gained=0, requested=opening["count"])
+                await self._mine_call(opening)
                 return await self._watch_stack("mining_status")
-            try:
-                await asyncio.wait_for(approach_shallow_face(self._call), timeout=35)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                log(f"Minecraft 浅层采石面暂不可达: {exc}", "DEBUG", tag="Minecraft")
         entry = await self._entry_point()
         order: dict[str, Any] = {
             "block": "stone" if stone_work else self._item(),
@@ -416,15 +394,20 @@ class MinecraftWorker:
         await self._call("gather_resources", order)
         outcome = await self._watch_stack()
         if stone_work and outcome.phase == "blocked" and _NO_TARGET_MARKER in outcome.reason:
+            # 表面无石料（全被埋）：盲开浅走廊——石头总在几格之下，不依
+            # 赖先看见石头才敢下挖；方向轮换，与换区共用偏航计数。
             if not await self._wait_until_free() or not await self._refresh_inventory_goals():
                 return outcome
             missing = min(self._stack_size(), stone_target - self._inv_stone)
             if missing <= 0:
                 return outcome
-            opening = await shallow_stone_order(self._call, await self._entry_point(), missing)
-            if opening is not None:
+            opening = await stone_corridor_order(
+                self._call, await self._entry_point(), missing, self._relocate_heading,
+            )
+            if opening is not None and not opening.get("extend"):
+                self._relocate_heading += 1
                 try:
-                    await start_stone_mining(self._call, opening)
+                    await self._mine_call(opening)
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
@@ -533,10 +516,16 @@ class MinecraftWorker:
         # 站在树冠/悬空树叶上时四向寻路全是 NO_PATH，脚下的资源才是唯一
         # 可达的出路。探测列表按环距/块距排序，最近命中常是同层或更高，
         # 必须扫出真正低于脚下 3 格以上的目标，不能只看第一个。
-        below = next((target for target in await self._probe_targets(here)
-                      if target["y"] <= here["y"] - 3), None)
+        probe = await self._probe_targets(here)
+        below = next((target for target in probe if target["y"] <= here["y"] - 3), None)
         if below is not None and await self._descend(below["y"]):
             log(f"Minecraft 自主作业目标在下方 {here['y'] - below['y']} 格，受控下撤后重新探测", "INFO", tag="Minecraft")
+            return
+        # 目标明显在上方（坑底被困）：立柱上攀爬出——行进寻路不垫方块，
+        # 四向寻路在坑里必然 NO_PATH，垫脚塔是唯一出路。
+        above = next((target for target in probe if target["y"] >= here["y"] + 3), None)
+        if above is not None and await self._ascend(above["y"]):
+            log(f"Minecraft 自主作业目标在上方 {above['y'] - here['y']} 格，立柱上攀后重新探测", "INFO", tag="Minecraft")
             return
         if self._relocate_fails >= _RELOCATE_FAIL_ESCALATION:
             # 近距换区连续无产出：探测命中互相指向残破区内部，直接远程跳区
@@ -552,6 +541,16 @@ class MinecraftWorker:
                             f"({here['x'] + dx * distance}, {here['z'] + dz * distance}) 离开残破地带",
                             "INFO", tag="Minecraft")
                         return
+            # 四向寻路全败的最后手段：先垫柱爬出深坑；仍不行就朝当前轮换
+            # 方向「破壁走」——行进寻路不挖地，被挖烂的台地上只有允许挖
+            # 自然地形的逃生配置能走出去。
+            if await self._ascend():
+                log("Minecraft 自主作业四向跳区不可达，立柱上攀爬出深坑后重新探测", "INFO", tag="Minecraft")
+                return
+            dx, dz = _RELOCATE_DIRECTIONS[self._relocate_heading % len(_RELOCATE_DIRECTIONS)]
+            if await self._ascend(None, here["x"] + dx * _RELOCATE_DISTANCE, here["z"] + dz * _RELOCATE_DISTANCE):
+                log("Minecraft 自主作业四向跳区不可达，破壁走出被挖烂地带后重新探测", "INFO", tag="Minecraft")
+                return
             self._relocate_cooldown_until = self._clock() + _RELOCATE_FAIL_COOLDOWN_SECONDS
             log("Minecraft 自主作业残破地带四向跳区全部不可达，进入冷却", "WARNING", tag="Minecraft")
             await self._announce_cooldown("这一带的地形我走不出去也挖不动，先歇一会儿；带我到平缓些的地方我马上继续。")
@@ -589,6 +588,40 @@ class MinecraftWorker:
             await self._announce(text)
         except Exception as exc:
             log(f"Minecraft 自主作业冷却播报失败: {exc}", "DEBUG", tag="Minecraft")
+
+    async def _mine_call(self, order: dict[str, Any]) -> dict[str, Any]:
+        """下矿单；被「旧矿道未确认返程」拒绝时先走回入口解除占用再重试。"""
+        try:
+            return await self._call("mine_resources", order)
+        except Exception as exc:
+            if "has not confirmed a return" not in str(exc):
+                raise
+            log("Minecraft 自主作业上次矿道未确认返程，先走回入口解除占用", "INFO", tag="Minecraft")
+            try:
+                await asyncio.wait_for(self._call("return_from_mine", {}), timeout=90)
+            except Exception as inner:
+                raise RuntimeError(f"MINING_STUCK_UNRETURNED: 旧矿道无法返程 ({inner})") from exc
+            return await self._call("mine_resources", order)
+
+    async def _ascend(self, target_y: int | None = None, target_x: int | None = None,
+                      target_z: int | None = None) -> bool:
+        """逃生：垫柱爬出深坑，或带目标列「破壁走」穿过被挖烂的地带。"""
+        args: dict[str, Any] = {}
+        if target_y is not None:
+            args["targetY"] = int(target_y)
+        if target_x is not None and target_z is not None:
+            args["targetX"] = int(target_x)
+            args["targetZ"] = int(target_z)
+        try:
+            result = await asyncio.wait_for(self._call("ascend", args), timeout=120)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log(f"Minecraft 自主作业立柱上攀失败: {exc}", "DEBUG", tag="Minecraft")
+            return False
+        ok = bool(result.get("completed"))
+        log(f"Minecraft 自主作业立柱上攀: from={result.get('from')} to={result.get('to')}", "DEBUG", tag="Minecraft")
+        return ok
 
     async def _descend(self, target_y: int | None = None) -> bool:
         """受控下撤：优先掉血落地（不摔死），否则逐格垂直下挖到安全高度。"""
@@ -779,11 +812,14 @@ class MinecraftWorker:
 
     def _track_stuck_spot(self, outcome: StackOutcome) -> None:
         """同点位空手连败升级换区：失败原因可能轮换（NO_TARGET/寻路/挖掘中止），
-        按「原因」计数永远凑不齐，按「入口坐标 + 空手」计数才能跳出死点。"""
+        按「原因」计数永远凑不齐；按「入口邻域 + 空手」计数——表面单与走廊单
+        的入口会在同一片自挖地形上来回挪动，完全相等永远凑不齐阈值。"""
         entry = outcome.entry
         if entry is None:
             return
-        if entry == self._stuck_entry:
+        same_spot = (self._stuck_entry is not None
+                     and max(abs(entry[axis] - self._stuck_entry[axis]) for axis in range(3)) <= 8)
+        if same_spot:
             if outcome.gained == 0:
                 self._stuck_streak += 1
         else:
@@ -793,7 +829,7 @@ class MinecraftWorker:
             self._relocate_pending = True
             self._stuck_streak = 0
             self._relocate_fails += 1
-            log(f"Minecraft 自主作业同点位连续空手受阻 {entry}，主动换区离开死点", "INFO", tag="Minecraft")
+            log(f"Minecraft 自主作业同点位邻域连续空手受阻 {entry}，主动换区离开死点", "INFO", tag="Minecraft")
 
     def _spawn_report(self, report_line: str) -> None:
         """后台汇报：历史写入与裁决轮都不占用作业循环，失败不反噬作业。"""
@@ -821,6 +857,11 @@ class MinecraftWorker:
             raise
         except Exception as exc:
             log(f"Minecraft 自主作业汇报记录失败: {exc}", "DEBUG", tag="Minecraft")
+        if self._relocate_pending or self._clock() < self._relocate_cooldown_until:
+            # 换区自治已接管：换区类受阻是本循环自己处理的信号，此时让
+            # 模型裁决只会在自救中途收到 stop。事实已记录，跳过裁决轮。
+            log("Minecraft 自主作业换区自治中，跳过本轮裁决", "DEBUG", tag="Minecraft")
+            return
         await self._verdict_turn(report_line)
 
     async def _verdict_turn(self, report_line: str) -> None:

@@ -9,8 +9,9 @@ const position = z.object({ x: z.number().int(), y: z.number().int(), z: z.numbe
 const origin = z.object({ requestId: z.string(), scope: z.string(), actor: z.string(), delegationId: z.string(), worldId: z.string() }).passthrough().nullable().optional()
 const recordSchema = z.object({
   version: z.literal(1), id: z.string().uuid(), world: z.string(),
-  entry: position, route: z.array(position).min(1).max(65),
+  entry: position, route: z.array(position).min(1).max(96),
   protectedFloors: z.array(position).max(16384).default([]),
+  stairWidth: z.number().int().min(1).max(3).default(1),
   direction: z.enum(['north', 'south', 'east', 'west']),
   depth: z.number().int().min(0).max(16), length: z.number().int().min(0).max(32),
   requestedDepth: z.number().int().min(0).max(16).optional(), minY: z.number().int().optional(),

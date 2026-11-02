@@ -18,6 +18,32 @@ const routeModes = /** @type {const} */ (['leaf', 'high', 'scaffold'])
 export const scaffoldHeight = 16
 /** @typedef {{position:Vec3,type:number,entry?:{x:number,y:number,z:number}}} Support */
 
+/** Append placement records to the persisted scaffold ledger for a world,
+ * merging with any existing records: escape pillars (ascend), descent
+ * bridges and gather scaffolds share one cleanup contract — the next task
+ * near them restores and dismantles them.
+ * @param {string} world @param {{position:{x:number,y:number,z:number},type:number}[]} records */
+export async function appendScaffolds (world, records) {
+  if (!world || !records.length) return
+  const root = process.env.AWESOME_MINEFLAYER_MCP_HOME || path.resolve('state')
+  const key = createHash('sha256').update(world).digest('hex')
+  const file = path.join(root, 'scaffolds', `${key}.json`)
+  let value = { version: 1, world, scaffolds: [] }
+  try {
+    value = JSON.parse(await fs.readFile(file, 'utf8'))
+  } catch { /* a fresh ledger */ }
+  const known = new Map((value.scaffolds ?? []).map(record => [`${record.position.x},${record.position.y},${record.position.z}`, record]))
+  for (const record of records) {
+    known.set(`${record.position.x},${record.position.y},${record.position.z}`,
+      { position: record.position, type: record.type, entry: record.position })
+  }
+  value.scaffolds = [...known.values()]
+  await fs.mkdir(path.dirname(file), { recursive: true })
+  const temporary = `${file}.tmp`
+  await fs.writeFile(temporary, JSON.stringify(value), 'utf8')
+  await fs.rename(temporary, file)
+}
+
 /** @param {unknown} name */
 export function isLeafBlockName (name) {
   return typeof name === 'string' && /^[a-z0-9]+(?:_[a-z0-9]+)*_leaves$/.test(name)
@@ -118,6 +144,10 @@ export class GatherNavigation {
   constructor (bot, entry, signal, world = '', boundsCenter = null) {
     this.bot = bot; this.entry = entry; this.signal = signal; this.world = world
     this.boundsCenter = boundsCenter
+    /** Corridor bounds (deterministic cells, mine-preset style). While set,
+     * stands and route restrictions follow corridor membership instead of the
+     * altitude bands. @type {Map<string, {minY:number, maxY:number}> | null} */
+    this.corridor = null
     /** @type {Map<string,Support>} */
     this.scaffolds = new Map()
     /** @type {Map<string,Support>} */
@@ -184,7 +214,9 @@ export class GatherNavigation {
   safeRoutePoint (p, mode) {
     const point = new Vec3(p.x, p.y, p.z).floored()
     const anchor = this.boundsCenter
-    if (point.distanceTo(this.entry) > 16 && !(anchor && point.distanceTo(anchor) <= 12)) return false
+    if (this.corridor != null) {
+      if (!this.inCorridor(point)) return false
+    } else if (point.distanceTo(this.entry) > 16 && !(anchor && point.distanceTo(anchor) <= 12)) return false
     if (occupied(this.bot, point, true)) return false
     if (mode === 'scaffold' && point.y >= this.entry.y + 1 && point.y <= this.entry.y + scaffoldHeight) {
       const feet = this.bot.blockAt(point), head = this.bot.blockAt(point.offset(0, 1, 0))
@@ -211,8 +243,10 @@ export class GatherNavigation {
       safeStanding(this.bot, point) && !occupiedByNonPlayer(this.bot, point)
   }
 
-  /** @param {RouteMode} mode */
-  movements (mode = 'leaf') {
+  /** @param {RouteMode} mode @param {boolean} [noBand] skip the altitude-band
+   * restriction — used by the return iron rule, whose question is world
+   * shape ("can I walk home without changing anything"), not band policy. */
+  movements (mode = 'leaf', noBand = false) {
     const movement = new Movements(this.bot)
     movement.anelfGatherMode = mode
     if (mode === 'scaffold') {
@@ -224,7 +258,11 @@ export class GatherNavigation {
       if (!isLeafBlockName(name) && Number.isInteger(definition?.id)) movement.blocksCantBreak.add(definition.id)
     }
     movement.exclusionAreasStep.push(block => {
+      if (noBand) return 0
       const p = block.position
+      if (this.corridor != null) {
+        return this.inCorridor(p) || this.inCorridor(p.offset(0, -1, 0)) ? 0 : 100
+      }
       // mineflayer-pathfinder asks this hook about the floor, feet and head
       // blocks around a route point. Checking the queried block itself would
       // reject every otherwise valid point because its floor is one block low.
@@ -239,6 +277,51 @@ export class GatherNavigation {
       return allowed ? 0 : 100
     })
     return movement
+  }
+
+  /** Activate corridor bounds from deterministic cells (stairs/tunnels).
+   * @param {{x:number,y:number,z:number}[]} cells */
+  setCorridor (cells) {
+    /** @type {Map<string, {minY:number, maxY:number}>} */
+    const columns = new Map()
+    for (const cell of cells) {
+      const column = `${cell.x},${cell.z}`
+      const band = columns.get(column) ?? { minY: cell.y, maxY: cell.y }
+      band.minY = Math.min(band.minY, cell.y); band.maxY = Math.max(band.maxY, cell.y)
+      columns.set(column, band)
+    }
+    this.corridor = columns
+  }
+
+  clearCorridor () { this.corridor = null }
+
+  /** @param {Vec3} point */
+  inCorridor (point) {
+    const band = this.corridor?.get(`${point.x},${point.z}`)
+    return band != null && point.y >= band.minY && point.y <= band.maxY
+  }
+
+  /** The return iron rule as a primitive: a walking route that breaks
+   * nothing but leaves and places nothing. Every below-entry dig is only
+   * committed while such a route back exists — the mine invariant promoted
+   * to all work faces, replacing brain-specific guarantees.
+   * @param {Vec3} from @param {Vec3} to @param {RouteMode} mode
+   */
+  async reachableNoDig (from, to, mode = 'leaf') {
+    if (!this.safeRoutePoint(from, mode) || !this.safeRoutePoint(to, mode)) return false
+    const movement = this.movements(mode, true)
+    movement.canDig = false
+    movement.scafoldingBlocks = []
+    const search = this.bot.pathfinder.getPathFromTo(movement, from, new goals.GoalBlock(to.x, to.y, to.z), {
+      timeout: 1000, tickTimeout: 25, searchRadius: 32, optimizePath: false,
+    })
+    for (const { result } of search) {
+      this.signal.throwIfAborted()
+      if (String(result.status) === 'partial') { await yieldFrame(); continue }
+      return result.status === 'success' && result.path.every(p =>
+        this.safeRoutePoint(p, mode) && p.toBreak.every(broken => isLeafBlockName(broken.name)) && !p.toPlace.length)
+    }
+    return false
   }
 
   scaffoldingIds () {

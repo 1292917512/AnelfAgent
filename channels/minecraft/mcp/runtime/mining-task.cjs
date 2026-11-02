@@ -4,7 +4,7 @@ const { randomUUID } = require('node:crypto')
 const { setTimeout: sleep, setImmediate: yieldFrame } = require('node:timers/promises')
 const { Vec3 } = require('vec3')
 const { Movements, goals } = require('mineflayer-pathfinder')
-const { MiningError, key, equipHarvestTool, protectFloor, restrictMovements } = require('./mining-safety.cjs')
+const { MiningError, key, digVerified, protectFloor, restrictMovements, naturalTerrain, itemCount } = require('./mining-safety.cjs')
 
 /** @typedef {import('mineflayer').Bot & {tool: import('mineflayer-tool').Tool}} Bot */
 /** @typedef {import('./mining-store.cjs').MineRecord} MineRecord */
@@ -12,14 +12,23 @@ const { MiningError, key, equipHarvestTool, protectFloor, restrictMovements } = 
 /** @typedef {{locks:{begin:(name:string,onCancel:()=>void)=>{signal:AbortSignal,actionId?:string,origin?:MineRecord['origin'],release:(outcome?:MineRecord['phase'],reason?:string)=>void}},
  * events:{push:(type:string,data:unknown)=>unknown}}} Context */
 /** @typedef {{x:number,y:number,z:number}} Position */
-/** @typedef {{direction:MineRecord['direction'],depth:number,length:number,item:string,count:number,minY?:number,requireTorches?:boolean}} MineOptions */
-const natural = new Set(['stone', 'deepslate', 'dirt', 'grass_block', 'granite', 'diorite', 'andesite', 'tuff',
-  'calcite', 'coal_ore', 'iron_ore', 'copper_ore', 'gold_ore', 'redstone_ore', 'lapis_ore', 'diamond_ore',
-  'emerald_ore', 'deepslate_coal_ore', 'deepslate_iron_ore', 'deepslate_copper_ore', 'deepslate_gold_ore',
-  'deepslate_redstone_ore', 'deepslate_lapis_ore', 'deepslate_diamond_ore', 'deepslate_emerald_ore'])
+/** @typedef {{direction:MineRecord['direction'],depth:number,length:number,item:string,count:number,minY?:number,requireTorches?:boolean,stairWidth?:number}} MineOptions */
+const natural = naturalTerrain
 const air = new Set(['air', 'cave_air', 'void_air', 'torch', 'wall_torch'])
 const hazards = new Set(['water', 'lava', 'sand', 'red_sand', 'gravel', 'powder_snow', 'fire', 'soul_fire'])
 const directions = { north: [0, -1], south: [0, 1], east: [1, 0], west: [-1, 0] }
+
+/** Collision-less ground decoration (leaf litter, grass, petals) can never
+ * hide a building or container, so corridor planning clears it like air.
+ * Player markers — signs, item frames, paintings, banners — stay protected.
+ * @param {import('prismarine-block').Block} block @returns {boolean}
+ */
+function clearableLitter (block) {
+  if (/(?:^|_)sign$|item_frame|painting|(?:^|_)banner$/.test(block.name)) return false
+  // Leaves are solid enough to stand on but they are foliage, not fabric:
+  // every other movement profile already clears them.
+  return block.boundingBox === 'empty' || /(?:^|_)leaves$/.test(block.name)
+}
 
 /** @param {Position} p */
 function vec (p) { return new Vec3(p.x, p.y, p.z) }
@@ -39,14 +48,31 @@ function minimumMiningY (bot, requested) {
 /** @param {MineRecord} record @returns {Position[]} */
 function plan (record) {
   const [dx, dz] = directions[record.direction]
-  return Array.from({ length: record.depth + record.length + 1 }, (_, i) => ({
-    x: record.entry.x + dx * i, y: record.entry.y - Math.min(i, record.depth), z: record.entry.z + dz * i
-  }))
+  const perp = [-dz, dx]
+  // The staircase descent is a wide, walkable stair (stairWidth columns,
+  // persisted with the corridor); the flat run stays a single column. Each
+  // step sweeps its columns alternating direction, so the digger ends beside
+  // the next step's first column — digging across to the far side of an
+  // undug step would have no visible face.
+  const wide = record.stairWidth ?? 1
+  const cells = []
+  for (let i = 0; i <= record.depth + record.length; i++) {
+    const y = record.entry.y - Math.min(i, record.depth)
+    const x = record.entry.x + dx * i
+    const z = record.entry.z + dz * i
+    const sides = i <= record.depth && wide >= 3
+      ? (i === 0 ? [0, -1, 1] : i % 2 === 0 ? [-1, 0, 1] : [1, 0, -1])
+      : [0]
+    for (const side of sides) cells.push({ x: x + perp[0] * side, y, z: z + perp[1] * side })
+    if (i === record.depth && wide >= 3) {
+      // The sweep ends on a side column; re-visit the centre so the flat run
+      // starts digging straight ahead instead of across a corner.
+      cells.push({ x, y, z })
+    }
+  }
+  return cells
 }
-/** @param {Bot} bot @param {string} item */
-function inventoryCount (bot, item) {
-  return bot.inventory.items().filter(i => i.name === item).reduce((total, i) => total + i.count, 0)
-}
+const inventoryCount = itemCount
 /** @param {Bot} bot @param {MineOptions} options @param {string} world @returns {MineRecord} */
 function newRecord (bot, options, world) {
   const entry = plain(bot.entity.position.floored())
@@ -164,15 +190,21 @@ class MineTask {
   /** @param {Position} p */
   inspectColumn (p) {
     const floor = this.block(vec(p).offset(0, -1, 0))
-    if (hazards.has(floor.name) || floor.boundingBox !== 'block' || floor.shapes.length !== 1 ||
-        floor.shapes[0].some((v, i) => v !== [0, 0, 0, 1, 1, 1][i])) {
+    const fullCube = shapes => shapes.length === 1 && shapes[0].every((v, i) => v === [0, 0, 0, 1, 1, 1][i])
+    const standable = floor.boundingBox === 'block' && (fullCube(floor.shapes) || (() => {
+      // A thin cover (snow blanket) over solid ground stands fine; the
+      // blanket stays as the corridor floor and the return path walks it.
+      const beneath = this.bot.blockAt(floor.position.offset(0, -1, 0))
+      return beneath != null && beneath.boundingBox === 'block' && fullCube(beneath.shapes)
+    })())
+    if (hazards.has(floor.name) || !standable) {
       throw new MiningError('MINING_UNSAFE_FLOOR', `No stable full-block floor at ${floor.position}; stop before the drop.`)
     }
     for (let y = 0; y < 4; y++) {
       const at = vec(p).offset(0, y, 0)
       const block = this.block(at)
       if (hazards.has(block.name)) throw new MiningError('MINING_HAZARD', `Hazard ${block.name} at ${at}.`)
-      if (y < 3 && !air.has(block.name) && !natural.has(block.name)) {
+      if (y < 3 && !air.has(block.name) && !natural.has(block.name) && !clearableLitter(block)) {
         throw new MiningError('MINING_PROTECTED_BLOCK', `Unexpected ${block.name} at ${at}; do not excavate buildings or containers.`)
       }
       if (y < 3) {
@@ -192,7 +224,9 @@ class MineTask {
       this.inspectColumn(p)
       for (let y = 0; y < 3; y++) {
         const block = this.block(vec(p).offset(0, y, 0))
-        if (!air.has(block.name)) {
+        // Collision-less covers (leaf litter, ground plants) cannot block a
+        // walker; only solid blocks obstruct the passage.
+        if (!air.has(block.name) && block.boundingBox !== 'empty') {
           throw new MiningError('MINING_RETURN_BLOCKED', `Return passage obstructed by ${block.name} at ${key(block.position)}. Excavation stopped.`)
         }
       }
@@ -275,22 +309,27 @@ class MineTask {
       this.check()
       this.inspectColumn(p)
       const block = this.block(vec(p).offset(0, y, 0))
-      if (air.has(block.name)) continue
-      await this.action(() => equipHarvestTool(this.bot, block))
-      const item = this.bot.heldItem
-      if (item) {
-        const maximum = this.bot.registry.itemsByName[item.name]?.maxDurability
-        if (maximum && maximum - item.durabilityUsed < 12) throw new MiningError('MINING_TOOL_LOW', 'Tool durability is low; keep a reserve and return for a replacement.')
-      }
-      await this.action(() => {
-        this.assertMiningHeight(p)
-        return this.bot.dig(block, true, 'raycast')
-      })
-      if (!air.has(this.block(block.position).name)) throw new MiningError('MINING_UNCONFIRMED', `Removal not confirmed at ${block.position}.`)
+      // Collision-less covers neither block walking nor sight — digging them
+      // is pointless churn.
+      if (air.has(block.name) || block.boundingBox === 'empty') continue
+      await this.action(() => digVerified(this.bot, block, {
+        watchdogMs: 20000,
+        // Re-assert after equipping: the bot can drift while the tool loads.
+        beforeDig: () => this.assertMiningHeight(p),
+      }))
       this.record.dug++
     }
     const route = [...this.record.route, plain(p)]
-    await this.verifyPath(p, this.record.entry, route)
+    try {
+      await this.verifyPath(p, this.record.entry, route)
+    } catch (error) {
+      // Foliage drops into the opened passage behind the dig: clear it as
+      // bounded maintenance and re-verify once before surfacing the block.
+      const message = error instanceof Error ? error.message : String(error)
+      if (!/Return passage obstructed/.test(message)) throw error
+      await this.clearFoliageObstructions()
+      await this.verifyPath(p, this.record.entry, route)
+    }
     protectFloor(this.bot, vec(p).offset(0, -1, 0))
     // Save before moving: a disconnect during movement still retains the new safe step.
     this.record.route = route
@@ -300,6 +339,36 @@ class MineTask {
     await sleep(600, undefined, { signal: this.controller.signal })
     if (this.record.steps % 4 === 0 && (this.record.requireTorches !== false || inventoryCount(this.bot, 'torch') > 0)) await this.light()
     await this.checkpoint()
+  }
+
+  /** Leaves and leaf litter drop or grow into an opened corridor; the return
+   * rule never digs, so foliage inside the saved passage is cleared here as
+   * bounded maintenance before the route is validated. Nothing but foliage
+   * is ever touched.
+   */
+  async clearFoliageObstructions () {
+    let cleared = 0
+    for (const p of this.record.route) {
+      if (cleared >= 12) break
+      for (let y = 0; y < 3; y++) {
+        if (cleared >= 12) break
+        const at = vec(p).offset(0, y, 0)
+        const block = this.bot.blockAt(at)
+        // Only solid foliage (leaves) blocks a corridor; collision-less
+        // litter never needed clearing.
+        if (block == null || air.has(block.name) || block.boundingBox === 'empty' ||
+            !/(?:^|_)leaves$/.test(block.name)) continue
+        this.check()
+        try {
+          await digVerified(this.bot, block, { watchdogMs: 5000 })
+          cleared++
+        } catch (error) {
+          if (error instanceof MiningError && error.code === 'MINING_PROTECTED_FLOOR') throw error
+          break
+        }
+      }
+    }
+    if (cleared > 0) await this.checkpoint()
   }
 
   async light () {
@@ -317,6 +386,7 @@ class MineTask {
     this.returnRequested = true
     this.record.phase = 'returning'
     await this.checkpoint()
+    await this.clearFoliageObstructions()
     this.validateRoute(this.record.route)
     // Visit recorded steps, so the returned result is backed by actual traversal.
     let nearest = 0
@@ -367,7 +437,7 @@ class MineTask {
       }
       this.checkPause()
       await this.returnToEntry()
-      const complete = this.record.count === 0 ? this.record.steps === this.record.depth + this.record.length
+      const complete = this.record.count === 0 ? this.record.steps === plan(this.record).length - 1
         : this.record.steps >= this.record.depth && this.record.gained >= this.record.count
       this.record.phase = complete ? 'completed' : 'partial'
       this.record.reason = this.record.phase === 'partial' ? 'Passage limit or early return reached before collecting the requested inventory gain.' : ''

@@ -6,9 +6,13 @@
  */
 import { z } from 'zod'
 import { Vec3 } from 'vec3'
+import pathfinderPkg from 'mineflayer-pathfinder'
 import safety from 'mineflayer/lib/anelf_mining/mining-safety.cjs'
+import { appendScaffolds } from './anelf-gather-navigation.mjs'
 import { ActionController } from '../bot/anelf-actions.mjs'
 import { ToolError } from '../util/errors.js'
+
+const { Movements, goals } = pathfinderPkg
 
 /** @typedef {import('mineflayer').Bot} Bot */
 
@@ -27,6 +31,155 @@ function fallDamage (blocks, landing) {
 }
 
 /** @param {import('./registry.js').Registrar} reg */
+export function registerAscend (reg) {
+  reg({ name: 'ascend', group: 'movement',
+    description: 'Autonomous routine only: escape dug terrain. With targetY, pillar up on carried dirt or cobblestone. With targetX/targetZ, break-out walk to that column — carving through natural terrain only, placing scaffold blocks where a step needs one; buildings, containers and floor protection stay untouchable. Every placed block is verified.',
+    inputSchema: { targetY: z.number().int().optional(),
+      targetX: z.number().int().optional().describe('Break-out walk target column; requires targetZ.'),
+      targetZ: z.number().int().optional().describe('Break-out walk target column; requires targetX.') },
+    annotations: { title: 'Escape dug terrain' },
+    handler: (args, ctx) => {
+      const bot = ctx.manager.requireBot()
+      if (!(ctx.locks instanceof ActionController)) throw new ToolError('INTERNAL', 'Ascend requires the installed action controller.')
+      const handle = ctx.locks.begin('ascend')
+      const report = ctx.manager.statusReport()
+      const world = JSON.stringify([report.host, report.port, bot.username, bot.game.dimension])
+      const promise = (async () => ascend(bot, handle.signal, args.targetY, args.targetX, args.targetZ, world))()
+      promise.then(() => handle.release('completed', ''), error => {
+        handle.release(error instanceof ToolError ? error.code : 'blocked', String(error?.message ?? error))
+      }).catch(() => {})
+      return promise
+    } })
+}
+
+/** Record placements that still exist in the world so the persisted
+ * scaffold ledger owns their cleanup; blocks already consumed by the descent
+ * itself are skipped.
+ * @param {Bot} bot @param {string} [world] @param {{position:import('vec3').Vec3,type:number}[]} placed */
+async function ledgerPlacements (bot, world, placed) {
+  if (!world || !placed.length) return
+  const surviving = placed.filter(record => {
+    const block = bot.blockAt(record.position)
+    return block != null && block.boundingBox !== 'empty' && block.type === record.type
+  })
+  if (surviving.length) await appendScaffolds(world, surviving)
+}
+
+/** @param {Bot} bot @param {AbortSignal} signal @param {number} [targetY]
+ * @param {number} [targetX] @param {number} [targetZ] @param {string} [world] */
+export async function ascend (bot, signal, targetY, targetX, targetZ, world) {
+  /** Every block the escape places (pillar towers, breakout steps) joins the
+   * same cleanup ledger as gather scaffolds. @type {{position:import('vec3').Vec3,type:number}[]} */
+  const placedBlocks = []
+  const originalPlace = bot.placeBlock
+  if (typeof originalPlace === 'function') {
+    bot.placeBlock = async (reference, face) => {
+      const result = await originalPlace(reference, face)
+      try {
+        const at = reference.position.plus(face).floored()
+        const block = bot.blockAt(at)
+        if (block != null && block.boundingBox !== 'empty') {
+          placedBlocks.push({ position: at.clone(), type: block.type })
+        }
+      } catch { /* recording is best effort */ }
+      return result
+    }
+  }
+  try {
+    return await ascendInner(bot, signal, targetY, targetX, targetZ, world, placedBlocks)
+  } finally {
+    if (typeof originalPlace === 'function') bot.placeBlock = originalPlace
+  }
+}
+
+/** @param {Bot} bot @param {AbortSignal} signal @param {number} [targetY]
+ * @param {number} [targetX] @param {number} [targetZ] @param {string} [world]
+ * @param {{position:import('vec3').Vec3,type:number}[]} placedBlocks */
+async function ascendInner (bot, signal, targetY, targetX, targetZ, world, placedBlocks) {
+  signal.throwIfAborted()
+  const pathfinder = bot.pathfinder
+  if (!pathfinder?.goto || typeof pathfinder?.setMovements !== 'function') {
+    throw new ToolError('PLUGIN_MISSING', 'The pathfinder plugin is required to pillar out.')
+  }
+  const placeable = ['dirt', 'cobblestone']
+    .map(name => bot.registry.itemsByName[name]?.id)
+    .filter(Number.isInteger)
+  const carried = bot.inventory?.items?.().find(entry => placeable.includes(entry.type))
+  if (!carried) throw new ToolError('NO_MATERIAL', 'No carried dirt or cobblestone to pillar with; refusing the climb.')
+  // Escape profile: pillar with carried blocks and, armed by the safety
+  // wrapper, carve through natural terrain only — buildings, containers and
+  // floor protection stay untouchable. Wide dug basins have no standable rim
+  // to walk to, so digging an ascending exit is the only way out.
+  const movements = new Movements(bot)
+  movements.anelfEscape = true
+  movements.canDig = true
+  movements.allow1by1towers = true
+  movements.allowParkour = false
+  movements.scafoldingBlocks = placeable
+  const start = bot.entity.position.floored()
+  const from = start.y
+  if (targetX != null && targetZ != null) {
+    // Break-out walk: same escape profile (carve natural terrain, place
+    // scaffold steps), aimed at a far column instead of a height.
+    pathfinder.setMovements(movements)
+    const timer = setTimeout(() => pathfinder.stop(), 90000)
+    try {
+      await pathfinder.goto(new goals.GoalNear(targetX, from, targetZ, 4))
+    } finally {
+      clearTimeout(timer)
+    }
+    const to = Math.floor(bot.entity.position.y)
+    const reached = Math.hypot(bot.entity.position.x - targetX - 0.5, bot.entity.position.z - targetZ - 0.5) <= 6
+    return { completed: reached, from, to, position: { x: bot.entity.position.x, y: to, z: bot.entity.position.z } }
+  }
+  // Surrounding terrain top (standing height) from a ring scan: in a dug pit
+  // the ring is the rim, and pillaring exactly to it ends standing on the
+  // surface. An "adjacent standable cell" check is useless here — the pit
+  // floor itself is standable.
+  const isTreePart = name => /(?:^|_)leaves$/.test(name) || name === 'leaf_litter' || /_log$/.test(name)
+  const rimTop = () => {
+    let top = -Infinity
+    // Chunk pits are up to 16x16: a tight ring would still be inside one.
+    // Tree crowns are walkable for the pathfinder but they are not terrain:
+    // targeting them sends the escape up a tree instead of out of the pit.
+    for (let dx = -8; dx <= 8; dx++) for (let dz = -8; dz <= 8; dz++) {
+      if (Math.abs(dx) <= 1 && Math.abs(dz) <= 1) continue
+      for (let y = from + 24; y >= from - 4; y--) {
+        const block = bot.blockAt(new Vec3(start.x + dx, y, start.z + dz))
+        if (block != null && block.boundingBox !== 'empty') {
+          if (!isTreePart(block.name)) top = Math.max(top, y + 1)
+          break
+        }
+      }
+    }
+    return top
+  }
+  const rim = rimTop()
+  const maxY = Math.min(targetY ?? rim, from + 24)
+  if (maxY <= from + 1) {
+    // Nothing to climb: the surroundings do not rise above the feet. Reporting
+    // failure lets the caller fall back to its cooldown instead of livelocking
+    // on no-op climbs.
+    return { completed: false, from, to: from, rim: from,
+      position: { x: start.x, y: from, z: start.z } }
+  }
+  const goal = new goals.Goal()
+  goal.isEnd = node => node.y >= maxY
+  goal.heuristic = node => Math.max(0, maxY - node.y)
+  pathfinder.setMovements(movements)
+  // pathfinder.goto has no wall-clock bound of its own; stop it hard.
+  const timer = setTimeout(() => pathfinder.stop(), 90000)
+  try {
+    await pathfinder.goto(goal)
+  } finally {
+    clearTimeout(timer)
+  }
+  const to = Math.floor(bot.entity.position.y)
+  await ledgerPlacements(bot, world, placedBlocks)
+  return { completed: to >= maxY, from, to, rim, position: { x: bot.entity.position.x, y: to, z: bot.entity.position.z } }
+}
+
+/** @param {import('./registry.js').Registrar} reg */
 export function registerDescent (reg) {
   reg({ name: 'descend', group: 'movement',
     description: 'Autonomous routine only: controlled descent from an elevated stranded spot. ' +
@@ -41,7 +194,9 @@ export function registerDescent (reg) {
       const bot = ctx.manager.requireBot()
       if (!(ctx.locks instanceof ActionController)) throw new ToolError('INTERNAL', 'Descent requires the installed action controller.')
       const handle = ctx.locks.begin('descend')
-      const promise = (async () => descend(bot, handle.signal, args.targetY))()
+      const report = ctx.manager.statusReport()
+      const world = JSON.stringify([report.host, report.port, bot.username, bot.game.dimension])
+      const promise = (async () => descend(bot, handle.signal, args.targetY, world))()
       promise.then(() => handle.release('completed', ''), error => {
         handle.release(error instanceof ToolError ? error.code : 'blocked', String(error?.message ?? error))
       }).catch(() => {})
@@ -49,8 +204,10 @@ export function registerDescent (reg) {
     } })
 }
 
-/** @param {Bot} bot @param {AbortSignal} signal @param {number} [targetY] */
-export async function descend (bot, signal, targetY) {
+/** @param {Bot} bot @param {AbortSignal} signal @param {number} [targetY] @param {string} [world] */
+export async function descend (bot, signal, targetY, world) {
+  /** @type {{position:import('vec3').Vec3,type:number}[]} */
+  const placedBlocks = []
   signal.throwIfAborted()
   const start = bot.entity.position.floored()
   /** First non-empty cell below the feet, skipping the immediate support:
@@ -97,6 +254,7 @@ export async function descend (bot, signal, targetY) {
     const feet = bot.entity.position.floored()
     if (targetY != null && feet.y <= targetY + 2) {
       // Target height reached: ordinary work can take it from here.
+      await ledgerPlacements(bot, world, placedBlocks)
       return { completed: true, fallen: fell, dug, from: start.y, to: feet.y,
         expectedDamage: 0, position: { x: feet.x, y: feet.y, z: feet.z } }
     }
@@ -108,6 +266,7 @@ export async function descend (bot, signal, targetY) {
       // standable cell. Without a target that is a complete descent; with an
       // unreachable target it is an honest refusal.
       if (targetY == null) {
+        await ledgerPlacements(bot, world, placedBlocks)
         return { completed: true, fallen: fell, dug, from: start.y, to: feet.y,
           expectedDamage: 0, position: { x: feet.x, y: feet.y, z: feet.z } }
       }
@@ -145,6 +304,7 @@ export async function descend (bot, signal, targetY) {
       signal.throwIfAborted()
       await bot.placeBlock(support, new Vec3(0, -1, 0))
       const bridged = bot.blockAt(feet.offset(0, -2, 0))
+      if (bridged?.boundingBox === 'block') placedBlocks.push({ position: bridged.position.clone(), type: bridged.type })
       if (!bridged || bridged.boundingBox !== 'block') {
         throw new ToolError('BRIDGE_FAILED', 'Placing the bridging block under the support was not confirmed.')
       }

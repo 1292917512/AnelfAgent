@@ -1,12 +1,38 @@
 // @ts-check
 /** Shared movement and floor protection for every mining entry point. */
+const { createHash } = require('node:crypto')
+const fs = require('node:fs/promises')
+const nodePath = require('node:path')
 const { Movements } = require('mineflayer-pathfinder')
+
+/** State file for a world key: both stores share the hashed-name convention.
+ * @param {string} directory @param {string} world */
+function worldStateFile (directory, world) {
+  return nodePath.join(directory, createHash('sha256').update(world).digest('hex') + '.json')
+}
+
+/** Atomic tmp+rename JSON write for world-persisted state.
+ * @param {string} file @param {unknown} data */
+async function atomicWriteJson (file, data) {
+  const temporary = `${file}.tmp`
+  await fs.writeFile(temporary, JSON.stringify(data), 'utf8')
+  await fs.rename(temporary, file)
+}
 
 /** @typedef {import('mineflayer').Bot} Bot */
 /** @typedef {import('prismarine-block').Block} Block */
 /** @type {WeakMap<Bot, Set<string>>} */
 const floors = new WeakMap()
 /** @type {WeakSet<Bot>} */
+/** Natural terrain a corridor plan may excavate; shared with the escape
+ * profile, which may carve through exactly these and nothing man-made. */
+const naturalTerrain = new Set(['stone', 'deepslate', 'dirt', 'grass_block', 'granite', 'diorite', 'andesite', 'tuff',
+  'calcite', 'coal_ore', 'iron_ore', 'copper_ore', 'gold_ore', 'redstone_ore', 'lapis_ore', 'diamond_ore',
+  'emerald_ore', 'deepslate_coal_ore', 'deepslate_iron_ore', 'deepslate_copper_ore', 'deepslate_gold_ore',
+  'deepslate_redstone_ore', 'deepslate_lapis_ore', 'deepslate_diamond_ore', 'deepslate_emerald_ore',
+  'oak_log', 'birch_log', 'spruce_log', 'jungle_log', 'acacia_log', 'dark_oak_log', 'cherry_log',
+  'mangrove_log', 'pale_oak_log'])
+
 const installed = new WeakSet()
 /** @type {WeakSet<Movements>} */
 const restricted = new WeakSet()
@@ -38,15 +64,54 @@ async function equipHarvestTool (bot, block) {
   }
 }
 
+/** Total count of one inventory item across slots. @param {Bot} bot @param {string} item */
+function itemCount (bot, item) {
+  return bot.inventory.items().filter(i => i.name === item).reduce((total, i) => total + i.count, 0)
+}
+
+/** Equip, dig under a watchdog and confirm the server removed the block —
+ * the shared receipt both executors previously duplicated. Rejects a worn
+ * tool below the durability reserve.
+ * @param {Bot & {tool: import('mineflayer-tool').Tool}} bot @param {Block} block
+ * @param {{watchdogMs?: number, dig?: (block: Block) => Promise<void>, beforeDig?: () => void}} [options]
+ */
+async function digVerified (bot, block, options = {}) {
+  await equipHarvestTool(bot, block)
+  const held = bot.heldItem
+  if (held) {
+    const maximum = bot.registry.itemsByName[held.name]?.maxDurability
+    if (maximum && maximum - held.durabilityUsed < 12) {
+      throw new MiningError('MINING_TOOL_LOW', 'Tool durability is low; keep a reserve and return for a replacement.')
+    }
+  }
+  options.beforeDig?.()
+  // mineflayer's dig promise never settles after stopDigging — the watchdog
+  // must be able to break the await itself, or one dead dig hangs the task
+  // forever.
+  let bail
+  const watchdog = new Promise((_, reject) => { bail = reject })
+  const timer = setTimeout(() => {
+    bot.stopDigging()
+    bail(new MiningError('MINING_DIG_TIMEOUT', 'Dig did not confirm in time; aborting.'))
+  }, options.watchdogMs ?? 15000)
+  try {
+    await Promise.race([options.dig ? options.dig(block) : bot.dig(block, true, 'raycast'), watchdog])
+  } finally { clearTimeout(timer) }
+  const after = bot.blockAt(block.position)
+  if (after != null && after.boundingBox !== 'empty' && after.name === block.name) {
+    throw new MiningError('MINING_UNCONFIRMED', `Removal not confirmed at ${block.position}.`)
+  }
+}
+
 /** @param {Movements} movements @returns {Movements} */
 function restrictMovements (movements) {
   const gatherMode = movements.anelfGatherMode
   // Foliage-only digging is the one universal travel exception (see
   // installSafety): without it a canopy is a one-way trap — leaves are solid
   // to stand on but were undiggable during plain travel.
-  movements.canDig = movements.anelfTravelDig === true ||
+  movements.canDig = movements.anelfTravelDig === true || movements.anelfEscape === true ||
     gatherMode === 'leaf' || gatherMode === 'high' || gatherMode === 'scaffold'
-  movements.allow1by1towers = gatherMode === 'scaffold'
+  movements.allow1by1towers = gatherMode === 'scaffold' || movements.anelfEscape === true
   movements.allowParkour = false
   movements.allowFreeMotion = false
   movements.allowSprinting = false
@@ -182,7 +247,15 @@ function installSafety (bot) {
   const setMovements = bot.pathfinder.setMovements.bind(bot.pathfinder)
   bot.pathfinder.setMovements = movements => {
     if (movements == null) return setMovements(movements)
-    if (movements.anelfGatherMode == null) {
+    if (movements.anelfEscape === true) {
+      // Escape may carve through natural terrain only: every solid block
+      // outside the natural list becomes unbreakable (buildings, containers,
+      // fixtures), matching the mine corridor's own protection.
+      movements.blocksCantBreak = new Set([...solidIds].filter(id => {
+        const entry = Object.values(bot.registry.blocksByName).find(block => block.id === id)
+        return entry != null && !naturalTerrain.has(entry.name)
+      }))
+    } else if (movements.anelfGatherMode == null) {
       movements.anelfTravelDig = true
       movements.blocksCantBreak = new Set(solidIds)
     }
@@ -198,4 +271,4 @@ function installSafety (bot) {
   }
 }
 
-module.exports = { MiningError, key, equipHarvestTool, restrictMovements, protectFloor, assertFloorSafe, isOwnSupport, canHarvestBlock, installSafety, descendTemporarySupport, breakForFall, recentDeliberateFall }
+module.exports = { MiningError, key, equipHarvestTool, restrictMovements, protectFloor, assertFloorSafe, isOwnSupport, canHarvestBlock, installSafety, descendTemporarySupport, breakForFall, recentDeliberateFall, naturalTerrain, itemCount, digVerified, worldStateFile, atomicWriteJson }
