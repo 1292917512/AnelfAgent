@@ -52,7 +52,8 @@ def router(monkeypatch: pytest.MonkeyPatch):
     """隔离配置的路由器（链配置键返回 None → 默认链 + 组件自动入链）。"""
     from core.config import ConfigManager
     monkeypatch.setattr(ConfigManager, "get", staticmethod(lambda k, d=None: None))
-    return CapabilityRouter(config_key="test_priority", default_chain=["models"], log_tag="测试")
+    return CapabilityRouter(config_key="test_priority", default_chain=["models"], log_tag="测试",
+                            allow_fallback=lambda _: True)
 
 
 class TestChainSemantics:
@@ -81,6 +82,40 @@ class TestChainSemantics:
 
 
 class TestChainRouting:
+    @pytest.mark.parametrize(("capability", "kind"), [
+        ("image_gen", "image_gen"), ("video", "video"), ("understand", "vision"),
+        ("tts", "tts"), ("voice_mgmt", "tts"), ("music", "music"),
+    ])
+    async def test_media_router_uses_model_type_policy(
+        self, capability: str, kind: str, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from agent.audio import capabilities as sound
+        from agent.vision import capabilities as visual
+        from core.config import ConfigManager
+
+        if capability in visual.VISUAL_CAPABILITIES:
+            monkeypatch.setattr(visual, "_router", None)
+            router = visual.get_visual_router()
+        else:
+            monkeypatch.setattr(sound, "_router", None)
+            router = sound.get_sound_router()
+        caps = frozenset({capability})
+        # 内置模型链抛异常，组件也可返回含诊断的失败结果。
+        primary = _FakeProvider("models", caps, error=ProviderChainError("offline", {"primary": "HTTP 503"}))
+        component = _FakeProvider("component", caps)
+        router.register(primary)
+        router.register(component)
+        result = await router.run(capability, "test")
+        assert result["success"] is False and result["errors"]["primary"] == "HTTP 503"
+        assert component.calls == []
+        router.register(_FakeProvider("models", caps, result={"error": "timeout", "trace_id": "req-1"}))
+        result = await router.run(capability, "test")
+        assert result["success"] is False and result["trace_id"] == "req-1"
+        assert component.calls == []
+        ConfigManager.set(f"model_fallback_{kind}", True)
+        result = await router.run(capability, "test")
+        assert result["provider"] == "component" and result["fallback_from"] == ["models"]
+
     async def test_failure_payload_falls_back_without_claiming_success(self, router):
         router.register(_FakeProvider("models", frozenset({"tts"}), result={"error": "HTTP 503"}))
         router.register(_FakeProvider("minimax", frozenset({"tts"}), result={"audio": "ok"}))

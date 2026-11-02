@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -15,6 +16,7 @@ from agent.llm.llm_manager import LLMManager
 from agent.llm.media_client import MediaClient
 from agent.llm.model_api import ImageContent, ModelAPI, ModelCallError, NoulQuestion, VideoContent
 from agent.llm.types import ChatResult, ChatStreamDelta
+from core.config import ConfigManager
 
 
 @pytest.fixture
@@ -80,6 +82,7 @@ async def test_vision_prepares_once_off_loop_and_falls_back_after_stall_and_trun
     monkeypatch.setattr(first, "chat_stream", stalled)
     monkeypatch.setattr(second, "chat_stream", truncated)
     monkeypatch.setattr(third, "chat_stream", complete)
+    ConfigManager.set("model_fallback_vision", True)
     monkeypatch.setattr("core.config.get_config_float", lambda key, default: (
         0.03 if key == "describe_image_first_response_timeout" else get_config_float(key, default)
     ))
@@ -119,10 +122,16 @@ async def test_chat_uses_compatible_candidates_and_hot_priority(manager: LLMMana
     assert second.chat.call_args.args[0] == messages
     assert second.chat.call_args.kwargs["tools"] == tools
 
+    ConfigManager.set("model_fallback_chat", False)
+    with pytest.raises(RuntimeError, match="offline"):
+        await api.chat(messages, tools=tools, max_retries=0)
+    assert first.chat.await_count == 2
+    second.chat.assert_awaited_once()
+
     manager._type_priorities["chat"] = ["second", "first"]
     assert api.list_models("chat") == ["second", "first"]
     await api.chat(messages, max_retries=0)
-    first.chat.assert_awaited_once()
+    assert first.chat.await_count == 2
     assert second.chat.await_count == 2
 
 
@@ -134,6 +143,10 @@ async def test_vision_chat_does_not_escape_its_model_pool(manager: LLMManager) -
     first.chat = AsyncMock(side_effect=RuntimeError("offline"))
     second.chat = AsyncMock(return_value=ChatResult(content="image"))
     api = ModelAPI(manager)
+    with pytest.raises(RuntimeError, match="offline"):
+        await api.chat([], model_type="vision", max_retries=0)
+    second.chat.assert_not_awaited()
+    ConfigManager.set("model_fallback_vision", True)
     assert (await api.chat(
         [{"role": "user", "content": [ImageContent("aGk=").to_openai_block()]}],
         model_type="vision", max_retries=0,
@@ -175,6 +188,12 @@ async def test_media_fallback_keeps_each_providers_credentials(
 
     monkeypatch.setattr(MediaClient, "_http_client", lambda *args, **kwargs:
                         httpx.AsyncClient(transport=httpx.MockTransport(respond)))
+    with pytest.raises(ModelCallError) as err:
+        await ModelAPI(manager).text_to_speech("hello", voice="voice")
+    assert list(err.value.errors) == ["first"]
+    assert [request.url.host for request in requests] == ["first.example"]
+    requests.clear()
+    ConfigManager.set("model_fallback_tts", True)
     result = await ModelAPI(manager).text_to_speech("hello", voice="voice")
     assert result.value == b"audio"
     assert result.model_id == "second" and result.model == "remote-second"
@@ -200,8 +219,15 @@ async def test_media_operations_use_their_own_type_chain(
 ) -> None:
     add(manager, "first", kind)
     add(manager, "second", kind)
-    call = AsyncMock(side_effect=[NotImplementedError("unsupported protocol"), value])
+    failure = NotImplementedError("unsupported protocol")
+    call = AsyncMock(side_effect=[failure, failure, value])
     monkeypatch.setattr(MediaClient, method, call)
+    with pytest.raises(ModelCallError) as err:
+        await getattr(ModelAPI(manager), method)(*args, **kwargs)
+    assert list(err.value.errors) == ["first"]
+    assert [item.kwargs["model"] for item in call.call_args_list] == ["remote-first"]
+    call.reset_mock()
+    ConfigManager.set(f"model_fallback_{kind}", True)
     result = await getattr(ModelAPI(manager), method)(*args, **kwargs)
     assert result.value == value and result.model_id == "second"
     assert [item.kwargs["model"] for item in call.call_args_list] == ["remote-first", "remote-second"]
@@ -219,6 +245,31 @@ async def test_vision_filters_unsupported_video_and_returns_identity(manager: LL
     image_only.describe_video.assert_not_awaited()
 
 
+async def test_generate_image_tool_obeys_policy_before_saving(
+    manager: LLMManager, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from agent.vision import capabilities, gen_tools
+
+    add(manager, "primary", "image_gen")
+    add(manager, "backup", "image_gen")
+    monkeypatch.setattr(capabilities, "_router", None)
+    monkeypatch.setattr(capabilities, "_mgr", lambda: manager)
+    error = RuntimeError("HTTP 503")
+    generate = AsyncMock(side_effect=[error, error, ["generated"]])
+    save = AsyncMock(return_value=["result.png"])
+    monkeypatch.setattr(MediaClient, "generate_image", generate)
+    monkeypatch.setattr(gen_tools.ws, "save_images", save)
+
+    failed = json.loads(await gen_tools.generate_image("draw"))
+    assert failed["success"] is False and "HTTP 503" in failed["errors"]["primary"]
+    save.assert_not_awaited()
+    ConfigManager.set("model_fallback_image_gen", True)
+    done = json.loads(await gen_tools.generate_image("draw"))
+    assert done["model"] == "remote-backup" and done["file_paths"] == ["result.png"]
+    assert [call.kwargs["model"] for call in generate.call_args_list] == ["remote-primary", "remote-primary", "remote-backup"]
+    save.assert_awaited_once_with(["generated"])
+
+
 async def test_embedding_timeout_falls_back_but_pinned_space_never_switches(manager: LLMManager) -> None:
     first = add(manager, "first", "embedding")
     second = add(manager, "second", "embedding")
@@ -234,6 +285,7 @@ async def test_embedding_timeout_falls_back_but_pinned_space_never_switches(mana
     first.embed = blocked
     second.embed = AsyncMock(return_value=[[0.1, 0.2]])
     api = ModelAPI(manager)
+    ConfigManager.set("model_fallback_embedding", True)
     result = await api.embed(["input"], timeout=0.01)
     assert result.model_id == "second" and result.value == [[0.1, 0.2]]
     assert cancelled.is_set()
@@ -243,6 +295,7 @@ async def test_embedding_timeout_falls_back_but_pinned_space_never_switches(mana
 
 
 async def test_cancel_never_advances_to_another_model(manager: LLMManager) -> None:
+    ConfigManager.set("model_fallback_vision", True)
     first = add(manager, "first", "vision")
     second = add(manager, "second", "vision")
     first.describe_images = AsyncMock(side_effect=asyncio.CancelledError())
@@ -253,6 +306,7 @@ async def test_cancel_never_advances_to_another_model(manager: LLMManager) -> No
 
 
 async def test_failure_details_are_ordered_and_do_not_leak_credentials(manager: LLMManager) -> None:
+    ConfigManager.set("model_fallback_vision", True)
     first = add(manager, "first", "vision")
     second = add(manager, "second", "vision")
     first.describe_images = AsyncMock(side_effect=RuntimeError("bad credential-first"))

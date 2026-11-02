@@ -12,8 +12,8 @@
 - 配置自管：提供者自行读取自己的配置键，``check_available`` 即
   "配置/服务就绪"判定。
 
-运行时失败降级：句级管线（pipeline.py）在某个提供者流中途失败时，
-按优先级链取下一个提供者重试当前句——首字节前失败可无缝切换，
+运行时失败降级：句级管线仅在语音合成允许切换时，
+按优先级链取下一个提供者重试当前句。首字节前失败可切换，
 首字节后失败截断该句并继续后续句（听感一跳优于整段失声）。
 """
 
@@ -21,6 +21,8 @@ from __future__ import annotations
 
 from typing import Any, AsyncIterator, List, Optional, Protocol, runtime_checkable
 
+from agent.llm.config import ModelType
+from agent.llm.fallback import fallback_enabled
 from core.log import log
 from core.registration import record_undo
 
@@ -131,21 +133,22 @@ async def synthesize_sentence(
 ) -> Optional[TtsStream]:
     """合成一句：优先级链 + 首字节前失败无缝降级。
 
-    返回的流在首个字节产出前若提供者异常，自动换下一个提供者重试；
-    全部提供者失败返回 None（调用方截断该句继续后续句）。
+    仅在语音合成允许切换时尝试后续提供者，失败返回 None。
     """
     providers = chain if chain is not None else await get_tts_registry().available_chain()
+    if not fallback_enabled(ModelType.TTS):
+        providers = providers[:1]
 
     async def _first_chunk_checked(provider: Any) -> Optional[TtsStream]:
         """包装流：首块产出失败（提供者级错误）返回 None 触发降级。"""
-        stream = provider.stream_synthesize(text, voice=voice, sample_rate=sample_rate)
-        iterator = stream.chunks.__aiter__()
         try:
+            stream = provider.stream_synthesize(text, voice=voice, sample_rate=sample_rate)
+            iterator = stream.chunks.__aiter__()
             first = await iterator.__anext__()
         except StopAsyncIteration:
             return None
         except Exception as exc:
-            log(f"TTS 提供者 {provider.name} 首块失败（降级重试）: {exc}",
+            log(f"TTS 提供者 {provider.name} 首块失败: {exc}",
                 "DEBUG", tag=_LOG_TAG)
             return None
 

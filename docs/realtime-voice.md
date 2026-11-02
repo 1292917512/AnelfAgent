@@ -100,8 +100,9 @@ StreamingAsrSession 协议（accept_pcm → partial/final 事件 + commit 定稿
 
 ## TTS 管线（agent/tts/）
 
-流式提供者协议（TtsStream=PCM 块流+采样率声明）+ 优先级链运行时降级（首字节前无缝切换、首字节后
-截断该句）；`SentenceSplitter` 流式断句（CJK 标点/英文缩写与小数豁免/超长软切/短尾合并，
+流式提供者协议（TtsStream=PCM 块流+采样率声明）。仅在模型管理开启语音合成的失败切换时，
+首字节前的失败可交给下一提供者；已输出音频的句子不会换音色重播。
+`SentenceSplitter` 流式断句（CJK 标点/英文缩写与小数豁免/超长软切/短尾合并，
 **首句窗口 6~36 字提前断句**——TTS 首请求不等第一个完整句，开声延迟缩到首个分句）+
 `strip_for_speech` 朗读清洗（markdown/旁白剥离、CJK 空格规范化、emoji 剔除）；句级管线预取
 （tts_prefetch_sentences）；压缩流经 ffmpeg 管道解码 PCM16。

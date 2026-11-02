@@ -3,7 +3,7 @@
 接口层：参数归一 → 沙箱校验 → 能力路由（get_sound_router / 音频服务 ASR 链）；
 产物（音频）统一落盘 workspace/uploads/ 并返回相对路径。
 
-provider 参数：auto（默认，按配置优先级链自动路由+失败降级）或指定
+provider 参数：auto（默认，按优先级和该模型类型的切换设置路由）或指定
 提供者名；可用值与能力优先级经 sound_config(action="providers") 查看。
 """
 
@@ -177,7 +177,7 @@ async def text_to_voice(
         speed: 语速 0.5~2.0，0 表示默认（MiniMax 协议）
         pitch: 语调 -12~12，0 表示原音色（MiniMax 协议）
         language_boost: 语种增强（MiniMax 协议）：Chinese/English/Japanese/auto 等
-        provider: auto（默认，按配置链路由+失败自动降级）或指定提供者名
+        provider: auto（默认，按该模型类型的优先级与切换设置路由）或指定提供者名
     """
     from agent.tts import default_preset
 
@@ -244,7 +244,7 @@ async def clone_voice(
         audio_path: 克隆源音频（本地路径或 URL，mp3/m4a/wav，10 秒~5 分钟，≤20MB）
         voice_id: 自定义音色 ID（8-256 字符，字母开头，可含数字/横线/下划线）
         preview_text: 可选试听文本（克隆后用新音色朗读，≤1000 字）
-        provider: auto（默认，按配置链路由+失败自动降级）或指定提供者名
+        provider: auto（默认，按该模型类型的优先级与切换设置路由）或指定提供者名
     """
     if not voice_id.strip():
         return tool_error("未提供 voice_id", cause=ErrorCause.PARAM, retryable=False)
@@ -287,7 +287,7 @@ async def design_voice(prompt: str, preview_text: str = "", voice_id: str = "", 
         prompt: 音色描述（如"悬疑小说旁白，低沉磁性的男声"）
         preview_text: 试听文本（≤500 字，留空使用默认试听文本）
         voice_id: 可选自定义音色 ID，留空自动生成
-        provider: auto（默认，按配置链路由+失败自动降级）或指定提供者名
+        provider: auto（默认，按该模型类型的优先级与切换设置路由）或指定提供者名
     """
     if not prompt.strip():
         return tool_error("prompt 不能为空", cause=ErrorCause.PARAM, retryable=False)
@@ -315,7 +315,7 @@ async def list_voices(voice_type: str = "all", provider: str = "auto") -> str:
 
     Args:
         voice_type: system / voice_cloning / voice_generation / all
-        provider: auto（默认，按配置链路由+失败自动降级）或指定提供者名
+        provider: auto（默认，按该模型类型的优先级与切换设置路由）或指定提供者名
     """
     err = _check_provider(provider)
     if err:
@@ -347,7 +347,7 @@ async def delete_voice(voice_id: str, voice_type: str = "voice_cloning", provide
     Args:
         voice_id: 要删除的音色 ID
         voice_type: voice_cloning（复刻）或 voice_generation（设计）
-        provider: auto（默认，按配置链路由+失败自动降级）或指定提供者名
+        provider: auto（默认，按该模型类型的优先级与切换设置路由）或指定提供者名
     """
     if not voice_id.strip():
         return tool_error("未提供 voice_id", cause=ErrorCause.PARAM, retryable=False)
@@ -382,7 +382,7 @@ async def generate_music(
         prompt: 音乐风格/情绪描述（≤2000 字）
         lyrics: 歌词（\\n 换行，支持 [Verse]/[Chorus] 等结构标签，≤3500 字）
         is_instrumental: 是否纯音乐（默认否）
-        provider: auto（默认，按配置链路由+失败自动降级）或指定提供者名
+        provider: auto（默认，按该模型类型的优先级与切换设置路由）或指定提供者名
     """
     if not prompt.strip() and not lyrics.strip():
         return tool_error("prompt 与 lyrics 至少提供一项",
@@ -417,7 +417,7 @@ async def generate_lyrics(
         lyrics: 已有歌词（mode=edit 时必填，≤3500 字）
         title: 保留的歌名（可选）
         mode: write_full_song（写整首）或 edit（修改已有歌词）
-        provider: auto（默认，按配置链路由+失败自动降级）或指定提供者名
+        provider: auto（默认，按该模型类型的优先级与切换设置路由）或指定提供者名
     """
     err = _check_provider(provider)
     if err:

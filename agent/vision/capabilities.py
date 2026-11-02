@@ -20,7 +20,10 @@ from agent.capabilities import (
     CapabilityRouter,
     ProviderChainError,
     ProviderUnavailable,
+    run_media_capability,
 )
+from agent.llm.config import ModelType
+from agent.llm.fallback import fallback_enabled
 from core.log import log
 
 CAP_UNDERSTAND = "understand"
@@ -30,11 +33,11 @@ CAP_VIDEO = "video"
 
 VISUAL_CAPABILITIES = (CAP_UNDERSTAND, CAP_IMAGE_GEN, CAP_IMAGE_EDIT, CAP_VIDEO)
 
-# 能力 → iter_media_for_type 的模型类型
 _CAPABILITY_MODEL_TYPE = {
-    CAP_IMAGE_GEN: "image_gen",
-    CAP_IMAGE_EDIT: "image_edit",
-    CAP_VIDEO: "video",
+    CAP_UNDERSTAND: ModelType.VISION,
+    CAP_IMAGE_GEN: ModelType.IMAGE_GEN,
+    CAP_IMAGE_EDIT: ModelType.IMAGE_EDIT,
+    CAP_VIDEO: ModelType.VIDEO,
 }
 
 _LOG_TAG = "视觉"
@@ -53,11 +56,8 @@ class ModelsVisualProvider:
 
     def is_configured(self, capability: str) -> bool:
         try:
-            if capability == CAP_UNDERSTAND:
-                from agent.llm.llm_manager import ModelType
-                return bool(_mgr().get_all_by_type(ModelType.VISION))
-            model_type = _CAPABILITY_MODEL_TYPE.get(capability, "")
-            return bool(model_type) and bool(_mgr().iter_media_for_type(model_type))
+            kind = _CAPABILITY_MODEL_TYPE.get(capability)
+            return kind is not None and _mgr().get_by_type(kind) is not None
         except Exception as e:
             log(f"models 提供者可用性检查失败: {e}", "DEBUG", tag=_LOG_TAG)
             return False
@@ -67,7 +67,6 @@ class ModelsVisualProvider:
         if capability != CAP_UNDERSTAND:
             return {}
         try:
-            from agent.llm.llm_manager import ModelType
             video_models = [
                 c.config.name
                 for c in _mgr().get_all_by_type(ModelType.VISION)
@@ -81,10 +80,9 @@ class ModelsVisualProvider:
     async def run(self, capability: str, **kwargs: Any) -> Dict[str, Any]:
         if capability == CAP_UNDERSTAND:
             return await self._run_understand(**kwargs)
-        model_type = _CAPABILITY_MODEL_TYPE.get(capability)
-        if not model_type:
-            raise CapabilityNotSupported(f"models 提供者不支持能力 '{capability}'")
-        dispatch: Dict[str, Callable[..., Awaitable[Any]]] = {
+        if capability == CAP_IMAGE_GEN and kwargs.get("reference_image"):
+            raise CapabilityNotSupported("参考图生图仅部分组件提供者支持")
+        dispatch: Dict[str, Callable[..., Awaitable[Dict[str, Any]]]] = {
             CAP_IMAGE_GEN: self._image_gen,
             CAP_IMAGE_EDIT: self._image_edit,
             CAP_VIDEO: self._video,
@@ -92,34 +90,10 @@ class ModelsVisualProvider:
         handler = dispatch.get(capability)
         if handler is None:
             raise CapabilityNotSupported(f"models 提供者不支持能力 '{capability}'")
-        return await self._with_model_fallback(model_type, handler, kwargs)
-
-    # ------------------------------------------------------------------
-    # 模型链回退骨架
-    # ------------------------------------------------------------------
-
-    async def _with_model_fallback(
-        self,
-        model_type: str,
-        handler: Callable[..., Awaitable[Any]],
-        kwargs: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        from agent.llm.config import ModelType
-        from agent.llm.llm_client import LLMNotConfiguredError
-        from agent.llm.model_execution import ModelCallError, execute_media
-
-        try:
-            result = await execute_media(
-                _mgr(), ModelType(model_type),
-                lambda model, client: handler(model, client, **kwargs),
-            )
-        except LLMNotConfiguredError as exc:
-            raise ProviderUnavailable(str(exc)) from exc
-        except ModelCallError as exc:
-            raise ProviderChainError(str(exc), exc.errors) from exc
-        output: Dict[str, Any] = result.value
-        output.setdefault("model", result.model)
-        return output
+        return await run_media_capability(
+            _mgr(), _CAPABILITY_MODEL_TYPE[capability],
+            lambda model, client: handler(model, client, **kwargs),
+        )
 
     # ------------------------------------------------------------------
     # 图片/视频理解
@@ -151,7 +125,6 @@ class ModelsVisualProvider:
         """下载或读取视频后交给统一模型接口，仅使用支持视频理解的视觉候选。"""
         from agent.llm.image_utils import download_video_to_base64, load_video_from_path
         from agent.llm.llm_client import LLMNotConfiguredError
-        from agent.llm.llm_manager import ModelType
         from agent.llm.model_api import ModelAPI
 
         manager = _mgr()
@@ -184,8 +157,6 @@ class ModelsVisualProvider:
         n: int,
         reference_image: str,
     ) -> Dict[str, Any]:
-        if reference_image:
-            raise CapabilityNotSupported("参考图生图仅部分组件提供者支持")
         image_results = await client.generate_image(
             prompt, model=model, image_size=image_size,
             num_inference_steps=num_inference_steps,
@@ -252,6 +223,7 @@ def get_visual_router() -> CapabilityRouter:
             config_key="vision_provider_priority",
             default_chain=["models"],
             log_tag=_LOG_TAG,
+            allow_fallback=lambda cap: cap in _CAPABILITY_MODEL_TYPE and fallback_enabled(_CAPABILITY_MODEL_TYPE[cap]),
         )
         _router.register(ModelsVisualProvider())
     return _router

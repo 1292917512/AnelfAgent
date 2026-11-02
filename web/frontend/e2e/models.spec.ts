@@ -28,6 +28,35 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
+test("model management saves fallback for the selected type", async ({ page }) => {
+  const enabled: Record<string, boolean> = { chat: true, image_gen: false };
+  await page.route("**/api/config/meta", (route) => route.fulfill({ json: { groups: [{
+    group: "models/fallback",
+    items: Object.entries(enabled).map(([tag, value]) => ({ tag, value, key: `model_fallback_${tag}`, editable: true })),
+  }] } }));
+  await page.route("**/api/config/meta/model_fallback_*", (route) => {
+    const kind = new URL(route.request().url()).pathname.slice("/api/config/meta/model_fallback_".length);
+    enabled[kind] = route.request().postDataJSON().value;
+    return route.fulfill({ json: { status: "ok" } });
+  });
+  await page.goto("/webui/models");
+  await page.getByRole("tab", { name: "Model Management" }).click();
+  const toggle = page.getByRole("switch", { name: "Try the next model on failure" });
+  await expect(toggle).toBeChecked();
+  await page.getByRole("button", { name: /Image Generation/ }).click();
+  await expect(toggle).not.toBeChecked();
+  await toggle.click();
+  await expect(toggle).toBeChecked();
+  await page.getByRole("button", { name: /^Chat\s*\(/ }).click();
+  await toggle.click();
+  await expect(toggle).not.toBeChecked();
+  await page.reload();
+  await page.getByRole("tab", { name: "Model Management" }).click();
+  await expect(toggle).not.toBeChecked();
+  await page.getByRole("button", { name: /Image Generation/ }).click();
+  await expect(toggle).toBeChecked();
+});
+
 test("missing chat models guide to setup and the guide disappears after a model is added", async ({ page }, info) => {
   let configured = false;
   const errors: string[] = [];

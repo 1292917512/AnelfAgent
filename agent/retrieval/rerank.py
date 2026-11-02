@@ -6,7 +6,7 @@ from typing import Any, Dict, List
 
 
 async def rerank_documents(query: str, documents: List[str]) -> Dict[str, Any]:
-    """按 rerank 类型模型优先级链对文档列表重排序，逐模型失败回退。
+    """按重排序类型的优先级和失败切换设置选择模型。
 
     Returns:
         {"results": [...], "model": 模型名}；无可用模型/全部失败抛 RuntimeError。

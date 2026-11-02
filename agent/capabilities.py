@@ -8,7 +8,7 @@
   未显式配置优先级链时自动加入链尾（即插即用）；
 
 解析语义：
-- 工具参数 provider=auto（默认）按优先级链依次尝试，失败降级并聚合归因；
+- 工具参数 provider=auto（默认）按优先级选择可用提供者，失败切换遵循对应能力的模型策略；
 - 显式指定 provider 不做隐式回退，不可用即报明原因；
 - 优先级链经配置键（JSON 字典 {能力: [provider 名]}）调整，留空/缺失时
   为默认链 + 已注册组件（注册顺序）。
@@ -19,12 +19,18 @@ Model Experience：能力状态区分自动链与显式配置，失败结果保�
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Protocol, Tuple, runtime_checkable
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Protocol, Tuple, runtime_checkable
 
 from core.log import log
 from core.registration import record_mapping
 from core.sanitizer import sanitize_text
 from core.tool_errors import ErrorCause
+
+if TYPE_CHECKING:
+    from agent.llm.config import ModelType
+    from agent.llm.llm_manager import LLMManager
+    from agent.llm.media_client import MediaClient
 
 
 class ProviderUnavailable(Exception):
@@ -41,6 +47,25 @@ class ProviderChainError(RuntimeError):
     def __init__(self, message: str, model_errors: Dict[str, str]) -> None:
         super().__init__(message)
         self.model_errors = model_errors
+
+
+async def run_media_capability(
+    manager: LLMManager,
+    kind: ModelType,
+    invoke: Callable[[str, MediaClient], Awaitable[Dict[str, Any]]],
+) -> Dict[str, Any]:
+    """将统一媒体调用的模型身份、配置缺失与失败明细映射到能力提供者接口。"""
+    from agent.llm.llm_client import LLMNotConfiguredError
+    from agent.llm.model_execution import ModelCallError, execute_media
+
+    try:
+        result = await execute_media(manager, kind, invoke)
+    except LLMNotConfiguredError as exc:
+        raise ProviderUnavailable(str(exc)) from exc
+    except ModelCallError as exc:
+        raise ProviderChainError(str(exc), exc.errors) from exc
+    result.value.setdefault("model", result.model)
+    return result.value
 
 
 @runtime_checkable
@@ -112,13 +137,18 @@ class CapabilityRouter:
             某能力未配置/为空时取默认链并自动追加已注册组件。
         default_chain: 各能力兜底链（通常为 ["models"]，内部模型利用）。
         log_tag: 日志标签。
+        allow_fallback: 该能力的调用失败后是否允许尝试另一提供者。
     """
 
-    def __init__(self, *, config_key: str, default_chain: List[str], log_tag: str) -> None:
+    def __init__(
+        self, *, config_key: str, default_chain: List[str], log_tag: str,
+        allow_fallback: Callable[[str], bool],
+    ) -> None:
         self._providers: Dict[str, CapabilityProvider] = {}
         self._config_key = config_key
         self._default_chain = list(default_chain)
         self._log_tag = log_tag
+        self._allow_fallback = allow_fallback
 
     # ------------------------------------------------------------------
     # 注册表
@@ -221,7 +251,8 @@ class CapabilityRouter:
         **kwargs: Any,
     ) -> Dict[str, Any]:
         """按优先级链执行能力调用，返回结果 dict（成功含 success=True，失败含 error）。"""
-        if provider and provider != "auto":
+        explicit = bool(provider and provider != "auto")
+        if explicit:
             impl = self._providers.get(provider)
             if impl is None:
                 return error_payload(
@@ -241,6 +272,7 @@ class CapabilityRouter:
         else:
             chain = self.chain(capability)
 
+        allow_fallback = not explicit and self._allow_fallback(capability)
         errors: Dict[str, str] = {}
         skipped: Dict[str, str] = {}
 
@@ -264,7 +296,7 @@ class CapabilityRouter:
                 if result.get("error") or result.get("success") is False:
                     detail = sanitize_text(str(result.get("error") or "提供者返回失败，但未说明原因"))[:200]
                     errors[name] = detail
-                    if (provider and provider != "auto") or result.get("outcome") == "unknown":
+                    if not allow_fallback or result.get("outcome") == "unknown":
                         return {**result, "success": False, "error": detail,
                                 "provider": name, "capability": capability}
                     continue
@@ -288,9 +320,10 @@ class CapabilityRouter:
                 errors[name] = detail[:200]
                 if isinstance(exc, ProviderChainError):
                     errors.update({key: sanitize_text(value)[:200] for key, value in exc.model_errors.items()})
-                log(f"{label} 提供者 '{name}' 调用失败，尝试下一提供者: {detail}",
+                log(f"{label} 提供者 '{name}' 调用失败: {detail}",
                     "WARNING", tag=self._log_tag)
-                continue
+                if not allow_fallback:
+                    break
 
         if not errors and skipped:
             return error_payload(
@@ -301,7 +334,7 @@ class CapabilityRouter:
             )
         cause, retryable, hint = classify_provider_errors(errors)
         return error_payload(
-            f"{label}失败：所有提供者均调用失败",
+            f"{label}失败：已尝试的提供者均调用失败",
             cause=cause, retryable=retryable, hint=hint,
             errors=errors, skipped=skipped,
         )

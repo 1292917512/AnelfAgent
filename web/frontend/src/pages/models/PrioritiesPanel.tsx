@@ -1,7 +1,9 @@
 import { useState, useCallback, useMemo } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { modelsApi } from "@/lib/api";
+import { configMetaApi, modelsApi } from "@/lib/api";
+import { QueryError } from "@/components/common/AsyncState";
+import { FallbackPolicyRow } from "./FallbackPolicyRow";
 import { cn } from "@/lib/utils";
 import { Switch } from "@/components/ui";
 import type { ModelPriorityItem } from "@/lib/types";
@@ -150,6 +152,13 @@ export function PrioritiesPanel() {
   const [activeType, setActiveType] = useState("chat");
 
   const { data: priorities = {} } = usePriorities();
+  const policyQuery = useQuery({
+    queryKey: ["configMeta"],
+    queryFn: () => configMetaApi.list().then((r) => r.data),
+    select: (data) => data.groups.find((group) => group.group === "models/fallback")?.items ?? [],
+    throwOnError: false,
+  });
+  const policy = policyQuery.data?.find((item) => item.tag === activeType);
 
   const pinMut = useModelPin();
 
@@ -183,7 +192,7 @@ export function PrioritiesPanel() {
     useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
 
-  const availableTypes = TYPE_ORDER.filter(tp => (priorities[tp]?.length ?? 0) > 0);
+  const availableTypes = TYPE_ORDER.filter(tp => priorities[tp]?.length || policyQuery.data?.some(item => item.tag === tp));
   const currentItems = useMemo(() => priorities[activeType] ?? [], [priorities, activeType]);
 
   const handleDragEnd = useCallback((event: DragEndEvent) => {
@@ -225,6 +234,9 @@ export function PrioritiesPanel() {
         {availableTypes.length === 0 && <p className="text-sm text-muted py-2">{t("noConfiguredModels")}</p>}
       </div>
 
+      {policyQuery.isError && <QueryError compact error={policyQuery.error} retry={() => void policyQuery.refetch()} />}
+      {policy && <FallbackPolicyRow key={policy.key} item={policy} />}
+
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
         <SortableContext items={currentItems.map(i => i.id)} strategy={verticalListSortingStrategy}>
           <div className="space-y-2">
@@ -245,11 +257,6 @@ export function PrioritiesPanel() {
         </SortableContext>
       </DndContext>
 
-      {currentItems.length > 0 && (
-        <p className="text-xs text-muted">
-          {t("priorityNote", { type: t(`modelTypeLabels.${activeType}`, { defaultValue: activeType }) })}
-        </p>
-      )}
     </div>
   );
 }

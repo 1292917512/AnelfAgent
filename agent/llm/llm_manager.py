@@ -32,6 +32,7 @@ from agent.delegation.profile import (
     parse_output_schema,
     valid_sub_agent_name,
 )
+from agent.llm.fallback import fallback_enabled
 from agent.llm.llm_client import (
     API_TYPE_ANTHROPIC,
     API_TYPES,
@@ -712,21 +713,6 @@ class LLMManager(BaseEntity):
     def get_image_edit_model(self) -> Optional[str]:
         return self._find_model_by_type("image_edit")
 
-    def iter_media_for_type(self, model_type: str) -> List[tuple]:
-        """返回指定类型的所有 (model_name, MediaClient) 对，按优先级排序。
-
-        用于带回退的媒体工具调用：依次尝试每个模型，第一个成功的即返回。
-        """
-        from agent.llm.media_client import MediaClient
-        result: List[tuple] = []
-        for mid in self._type_priorities.get(model_type, []):
-            client = self._clients.get(mid)
-            if not client or not client.config.enabled:
-                continue
-            mc = MediaClient.from_config(client.config)
-            result.append((client.config.model, mc))
-        return result
-
     def _find_model_by_type(self, model_type: str, keyword: str = "") -> Optional[str]:
         priority = self._type_priorities.get(model_type, [])
         if keyword:
@@ -806,7 +792,7 @@ class LLMManager(BaseEntity):
         """
         primary = client or self.get_default()
         candidates = [primary]
-        if allow_fallback:
+        if allow_fallback and fallback_enabled(model_type):
             candidates.extend(self.get_fallback_clients(
                 model_type=model_type, exclude=primary.config.name,
                 require_tools=bool(tools), require_vision=self._messages_contain_images(messages),

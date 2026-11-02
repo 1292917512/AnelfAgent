@@ -66,6 +66,30 @@ class TestGetMeta:
 
 
 class TestSaveMeta:
+    def test_model_fallback_defaults_and_persistence(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+        from agent.llm.config import ModelType
+        from agent.llm.fallback import fallback_enabled
+
+        monkeypatch.setattr("web.server._load_auth_password", lambda: "local-test-password")
+        assert client.put("/api/config/meta/model_fallback_image_gen", json={"value": True}).status_code == 401
+        assert client.post("/api/auth/login", json={"password": "local-test-password"}).status_code == 200
+        groups = client.get("/api/config/meta").json()["groups"]
+        fields = next(group["items"] for group in groups if group["group"] == "models/fallback")
+        assert {field["tag"]: field["value"] for field in fields} == {
+            kind.value: kind is ModelType.CHAT for kind in ModelType
+        }
+        for kind in (ModelType.CHAT, ModelType.IMAGE_GEN):
+            field = next(item for item in fields if item["tag"] == kind.value)
+            response = client.put(f"/api/config/meta/{field['key']}", json={"value": not field["value"]})
+            assert response.status_code == 200
+            assert fallback_enabled(kind) is not field["value"]
+        ConfigManager.clear()
+        monkeypatch.setattr(ConfigManager, "_initialized", False)
+        assert ConfigManager.initialize()
+        assert not fallback_enabled(ModelType.CHAT)
+        assert fallback_enabled(ModelType.IMAGE_GEN)
+        assert not fallback_enabled(ModelType.VIDEO)
+
     def test_iteration_limit_defaults_to_unlimited_and_can_be_restored(self, client, tmp_path, monkeypatch) -> None:
         import json
 

@@ -6,6 +6,7 @@ import pytest
 
 from agent.tts import SentenceSplitter, TtsPipeline, get_tts_registry, strip_for_speech
 from agent.tts.providers import TtsStream, synthesize_sentence
+from core.config import ConfigManager
 
 
 class TestStripForSpeech:
@@ -134,11 +135,14 @@ def clean_tts_registry():
 
 
 class TestProviderFailover:
-    async def test_first_chunk_failure_falls_back(self) -> None:
+    async def test_first_chunk_failure_obeys_tts_policy(self) -> None:
         bad = FakeProvider("bad", 10, fail_first=True)
         good = FakeProvider("good", 20)
         get_tts_registry().register(bad)
         get_tts_registry().register(good)
+        assert await synthesize_sentence("你好") is None
+        assert bad.calls == 1 and good.calls == 0
+        ConfigManager.set("model_fallback_tts", True)
         stream = await synthesize_sentence("你好")
         assert stream is not None
         chunks = [c async for c in stream.chunks]

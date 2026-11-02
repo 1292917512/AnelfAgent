@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from typing import Generic, TypeVar
 
 from agent.llm.config import ModelType
+from agent.llm.fallback import fallback_enabled
 from agent.llm.llm_client import LLMClient, LLMNotConfiguredError
 from agent.llm.llm_manager import LLMManager
 from agent.llm.media_client import MediaClient
@@ -77,6 +78,8 @@ async def execute_candidates(
     """每个候选调用一次；取消立即传播，显式时限约束单个候选的完整操作。"""
     validate_timeout(timeout)
     candidates = select_candidates(manager, model_type, model_id=model_id, accepts=accepts)
+    if not fallback_enabled(model_type):
+        candidates = candidates[:1]
     errors: dict[str, str] = {}
     policy_rejects = 0
     for client in candidates:

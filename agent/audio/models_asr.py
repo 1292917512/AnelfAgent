@@ -15,7 +15,7 @@ from core.config import get_config_int
 
 
 class ModelsAsrProvider:
-    """模型配置 ASR 提供者：按 llm_clients.json 的 asr 类型优先级逐模型回退。"""
+    """模型配置 ASR 提供者：遵循语音识别的模型优先级与失败切换设置。"""
 
     name = "models"
     kind = KIND_ASR

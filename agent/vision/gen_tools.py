@@ -3,7 +3,7 @@
 接口层：参数归一 → 沙箱校验 → get_visual_router() 按优先级链路由；
 产物（图片/视频）统一落盘 workspace/uploads/ 并返回相对路径。
 
-provider 参数：auto（默认，按配置优先级链自动路由+失败降级）或指定
+provider 参数：auto（默认，按优先级和该模型类型的切换设置路由）或指定
 提供者名；可用值与能力优先级经 vision_config(action="providers") 查看。
 
 Model Experience：视觉主模型通过工具回注原图；本地路径、URL、Data URL 共用此路由，辅助识图按会话通知。
@@ -166,7 +166,7 @@ async def recognize_video(video_path: str = "", prompt: str = "", provider: str 
         video_path: 视频的绝对路径或 URL
         prompt: 可选的分析提示，如"总结视频里发生的事情"
         background: 默认 true 后台识别并通知所属会话；false 同步返回描述。
-        provider: auto（默认，按配置链路由+失败自动降级）或指定提供者名
+        provider: auto（默认，按该模型类型的优先级与切换设置路由）或指定提供者名
     """
     return await _recognize_visual(video_path, prompt, provider, kwargs, background=background)
 
@@ -197,7 +197,7 @@ async def generate_image(
         num_inference_steps: 推理步数，默认 20（仅 models 链生效），越高越精细但更慢
         style: 可选风格预设名（vision_style_presets 配置）或自定义风格描述
         reference_image: 人物参考照片的本地路径或 URL（非空=人物参考图生图）
-        provider: auto（默认，按配置链路由+失败自动降级）或指定提供者名
+        provider: auto（默认，按该模型类型的优先级与切换设置路由）或指定提供者名
     """
     err = _check_provider(provider)
     if err:
@@ -231,7 +231,7 @@ async def edit_image(
         image_path: 要编辑的图片，本地路径或 URL
         prompt: 编辑指令，描述希望如何修改图片
         num_inference_steps: 推理步数，默认 20
-        provider: auto（默认，按配置链路由+失败自动降级）或指定提供者名
+        provider: auto（默认，按该模型类型的优先级与切换设置路由）或指定提供者名
     """
     err = _check_provider(provider)
     if err:
@@ -290,7 +290,7 @@ async def generate_video(
         resolution: 分辨率，留空用默认配置；如 "2K" 或 "768P"/"1080P"
         ratio: 画面比例，如 "16:9"/"9:16"（仅支持的协议生效）
         style: 可选风格预设名（vision_style_presets 配置）或自定义风格描述
-        provider: auto（默认，按配置链路由+失败自动降级）或指定提供者名
+        provider: auto（默认，按该模型类型的优先级与切换设置路由）或指定提供者名
     """
     err = _check_provider(provider)
     if err:
@@ -327,7 +327,7 @@ async def query_video_task(task_id: str, download: bool = True, provider: str = 
     Args:
         task_id: 视频任务 ID（由创建任务响应或任务列表获得）
         download: 任务成功时是否下载视频到本地（默认是）
-        provider: auto（默认，按配置链路由+失败自动降级）或指定提供者名
+        provider: auto（默认，按该模型类型的优先级与切换设置路由）或指定提供者名
     """
     if not task_id.strip():
         return tool_error("未提供 task_id", cause=ErrorCause.PARAM, retryable=False)
@@ -353,7 +353,7 @@ async def list_video_tasks(page_num: int = 1, page_size: int = 20, status: str =
         page_num: 页码，从 1 开始
         page_size: 每页条数
         status: 可选状态过滤：queued/running/succeeded/failed/cancelled/expired
-        provider: auto（默认，按配置链路由+失败自动降级）或指定提供者名
+        provider: auto（默认，按该模型类型的优先级与切换设置路由）或指定提供者名
     """
     err = _check_provider(provider)
     if err:
@@ -370,7 +370,7 @@ async def cancel_video_task(task_id: str, provider: str = "auto") -> str:
 
     Args:
         task_id: 视频任务 ID
-        provider: auto（默认，按配置链路由+失败自动降级）或指定提供者名
+        provider: auto（默认，按该模型类型的优先级与切换设置路由）或指定提供者名
     """
     if not task_id.strip():
         return tool_error("未提供 task_id", cause=ErrorCause.PARAM, retryable=False)

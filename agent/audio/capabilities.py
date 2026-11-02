@@ -18,9 +18,10 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional
 from agent.capabilities import (
     CapabilityNotSupported,
     CapabilityRouter,
-    ProviderChainError,
-    ProviderUnavailable,
+    run_media_capability,
 )
+from agent.llm.config import ModelType
+from agent.llm.fallback import fallback_enabled
 from core.log import log
 
 CAP_TTS = "tts"
@@ -29,11 +30,10 @@ CAP_MUSIC = "music"
 
 SOUND_CAPABILITIES = (CAP_TTS, CAP_VOICE_MGMT, CAP_MUSIC)
 
-# 能力 → iter_media_for_type 的模型类型
 _CAPABILITY_MODEL_TYPE = {
-    CAP_TTS: "tts",
-    CAP_VOICE_MGMT: "tts",
-    CAP_MUSIC: "music",
+    CAP_TTS: ModelType.TTS,
+    CAP_VOICE_MGMT: ModelType.TTS,
+    CAP_MUSIC: ModelType.MUSIC,
 }
 
 _LOG_TAG = "声音"
@@ -52,8 +52,8 @@ class ModelsSoundProvider:
 
     def is_configured(self, capability: str) -> bool:
         try:
-            model_type = _CAPABILITY_MODEL_TYPE.get(capability, "")
-            return bool(model_type) and bool(_mgr().iter_media_for_type(model_type))
+            kind = _CAPABILITY_MODEL_TYPE.get(capability)
+            return kind is not None and _mgr().get_by_type(kind) is not None
         except Exception as e:
             log(f"models 提供者可用性检查失败: {e}", "DEBUG", tag=_LOG_TAG)
             return False
@@ -62,10 +62,7 @@ class ModelsSoundProvider:
         return {}
 
     async def run(self, capability: str, **kwargs: Any) -> Dict[str, Any]:
-        model_type = _CAPABILITY_MODEL_TYPE.get(capability)
-        if not model_type:
-            raise CapabilityNotSupported(f"models 提供者不支持能力 '{capability}'")
-        dispatch: Dict[str, Callable[..., Awaitable[Any]]] = {
+        dispatch: Dict[str, Callable[..., Awaitable[Dict[str, Any]]]] = {
             CAP_TTS: self._tts,
             CAP_VOICE_MGMT: self._voice_mgmt,
             CAP_MUSIC: self._music,
@@ -73,34 +70,10 @@ class ModelsSoundProvider:
         handler = dispatch.get(capability)
         if handler is None:
             raise CapabilityNotSupported(f"models 提供者不支持能力 '{capability}'")
-        return await self._with_model_fallback(model_type, handler, kwargs)
-
-    # ------------------------------------------------------------------
-    # 模型链回退骨架
-    # ------------------------------------------------------------------
-
-    async def _with_model_fallback(
-        self,
-        model_type: str,
-        handler: Callable[..., Awaitable[Any]],
-        kwargs: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        from agent.llm.config import ModelType
-        from agent.llm.llm_client import LLMNotConfiguredError
-        from agent.llm.model_execution import ModelCallError, execute_media
-
-        try:
-            result = await execute_media(
-                _mgr(), ModelType(model_type),
-                lambda model, client: handler(model, client, **kwargs),
-            )
-        except LLMNotConfiguredError as exc:
-            raise ProviderUnavailable(str(exc)) from exc
-        except ModelCallError as exc:
-            raise ProviderChainError(str(exc), exc.errors) from exc
-        output: Dict[str, Any] = result.value
-        output.setdefault("model", result.model)
-        return output
+        return await run_media_capability(
+            _mgr(), _CAPABILITY_MODEL_TYPE[capability],
+            lambda model, client: handler(model, client, **kwargs),
+        )
 
     # ------------------------------------------------------------------
     # 各能力的单模型调用
@@ -181,6 +154,7 @@ def get_sound_router() -> CapabilityRouter:
             config_key="sound_provider_priority",
             default_chain=["models"],
             log_tag=_LOG_TAG,
+            allow_fallback=lambda cap: cap in _CAPABILITY_MODEL_TYPE and fallback_enabled(_CAPABILITY_MODEL_TYPE[cap]),
         )
         _router.register(ModelsSoundProvider())
     return _router

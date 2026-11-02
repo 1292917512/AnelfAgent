@@ -55,6 +55,8 @@ def _patch_mgr(monkeypatch: pytest.MonkeyPatch, clients: list) -> None:
 
 def _patch_common(monkeypatch: pytest.MonkeyPatch, clients: list) -> List[int]:
     """装配桩：模型管理器 + 本地加载 + 计数版优化。"""
+    from core.config import ConfigManager
+    ConfigManager.set("model_fallback_vision", True)
     _patch_mgr(monkeypatch, clients)
     monkeypatch.setattr(image_utils, "is_video_path", lambda _p: False)
     monkeypatch.setattr(
@@ -178,6 +180,8 @@ class TestVisionDownloadFirst:
     async def test_base64_download_failure_falls_back_to_url_model(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from unittest.mock import AsyncMock
 
+        from core.config import ConfigManager
+        ConfigManager.set("model_fallback_vision", True)
         first = _FakeVisionClient("base64")
         first.config.supports_url_vision = False
         second = _FakeVisionClient("url")
