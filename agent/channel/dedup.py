@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import time
-from typing import Dict, Optional
+from collections import OrderedDict
+from typing import Optional
 
 
 class MessageDedup:
@@ -13,16 +14,19 @@ class MessageDedup:
     """
 
     def __init__(self, ttl_seconds: Optional[float] = 300, max_size: int = 2000) -> None:
+        if max_size < 1:
+            raise ValueError("去重器容量必须为正数")
         self._ttl_seconds = ttl_seconds
         self._max_size = max_size
-        self._seen: Dict[str, float] = {}
+        self._seen: OrderedDict[str, float] = OrderedDict()
 
     def is_duplicate(self, key: str) -> bool:
         """键已存在（未过期）返回 True；否则登记并返回 False。"""
-        now = time.time()
-        self._evict(now)
-        if key in self._seen:
+        now = time.monotonic()
+        timestamp = self._seen.get(key)
+        if timestamp is not None and (self._ttl_seconds is None or now - timestamp <= self._ttl_seconds):
             return True
+        self._evict(now)
         self._seen[key] = now
         return False
 
@@ -32,10 +36,11 @@ class MessageDedup:
 
     def _evict(self, now: float) -> None:
         if self._ttl_seconds is not None:
-            expired = [k for k, ts in self._seen.items() if now - ts > self._ttl_seconds]
-            for k in expired:
-                del self._seen[k]
+            while self._seen:
+                first = next(iter(self._seen))
+                if now - self._seen[first] <= self._ttl_seconds:
+                    break
+                del self._seen[first]
         if len(self._seen) >= self._max_size:
-            ordered = sorted(self._seen.items(), key=lambda kv: kv[1])
-            for k, _ in ordered[: len(ordered) // 2]:
-                del self._seen[k]
+            for _ in range(max(1, len(self._seen) // 2)):
+                self._seen.popitem(last=False)

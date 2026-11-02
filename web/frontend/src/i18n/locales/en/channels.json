@@ -1,4 +1,6 @@
 {
+  "saveIncomplete": "Some settings could not be saved. Review the remaining changes and try again.",
+  "setupChannel": "Set up connection",
   "tabs": {
     "channels": "Channel Management",
     "approvals": "Permissions",

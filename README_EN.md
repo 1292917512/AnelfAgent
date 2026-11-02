@@ -236,6 +236,7 @@ Context is layered by change frequency: stable instructions and history retain t
 | Platform / module | Integration |
 |---|---|
 | **QQ** | OneBot v11 + NapCat |
+| **QQ Official Bot** | QQ Open Platform for direct, group and guild messages. [Setup guide (Chinese)](channels/qqbot/README.md) |
 | **WeChat `weixin`** | iLink Bot API, QR login, no public webhook; [guide](channels/weixin/README.md) |
 | **Personal WeChat `wcauto`** | Windows desktop bridge, private / group messages, media, and Moments; separate bridge runtime and write-operation switches; [guide](channels/wcauto/README.md) |
 | **Feishu (Lark)** | WebSocket events; separate [Feishu ACP task delegation](docs/feishu-task-binding.md) |

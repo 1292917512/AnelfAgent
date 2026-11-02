@@ -76,7 +76,8 @@ Cognee 同步队列概览独立于全量构建阶段展示：待同步为 `pendi
 
 - **频道前端**：`channels/<id>/frontend/` 自持清单、组件、API、类型和翻译。`module-links.mjs`
   生成懒加载清单，构建以 `@channels` 别名直接消费源码。`index.ts` 声明 `login` / `panel` /
-  `hiddenInChannelList`；`panel` 同时挂载到已注册频道和仅有配置的未注册频道卡片，频道管理功能
+  `settings` / `hiddenInChannelList`。`settings` 用配置元数据和宿主草稿呈现专属接入表单，保存与启动仅作用于当前频道。
+  `settings` 和 `panel` 均可挂载到已注册频道和仅有配置的未注册频道卡片，频道管理功能
   应优先放在这里。真正独立的整页内容才经 `contributions.ts` 的 `app.routes` 插槽注册，不能用
   独立路由复制频道面板。核心频道管理面由注册表驱动，禁止按具体频道 ID 硬编码
 - **实体面板**：`entities/<name>/panel.tsx`（+ `panels/` 子目录）经 `module-links.mjs` **代码生成**

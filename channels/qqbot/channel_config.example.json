@@ -1,0 +1,9 @@
+{
+  "enabled": false,
+  "app_id": "",
+  "app_secret": "",
+  "connection_mode": "webhook",
+  "intents": 1107296256,
+  "require_mention": true,
+  "allowed_chats": ""
+}

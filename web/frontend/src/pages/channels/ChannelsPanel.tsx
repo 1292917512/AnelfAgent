@@ -2,10 +2,11 @@ import { useSearchParams } from "react-router-dom";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { adaptersApi, configMetaApi } from "@/lib/api";
+import { adaptersApi, apiErrorMessage, configMetaApi } from "@/lib/api";
 import type { ConfigMetaGroup, ConfigMetaItem, ConfigValues } from "@/lib/types";
 import { Save, CheckCircle, RefreshCw, RotateCcw } from "lucide-react";
-import { isChannelHidden } from "@/lib/channel-plugins";
+import { CHANNEL_SETTINGS_COMPONENTS, isChannelHidden, type ChannelSettingsProps } from "@/lib/channel-plugins";
+import { ConfigField } from "./ConfigField";
 import { AdapterCard } from "./AdapterCard";
 import { UnmatchedGroupCard } from "./UnmatchedGroupCard";
 import { useDraft } from "@/hooks/useDraft";
@@ -50,20 +51,31 @@ export function ChannelsPanel({ onOpenTools }: {
   });
   const save = useMutation({
     mutationFn: async (patch: ConfigValues) => {
-      const results = await Promise.allSettled(Object.entries(patch).map(async ([key, value]) => {
-        const response = await configMetaApi.save(key, value);
-        return { key, submitted: value, value: response.data.value };
-      }));
+      const writes = Object.entries(configs).flatMap(([channel, items]) => {
+        const entries = items.filter(item => item.key in patch).map(item => [item.key, patch[item.key]] as const);
+        if (!entries.length) return [];
+        if (CHANNEL_SETTINGS_COMPONENTS[channel]) {
+          const submitted = Object.fromEntries(entries);
+          return [configMetaApi.saveChannel(channel, submitted).then(({ data }) => ({ submitted, values: data.values }))];
+        }
+        return entries.map(([key, value]) => configMetaApi.save(key, value).then(({ data }) => ({
+          submitted: { [key]: value }, values: data.value === undefined ? {} : { [key]: data.value },
+        })));
+      });
+      const results = await Promise.allSettled(writes);
       const accepted: ConfigValues = {};
       const persisted: ConfigValues = {};
+      let error = "";
       for (const result of results) {
-        if (result.status !== "fulfilled") continue;
-        accepted[result.value.key] = result.value.submitted;
-        if (result.value.value !== undefined) persisted[result.value.key] = result.value.value;
+        if (result.status === "rejected") error ||= apiErrorMessage(result.reason, t("saveIncomplete"));
+        else {
+          Object.assign(accepted, result.value.submitted);
+          Object.assign(persisted, result.value.values);
+        }
       }
-      return { accepted, persisted, complete: results.every((r) => r.status === "fulfilled") };
+      return { accepted, persisted, error };
     },
-    onSuccess: ({ accepted, persisted, complete }) => {
+    onSuccess: ({ accepted, persisted, error }) => {
       client.setQueryData<{ groups: ConfigMetaGroup[] }>(["configMeta"], (current) => current && ({
         groups: current.groups.map((group) => ({
           ...group, items: group.items.map((item) => Object.prototype.hasOwnProperty.call(persisted, item.key) ? { ...item, value: persisted[item.key] } : item),
@@ -71,13 +83,40 @@ export function ChannelsPanel({ onOpenTools }: {
       }));
       draft.acknowledge(accepted);
       void client.invalidateQueries({ queryKey: ["configMeta"] });
-      if (complete) showSaved();
+      if (!error) showSaved();
     },
   });
   const reload = useChannelReload();
-  const busy = toggle.isPending || reload.isPending || save.isPending;
+  const apply = useMutation({
+    mutationFn: async ({ key, connect }: { key: string; connect: boolean }) => {
+      const patch = Object.fromEntries((configs[key] ?? []).filter((item) => item.key in draft.patch)
+        .map((item) => [item.key, draft.patch[item.key]]));
+      if (Object.keys(patch).length) {
+        const { error } = await save.mutateAsync(patch);
+        if (error) throw new Error(error);
+      }
+      if (connect) await adaptersApi.start(key);
+    },
+    onSettled: () => Promise.all([
+      client.invalidateQueries({ queryKey: ["adapters"] }),
+      client.invalidateQueries({ queryKey: ["configMeta"] }),
+    ]),
+  });
+  const busy = toggle.isPending || reload.isPending || save.isPending || apply.isPending;
   const update = (key: string, value: unknown) => { draft.update(key, value); resetSaved(); };
-  const visible = (key: string, name = "") => !isChannelHidden(key) && (key + " " + name).toLowerCase().includes(search.trim().toLowerCase());
+  const settingsFor = (key: string, status: string): ChannelSettingsProps => {
+    const items = configs[key] ?? [];
+    return {
+      items, status, busy, dirty: items.some((item) => item.key in draft.patch),
+      value: (item) => draft.values[item.key], update: (item, value) => update(item.key, value),
+      field: (item, label) => <ConfigField key={item.key} meta={label ? { ...item, description: label } : item}
+        prefix={`${key}_`} value={draft.values[item.key]} onChange={(value) => update(item.key, value)} />,
+      apply: (connect) => apply.mutateAsync({ key, connect }),
+    };
+  };
+  const term = search.trim().toLowerCase();
+  const visible = (key: string, name = "") => !isChannelHidden(key) && (!term ||
+    [key, name, t(`config:sections.adapter/${key}`, { defaultValue: key })].some(label => label.toLowerCase().includes(term)));
   const registered = adapters.data?.adapters ?? [];
   const matches = registered.filter((adapter) => visible(adapter.key, adapter.name));
   const registeredKeys = new Set(registered.map((adapter) => adapter.key));
@@ -103,7 +142,7 @@ export function ChannelsPanel({ onOpenTools }: {
           <div className="grid gap-4">
             {count === 0 && <p className="py-12 text-center text-muted">{t("common:noMatches")}</p>}
             {matches.map((adapter) => (
-              <AdapterCard key={adapter.key} adapter={adapter} isOpen={expanded === adapter.key} configs={configs[adapter.key] ?? []}
+              <AdapterCard key={adapter.key} adapter={adapter} settings={settingsFor(adapter.key, adapter.status)} isOpen={expanded === adapter.key} configs={configs[adapter.key] ?? []}
                 values={draft.values} toggling={toggle.isPending && toggle.variables === adapter.key}
                 busy={busy} reloadDisabled={draft.dirty || busy} reloading={reload.isPending && reload.variables === adapter.key}
                 onReload={() => reload.mutate(adapter.key)}
@@ -112,7 +151,7 @@ export function ChannelsPanel({ onOpenTools }: {
                 onUpdateVal={update} onResetDefaults={() => { for (const item of configs[adapter.key] ?? []) update(item.key, item.default); }} />
             ))}
             {unmatched.map((key) => (
-              <UnmatchedGroupCard key={key} channelKey={key} configs={configs[key] ?? []} values={draft.values}
+              <UnmatchedGroupCard key={key} channelKey={key} settings={settingsFor(key, "stopped")} configs={configs[key] ?? []} values={draft.values}
                 isOpen={expanded === key} toggling={toggle.isPending && toggle.variables === key}
                 busy={busy}
                 onToggleExpand={() => setExpanded(expanded === key ? null : key)}

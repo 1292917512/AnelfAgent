@@ -117,6 +117,7 @@ export const adaptersApi = {
   list: () => api.get<AdapterListResult>("/adapters/"),
   reload: (key: string | null = null) => api.post<ModuleSyncResult>(key ? `/adapters/${encodeURIComponent(key)}/reload` : "/adapters/reload"),
   toggle: (key: string) => api.put(`/adapters/${encodeURIComponent(key)}/toggle`),
+  start: (key: string) => api.put(`/adapters/${encodeURIComponent(key)}/start`),
   testHealth: (key: string) =>
     api.post<ChannelTestHealthResult>(`/adapters/${encodeURIComponent(key)}/test/health`),
   testSend: (key: string, payload: { chat_id: string; text: string }) =>

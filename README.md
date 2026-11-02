@@ -259,6 +259,7 @@ Web 记忆页提供长期记忆、便签、关系、召回测试、标签治理�
 | 平台 / 模块 | 接入特点 |
 |---|---|
 | **QQ** | OneBot v11 + NapCat |
+| **QQ 官方机器人** | QQ 开放平台，支持单聊、群聊和频道。[接入指南](channels/qqbot/README.md) |
 | **微信 `weixin`** | iLink Bot API，扫码登录、无需公网 webhook；见[说明](channels/weixin/README.md) |
 | **个人微信 `wcauto`** | Windows 桌面桥，私聊 / 群聊 / 媒体 / 朋友圈；独立桥负载与写操作开关，见[说明](channels/wcauto/README.md) |
 | **飞书** | WebSocket 事件；另有[飞书任务委派 ACP](docs/feishu-task-binding.md) |

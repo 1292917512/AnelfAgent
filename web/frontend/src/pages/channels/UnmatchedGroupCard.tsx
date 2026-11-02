@@ -5,11 +5,13 @@ import type { ConfigMetaItem, ConfigValues } from "@/lib/types";
 import { StatusDot } from "@/components/common/StatusDot";
 import { cn } from "@/lib/utils";
 import { ConfigField } from "./ConfigField";
-import { CHANNEL_LOGIN_COMPONENTS, CHANNEL_PANEL_COMPONENTS } from "@/lib/channel-plugins";
+import { CHANNEL_LOGIN_COMPONENTS, CHANNEL_PANEL_COMPONENTS, CHANNEL_SETTINGS_COMPONENTS, type ChannelSettingsProps } from "@/lib/channel-plugins";
+import { Button } from "@/components/ui";
 
 /** 未注册为频道的配置组卡片（可启用 + 配置表单） */
 export function UnmatchedGroupCard({
   channelKey,
+  settings,
   configs,
   values,
   isOpen,
@@ -20,6 +22,7 @@ export function UnmatchedGroupCard({
   onUpdateVal,
 }: {
   channelKey: string;
+  settings: ChannelSettingsProps;
   configs: ConfigMetaItem[];
   values: ConfigValues;
   isOpen: boolean;
@@ -33,6 +36,7 @@ export function UnmatchedGroupCard({
   // 未注册频道同样可携带插件登录入口与专属面板（如扫码登录在启用前可用）
   const PluginLogin = CHANNEL_LOGIN_COMPONENTS[channelKey];
   const PluginPanel = CHANNEL_PANEL_COMPONENTS[channelKey];
+  const PluginSettings = CHANNEL_SETTINGS_COMPONENTS[channelKey];
   return (
     <div className={cn(
       "rounded-xl border transition-colors bg-card",
@@ -44,7 +48,7 @@ export function UnmatchedGroupCard({
           <ChevronDown size={16} className={cn("text-muted transition-transform", isOpen && "rotate-180")} />
           <StatusDot status="offline" />
           <div>
-            <span className="text-sm font-medium text-heading">{channelKey}</span>
+            <span className="text-sm font-medium text-heading">{t(`config:sections.adapter/${channelKey}`, { defaultValue: channelKey })}</span>
             <span className="ml-2 text-[11px] px-2 py-0.5 rounded-full bg-secondary text-muted border border-border">
               {t("notEnabled")}
             </span>
@@ -59,7 +63,8 @@ export function UnmatchedGroupCard({
               <PluginLogin compact />
             </Suspense>
           )}
-          <button
+          {PluginSettings ? (!isOpen && <Button variant="primary" size="sm" onClick={onToggleExpand}>
+            <Settings2 size={14} />{t("setupChannel")}</Button>) : <button
             onClick={onStart}
             disabled={busy}
             className={cn(
@@ -71,7 +76,7 @@ export function UnmatchedGroupCard({
           >
             <Power size={14} className={toggling ? "animate-spin" : ""} />
             {toggling ? t("starting") : t("start")}
-          </button>
+          </button>}
         </div>
       </div>
       {isOpen && (
@@ -81,12 +86,12 @@ export function UnmatchedGroupCard({
               <PluginPanel />
             </Suspense>
           )}
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          {PluginSettings ? <Suspense fallback={null}><PluginSettings {...settings} /></Suspense> : <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {configs.map((meta) => (
               <ConfigField key={meta.key} meta={meta} prefix={`${channelKey}_`}
                 value={values[meta.key]} onChange={(v) => onUpdateVal(meta.key, v)} />
             ))}
-          </div>
+          </div>}
         </div>
       )}
     </div>

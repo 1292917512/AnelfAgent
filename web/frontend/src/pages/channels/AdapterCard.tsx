@@ -7,7 +7,7 @@ import { StatusDot } from "@/components/common/StatusDot";
 import { cn } from "@/lib/utils";
 import { ChannelWebView } from "./ChannelWebView";
 import { ConfigField } from "./ConfigField";
-import { CHANNEL_LOGIN_COMPONENTS, CHANNEL_PANEL_COMPONENTS } from "@/lib/channel-plugins";
+import { CHANNEL_LOGIN_COMPONENTS, CHANNEL_PANEL_COMPONENTS, CHANNEL_SETTINGS_COMPONENTS, type ChannelSettingsProps } from "@/lib/channel-plugins";
 import { Button } from "@/components/ui";
 
 const statusToColor = (s: string): "ok" | "warn" | "danger" | "offline" => {
@@ -22,6 +22,7 @@ const statusToColor = (s: string): "ok" | "warn" | "danger" | "offline" => {
 /** 单个频道卡片：头部状态行 + 展开后的连接状态 / WebView / 配置表单 */
 export function AdapterCard({
   adapter: a,
+  settings,
   isOpen,
   configs,
   values,
@@ -37,6 +38,7 @@ export function AdapterCard({
   onResetDefaults,
 }: {
   adapter: AdapterInfo;
+  settings: ChannelSettingsProps;
   isOpen: boolean;
   configs: ConfigMetaItem[];
   values: ConfigValues;
@@ -56,6 +58,7 @@ export function AdapterCard({
   // 频道插件（channels/<id>/frontend/）提供登录入口与自定义面板，核心零硬编码
   const PluginLogin = CHANNEL_LOGIN_COMPONENTS[a.key];
   const PluginPanel = CHANNEL_PANEL_COMPONENTS[a.key];
+  const PluginSettings = CHANNEL_SETTINGS_COMPONENTS[a.key];
   return (
     <div className={cn(
       "rounded-xl border transition-colors bg-card",
@@ -100,7 +103,9 @@ export function AdapterCard({
           <Button size="sm" aria-label={t("reloadChannel", { name: a.name })} title={t("reloadChannel", { name: a.name })} onClick={onReload} disabled={reloadDisabled} loading={reloading}>
             {!reloading && <RefreshCw size={14} />}{t("reloadOne")}
           </Button>
-          <Button size="sm" onClick={onToggle} disabled={busy} loading={toggling}
+          {PluginSettings && !isRunning ? (!isOpen &&
+            <Button variant="primary" size="sm" onClick={onToggleExpand}><Settings2 size={14} />{t("setupChannel")}</Button>
+          ) : <Button size="sm" onClick={onToggle} disabled={busy} loading={toggling}
             className={cn(
               toggling
                 ? "border-border text-warn bg-warn-subtle cursor-wait"
@@ -110,7 +115,7 @@ export function AdapterCard({
             )}>
             {!toggling && <Power size={14} />}
             {toggling ? (isRunning ? t("stopping") : t("starting")) : isRunning ? t("stop") : t("start")}
-          </Button>
+          </Button>}
         </div>
       </div>
 
@@ -147,7 +152,7 @@ export function AdapterCard({
             </Suspense>
           )}
 
-          {configs.length > 0 ? (
+          {PluginSettings ? <Suspense fallback={null}><PluginSettings {...settings} /></Suspense> : configs.length > 0 ? (
             <>
               <div className="flex items-center justify-between">
                 <p className="text-xs font-semibold text-muted uppercase tracking-wider">

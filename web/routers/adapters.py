@@ -54,6 +54,19 @@ async def toggle_adapter(key: str) -> Dict[str, str]:
         raise server_error("切换频道", e) from e
 
 
+@router.put("/{key}/start")
+async def start_adapter(key: str) -> Dict[str, str]:
+    try:
+        await _adapter_svc.start_adapter(key)
+    except KeyError as exc:
+        raise HTTPException(404, "频道不存在") from exc
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except Exception as exc:
+        raise server_error("启动频道", exc) from exc
+    return {"status": "ok"}
+
+
 @router.post("/{key}/reload")
 async def reload_channel(key: str) -> Dict[str, Any]:
     """按实际频道目录定向重载，不重连其他频道；失败保留可管理的实例。"""

@@ -100,7 +100,23 @@ class AdapterService:
             set_channel_enabled(key, False)
             return
 
-        set_channel_enabled(key, True)
+        await self.start_adapter(key)
+
+    async def start_adapter(self, key: str) -> None:
+        """确保频道已启用并启动，重复请求不会停止运行中的实例。"""
+        from agent.channel import get_channel_manager
+        from agent.channel.config import config_key, is_channel_enabled
+        from agent.channel.manager import list_configured_channels, set_channel_enabled
+        from core.config import ConfigManager
+        mgr = get_channel_manager()
+        channel = mgr.get(key)
+        if channel is None and key not in list_configured_channels():
+            raise KeyError(key)
+        if ConfigManager.environment_override(config_key(key, "enabled")):
+            if not is_channel_enabled(key):
+                raise ValueError("频道已由环境变量禁用")
+        else:
+            set_channel_enabled(key, True)
         if channel:
             await self._with_timeout(mgr.start_channel(key), 15, f"启动频道超时: {key}")
             return

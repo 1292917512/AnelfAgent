@@ -64,6 +64,8 @@ export const tasksApi = {
 
 export const configMetaApi = {
   list: () => api.get<{ groups: ConfigMetaGroup[] }>("/config/meta"),
+  saveChannel: (channel: string, values: ConfigValues) =>
+    api.put<{ values: ConfigValues }>(`/config/meta/channels/${encodeURIComponent(channel)}`, values),
   save: (key: string, value: unknown) =>
     api.put<{ status: string; key: string; value?: unknown; unchanged?: boolean }>(`/config/meta/${encodeURIComponent(key)}`, { value }),
 };

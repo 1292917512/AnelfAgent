@@ -426,6 +426,10 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
             return _ok({"chat_id": chat_id, "message_id": resp.message_id})
         return _err(resp.error or "发送失败")
 
+    def _media_tool_result(self, resp: SendResponse) -> str:
+        """序列化单段媒体回执，平台可附带不确定状态和已送达 ID。"""
+        return _ok({"message_id": resp.message_id}) if resp.success else _err(resp.error or "失败")
+
     async def send_photo(
         self,
         chat_id: str,
@@ -439,7 +443,7 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
             **kwargs,
         )
         resp = await self.forward_message(req)
-        return _ok({"message_id": resp.message_id}) if resp.success else _err(resp.error or "失败")
+        return self._media_tool_result(resp)
 
     @channel_tool(description="向指定会话发送视频")
     async def send_video(
@@ -451,7 +455,7 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
             **kwargs,
         )
         resp = await self.forward_message(req)
-        return _ok({"message_id": resp.message_id}) if resp.success else _err(resp.error or "失败")
+        return self._media_tool_result(resp)
 
     @channel_tool(description="向指定会话发送音频")
     async def send_audio(
@@ -463,7 +467,7 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
             **kwargs,
         )
         resp = await self.forward_message(req)
-        return _ok({"message_id": resp.message_id}) if resp.success else _err(resp.error or "失败")
+        return self._media_tool_result(resp)
 
     async def send_voice(
         self, chat_id: str, voice: str, caption: str = "", **kwargs: Any,
@@ -474,7 +478,7 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
             **kwargs,
         )
         resp = await self.forward_message(req)
-        return _ok({"message_id": resp.message_id}) if resp.success else _err(resp.error or "失败")
+        return self._media_tool_result(resp)
 
     async def send_file(
         self, chat_id: str, file_path: str, caption: str = "", **kwargs: Any,
@@ -485,7 +489,7 @@ class BaseChannel(BaseEntity, ABC, Generic[TConfig]):
             **kwargs,
         )
         resp = await self.forward_message(req)
-        return _ok({"message_id": resp.message_id}) if resp.success else _err(resp.error or "失败")
+        return self._media_tool_result(resp)
 
     # ------------------------------------------------------------------
     # 旧版兼容接口（各频道共用的薄封装，集中在基类维护）

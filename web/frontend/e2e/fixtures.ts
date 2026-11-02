@@ -74,6 +74,7 @@ export const test = base.extend({
   page: async ({ page }, use) => { await mockApi(page); await use(page); },
 });
 export { expect } from "@playwright/test";
+export type { Page } from "@playwright/test";
 
 
 export async function openWebChat(page: Page) {

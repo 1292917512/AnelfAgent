@@ -6,6 +6,8 @@
   },
   "savedOk": "已保存",
   "saveConfig": "保存配置",
+  "saveIncomplete": "部分配置未保存。请检查仍有改动的字段后重试。",
+  "setupChannel": "配置与连接",
   "runtimeNotReady": "运行时未就绪，请先启动后端服务",
   "nConfigItems": "{{count}} 项配置",
   "stop": "停止",

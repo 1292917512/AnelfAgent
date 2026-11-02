@@ -10,8 +10,20 @@
  * 清单经 initChannelPlugins() 在应用渲染前逐个隔离加载：单插件模块级异常
  * 仅跳过该插件并记日志，不再拖垮整个入口 chunk（整站黑屏）。
  */
-import { lazy, type ComponentType, type LazyExoticComponent } from "react";
+import { lazy, type ComponentType, type LazyExoticComponent, type ReactNode } from "react";
 import { channelPluginLoaders } from "@/generated/channel-plugins";
+import type { ConfigMetaItem } from "@/lib/types";
+
+export interface ChannelSettingsProps {
+  items: ConfigMetaItem[];
+  value: (item: ConfigMetaItem) => unknown;
+  update: (item: ConfigMetaItem, value: unknown) => void;
+  field: (item: ConfigMetaItem, label?: string) => ReactNode;
+  status: string;
+  busy: boolean;
+  dirty: boolean;
+  apply: (connect: boolean) => Promise<void>;
+}
 
 /** 频道插件清单（index.ts 的默认导出） */
 export interface ChannelPlugin {
@@ -19,6 +31,8 @@ export interface ChannelPlugin {
   login?: () => Promise<{ default: ComponentType<{ compact?: boolean }> }>;
   /** 频道卡片展开区的自定义面板（如直播模式面板） */
   panel?: () => Promise<{ default: ComponentType }>;
+  /** 频道专属配置表单，使用宿主的 schema、草稿与保存流程。 */
+  settings?: () => Promise<{ default: ComponentType<ChannelSettingsProps> }>;
   /** 从频道列表/测试面板隐藏（由模块贡献清单提供独立管理入口） */
   hiddenInChannelList?: boolean;
 }
@@ -35,6 +49,7 @@ export const CHANNEL_LOGIN_COMPONENTS: Record<
   LazyExoticComponent<ComponentType<{ compact?: boolean }>>
 > = {};
 export const CHANNEL_PANEL_COMPONENTS: Record<string, LazyExoticComponent<ComponentType>> = {};
+export const CHANNEL_SETTINGS_COMPONENTS: Record<string, LazyExoticComponent<ComponentType<ChannelSettingsProps>>> = {};
 
 /**
  * 应用渲染前加载全部频道插件清单（main.tsx 调用，幂等）。
@@ -65,7 +80,7 @@ async function loadChannelPlugins(): Promise<void> {
     if (plugin.panel) {
       CHANNEL_PANEL_COMPONENTS[key] = lazy(plugin.panel);
     }
-
+    if (plugin.settings) CHANNEL_SETTINGS_COMPONENTS[key] = lazy(plugin.settings);
   }
 }
 

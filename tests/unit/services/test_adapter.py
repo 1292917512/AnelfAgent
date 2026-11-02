@@ -24,3 +24,23 @@ async def test_toggle_active_channel_stops_and_persists_intent(monkeypatch, stat
     manager.stop_channel.assert_awaited_once_with("demo")
     manager.start_channel.assert_not_awaited()
     persist.assert_called_once_with("demo", False)
+
+
+async def test_explicit_start_is_repeatable_and_respects_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    import agent.channel as channels
+    import agent.channel.manager as manager_module
+
+    manager = SimpleNamespace(get=lambda key: object(), start_channel=AsyncMock(return_value=True), stop_channel=AsyncMock())
+    monkeypatch.setattr(channels, "get_channel_manager", lambda: manager)
+    persist = Mock()
+    monkeypatch.setattr(manager_module, "set_channel_enabled", persist)
+    service = AdapterService()
+    monkeypatch.delenv("ANELF_DEMO_ENABLED", raising=False)
+    await service.start_adapter("demo")
+    await service.start_adapter("demo")
+    assert manager.start_channel.await_count == persist.call_count == 2
+    manager.stop_channel.assert_not_awaited()
+    monkeypatch.setenv("ANELF_DEMO_ENABLED", "false")
+    with pytest.raises(ValueError, match="环境变量"):
+        await service.start_adapter("demo")
+    assert manager.start_channel.await_count == persist.call_count == 2

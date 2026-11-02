@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -66,6 +69,41 @@ class TestGetMeta:
 
 
 class TestSaveMeta:
+    def test_channel_draft_validates_and_saves_credentials_together(
+        self, client: TestClient, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from agent.channel.config import ChannelConfigStore
+
+        path = tmp_path / "channel_config.json"
+        ConfigManager.register_store("demoqq_", ChannelConfigStore("demoqq", path))
+        group = "adapter/demoqq"
+        ConfigRegistry.register(ConfigItem("demoqq_app_id", group, "AppID", ""))
+        ConfigRegistry.register(ConfigItem("demoqq_app_secret", group, "AppSecret", "", value_type="password"))
+        ConfigRegistry.register(ConfigItem("demoqq_connection_mode", group, "Mode", "webhook",
+                                           value_type="enum", enum_options=["webhook", "websocket"]))
+        url = "/api/config/meta/channels/demoqq"
+        draft = {"demoqq_app_id": "123", "demoqq_app_secret": "test-secret-1234"}
+        monkeypatch.setattr("web.server._load_auth_password", lambda: "test-password")
+        assert client.put(url, json=draft).status_code == 401
+        assert client.post("/api/auth/login", json={"password": "test-password"}).status_code == 200
+        assert client.put(url, json={**draft, "other_app_id": "1"}).status_code == 400
+        monkeypatch.setenv("ANELF_DEMOQQ_APP_SECRET", "123456")
+        metadata = client.get("/api/config/meta").json()["groups"]
+        fields = next(group["items"] for group in metadata if group["group"] == "adapter/demoqq")
+        secret = next(item for item in fields if item["key"] == "demoqq_app_secret")
+        assert secret["value"] == "****" and not secret["editable"]
+        assert client.put(url, json=draft).status_code == 409
+        assert not path.exists()
+        monkeypatch.delenv("ANELF_DEMOQQ_APP_SECRET")
+        response = client.put(url, json=draft)
+        assert response.status_code == 200
+        masked = response.json()["values"]["demoqq_app_secret"]
+        assert draft["demoqq_app_secret"] not in response.text and masked == "test****1234"
+        assert client.put(url, json={"demoqq_app_secret": masked, "demoqq_connection_mode": "invalid"}).status_code == 400
+        assert client.put(url, json={"demoqq_app_secret": masked}).status_code == 200
+        saved = json.loads(path.read_text(encoding="utf-8"))
+        assert saved["app_id"] == "123" and saved["app_secret"] == draft["demoqq_app_secret"]
+
     def test_model_fallback_defaults_and_persistence(self, client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
         from agent.llm.config import ModelType
         from agent.llm.fallback import fallback_enabled
