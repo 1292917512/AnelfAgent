@@ -154,7 +154,7 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
 
     channel_id = "http_api"
 
-    display_order = 40
+    display_order = 11
 
     capabilities: Set[ChannelCapability] = {
         ChannelCapability.SEND_TEXT,
