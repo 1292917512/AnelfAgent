@@ -24,8 +24,12 @@ class AdapterService:
         if not is_ready():
             return None
         from agent.channel import get_channel_manager
+        from agent.channel.manager import get_channel_display, list_configured_channels
+
         mgr = get_channel_manager()
         channels = mgr.list_channels()
+        configured = list_configured_channels()
+        displays = {key: get_channel_display(key) for key in channels.keys() | configured.keys()}
         status_map = {
             "running": "🟢 运行中",
             "stopped": "⚪ 已停止",
@@ -34,13 +38,21 @@ class AdapterService:
             "error": "🔴 错误",
         }
         result: List[Dict[str, Any]] = []
-        seen_keys: set = set()
-        for key, channel in channels.items():
+        for key in sorted(displays, key=lambda key: (displays[key][1], key)):
+            channel = channels.get(key)
+            if channel is None:
+                result.append({
+                    "key": key,
+                    "name": displays[key][0],
+                    "status": "stopped",
+                    "status_display": "⚪ 已停止" if configured[key] else "⚪ 未启用",
+                })
+                continue
             info = channel.get_status_info()
             status = info.get("status", "unknown")
             item: Dict[str, Any] = {
                 "key": key,
-                "name": info.get("name", key),
+                "name": info.get("name", displays[key][0]),
                 "status": status,
                 "status_display": status_map.get(status, status),
             }
@@ -60,20 +72,6 @@ class AdapterService:
                     item[identity_field] = info[identity_field]
             item["capabilities"] = info.get("capabilities", [])
             result.append(item)
-            seen_keys.add(key)
-
-        from agent.channel.manager import list_configured_channels
-        for channel_name, enabled in list_configured_channels().items():
-            if channel_name not in seen_keys:
-                result.append({
-                    "key": channel_name,
-                    "name": channel_name,
-                    "status": "stopped",
-                    "status_display": "⚪ 未启用" if not enabled else "⚪ 已停止",
-                })
-        # 按频道自声明的展示权重排序（display_order，一类的放一块），同权重按 key 稳定
-        from agent.channel.manager import get_channel_display_order
-        result.sort(key=lambda item: (get_channel_display_order(item["key"]), item["key"]))
         return result
 
     @staticmethod

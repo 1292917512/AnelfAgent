@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -722,6 +723,40 @@ class TestReplyPolicy:
         assert f"{channel.config.host}:{channel.config.port}" in text
 
 
+def test_discovery_uses_declared_default_and_respects_overrides(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import channels
+    from agent.channel.config import ChannelConfigStore, register_channel_schema, unregister_channel_schema
+    from core.config import ConfigRegistry
+
+    channel_dir = tmp_path / "http_api"
+    channel_dir.mkdir()
+    (channel_dir / "adapter.py").touch()
+    (channel_dir / "config.py").touch()
+    monkeypatch.setattr(channels, "__file__", str(tmp_path / "__init__.py"))
+    monkeypatch.setattr("agent.channel.config.channels_dir", lambda: tmp_path)
+    monkeypatch.delenv("ANELF_HTTP_API_ENABLED", raising=False)
+    assert register_channel_schema("http_api")
+    try:
+        item = ConfigRegistry.get_item("http_api_enabled")
+        assert item is not None and item.default_value is True
+        channel, = channels.discover_channels()
+        assert channel.channel_id == "http_api" and channel.config.base_url == "http://127.0.0.1:8091"
+        store = ConfigManager._store_for("http_api_enabled")
+        assert isinstance(store, ChannelConfigStore)
+        store.path.write_text('{"enabled": false}', encoding="utf-8")
+        store.reload_notify()
+        assert channels.discover_channels() == []
+        store.path.write_text("{}", encoding="utf-8")
+        store.reload_notify()
+        assert [ch.channel_id for ch in channels.discover_channels()] == ["http_api"]
+        monkeypatch.setenv("ANELF_HTTP_API_ENABLED", "false")
+        assert channels.discover_channels() == []
+    finally:
+        unregister_channel_schema("http_api")
+
+
 class TestVisionStreamWs:
     def test_stream_frames_ingested(self, fake_hash, tmp_path, monkeypatch) -> None:
         monkeypatch.setattr("core.path.ConfigPaths.UPLOAD_DIR", str(tmp_path), raising=False)
@@ -781,6 +816,8 @@ class TestPortalHelpTool:
         meta = getattr(type(channel).portal_help, "_channel_tool_meta", None)
         assert meta is not None, "portal_help 应标记为频道工具"
         spec = json.loads(channel.portal_help())
+        assert spec["display_name"] == channel.display_name == channel.metadata.name == "HTTP/HTTPS API"
+        assert _client(channel).get("/openapi.json").json()["info"]["title"] == f"AnelfAgent {channel.display_name}"
         assert spec["base_url"] == f"http://{channel.config.host}:{channel.config.port}"
         assert spec["auth"]["required"] is True
         assert "chat" in spec["inbound"] and "vision_stream" in spec["inbound"]

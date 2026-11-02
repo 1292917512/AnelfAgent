@@ -1,7 +1,7 @@
-# HTTP/HTTPS 频道
+# HTTP/HTTPS API 频道
 
 为外部应用提供消息、媒体、会话控制、历史、模型 SDK 和系统工具的统一入口。
-默认停用，默认地址 `http://127.0.0.1:8091`。
+频道默认随服务启动，监听 `http://127.0.0.1:8091`。配置证书和私钥后，同一频道可通过 HTTPS 接入。
 
 ## AI 获取帮助
 
@@ -15,11 +15,12 @@
 ## 配置
 
 配置中心的键为 `http_api_<字段>`；频道文件 `channels/http_api/channel_config.json`
-使用不带前缀的字段名。通过配置中心或 `set_channel_config` 写入，监听、TLS、并发等配置重启频道生效。
+使用不带前缀的字段名，示例见 [channel_config.example.json](channel_config.example.json)。
+通过配置中心或 `set_channel_config` 写入，监听、TLS、并发等配置重启频道生效。
 
 | 字段 | 默认 | 用途 |
 |---|---|---|
-| `enabled` | `false` | 启用频道 |
+| `enabled` | `true` | 启动时启用 HTTP/HTTPS API 频道。设为 `false` 后下次启动保持关闭 |
 | `host` / `port` | `127.0.0.1` / `8091` | 监听地址与端口 |
 | `api_token` | 空 | `Authorization: Bearer` 或 `x-api-token`；公网监听/公开地址必须配置 |
 | `ssl_certfile` / `ssl_keyfile` | 空 | 原生 HTTPS 的 PEM 证书和私钥，必须成对 |
@@ -31,7 +32,9 @@
 | `callback_timeout` | `10` | 回调超时秒数 |
 | `stream_queue_size` / `max_stream_subscribers` | `256` / `128` | SSE 缓冲帧数与订阅上限 |
 | `max_connections` / `sdk_concurrency` | `256` / `8` | HTTP 连接/任务与 SDK 调用上限；超载返回 503 |
-| `context_inject` / `max_context_sessions` | `true` / `256` | 外部动态上下文注入开关与会话容量；均可热更 |
+| `context_inject` / `max_context_sessions` | `true` / `256` | 启用外部应用的会话动态上下文注入，以及可保存的会话数。均可热更 |
+
+频道运行时，HTTP 和 HTTPS 会话共用同一套收发规则。关闭 `context_inject` 只停止向模型注入外部应用快照，会话收发规则仍然生效。
 
 集成令牌具有系统工具权限，应由可信后端保管。`user_id` 是来源声明，会话隔离不构成多租户授权。
 面向不可信用户的应用应先在自己的后端认证和授权，再调用门户。

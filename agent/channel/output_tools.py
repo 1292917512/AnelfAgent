@@ -386,7 +386,7 @@ async def execute_send_action(
 def list_channels() -> str:
     """列出所有通信频道及其能力和状态（含已配置但未启用的频道）。"""
     try:
-        from .manager import get_channel_manager, list_configured_channels
+        from .manager import get_channel_display, get_channel_manager, list_configured_channels
         cm = get_channel_manager()
         channels = cm.list_channels()
         result = [ch.get_status_info() for ch in channels.values()]
@@ -395,7 +395,7 @@ def list_channels() -> str:
             if cid not in channels:
                 result.append({
                     "key": cid,
-                    "name": cid,
+                    "name": get_channel_display(cid)[0],
                     "status": "stopped",
                     "enabled": enabled,
                     "capabilities": [],

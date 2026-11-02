@@ -20,13 +20,13 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Set
 
-from core.config import ConfigRegistry, get_config_bool
+from core.config import ConfigRegistry
 from core.event_bus import EVENT_MODULE_ADDED, EVENT_MODULE_REMOVED
 from core.log import log
 
 from .config import (
     channels_dir,
-    config_key,
+    is_channel_enabled,
     register_channel_schema,
     unregister_channel_schema,
 )
@@ -81,7 +81,7 @@ async def _add_channel(channel_id: str) -> None:
     mgr = get_channel_manager()
     if not register_channel_schema(channel_id):
         raise RuntimeError(f"频道 {channel_id} 配置注册失败")
-    if get_config_bool(config_key(channel_id, "enabled"), False):
+    if is_channel_enabled(channel_id):
         if not await mgr.activate_channel(channel_id):
             raise RuntimeError(f"频道 {channel_id} 启动失败")
     await _emit(EVENT_MODULE_ADDED, channel_id)

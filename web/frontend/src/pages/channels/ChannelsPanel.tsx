@@ -43,7 +43,10 @@ export function ChannelsPanel({ onOpenTools }: {
   useUnsavedChanges(draft.dirty);
   const toggle = useMutation({
     mutationFn: adaptersApi.toggle,
-    onSettled: () => client.invalidateQueries({ queryKey: ["adapters"] }),
+    onSettled: () => Promise.all([
+      client.invalidateQueries({ queryKey: ["adapters"] }),
+      client.invalidateQueries({ queryKey: ["configMeta"] }),
+    ]),
   });
   const save = useMutation({
     mutationFn: async (patch: ConfigValues) => {

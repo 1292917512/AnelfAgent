@@ -33,6 +33,7 @@ from core.config import (
     ConfigRegistry,
     ConfigStore,
     expand_env_refs,
+    get_config_bool,
     parse_env_value,
     register_model_configs,
 )
@@ -53,6 +54,13 @@ def channels_dir() -> Path:
 def config_key(channel_id: str, field: str) -> str:
     """频道字段在统一配置面的配置键（<channel_id>_<field>）。"""
     return f"{channel_id}_{field}"
+
+
+def is_channel_enabled(channel_id: str) -> bool:
+    """读取启动开关，未配置时沿用本频道注册的默认值。"""
+    key = config_key(channel_id, "enabled")
+    item = ConfigRegistry.get_item(key)
+    return get_config_bool(key, item is not None and item.default_value is True)
 
 
 def set_channel_config(channel_id: str, **fields: Any) -> None:

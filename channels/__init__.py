@@ -23,7 +23,7 @@ from core.registration import import_registered_module, registration_transaction
 def discover_channels() -> List:
     """扫描 channels/ 下所有子目录，实例化已启用的频道。"""
     from agent.channel.base import BaseChannel
-    from agent.channel.config import config_key
+    from agent.channel.config import config_key, is_channel_enabled
 
     channel_dir = Path(__file__).parent
     loaded: list = []
@@ -57,8 +57,7 @@ def discover_channels() -> List:
             skipped.append(item.name)
             continue
 
-        # 检查是否启用（统一配置 <id>_enabled，缺省 False）
-        if not get_config_bool(config_key(item.name, "enabled"), False):
+        if not is_channel_enabled(item.name):
             skipped.append(item.name)
             continue
 

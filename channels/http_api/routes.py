@@ -50,10 +50,10 @@ def build_router(adapter: HttpApiChannel) -> APIRouter:
                 adapter._register_callback(req.chat_id, req.callback_url, req.session_id, req.channel_type)
             if not req.async_mode and not notification:
                 fut = adapter._expect_reply(req.chat_id, req.session_id, req.channel_type)
-            sender = notification_sender(adapter.channel_id, "HTTP API") if notification else AdapterUser(
+            sender = notification_sender(adapter.channel_id, adapter.display_name) if notification else AdapterUser(
                 platform=adapter.channel_id, user_id=req.user_id, user_name=req.user_name or req.user_id,
             )
-            target = notification_channel("HTTP API") if notification else AdapterChannel(
+            target = notification_channel(adapter.display_name) if notification else AdapterChannel(
                 channel_id=req.chat_id, channel_type=ChannelType(req.channel_type),
             )
             message_content = req.tagged_content(req.message)

@@ -1,4 +1,4 @@
-"""HTTP 接口频道配置。
+"""HTTP/HTTPS API 频道配置。
 
 CONFIG_MODEL 是配置的唯一声明源：schema 经 agent/channel/config.py 派生注册到
 ConfigRegistry（组 adapter/http_api，键 http_api_<field>），值统一存 ConfigManager。
@@ -10,12 +10,14 @@ from pydantic import Field, model_validator
 
 from agent.channel.base import ChannelConfig
 
+CHANNEL_DISPLAY_NAME = "HTTP/HTTPS API"
+
 
 class HttpApiConfig(ChannelConfig):
-    """HTTP 接口频道配置。"""
+    """HTTP/HTTPS API 频道配置。"""
 
-    enabled: bool = Field(default=False, description="是否启用 HTTP 接口频道")
-    host: str = Field(default="127.0.0.1", description="HTTP 监听地址")
+    enabled: bool = Field(default=True, description=f"启动时启用 {CHANNEL_DISPLAY_NAME} 频道")
+    host: str = Field(default="127.0.0.1", description="HTTP/HTTPS 监听地址")
     port: int = Field(default=8091, ge=1, le=65535, description="HTTP/HTTPS 监听端口")
     reply_timeout: int = Field(default=60, ge=1, description="等待 Agent 回复的超时时间（秒）")
     ssl_certfile: str = Field(default="", description="HTTPS PEM 证书文件，与私钥同时配置")
@@ -28,11 +30,11 @@ class HttpApiConfig(ChannelConfig):
     max_stream_subscribers: int = Field(default=128, ge=1, le=10000, description="同时在线的 SSE 订阅上限")
     max_connections: int = Field(default=256, ge=1, description="HTTP 并发连接/任务上限，超出返回 503")
     sdk_concurrency: int = Field(default=8, ge=1, le=1000, description="SDK 模型和工具并发调用上限，超出返回 503")
-    context_inject: bool = Field(default=True, description="是否注入外部应用提供的动态上下文")
+    context_inject: bool = Field(default=True, description="启用外部应用的会话动态上下文注入")
     max_context_sessions: int = Field(default=256, ge=1, le=10000, description="外部上下文会话容量，超出返回 503")
     cors_origins: list[str] = Field(default_factory=list, description="允许浏览器跨域访问的来源地址；默认不开放跨域")
     api_token: str = Field(
-        default="", description="API Token（空则免认证）",
+        default="", description="入站 API 令牌（仅本机回环且未配置公开地址时可留空）",
         json_schema_extra={"value_type": "password"})
     callback_url: str = Field(
         default="", description="默认出站回调地址（Agent 主动消息以 POST JSON 推送到该 webhook）")

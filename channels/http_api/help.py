@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from .config import HttpApiConfig
+from .config import CHANNEL_DISPLAY_NAME, HttpApiConfig
 
 HelpTopic = Literal["overview", "chat", "sessions", "context", "sdk", "https"]
 
@@ -22,7 +22,8 @@ def build_portal_spec(config: HttpApiConfig) -> dict[str, Any]:
     return {
         "api_version": "1",
         "channel": "http_api",
-        "purpose": "外部系统与 Agent 的 HTTP/HTTPS 门户：消息、媒体、视觉、会话控制、历史、模型 SDK 与系统工具",
+        "display_name": CHANNEL_DISPLAY_NAME,
+        "purpose": f"{CHANNEL_DISPLAY_NAME} 为外部系统提供消息、媒体、视觉、会话控制、历史、模型 SDK 与系统工具",
         "base_url": base,
         "auth": {
             "required": bool(cfg.api_token),
@@ -130,7 +131,7 @@ def build_portal_spec(config: HttpApiConfig) -> dict[str, Any]:
 def build_portal_help(config: HttpApiConfig, topic: HelpTopic = "overview") -> dict[str, Any]:
     """默认只给接入步骤与入口；主题帮助保留对应的规则和示例。"""
     spec = build_portal_spec(config)
-    common = {key: spec[key] for key in ("api_version", "channel", "base_url", "auth")}
+    common = {key: spec[key] for key in ("api_version", "channel", "display_name", "base_url", "auth")}
     if topic == "overview":
         return {
             **common,

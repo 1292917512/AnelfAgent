@@ -244,7 +244,7 @@ Context is layered by change frequency: stable instructions and history retain t
 | **AcFun** | Danmaku and private messages |
 | **Minecraft** | Mineflayer MCP companion and game tasks; source and installed runtime are managed separately; [guide](channels/minecraft/README.md) |
 | **WebUI** | Workspace conversation, SSE / WebSocket, and UI interaction |
-| **HTTP API** | Bidirectional messages, media, and vision; synchronous, SSE, and callbacks; disabled by default; [protocol](channels/http_api/README.md) |
+| **HTTP/HTTPS API** | Bidirectional messages, media, and vision with synchronous responses, SSE, and callbacks. Enabled by default on loopback. [Protocol](channels/http_api/README.md) |
 | **CLI** | Terminal interaction and debugging; [guide](channels/cli/README.md) |
 | **Responses API** | Expose the agent as an OpenAI-compatible service |
 

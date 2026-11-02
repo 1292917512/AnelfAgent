@@ -1,4 +1,4 @@
-"""HTTP API 频道 — 内嵌 uvicorn 的通用 HTTP 双向通信门户。
+"""HTTP/HTTPS API 频道 — 内嵌 uvicorn 的双向通信门户。
 
 继承 BaseChannel。入站：POST /api/chat 消息问答（文本/图片/媒体，async_mode 立即返回）、
 POST /api/vision/push 外部视觉源单帧推送、WS /api/vision/stream 持续推流、
@@ -50,7 +50,7 @@ from agent.channel.tool_bridge import channel_tool
 from agent.messages import build_entity_scope
 from core.log import log
 
-from .config import HttpApiConfig
+from .config import CHANNEL_DISPLAY_NAME, HttpApiConfig
 from .context import HttpSessionContexts
 from .help import HelpTopic
 from .schemas import ChatRequest
@@ -125,13 +125,14 @@ _MAX_CALLBACKS = 1000
 
 
 class HttpApiChannel(BaseChannel[HttpApiConfig]):
-    """HTTP API 频道。"""
+    """HTTP/HTTPS API 频道。"""
 
-    _entity_description = "HTTP 接口通信频道"
+    display_name = CHANNEL_DISPLAY_NAME
+    _entity_description = f"{display_name} 双向通信频道"
 
     metadata = ChannelMetadata(
-        name="HTTP API",
-        description="内嵌 uvicorn 的通用 HTTP 双向通信门户",
+        name=display_name,
+        description="通过 HTTP 或 HTTPS 收发消息、媒体和会话事件",
         version="1.2.0",
         author="AnelfAgent",
     )
@@ -153,8 +154,6 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
 
     channel_id = "http_api"
 
-    display_name = "HTTP 接口"
-
     display_order = 40
 
     capabilities: Set[ChannelCapability] = {
@@ -168,7 +167,7 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
 
     @property
     def reply_policy(self) -> ReplyPolicy:
-        """HTTP 门户的收发规则（按生效配置生成地址与等待窗口）。"""
+        """门户的收发规则（按生效配置生成地址与等待窗口）。"""
         from .reply_policy import http_api_policy
         return http_api_policy(self.portal_config)
 
@@ -188,9 +187,9 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
         from .help import build_portal_spec
         return build_portal_spec(self.portal_config)
 
-    @channel_tool(description="HTTP 频道接入帮助：默认 overview；按需 topic=chat/sessions/sdk/https，开发外部应用前先读")
+    @channel_tool(description=f"{CHANNEL_DISPLAY_NAME} 频道接入帮助：默认 overview；按需 topic=chat/sessions/context/sdk/https")
     def portal_help(self, topic: HelpTopic = "overview") -> str:
-        """获取接入帮助；默认概览，可选 chat/sessions/sdk/https 主题。"""
+        """获取接入帮助；默认概览，可选 chat/sessions/context/sdk/https 主题。"""
         from core.tool_errors import error_from_exception
 
         from .help import build_portal_help
@@ -199,7 +198,7 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
             payload["status"] = self.status.value
             return json.dumps(payload, ensure_ascii=False, indent=2)
         except Exception as exc:
-            return error_from_exception(exc, action="获取 HTTP 频道帮助")
+            return error_from_exception(exc, action=f"获取 {self.display_name} 频道帮助")
 
     async def start(self) -> None:
         import uvicorn
@@ -213,7 +212,7 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
 
         if (not self._is_loopback(host) or settings.public_base_url) and not settings.api_token:
             raise RuntimeError(
-                f"HTTP API 频道声明公开接入（监听 {host}）但未配置 api_token，"
+                f"{self.display_name} 频道声明公开接入（监听 {host}）但未配置 api_token，"
                 "拒绝启动（外部请求将无法被认证）。请配置 api_token 或将 host 改为 127.0.0.1"
             )
 
@@ -236,7 +235,7 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
                 while not self._server.started:
                     if self._server_task.done():
                         await self._server_task
-                        raise RuntimeError("HTTP API 服务器未完成启动")
+                        raise RuntimeError(f"{self.display_name} 服务器未完成启动")
                     await asyncio.sleep(0.01)
         except BaseException:
             await self.stop()
@@ -246,17 +245,17 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
         self._bound_base_url = bound_base_url
         self._status = ChannelStatus.RUNNING
         outbound = f"，出站回调: {self.config.callback_url}" if self.config.callback_url else ""
-        log(f"HTTP API 频道已启动: {bound_base_url}（认证: {'token' if self.config.api_token else '仅回环'}）{outbound}")
+        log(f"{self.display_name} 频道已启动: {bound_base_url}（认证: {'token' if self.config.api_token else '仅回环'}）{outbound}")
 
     async def _serve(self) -> None:
         """内嵌服务器的绑定失败作为频道异常传播，避免 SystemExit 退出整个宿主。"""
         server = self._server
         if server is None:
-            raise RuntimeError("HTTP API 服务器尚未创建")
+            raise RuntimeError(f"{self.display_name} 服务器尚未创建")
         try:
             await server.serve()
         except SystemExit as exc:
-            raise RuntimeError(f"HTTP API 监听失败: {self.config.host}:{self.config.port}") from exc
+            raise RuntimeError(f"{self.display_name} 监听失败: {self.config.host}:{self.config.port}") from exc
 
     async def stop(self) -> None:
         for sub in self._stream_subs:
@@ -264,7 +263,7 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
         self._stream_subs.clear()
         for fut in self._pending_replies.values():
             if not fut.done():
-                fut.set_exception(RuntimeError("HTTP API 频道已停止"))
+                fut.set_exception(RuntimeError(f"{self.display_name} 频道已停止"))
         self._pending_replies.clear()
         if self._server:
             self._server.should_exit = True
@@ -274,7 +273,7 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
             except (asyncio.TimeoutError, asyncio.CancelledError, KeyboardInterrupt):
                 log("stop 异常已忽略", "DEBUG")
             except Exception as exc:
-                log(f"HTTP API 服务收尾: {type(exc).__name__}", "DEBUG")
+                log(f"{self.display_name} 服务收尾: {type(exc).__name__}", "DEBUG")
             self._server_task = None
         self._server = None
         self._bound_base_url = ""
@@ -284,7 +283,7 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
         self._callbacks.clear()
         self.contexts.close()
         self._status = ChannelStatus.STOPPED
-        log("HTTP API 频道已停止")
+        log(f"{self.display_name} 频道已停止")
 
     # ------------------------------------------------------------------
     # 流式过程事件订阅（内核事件 → SSE 帧；机器消费面，不进对话历史）
@@ -359,7 +358,7 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
         }, scope)
 
     async def send_text(self, chat_id: str, text: str, **kwargs: Any) -> str:
-        """回复 HTTP API 调用方（pending future → SSE 订阅者 → webhook 回调级联）。"""
+        """回复门户调用方（pending future → SSE 订阅者 → webhook 回调级联）。"""
         session_id = str(kwargs.get("session_id") or "")
         channel_type = str(kwargs.get("channel_type") or "private")
         fut = self._pending_replies.pop(self._delivery_key(chat_id, session_id, channel_type), None)
@@ -629,7 +628,7 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
 
         self._requires_token = (self._requires_token or not self._is_loopback(self.config.host)
                                 or bool(self.config.public_base_url))
-        app = FastAPI(title="AnelfAgent HTTP Portal", version="1.2.0",
+        app = FastAPI(title=f"AnelfAgent {self.display_name}", version="1.2.0",
                       root_path=urlsplit(self.config.public_base_url).path.rstrip("/"))
         app.add_middleware(HttpBoundary, authenticate=self._check_auth, max_body=_MAX_BODY_BYTES)
         if self.config.cors_origins:
@@ -733,7 +732,7 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
         return ChannelUser(
             platform=self.channel_id,
             user_id="http_api_bot",
-            user_name="HTTP API",
+            user_name=self.display_name,
             role=ChannelUserRole.MEMBER,
             is_bot=True,
         )
@@ -741,7 +740,7 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
     async def get_channel_info(self, channel_id: str) -> ChannelInfo:
         return ChannelInfo(
             channel_id=channel_id,
-            channel_name="HTTP API Session",
+            channel_name=f"{self.display_name} Session",
             channel_type=ChannelType.PRIVATE,
         )
 
@@ -762,7 +761,7 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
             )
         return HealthStatus(
             healthy=True,
-            detail=f"HTTP API listening on {self._bound_base_url or self.config.base_url}",
+            detail=f"{self.display_name} listening on {self._bound_base_url or self.config.base_url}",
             last_success_at=time.time(),
         )
 

@@ -1,4 +1,4 @@
-"""HTTP 接口频道适配器。"""
+"""HTTP/HTTPS API 频道适配器。"""
 
 from .adapter import HttpApiChannel
 from .config import HttpApiConfig

@@ -267,7 +267,7 @@ Web 记忆页提供长期记忆、便签、关系、召回测试、标签治理�
 | **AcFun** | 弹幕与私信 |
 | **Minecraft** | Mineflayer MCP 游戏陪玩与任务操作；源码和已安装负载分别管理，见[说明](channels/minecraft/README.md) |
 | **WebUI** | 工作区对话、SSE / WebSocket 与界面交互 |
-| **HTTP API** | 双向消息 / 媒体 / 视觉门户，同步、SSE 与回调；默认停用，见[协议](channels/http_api/README.md) |
+| **HTTP/HTTPS API** | 双向消息、媒体和视觉接口，支持同步响应、SSE 与回调。默认启用并监听本机回环地址。[接入协议](channels/http_api/README.md) |
 | **CLI** | 终端交互与调试，见[说明](channels/cli/README.md) |
 | **Responses API** | 作为 OpenAI 兼容的智能体服务对外提供能力 |
 

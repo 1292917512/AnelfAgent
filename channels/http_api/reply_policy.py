@@ -1,4 +1,4 @@
-"""HTTP API 门户的会话规则。
+"""HTTP/HTTPS API 门户的会话规则。
 
 Model Experience: http_api 会话的每次回复看到门户语义（生效地址/认证形态）、完整收发
 契约（入站端点、出站投递级联、媒体规则）与同步等待窗口纪律；不注入工具名单与召回覆盖。
@@ -8,11 +8,11 @@ Cache effect: 经 channel_policy 尾部层注入，不触碰 stable 前缀。
 
 from agent.channel.reply_policy import ReplyPolicy
 
-from .config import HttpApiConfig
+from .config import CHANNEL_DISPLAY_NAME, HttpApiConfig
 
 
 def http_api_policy(config: HttpApiConfig) -> ReplyPolicy:
-    """按生效配置生成 HTTP API 门户的会话规则。"""
+    """按生效配置生成门户的会话规则。"""
     base = config.base_url
     ws_base = base.replace("https://", "wss://", 1).replace("http://", "ws://", 1)
     auth = "x-api-token / Bearer 认证" if config.api_token else "回环免认证"
@@ -21,8 +21,8 @@ def http_api_policy(config: HttpApiConfig) -> ReplyPolicy:
     ) + "调用方可在请求里带 callback_url 按会话注册"
     return ReplyPolicy(
         instructions=(
-            "[HTTP API 门户契约]\n"
-            f"本频道是外部系统与 Agent 的双向 HTTP 门户（生效地址 {base}，{auth}），"
+            f"[{CHANNEL_DISPLAY_NAME} 门户契约]\n"
+            f"本频道是外部系统与 Agent 的双向通信门户（生效地址 {base}，{auth}），"
             "对方是程序调用方而非聊天界面：回复文本原样进入 API 响应，直接产出最终内容，"
             "不写寒暄与过程自述。接入帮助用 http_api_portal_help 获取，"
             "默认概览，按需传 topic=chat/sessions/context/sdk/https。\n"

@@ -52,7 +52,7 @@ GitHub push 只合并同分支、同一已知发起者的事件，避免将不�
 非聊天事件保留原有入队与唤醒策略，但不计入用户发言次数、群发言者列表或首次用户画像任务。
 内部后台通知的待处理信号标为 `system`，保留此前用户请求的时间水位，避免掩盖未处理对话。
 
-http_api 频道是外部系统的 HTTP/HTTPS 门户（默认 127.0.0.1:8091，停用）：入站 /api/chat
+HTTP/HTTPS API 频道（标识 `http_api`）默认随服务启动，监听 `http://127.0.0.1:8091`。入站 /api/chat
 （文本 + images + media base64 落盘为媒体段）、/api/vision/push 与 WS /api/vision/stream
 （视觉单帧/持续推流，与 web 端共用 `push_external_frame`，判变注入由系统内部完成）、
 /api/chat/stream（SSE 帧）；出站按 同步响应 → SSE 订阅 → webhook 回调（请求级 callback_url

@@ -15,6 +15,8 @@ from dataclasses import dataclass
 from core.context_provider import ContextProviderRegistry, ProviderMeta, ProviderSnapshot
 from core.tags import tag_label
 
+from .config import CHANNEL_DISPLAY_NAME
+
 
 @dataclass(frozen=True)
 class HttpContextSnapshot:
@@ -39,7 +41,7 @@ class HttpSessionContexts:
         ContextProviderRegistry.register(ProviderMeta(
             name=self.provider_name, priority=50, max_tokens=4000,
             instance=self, inject_key="http_api_context_inject",
-            description="HTTP 外部应用的会话动态快照",
+            description=f"{CHANNEL_DISPLAY_NAME} 外部应用的会话动态快照",
         ))
 
     def close(self) -> None:

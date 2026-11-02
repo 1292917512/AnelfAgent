@@ -8,20 +8,19 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Dict, Optional, Type
 
-from core.config import get_config_bool
 from core.entity import BaseEntity, EntityRegistry, EntityType
 from core.log import log
 from core.registration import import_registered_module, registration_transaction
 from core.tags import strip_message_meta_tags
 
 from .base import BaseChannel, ChannelStatus
-from .config import channels_dir, config_key, register_channel_schema
+from .config import channels_dir, config_key, is_channel_enabled, register_channel_schema
 
 
 def list_configured_channels() -> Dict[str, bool]:
     """扫描 channels/ 下所有频道目录，返回 {channel_id: enabled}（含未注册频道）。
 
-    enabled 读统一配置（ConfigManager 键 <channel_id>_enabled，缺省 False）。
+    enabled 读统一配置，缺省时使用频道声明的默认值。
     """
     result: Dict[str, bool] = {}
     root = channels_dir()
@@ -32,7 +31,7 @@ def list_configured_channels() -> Dict[str, bool]:
             continue
         if not (item / "adapter.py").exists():
             continue
-        result[item.name] = get_config_bool(config_key(item.name, "enabled"), False)
+        result[item.name] = is_channel_enabled(item.name)
     return result
 
 
@@ -70,17 +69,15 @@ def load_channel_class(channel_id: str) -> Optional[Type[BaseChannel]]:
     return channel_cls
 
 
-def get_channel_display_order(channel_id: str) -> int:
-    """读取频道自声明的展示排序权重（display_order，缺省 100）。
+def get_channel_display(channel_id: str) -> tuple[str, int]:
+    """读取频道声明的展示名与排序权重，未实例化时直接读类属性。"""
+    channel = get_channel_manager().get(channel_id) or load_channel_class(channel_id)
+    return getattr(channel, "display_name", channel_id), int(getattr(channel, "display_order", 100))
 
-    已注册频道读实例类属性；未实例化频道经模块导入读类属性
-    （模块在 discover 阶段已导入过，此处命中 importlib 缓存）。
-    """
-    channel = get_channel_manager().get(channel_id)
-    if channel is not None:
-        return int(getattr(channel, "display_order", 100))
-    channel_cls = load_channel_class(channel_id)
-    return int(getattr(channel_cls, "display_order", 100)) if channel_cls else 100
+
+def get_channel_display_order(channel_id: str) -> int:
+    """读取频道自声明的展示排序权重。"""
+    return get_channel_display(channel_id)[1]
 
 
 class ChannelManager(BaseEntity):
@@ -184,7 +181,7 @@ class ChannelManager(BaseEntity):
         from .reload import reload_channel
 
         async with self._operation_lock(channel_id):
-            self._desired_running.setdefault(channel_id, get_config_bool(config_key(channel_id, "enabled"), False))
+            self._desired_running.setdefault(channel_id, is_channel_enabled(channel_id))
             await reload_channel(self, channel_id)
 
     async def start_channel(self, channel_id: str) -> bool:

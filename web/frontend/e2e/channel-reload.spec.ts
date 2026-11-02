@@ -1,6 +1,30 @@
 import AxeBuilder from "@axe-core/playwright";
 import { test, expect } from "./fixtures";
 
+test("stopping a channel refreshes its startup switch without changing context injection", async ({ page }) => {
+  let enabled = true;
+  await page.route("**/api/adapters/", (route) => route.fulfill({ json: { ready: true, adapters: [{
+    key: "http_api", name: "HTTP/HTTPS API", status: enabled ? "running" : "stopped",
+    status_display: enabled ? "Running" : "Stopped",
+  }] } }));
+  await page.route("**/api/config/meta", (route) => route.fulfill({ json: { groups: [{
+    group: "adapter/http_api", items: [
+      { key: "http_api_enabled", description: "Start channel", type: "boolean", value: enabled, default: true, editable: true },
+      { key: "http_api_context_inject", description: "Inject context", type: "boolean", value: true, default: true, editable: true },
+    ],
+  }] } }));
+  await page.route("**/api/adapters/http_api/toggle", (route) => {
+    enabled = false;
+    return route.fulfill({ json: { status: "ok" } });
+  });
+  await page.goto("/webui/channels?channel=http_api");
+  const startup = page.getByRole("switch", { name: "Start channel" });
+  await expect(startup).toBeChecked();
+  await page.getByRole("button", { name: "Stop", exact: true }).click();
+  await expect(startup).not.toBeChecked();
+  await expect(page.getByRole("switch", { name: "Inject context" })).toBeChecked();
+});
+
 test("channel reload preserves filters and drafts, serializes actions and reports partial failures", async ({ page, isMobile }, info) => {
   if (isMobile) await page.setViewportSize({ width: 360, height: 800 });
   let calls = 0;
