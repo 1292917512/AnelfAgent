@@ -177,7 +177,7 @@ def test_move_preserves_internal_and_external_link_targets(
     migrate(source, target, data, lambda *_: None, data / "cancel")
     assert (target / "internal").resolve() == target / "config/data.db"
     assert (target / "external").read_text() == "outside"
-    saved = json.loads((target / "logs/manager/migration.json").read_text())["environment_backup"]
+    saved = json.loads((target / "logs/manager/migration.json").read_text("utf-8"))["environment_backup"]
     assert (target / saved / "package-link").read_text() == "preserve packages"
     assert (target / "dangling").is_symlink() and not (target / "dangling").exists()
 
@@ -277,7 +277,7 @@ def test_windows_junctions_preserve_internal_packages_and_external_data(
         assert link.is_junction() and link.samefile(target / package.relative_to(source))
         assert (link / "index.js").read_text() == "local package"
         assert (target / "external").is_junction() and (target / "external").samefile(external)
-        saved = json.loads((target / "logs/manager/migration.json").read_text())["environment_backup"]
+        saved = json.loads((target / "logs/manager/migration.json").read_text("utf-8"))["environment_backup"]
         assert (target / saved / "alias/keep.txt").read_text() == "extra package"
         assert (target / "old-environment").samefile(target / saved)
         moved_recovery = target / recovery.relative_to(source)
@@ -431,7 +431,7 @@ def test_directory_held_by_process_is_detected_and_late_failure_resumes(
             migrate(source, target, data, report, data / "cancel")
         assert source.is_dir() and not target.exists()
         if late:
-            assert json.loads((data / "migration.json").read_text())["verified"]
+            assert json.loads((data / "migration.json").read_text("utf-8"))["verified"]
         else:
             assert not messages and not (data / "migration.json").exists()
     finally:
