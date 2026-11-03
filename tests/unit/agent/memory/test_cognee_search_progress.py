@@ -50,6 +50,80 @@ class SearchClient:
         return [CogneeRecallItem(id="memory:fast", content="已索引的项目部署事实", score=1)]
 
 
+async def test_initial_search_and_probe_share_exact_requests_within_one_round():
+    from agent.memory.cognee.query_scope import query_scope
+
+    client = SearchClient()
+    config = CogneeConfig()
+    async with query_scope():
+        primary = asyncio.create_task(search_cognee(
+            client, config, "query", ["scope"], 5, ["CHUNKS"], node_names=["user:qq:1"]))
+        probe = asyncio.create_task(search_cognee(
+            client, config, "query", ["scope"], 5, ["CHUNKS", "GRAPH_COMPLETION"], node_names=["user:qq:1"]))
+        try:
+            assert await asyncio.wait_for(primary, 1)
+            assert not probe.done()
+            client.release.set()
+            assert await asyncio.wait_for(probe, 1)
+        finally:
+            primary.cancel()
+            probe.cancel()
+            await asyncio.gather(primary, probe, return_exceptions=True)
+    assert len(client.calls) == 3  # CHUNKS、实体定向和图谱各一次。
+    await search_cognee(client, config, "query", ["scope"], 5, ["CHUNKS"])
+    assert len(client.calls) == 4  # 新轮次不得复用旧结果。
+
+
+async def test_cancelling_one_consumer_keeps_shared_query_for_other_consumer():
+    from agent.memory.cognee.query_scope import query_scope, recall_shared
+
+    client = SearchClient()
+    started = asyncio.Event()
+    original = client.recall
+
+    async def recall(query, **options):
+        started.set()
+        return await original(query, **options)
+
+    client.recall = recall
+    async with query_scope():
+        first = asyncio.create_task(recall_shared(client, "q", query_type="GRAPH_COMPLETION"))
+        second = asyncio.create_task(recall_shared(client, "q", query_type="GRAPH_COMPLETION"))
+        try:
+            await asyncio.wait_for(started.wait(), 1)
+            first.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await first
+            assert not second.done() and client.cancelled == 0
+            client.release.set()
+            assert await asyncio.wait_for(second, 1) == []
+        finally:
+            first.cancel()
+            second.cancel()
+            await asyncio.gather(first, second, return_exceptions=True)
+    assert len(client.calls) == 1 and client.pending == 0
+
+
+@pytest.mark.parametrize("changed", ["query", "dataset", "tags", "limit", "backend"])
+async def test_shared_reads_do_not_mix_distinct_queries_or_filters(changed):
+    from agent.memory.cognee.query_scope import query_scope, recall_shared
+
+    client = SearchClient()
+    other = SearchClient() if changed == "backend" else client
+    options = {"query_type": "CHUNKS", "datasets": ["scope"], "top_k": 5, "node_name": ["user:qq:1"]}
+    changed_options = {**options}
+    if changed == "dataset":
+        changed_options["datasets"] = ["other"]
+    elif changed == "tags":
+        changed_options["node_name"] = ["user:qq:2"]
+    elif changed == "limit":
+        changed_options["top_k"] = 10
+    async with query_scope():
+        await recall_shared(client, "q", **options)
+        await recall_shared(other, "other" if changed == "query" else "q", **changed_options)
+    assert len(client.calls) + (len(other.calls) if other is not client else 0) == 2
+
+
 @pytest.mark.parametrize("deep", [False, True])
 @pytest.mark.parametrize("explicit", [False, True])
 async def test_diagnostic_types_match_executed_lanes_without_changing_saved_config(store, monkeypatch, deep, explicit):
@@ -138,6 +212,67 @@ async def test_partial_recall_reports_timeout_without_losing_native_evidence(mon
     assert diagnostic.result()["status"] == "partial" and diagnostic.timed_out
     assert diagnostic.native == "complete" and diagnostic.completed_lanes == 2
     assert client.pending == 0
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_secondary_remote_waits_without_delaying_native_results_or_owning_primary(cancel):
+    from agent.memory.cognee.fusion import federated_search
+    from agent.memory.memory_types import MemorySearchResult
+
+    client = SearchClient()
+    primary = asyncio.get_running_loop().create_future()
+    native_ready = asyncio.Event()
+
+    async def native():
+        return [MemorySearchResult(id="mem:1", snippet="次要角度的本地证据", score=.9)]
+
+    def snapshot(results):
+        if any(result.id == "mem:1" for result in results):
+            native_ready.set()
+
+    task = asyncio.create_task(federated_search(
+        native(), query="secondary", client=client, config=CogneeConfig(search_types=["CHUNKS"]),
+        limit=5, on_results=snapshot, remote_after=primary))
+    try:
+        await asyncio.wait_for(native_ready.wait(), 1)
+        assert not client.calls and not task.done()
+        if cancel:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+            assert not primary.cancelled()
+        else:
+            primary.set_result([])
+            results = await asyncio.wait_for(task, 1)
+            assert {result.id for result in results} == {"mem:1", "memory:fast"}
+            assert client.calls
+    finally:
+        task.cancel()
+        primary.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+
+async def test_secondary_remote_deadline_keeps_native_evidence_without_cancelling_primary(monkeypatch):
+    from agent.memory.cognee.fusion import RecallDiagnostics, federated_search
+    from agent.memory.memory_types import MemorySearchResult
+
+    monkeypatch.setattr("agent.memory.cognee.fusion.get_config_float", lambda *args: .1)
+    client = SearchClient()
+    primary = asyncio.get_running_loop().create_future()
+    diagnostic = RecallDiagnostics()
+
+    async def native():
+        return [MemorySearchResult(id="mem:1", snippet="主通道卡住也保留本地证据", score=.9)]
+
+    try:
+        results = await federated_search(
+            native(), query="secondary", client=client, config=CogneeConfig(search_types=["CHUNKS"]),
+            limit=5, remote_after=primary, diagnostics=diagnostic)
+        assert [result.id for result in results] == ["mem:1"]
+        assert diagnostic.timed_out and diagnostic.native == "complete"
+        assert not primary.done() and not client.calls
+    finally:
+        primary.cancel()
 
 
 @pytest.mark.parametrize("method", ["available_datasets", "recall"])
@@ -332,7 +467,7 @@ async def test_probe_keeps_partial_results_and_reports_unfinished_stage(store, m
         assert all(call["only_context"] == (call["query_type"] == "GRAPH_COMPLETION") for call in client.calls)
         record = hook_journal.snapshot()["recent"][0]
         assert record["mode"] == "sync" and record["event"] == "context_prepare"
-        assert record["status"] == "error"
+        assert record["status"] == ("partial" if timeout else "error")
         assert record["model_calls"] is None and record["tool_calls"] is None
         assert "已保留" in record["detail"]
         assert "GRAPH_COMPLETION" in record["detail"]

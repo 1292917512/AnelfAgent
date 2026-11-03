@@ -109,6 +109,88 @@ async def test_memory_postprocessing_does_not_wait_for_profiles(store, monkeypat
         await asyncio.gather(task, return_exceptions=True)
 
 
+@pytest.mark.parametrize("cancel", [False, True])
+async def test_probe_overlaps_planned_search_and_is_owned_by_recall(store, monkeypatch, cancel):
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from agent.memory import memory_retriever as module
+    from agent.memory.memory_types import MemoryEntry, MemoryType
+
+    await store.add(MemoryEntry(memory_type=MemoryType.SEMANTIC, content="航海项目发布地点是青岛"))
+    retriever = _retriever(store)
+    search_started, probe_started, release_probe, probe_drained = (asyncio.Event() for _ in range(4))
+    queries = []
+    monkeypatch.setattr(retriever, "plan_retrieval", AsyncMock(return_value=RetrievalPlan(
+        queries=["航海项目发布地点", "航海项目发布地点", "发布地址"], deep_needed=True)))
+
+    async def search(native, *, query, **kwargs):
+        results = await native
+        queries.append(query)
+        search_started.set()
+        await probe_started.wait()
+        return results
+
+    async def probe(**kwargs):
+        assert 0 < kwargs["timeout"] <= 5
+        await search_started.wait()
+        probe_started.set()
+        try:
+            await release_probe.wait()
+        finally:
+            probe_drained.set()
+
+    monkeypatch.setattr("agent.memory.cognee.fusion.federated_search", search)
+    monkeypatch.setattr(module.deep_probe_hub, "collect", probe)
+    task = asyncio.create_task(retriever.recall_split(
+        [{"role": "user", "content": "航海项目发布地点是哪里"}], entity_scope="user_qq:1", fire_probe=True))
+    try:
+        await asyncio.wait_for(probe_started.wait(), 2)
+        assert not task.done()
+        if cancel:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        else:
+            release_probe.set()
+            _, messages = await asyncio.wait_for(task, 2)
+            assert "青岛" in str(messages)
+            assert queries.count("航海项目发布地点") == 1
+            assert "发布地址" in queries
+        assert probe_drained.is_set()
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await module.deep_probe_hub.end_reply("user_qq:1")
+
+
+async def test_disabled_probe_keeps_all_planned_remote_queries_independent(store, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from agent.memory import memory_retriever as module
+    from core.config import ConfigManager
+
+    ConfigManager.set("memory_probe_enabled", False)
+    retriever = _retriever(store)
+    monkeypatch.setattr(retriever, "plan_retrieval", AsyncMock(return_value=RetrievalPlan(
+        queries=["主查询", "次要查询"], deep_needed=True)))
+    dependencies = []
+
+    async def search(native, **kwargs):
+        dependencies.append(kwargs.get("remote_after"))
+        return await native
+
+    probe = AsyncMock()
+    monkeypatch.setattr("agent.memory.cognee.fusion.federated_search", search)
+    monkeypatch.setattr(module.deep_probe_hub, "collect", probe)
+    try:
+        await retriever.recall_split([{"role": "user", "content": "原始问题"}], entity_scope="user_qq:1", fire_probe=True)
+        assert dependencies == [None, None, None]
+        probe.assert_not_awaited()
+    finally:
+        await module.deep_probe_hub.end_reply("user_qq:1")
+
+
 # ==================================================================
 # 计划 JSON 宽松解析
 # ==================================================================

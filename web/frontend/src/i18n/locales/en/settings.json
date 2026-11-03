@@ -273,6 +273,7 @@
       "done": "Completed",
       "error": "Failed",
       "blocked": "Blocked",
+      "partial": "Partially completed",
       "cancelled": "Cancelled"
     },
     "stages": {

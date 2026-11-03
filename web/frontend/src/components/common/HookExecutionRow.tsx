@@ -24,13 +24,13 @@ export function HookExecutionRow({ run, defaultExpanded = false }: { run: HookEx
   const activityIds = run.activity_ids ?? [];
   const running = run.status === "running";
   const now = useNow(running);
-  const failed = run.status === "error" || run.status === "blocked";
+  const warning = ["error", "blocked", "partial"].includes(run.status);
   const duration = running
     ? Math.max(0, now - run.started_at * 1000)
     : run.duration_ms;
   const Status = running
     ? Loader2
-    : failed
+    : warning
       ? CircleAlert
       : run.status === "done"
         ? Check
@@ -39,7 +39,7 @@ export function HookExecutionRow({ run, defaultExpanded = false }: { run: HookEx
     <div
       className={cn(
         "rounded-xl border border-border/70 bg-card/50",
-        failed && "border-warn/30",
+        warning && "border-warn/30",
       )}
     >
       <button
@@ -54,7 +54,7 @@ export function HookExecutionRow({ run, defaultExpanded = false }: { run: HookEx
             "shrink-0",
             running
               ? "animate-spin text-accent"
-              : failed
+              : warning
                 ? "text-warn"
                 : "text-muted",
           )}

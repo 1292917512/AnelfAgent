@@ -11,6 +11,10 @@ Model Experience（召回归属标注）:
   涉及谁再下定论，uid 不符不张冠李戴）
 - token 影响：每条增加简短出处与 mem ID；明确确认轮省去检索与规划，查询预算优先最新需求
 - 缓存影响：召回块在尾部动态区（vol>30），不触碰前缀缓存层
+
+Model Experience：计划就绪后基础检索与深探并行补全事实，截止时保留已完成证据。
+Token effect：沿用原结果预算，不新增模型调用；相同 Cognee 通道只请求一次。
+Cache effect：共享仅限当前召回，动态尾部注入，不触碰稳定前缀。
 """
 
 from __future__ import annotations
@@ -19,9 +23,11 @@ import asyncio
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Coroutine, Dict, List, Optional, Tuple, TypeVar
 
 from agent.judgment.evidence import dialogue_messages
+from core.config import get_config_bool
 from core.log import log
 from core.sanitizer import truncate_middle
 
+from .cognee.query_scope import query_scope
 from .embedding import Embedder
 from .hub import HUB_TAG
 from .memory_store import MemoryStore
@@ -139,6 +145,7 @@ class MemoryRetriever:
         )
         return profile_msgs + memory_msgs
 
+    @query_scope()
     async def recall_split(
         self,
         conversation: List[Dict],
@@ -218,6 +225,17 @@ class MemoryRetriever:
             plan = RetrievalPlan(queries=[query] if query else [])
             mention_tags: List[str] = []
             cognee_busy = False
+            probe_enabled = fire_probe and get_config_bool("memory_probe_enabled", True)
+            probe_task: asyncio.Task[None] | None = None
+
+            async def _complete_probe() -> None:
+                try:
+                    await deep_probe_hub.collect(
+                        scope=entity_scope, plan=plan, store=self._store, conversation=conversation,
+                        timeout=max(0.0, deadline - loop.time()),
+                    )
+                except Exception as exc:
+                    log(f"首轮深探失败: {exc}", "DEBUG", tag="记忆")
 
             def with_coverage(messages: List[Dict]) -> List[Dict]:
                 if cognee_busy:
@@ -240,7 +258,7 @@ class MemoryRetriever:
                     return []
 
             async def _planned_recall() -> List[MemorySearchResult]:
-                nonlocal plan, mention_tags
+                nonlocal plan, mention_tags, probe_task
                 if loop.time() >= deadline:
                     from .recall_fast import search_local
                     return await search_local(self, query, deadline=deadline)
@@ -255,7 +273,10 @@ class MemoryRetriever:
 
                 partial_lanes: dict[asyncio.Future, List[MemorySearchResult]] = {}
 
-                async def _query_search(q: str, *, targeted: bool = False) -> List[MemorySearchResult]:
+                async def _query_search(
+                    q: str, *, targeted: bool = False,
+                    remote_after: asyncio.Future[List[MemorySearchResult]] | None = None,
+                ) -> List[MemorySearchResult]:
                     nonlocal cognee_busy
                     owner = asyncio.current_task()
 
@@ -274,11 +295,8 @@ class MemoryRetriever:
                     try:
                         return await federated_search(
                             self._store.search_unified(
-                                query=q,
-                                query_vec=vec,
-                                query_tags=mention_tags or None,
-                                limit=k * cognee_config.recall_pool_multiplier,
-                                min_score=min_score,
+                                query=q, query_vec=vec, query_tags=mention_tags or None,
+                                limit=k * cognee_config.recall_pool_multiplier, min_score=min_score,
                             ),
                             query=q,
                             client=get_cognee_client(),
@@ -289,6 +307,7 @@ class MemoryRetriever:
                             on_results=preserve,
                             resolve_sources=self._store.resolve_memory_references,
                             diagnostics=diagnostic,
+                            remote_after=remote_after,
                         )
                     finally:
                         cognee_busy |= diagnostic.cognee == "busy"
@@ -322,16 +341,24 @@ class MemoryRetriever:
                     plan = RetrievalPlan(queries=[query] if query else [])
                 if plan_ready is not None and not plan_ready.done():
                     plan_ready.set_result(list(plan.queries))
+                if probe_enabled:
+                    probe_task = track(_complete_probe())
                 # 计划 lanes：同串已由基础 lane 覆盖（query_vec 复用零开销），
                 # 跳过；首条异于原查询的计划查询带实体定向（首条即原查询时
                 # 本轮放弃定向，node_keys 邻域仍供深探）
                 targeted_used = False
                 plan_lane_tasks: List[asyncio.Future] = []
-                for q in plan.queries[:3]:
+                primary_plan_task = base_task if plan.queries and plan.queries[0] == query else None
+                for q in dict.fromkeys(plan.queries[:3]):
                     if not q or q == query:
                         continue
-                    plan_lane_tasks.append(track(
-                        _query_search(q, targeted=not targeted_used)))
+                    task = track(_query_search(
+                        q, targeted=not targeted_used,
+                        remote_after=primary_plan_task if probe_enabled and plan.deep_needed else None,
+                    ))
+                    plan_lane_tasks.append(task)
+                    if primary_plan_task is None:
+                        primary_plan_task = task
                     targeted_used = True
                 # 共识段在前（merge_consensus 按前 N 条 lane 计数），基础与
                 # 焦点 lane 只参与合并竞争
@@ -401,24 +428,14 @@ class MemoryRetriever:
             # 关联扩展：沿标签网络发现一跳关联记忆（想到一件事 → 联想到相关的事）
             results = await optional(lambda: self._expand_associations(results, limit=k, extra_seeds=mention_tags), results)
 
-            async def _complete_probe() -> None:
-                if not fire_probe:
-                    return
-                try:
-                    await deep_probe_hub.collect(
-                        scope=entity_scope, plan=plan, store=self._store, conversation=conversation,
-                        timeout=recall_timeout - (loop.time() - t0),
-                    )
-                except Exception as exc:
-                    log(f"首轮深探失败: {exc}", "DEBUG", tag="记忆")
-
             if not results:
                 log("💾 统一搜索无结果，回退近期记忆", tag="思维")
                 pinned = await self._load_permanent_pins([])
                 fallback = await self._fallback_recent(k, scope=entity_scope)
                 pinned_msgs = await self._format_unified_results(pinned, scope=entity_scope) if pinned else []
                 entity_msgs = await profiles_task
-                await _complete_probe()
+                if probe_task is not None:
+                    await probe_task
                 return entity_msgs, with_coverage(pinned_msgs + fallback)
 
             # Rerank if available
@@ -441,7 +458,8 @@ class MemoryRetriever:
 
             memory_msgs = await self._format_unified_results(results, scope=entity_scope)
             entity_msgs = await profiles_task
-            await _complete_probe()
+            if probe_task is not None:
+                await probe_task
 
             for r in results:
                 src_label = (

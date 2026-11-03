@@ -273,6 +273,7 @@
       "done": "已完成",
       "error": "失败",
       "blocked": "已阻止",
+      "partial": "部分完成",
       "cancelled": "已取消"
     },
     "stages": {

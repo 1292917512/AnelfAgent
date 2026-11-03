@@ -13,10 +13,12 @@ export function ActivityPhase({ entry }: { entry: Extract<ActivityEntry, { kind:
   const title = entry.kind === "hook" ? t(`settings:hookFlow.names.${entry.name}`, { defaultValue: entry.name })
     : t(`activity.phases.${entry.name}`, { defaultValue: entry.name });
   const failed = entry.status === "error" || entry.status === "blocked";
-  const detail = entry.kind === "phase" ? entry.error || entry.detail : entry.operation || entry.detail;
+  const partial = entry.status === "partial";
+  const detail = entry.kind === "phase" ? entry.error || entry.detail
+    : running ? entry.operation || entry.detail : entry.detail || entry.operation;
   return <div className="activity-phase">
     <ActivityInspector title={title} preview={detail || title} className="activity-tool-trigger" trigger={<>
-      {running ? <Loader2 size={14} className="animate-spin text-accent" /> : failed ? <CircleAlert size={14} className="text-warn" /> : entry.status === "done" ? <Check size={14} className="text-muted" /> : <Pause size={14} className="text-muted" />}
+      {running ? <Loader2 size={14} className="animate-spin text-accent" /> : failed || partial ? <CircleAlert size={14} className="text-warn" /> : entry.status === "done" ? <Check size={14} className="text-muted" /> : <Pause size={14} className="text-muted" />}
       <span className="min-w-0 flex-1 truncate">{title}</span>
       <span className="text-xs text-muted">{t(`activity.status.${entry.status}`, { defaultValue: entry.status })} · {formatElapsedCompact(Math.max(0, running ? now - entry.ts * 1000 : entry.duration_ms))}</span>
     </>}><p className="activity-note">{detail || title}</p></ActivityInspector>

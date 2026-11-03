@@ -3,6 +3,8 @@
 import asyncio
 from unittest.mock import AsyncMock
 
+import pytest
+
 from agent.memory.memory_retriever import MemoryRetriever
 from agent.memory.memory_types import MemoryEntry, MemorySearchResult, MemoryType, RetrievalPlan
 from agent.memory.probe import DeepProbeHub
@@ -146,7 +148,7 @@ async def test_reapplying_policy_keeps_existing_probe(monkeypatch):
         assert not state.task.done()
 
 
-async def test_fallback_facts_are_prepared_but_not_consumed_before_probe(store, monkeypatch):
+async def test_fallback_facts_are_prepared_without_consuming_concurrent_probe(store, monkeypatch):
     import agent.memory.memory_retriever as retriever_module
 
     hub = DeepProbeHub()
@@ -169,7 +171,42 @@ async def test_fallback_facts_are_prepared_but_not_consumed_before_probe(store, 
         entity_scope="user_qq:1", fire_probe=True)
     state = hub.state_for("user_qq:1")
     await state.task
-    assert seen and {f"mem:{pin_id}", f"mem:{recent_id}"} <= seen[0]
+    assert seen and {f"mem:{pin_id}", f"mem:{recent_id}"} <= state.prepared.result_ids
+    assert not state.ledger.result_ids
+    await hub.end_reply(state.scope)
+
+
+@pytest.mark.parametrize("visible", [False, True])
+async def test_early_probe_duplicates_wait_for_actual_base_visibility(visible):
+    hub = DeepProbeHub()
+    state = hub.begin_reply("user_qq:1")
+    early = RecallDelta("深层记忆", "深探先返回的事实", "mem:1", "同一原文")
+    base = RecallDelta("记忆", "基础召回的完整事实", "mem:1", "同一原文")
+    assert hub.publish(state.scope, state.revision, [early])
+    hub.prepare_base(state.scope, [base])
+    assert not state.rendered and not state.ledger.result_ids
+    assert hub.publish(state.scope, state.revision, [RecallDelta("关系", "独立的关系证据", "edge:2")])
+    hub.acknowledge_base(state.scope, [{"role": "system", "content": base.text}] if visible else [])
+    assert (early.text in state.rendered) is not visible
+    assert "独立的关系证据" in state.rendered
+    assert state.ledger.seen_result("mem:1") is visible
+    assert not state.overlaps
+    await hub.end_reply(state.scope)
+
+
+async def test_reconciling_early_duplicates_releases_budget_for_independent_evidence():
+    hub = DeepProbeHub()
+    state = hub.begin_reply("user_qq:1")
+    state.buffer = RecallBuffer(400)
+    repeated = RecallDelta("深层记忆", "甲" * 260, "mem:1", "第一条原文")
+    independent = RecallDelta("深层记忆", "乙" * 260, "mem:2", "第二条原文")
+    hub.publish(state.scope, state.revision, [repeated])
+    hub.prepare_base(state.scope, [repeated])
+    hub.publish(state.scope, state.revision, [independent])
+    assert independent.text in state.rendered and repeated.text not in state.rendered
+    assert len(state.rendered) <= 400
+    hub.acknowledge_base(state.scope, [{"role": "system", "content": repeated.text}])
+    assert independent.text in state.rendered and repeated.text not in state.rendered
     await hub.end_reply(state.scope)
 
 

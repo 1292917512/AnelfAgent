@@ -1027,6 +1027,44 @@ async def test_real_ingestion_publishes_colliding_tags_without_changing_document
         await client.close()
 
 
+@pytest.mark.timeout(180)
+async def test_real_shared_read_preserves_published_source_without_model_access(offline_index_config, monkeypatch):
+    """真实 SDK 进程读取尚未构图的库；查询为空或失败后，已提交原文、标签及恢复点不变。"""
+    from agent.memory.cognee.fusion import RecallDiagnostics, search_cognee
+    from agent.memory.cognee.query_scope import query_scope
+
+    client = CogneeClient(offline_index_config)
+    text = "published-source-anchor: 完整保留的离线源文档，包含条件、否定与原始标签。"
+    metadata = {"anelf_content_hash": hashlib.sha256(text.encode()).hexdigest(),
+                "anelf_attribution": {"tags": ["topic:WoL", "topic:WOL"]}}
+    item = await client.make_data_item(text, label="memory", external_metadata=metadata,
+                                       node_set=metadata["anelf_attribution"]["tags"], dataset_name="anelf_global")
+    try:
+        ingestion = await client.add([item], dataset_name="anelf_global", incremental_loading=True)
+        before = await client.list_data(ingestion["dataset_id"])
+        manifest = client._checkpoints.read_manifest()
+        committed = client._checkpoints.state["committed"]
+        commits = client.publication_status["commits"]
+        recall = AsyncMock(wraps=client.recall)
+        monkeypatch.setattr(client, "recall", recall)
+        diagnostics = [RecallDiagnostics(), RecallDiagnostics()]
+        async with query_scope():
+            results = await asyncio.gather(*(search_cognee(
+                client, offline_index_config, "published-source-anchor", ["anelf_global"], 5,
+                ["CHUNKS_LEXICAL"], diagnostics=diagnostic) for diagnostic in diagnostics))
+        assert results == [[], []]  # 只做原文摄入，未运行模型构图，不冒充已有分块。
+        assert recall.await_count == 1
+        assert all(diagnostic.completed_lanes + diagnostic.failed_lanes == 1 for diagnostic in diagnostics)
+        assert await client.list_data(ingestion["dataset_id"]) == before
+        assert client.publication_status["commits"] == commits
+        assert client._checkpoints.state["committed"] == committed
+        assert client._checkpoints.read_manifest() == manifest
+        from agent.memory.cognee.sdk_client import _source_digest
+        assert _source_digest(Path(offline_index_config.absolute_data_root) / "data", before[0]["raw_data_location"]) == metadata["anelf_content_hash"]
+    finally:
+        await client.close()
+
+
 @pytest.mark.timeout(240)
 async def test_real_cleanup_continuations_preserve_tagged_versions_and_published_documents(offline_index_config, store, monkeypatch):
     import lancedb

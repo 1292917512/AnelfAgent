@@ -24,7 +24,7 @@ from ..projection import canonical_tags, projection_dataset
 from ..tag_query import TagQuery
 from .config import CogneeConfig
 from .ports import RecallBackend
-from .query_scope import query_scope
+from .query_scope import query_scope, recall_shared
 from .types import CogneeIndexBusy, CogneeRecallItem
 
 
@@ -111,6 +111,7 @@ async def federated_search(
     diagnostics: RecallDiagnostics | None = None,
     on_results: Callable[[list[MemorySearchResult]], None] | None = None,
     resolve_sources: Callable[[list[MemorySearchResult]], Awaitable[list[MemorySearchResult]]] | None = None,
+    remote_after: asyncio.Future[list[MemorySearchResult]] | None = None,
 ) -> list[MemorySearchResult]:
     """并行搜索原生后端和 Cognee，失败时透明降级。
 
@@ -159,12 +160,15 @@ async def federated_search(
             batches[batch.lane] = batch.results
             publish()
 
-    tasks = [asyncio.create_task(read_native()), asyncio.create_task(
-        search_cognee(client, config, query, datasets, limit, search_types,
-                      node_names=node_names, on_batch=consume, tag_query=tag_query, overview=overview,
-                      diagnostics=diagnostics, resolve_sources=resolve_sources),
-        name="memory.cognee.recall",
-    )]
+    async def read_cognee() -> None:
+        if remote_after is not None:
+            # 仅次要远端角度让主查询和深探先入队，本地证据仍独立发布。
+            await asyncio.wait({remote_after})
+        await search_cognee(client, config, query, datasets, limit, search_types,
+                            node_names=node_names, on_batch=consume, tag_query=tag_query, overview=overview,
+                            diagnostics=diagnostics, resolve_sources=resolve_sources)
+
+    tasks = [asyncio.create_task(read_native()), asyncio.create_task(read_cognee(), name="memory.cognee.recall")]
     try:
         budget = get_config_float("memory_probe_timeout_seconds" if deep else "memory_recall_timeout_seconds",
                                   60.0 if deep else 5.0)
@@ -261,13 +265,13 @@ async def search_cognee(
                 include_references=True,
             )
             call = (partial(_filtered_recall, client, query, options, tag_query, limit, diagnostics, resolve_sources)
-                    if strict else partial(client.recall, query, **options))
+                    if strict else partial(recall_shared, client, query, **options))
             lanes.append((f"{search_type_name}/{dataset_name}", call))
     # 定向检索通道：node_name 限定到提及实体的事实块（每数据集一次，
     # 不随 search_types 翻倍——定向精度来自节点过滤而非查询类型）
     if targeted_type is not None:
         for dataset_name in datasets:
-            lanes.append((f"CHUNKS:targeted/{dataset_name}", partial(client.recall,
+            lanes.append((f"CHUNKS:targeted/{dataset_name}", partial(recall_shared, client,
                 query,
                 query_type=targeted_type,
                 datasets=[dataset_name],
@@ -279,7 +283,7 @@ async def search_cognee(
             )))
     if not lanes:
         for dataset_name in datasets:
-            lanes.append((f"AUTO/{dataset_name}", partial(client.recall,
+            lanes.append((f"AUTO/{dataset_name}", partial(recall_shared, client,
                 query,
                 datasets=[dataset_name],
                 top_k=pool_size,
@@ -367,7 +371,7 @@ async def _filtered_recall(client: RecallBackend, query: str, options: dict[str,
     options = dict(options)
     collected: dict[tuple[str, str], CogneeRecallItem] = {}
     for _ in range(3):
-        items = await client.recall(query, **{**options, "top_k": requested})
+        items = await recall_shared(client, query, **{**options, "top_k": requested})
         for item in items:
             collected[(item.source, item.id)] = item
         candidates = _project_items(list(collected.values()), strict=True, resolving=resolve_sources is not None)

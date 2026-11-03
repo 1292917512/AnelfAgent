@@ -50,6 +50,32 @@ test("an open tool inspector receives its timeout and stops counting while the r
   await page.screenshot({ path: info.outputPath("ssh-timeout-result.png"), animations: "disabled" });
 });
 
+test("initial deep recall reports a budget cutoff and retains live terminal details", async ({ page }, info) => {
+  const start = Date.now() / 1000 - 4;
+  const hook: Extract<ActivityRun["entries"][number], { kind: "hook" }> = {
+    id: "probe", kind: "hook", ts: start, name: "memory.probe", event: "context_prepare", mode: "sync",
+    source: "internal", scope: "user_qq:42", status: "running", duration_ms: 0,
+    operation: "Four Cognee lanes pending", detail: "Preparing recall",
+  };
+  const active = run("initial-probe", start, { entries: [hook] });
+  const publish = await liveFixture(page, [active]);
+  await page.goto("/webui/");
+  const row = page.locator(".activity-phase");
+  await expect(row).toContainText("Four Cognee lanes pending");
+  const retained = "Recall budget reached; 1529 characters retained; main reply continues.";
+  await publish({ ...active, entries: [{ ...hook, status: "partial", duration_ms: 3528, detail: retained }] });
+  await expect(row).toContainText("Partially completed");
+  await expect(row).toContainText(retained);
+  await expect(row).not.toContainText("Four Cognee lanes pending");
+  await row.getByRole("button", { name: "View details: Initial deep recall", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Initial deep recall", exact: true });
+  await expect(dialog).toContainText(retained);
+  await publish({ ...active, entries: [{ ...hook, status: "error", duration_ms: 3528, detail: "Backend connection refused" }] });
+  await expect(dialog).toContainText("Backend connection refused");
+  await expect(row).toContainText("Failed");
+  await page.screenshot({ path: info.outputPath("recall-terminal-detail.png"), animations: "disabled" });
+});
+
 test("recollection window separates conversations and observes background results without rendering closed details", async ({ page }, info) => {
   const start = Date.now() / 1000 - 10;
   const hook: ActivityRun["entries"][number] = { id: "recall", kind: "hook", name: "memory.probe", event: "context_refresh", mode: "async", source: "internal", scope: "user_qq:42", status: "running", ts: start, duration_ms: 0, detail: "Searching current deployment evidence" };

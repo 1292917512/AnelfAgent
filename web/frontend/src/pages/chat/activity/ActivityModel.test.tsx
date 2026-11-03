@@ -6,8 +6,29 @@ import type { ActivityEntry } from "@/lib/types/activity";
 import { ActivityEntryView } from "./ActivityEntryView";
 import { highlightCode } from "@/lib/shiki";
 import { ActivityContext } from "./ActivityContext";
+import { ActivityPhase } from "./ActivityPhase";
 
 vi.mock("@/lib/shiki", () => ({ highlightCode: vi.fn(async () => null) }));
+
+it("shows terminal recall outcomes in the row and inspector instead of stale progress", async () => {
+  const user = userEvent.setup();
+  const entry: Extract<ActivityEntry, { kind: "hook" }> = {
+    id: "probe", kind: "hook", ts: 1, name: "memory.probe", event: "context_prepare", mode: "sync",
+    source: "internal", scope: "user_webui:1", status: "running", duration_ms: 0,
+    operation: "Four lanes pending", detail: "Waiting for recall",
+  };
+  const view = (value: typeof entry) => <MemoryRouter><ActivityPhase entry={value} /></MemoryRouter>;
+  const { rerender } = render(view(entry));
+  expect(screen.getByText("Four lanes pending")).toBeTruthy();
+  rerender(view({ ...entry, status: "partial", duration_ms: 3500, detail: "Budget reached; 1529 characters retained" }));
+  expect(screen.queryByText("Four lanes pending")).toBeNull();
+  expect(screen.getByText("Budget reached; 1529 characters retained")).toBeTruthy();
+  await user.click(screen.getByRole("button"));
+  expect(screen.getByRole("dialog").textContent).toContain("Budget reached; 1529 characters retained");
+  rerender(view({ ...entry, status: "error", duration_ms: 3500, detail: "Backend connection refused" }));
+  expect(screen.getByRole("dialog").textContent).toContain("Backend connection refused");
+  expect(screen.queryByText("Four lanes pending")).toBeNull();
+});
 
 it("mounts recalled content only for expanded blocks and preserves live updates", async () => {
   const user = userEvent.setup();

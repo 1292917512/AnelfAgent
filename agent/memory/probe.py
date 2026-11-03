@@ -84,6 +84,11 @@ class RecallLedger:
         key = content_key or normalized_content_key(snippet)
         return bool(key) and key in self.content_keys
 
+    def seen_delta(self, delta: RecallDelta) -> bool:
+        """按记忆、内容与归属或关系边判断同一事实。"""
+        return (self.seen_result(delta.result_id) or self.seen_content(delta.snippet, content_key=delta.content_key)
+                or (delta.edge_id is not None and self.seen_edge(delta.edge_id)))
+
 
 @dataclass
 class _ProbeState:
@@ -98,6 +103,7 @@ class _ProbeState:
     ledger: RecallLedger = field(default_factory=RecallLedger)
     prepared: RecallLedger = field(default_factory=RecallLedger)
     base_facts: list[RecallDelta] = field(default_factory=list)
+    overlaps: list[RecallDelta] = field(default_factory=list)
     task: asyncio.Task[None] | None = None
     rendered: str = ""
     created_at: float = field(default_factory=time.monotonic)
@@ -238,11 +244,18 @@ class DeepProbeHub:
         state = self.state_for(scope)
         if state is None:
             return
+        base = RecallLedger()
         for fact in facts:
             state.base_facts.append(fact)
+            base.record_result(fact.result_id, fact.snippet, content_key=fact.content_key)
             state.prepared.record_result(fact.result_id, fact.snippet, content_key=fact.content_key)
             if fact.edge_id is not None:
+                base.record_edges([fact.edge_id])
                 state.prepared.record_edges([fact.edge_id])
+        # 深探可能先返回同一事实；仅暂存重叠项，最终基础上下文被裁剪时仍可补回。
+        state.overlaps.extend(fact for fact in state.buffer.facts if base.seen_delta(fact))
+        state.buffer = state.buffer.filtered(lambda fact: not base.seen_delta(fact))
+        state.rendered = state.buffer.render()
 
     def acknowledge_base(self, scope: str, messages: list[dict]) -> None:
         """在最终模型输入上确认首轮事实，释放被预算或压缩省略的候选。"""
@@ -262,17 +275,16 @@ class DeepProbeHub:
             state.prepared.record_result(fact.result_id, fact.snippet, content_key=fact.content_key)
             if fact.edge_id is not None:
                 state.prepared.record_edges([fact.edge_id])
+        overlaps, state.overlaps = state.overlaps, []
+        self._publish(state, state.revision, overlaps)
 
     def unseen(self, scope: str, deltas: Iterable[RecallDelta]) -> list[RecallDelta]:
         """过滤已消费或已经在快照中等待装配的事实。"""
         state = self.state_for(scope)
         if state is None:
             return []
-        return [delta for delta in deltas if not any(
-            ledger.seen_result(delta.result_id) or ledger.seen_content(delta.snippet, content_key=delta.content_key)
-            or (delta.edge_id is not None and ledger.seen_edge(delta.edge_id))
-            for ledger in (state.ledger, state.prepared)
-        )]
+        return [delta for delta in deltas
+                if not any(ledger.seen_delta(delta) for ledger in (state.ledger, state.prepared))]
 
     def publish(self, scope: str, revision: int, deltas: Iterable[RecallDelta]) -> bool:
         """对话协调者提交本轮有效的增量，失效或已结束的回复拒绝写入。"""
@@ -324,14 +336,16 @@ class DeepProbeHub:
             except Exception as exc:
                 run.status = "error"
                 if isinstance(exc, TimeoutError) and budget.expired():
+                    run.status = "partial"
                     run.detail = f"检索预算 {timeout:g} 秒已用尽；未完成阶段：{run.operation or '准备'}。已保留 {len(state.rendered)} 字符补充记忆，主回复继续。"
                     self._metrics("probe.timeout")
                 else:
                     run.detail = f"{run.operation}: {type(exc).__name__}: {str(exc) or '检索未完成'}；已保留 {len(state.rendered)} 字符补充记忆。"
-                log(f"深探失败 scope={state.scope}: {run.detail}", "DEBUG", tag="记忆")
+                outcome = "预算截止" if run.status == "partial" else "失败"
+                log(f"深探{outcome} scope={state.scope}: {run.detail}", "DEBUG", tag="记忆")
             else:
                 added = len(state.rendered) - before
-                summary = f"新增上下文 {added} 字符" if added > 0 else "当前话题无需补充记忆"
+                summary = f"新增上下文 {added} 字符" if added > 0 else "本轮无新增补充记忆"
                 run.detail = f"{run.detail}；{summary}" if run.detail else summary
                 self._metrics("probe.completed")
 

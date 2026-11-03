@@ -320,6 +320,7 @@
       "cancelled": "Cancelled",
       "interrupted": "Interrupted",
       "budget_exhausted": "Execution limit reached",
+      "partial": "Partially completed",
       "deleted": "Removed"
     },
     "tags": {

@@ -4,6 +4,7 @@
 Token 影响：整轮共享字符预算；缓存影响：未追加时输出字节不变。
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 
 from core.sanitizer import sanitize_for_context
@@ -60,3 +61,12 @@ class RecallBuffer:
         if not self._body:
             return ""
         return _HEADER + self._body + (_OVERFLOW if self._overflow else "")
+
+    def filtered(self, keep: Callable[[RecallDelta], bool]) -> "RecallBuffer":
+        """重建仍需呈现的事实，释放重复项的预算并保留原有省略提示。"""
+        result = RecallBuffer(self.max_chars)
+        for delta in self.facts:
+            if keep(delta):
+                result.append(delta)
+        result._overflow |= self._overflow
+        return result

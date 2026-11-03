@@ -320,6 +320,7 @@
       "cancelled": "已取消",
       "interrupted": "已中断",
       "budget_exhausted": "已达执行上限",
+      "partial": "部分完成",
       "deleted": "已移除"
     },
     "tags": {
