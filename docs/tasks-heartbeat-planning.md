@@ -95,10 +95,12 @@ heartbeat（每 N 次心跳）/ scheduled（每天指定时间）/ idle / manual
 LLM 调用不经 reflect 故不计）。本 tick 无确定性到期任务时才评估触发，空闲窗口让位给
 scheduled/heartbeat。写入侧 `validate_schedules` 强校验全局仅一条 idle，AI/Web 双路径同规则。
 
-**按需自我反思**：`self_reflection` 不配置独立定时、空闲或事件触发；自主决策选择 REFLECT 时，
+**按需自我反思**：`self_reflection` 支持 manual 或 idle 调度。空闲调度沿用全局仅一条的校验，
+到期后复用任务认领、冷却和执行历史；自主决策选择 REFLECT 时，
 在当前主 Driver 内联执行该任务，避免把任务提交回同一 Driver 后自等待。原因经
 `TaskExecutor.run(extra_note=...)` 尾部追加，历史标记为 `autonomous`。旧自动调度在加载时
-转换为 manual，保留任务定义、历史及调度中指定的模型和思考等级；仍可显式手动触发。
+将 heartbeat/scheduled 转换为 manual，保留任务定义、历史及调度中指定的模型和思考等级；
+idle 模式及其空闲计数原样保留，仍可显式手动触发。任务定义须存在于 `config/tasks/`。
 `agent/task/reflection.py` 统一身份与冷却策略：所有入口在认领时检查该任务的真实执行历史，
 普通任务、子代理和钩子的 `mind.reflect()` 不计作自我反思。失败或取消尝试也进入冷却；
 已持久化的历史跨重启生效。同批多个 REFLECT 只执行一次。

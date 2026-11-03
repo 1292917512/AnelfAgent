@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -82,3 +83,31 @@ class TestIntervalReadView:
 
         assert cfg["interval_seconds"] == 6000
         assert "task_schedules" in cfg and "enabled" in cfg
+
+
+@pytest.mark.parametrize("mode", ["idle", "heartbeat", "scheduled"])
+def test_web_reflection_schedule_modes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str,
+) -> None:
+    from agent.heartbeat.config import HeartbeatConfig
+    from core.path import ConfigPaths
+
+    path = tmp_path / "heartbeat.json"
+    monkeypatch.setattr(ConfigPaths, "HEARTBEAT_CONFIG", str(path))
+    cfg = HeartbeatConfig()
+    monkeypatch.setattr("agent.heartbeat.config.get_heartbeat_config", lambda: cfg)
+    monkeypatch.setattr("services.heartbeat.get_runtime", lambda: None)
+    params = {"task_schedules": [{
+        "task_name": "self_reflection", "mode": mode, "every_n_beats": 3,
+        "schedule_times": ["09:00"], "model_id": "chosen", "reasoning_effort": "high",
+    }]}
+    if mode != "idle":
+        with pytest.raises(HeartbeatServiceError, match="manual 或 idle"):
+            HeartbeatService.save_config(params)
+        assert not path.exists()
+        return
+
+    HeartbeatService.save_config(params)
+    schedule = HeartbeatConfig.load().get_schedule("self_reflection")
+    assert schedule is not None and schedule.mode.value == "idle"
+    assert schedule.model_id == "chosen" and schedule.reasoning_effort == "high"

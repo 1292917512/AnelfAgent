@@ -71,7 +71,7 @@ class TestDynamicPathSameSource:
         assert sched is not None and sched.every_n_beats == 7
 
 
-@pytest.mark.parametrize("mode", ["idle", "heartbeat", "scheduled"])
+@pytest.mark.parametrize("mode", ["heartbeat", "scheduled"])
 def test_reflection_migration_preserves_other_schedules_and_model(_isolate_paths, mode):
     raw = {"enabled": False, "task_schedules": [
         {"task_name": "self_reflection", "mode": mode, "every_n_beats": 12,
@@ -98,7 +98,7 @@ def test_reflection_migration_preserves_other_schedules_and_model(_isolate_paths
 
 def test_failed_migration_save_keeps_loaded_config(_isolate_paths, monkeypatch):
     _isolate_paths.write_text(json.dumps({"task_schedules": [
-        {"task_name": "self_reflection", "mode": "idle"},
+        {"task_name": "self_reflection", "mode": "heartbeat"},
         {"task_name": "daily", "mode": "scheduled", "schedule_times": ["05:00"]},
     ]}), encoding="utf-8")
     original = _isolate_paths.read_bytes()
@@ -109,3 +109,23 @@ def test_failed_migration_save_keeps_loaded_config(_isolate_paths, monkeypatch):
     assert cfg.get_schedule("self_reflection").mode == ScheduleMode.MANUAL
     assert cfg.get_schedule("daily").schedule_times == ["05:00"]
     assert _isolate_paths.read_bytes() == original
+
+
+def test_idle_reflection_preserves_schedule_on_load_and_update(_isolate_paths: Path) -> None:
+    raw = {"task_schedules": [{
+        "task_name": "self_reflection", "mode": "idle", "every_n_beats": 4, "beat_count": 2,
+        "model_id": "chosen", "reasoning_effort": "high",
+    }]}
+    _isolate_paths.write_text(json.dumps(raw), encoding="utf-8")
+    original = _isolate_paths.read_bytes()
+    cfg = HeartbeatConfig.load()
+    schedule = cfg.get_schedule("self_reflection")
+    assert schedule is not None and schedule.mode == ScheduleMode.IDLE
+    assert schedule.every_n_beats == 4 and schedule.beat_count == 2
+    assert schedule.model_id == "chosen" and schedule.reasoning_effort == "high"
+    assert _isolate_paths.read_bytes() == original
+
+    cfg.set_schedule(TaskSchedule("self_reflection", mode=ScheduleMode.IDLE, every_n_beats=6))
+    assert cfg.get_schedule("self_reflection").beat_count == 2
+    cfg.save()
+    assert HeartbeatConfig.load().to_dict() == cfg.to_dict()

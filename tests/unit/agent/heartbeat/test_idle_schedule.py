@@ -103,18 +103,22 @@ def _make_engine(
 class TestIdleConfig:
     def test_validate_allows_single_idle(self) -> None:
         schedules = [
-            TaskSchedule(task_name="a", mode=ScheduleMode.IDLE),
+            TaskSchedule(task_name="self_reflection", mode=ScheduleMode.IDLE),
             TaskSchedule(task_name="b", mode=ScheduleMode.HEARTBEAT),
         ]
         assert validate_schedules(schedules) is None
 
     def test_validate_rejects_multiple_idle(self) -> None:
         schedules = [
-            TaskSchedule(task_name="a", mode=ScheduleMode.IDLE),
+            TaskSchedule(task_name="self_reflection", mode=ScheduleMode.IDLE),
             TaskSchedule(task_name="b", mode=ScheduleMode.IDLE),
         ]
         err = validate_schedules(schedules)
         assert err is not None and "仅允许一条" in err
+        cfg = HeartbeatConfig(task_schedules=schedules[:1])
+        with pytest.raises(ValueError, match="仅允许一条"):
+            cfg.set_schedule(schedules[1])
+        assert cfg.task_schedules == schedules[:1]
 
     def test_idle_dict_round_trip(self) -> None:
         schedule = TaskSchedule(
@@ -273,6 +277,33 @@ class TestIdleScheduling:
 
 
 class TestInflightDedup:
+    async def test_idle_reflection_shares_cooldown_and_claim(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import time
+
+        from agent.task.history import record_execution
+        from core.config import ConfigManager
+
+        schedule = TaskSchedule("self_reflection", mode=ScheduleMode.IDLE, every_n_beats=1)
+        tasks = {"self_reflection": _task("self_reflection")}
+        engine, _ = _make_engine([schedule], tasks, monkeypatch)
+        record_execution(
+            "self_reflection", started_at=time.time(), duration_ms=1,
+            status="error", trigger="autonomous",
+        )
+        assert await engine.tick() == []
+        assert schedule.beat_count == 1
+        engine.executor.run.assert_not_called()
+        ConfigManager.set("reflection_cooldown_minutes", 0)
+
+        def run(task: TaskDefinition, entity: object, **kwargs: object) -> TaskResult:
+            assert not engine.claim_task(task.name)[0]
+            return _result(task.name)
+
+        engine.executor.run.side_effect = run
+        assert await engine.tick() == ["self_reflection"]
+        assert engine.executor.run.call_args.kwargs["trigger"] == "idle"
+        assert "self_reflection" not in engine._task_inflight
+
     @pytest.mark.parametrize("status", ["success", "no_output", "incomplete", "error"])
     async def test_reflection_cooldown_uses_own_persistent_history(self, monkeypatch, status):
         import time
@@ -460,18 +491,27 @@ def _seed_engine(tasks: list[TaskDefinition], cfg: HeartbeatConfig) -> Heartbeat
     return engine
 
 
-def test_seed_declared_schedules_registers_missing() -> None:
+@pytest.mark.parametrize("name, mode", [("graph_curation", "heartbeat"), ("self_reflection", "idle")])
+def test_seed_declared_schedules_registers_missing(name: str, mode: str) -> None:
     cfg = HeartbeatConfig()
     task = TaskDefinition(
-        name="graph_curation", prompt="p",
-        schedule_mode="heartbeat", schedule_every_n_beats=48,
+        name=name, prompt="p",
+        schedule_mode=mode, schedule_every_n_beats=48,
     )
     engine = _seed_engine([task], cfg)
     engine._seed_declared_schedules()
-    schedule = cfg.get_schedule("graph_curation")
+    schedule = cfg.get_schedule(name)
     assert schedule is not None
-    assert schedule.mode == ScheduleMode.HEARTBEAT
+    assert schedule.mode == ScheduleMode(mode)
     assert schedule.every_n_beats == 48
+
+
+def test_seed_reflection_respects_single_idle_schedule() -> None:
+    cfg = HeartbeatConfig(task_schedules=[TaskSchedule("other", mode=ScheduleMode.IDLE)])
+    task = TaskDefinition(name="self_reflection", prompt="p", schedule_mode="idle")
+    engine = _seed_engine([task], cfg)
+    engine._seed_declared_schedules()
+    assert [s.task_name for s in cfg.task_schedules] == ["other"]
 
 
 def test_seed_declared_schedules_never_overrides_existing() -> None:
@@ -489,12 +529,15 @@ def test_seed_declared_schedules_never_overrides_existing() -> None:
     assert len(cfg.task_schedules) == 1
 
 
-def test_seed_declared_schedules_skips_manual() -> None:
+@pytest.mark.parametrize("name, mode", [
+    ("manual_task", "manual"), ("self_reflection", "heartbeat"), ("self_reflection", "scheduled"),
+])
+def test_seed_declared_schedules_skips_unsupported(name: str, mode: str) -> None:
     cfg = HeartbeatConfig()
-    task = TaskDefinition(name="manual_task", prompt="p")  # schedule_mode 默认 manual
+    task = TaskDefinition(name=name, prompt="p", schedule_mode=mode)
     engine = _seed_engine([task], cfg)
     engine._seed_declared_schedules()
-    assert cfg.get_schedule("manual_task") is None
+    assert cfg.get_schedule(name) is None
 
 
 class TestReplyPriorityGate:

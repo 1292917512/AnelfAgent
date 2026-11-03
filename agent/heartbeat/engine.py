@@ -14,12 +14,12 @@
 
 idle 空闲调度（ScheduleMode.IDLE）：计数维度是"距上次思考的连续空闲心跳数"
 （mind.last_activity_ts 锚点，任何 reply/reflect 活动清零，含 idle 任务自身），
-仅在本 tick 无确定性到期任务时评估触发；自我反思统一由自主决策按需执行，
+仅在本 tick 无确定性到期任务时评估触发；自我反思由自主决策按需或空闲调度触发，
 不打断对话节奏。同任务排队经 _task_inflight 去重（排队里同一种任务只允许一条）。
 
 Model Experience:
-- 模型看到：自主决策选定的反思原因追加在任务指令尾部，普通任务独立运行。
-- token 影响：取消自我反思的独立定时入口，减少重复执行。
+- 模型看到：自主决策与空闲调度共用反思任务，决策原因追加在任务指令尾部。
+- token 影响：空闲调度可增加反思调用，与自主决策共用冷却和去重。
 - KV Cache 影响：不改变稳定前缀，extra_note 为尾部追加。
 """
 
@@ -358,21 +358,25 @@ class HeartbeatEngine:
 
         seeded = False
         for task in self.task_registry.list_all():
-            if task.name == SELF_REFLECTION_TASK:
-                continue
             mode = (task.schedule_mode or "manual").strip().lower()
+            if task.name == SELF_REFLECTION_TASK and mode != "idle":
+                continue
             if mode not in ("heartbeat", "scheduled", "idle"):
                 continue
             if self.config.get_schedule(task.name) is not None:
                 continue
-            self.config.set_schedule(
-                TaskSchedule(
-                    task_name=task.name,
-                    mode=ScheduleMode(mode),
-                    every_n_beats=max(1, task.schedule_every_n_beats),
-                    schedule_times=list(task.schedule_times),
+            try:
+                self.config.set_schedule(
+                    TaskSchedule(
+                        task_name=task.name,
+                        mode=ScheduleMode(mode),
+                        every_n_beats=max(1, task.schedule_every_n_beats),
+                        schedule_times=list(task.schedule_times),
+                    )
                 )
-            )
+            except ValueError as exc:
+                log(f"任务 {task.name} 的初始调度未受理: {exc}", "WARNING", tag="心跳")
+                continue
             seeded = True
             log(
                 f"任务 {task.name} 按定义文件种子化调度（mode={mode}, every_n_beats={task.schedule_every_n_beats}）",
@@ -487,9 +491,15 @@ class HeartbeatEngine:
         if pending_task is not None and pending_schedule_idx >= 0:
             schedule = self.config.task_schedules[pending_schedule_idx]
 
-            entity = await self._pop_analysis_entity() if pending_task.scope.value == "entity" else None
-            self._task_inflight.add(pending_task.name)
+            accepted, message = self.claim_task(pending_task.name)
+            if not accepted:
+                log(f"调度任务 [{pending_task.name}] 未受理: {message}", "DEBUG", tag="心跳")
+                if dirty:
+                    self.config.save()
+                return executed
+            entity = None
             try:
+                entity = await self._pop_analysis_entity() if pending_task.scope.value == "entity" else None
                 result = await self.executor.run(
                     pending_task,
                     entity,
@@ -592,6 +602,8 @@ class HeartbeatEngine:
 
             effective_beats = max(1, round(schedule.every_n_beats * idle_beats_factor()))
             if schedule.beat_count >= effective_beats:
+                if schedule.task_name == SELF_REFLECTION_TASK and reflection_cooldown_reason():
+                    return None
                 return idx, task, ""
             return None
         return None

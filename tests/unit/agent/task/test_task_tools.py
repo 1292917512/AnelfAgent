@@ -123,16 +123,16 @@ async def test_delete_task_removes_schedule() -> None:
 
 @pytest.mark.asyncio
 async def test_set_task_schedule_idle_single_instance() -> None:
-    await task_tools.create_task("ia", "空闲思考 A")
+    await task_tools.create_task("self_reflection", "空闲思考 A")
     await task_tools.create_task("ib", "空闲思考 B")
 
     # 首条 idle 调度允许
-    raw = await task_tools.set_task_schedule("ia", "idle", every_n_beats=4)
+    raw = await task_tools.set_task_schedule("self_reflection", "idle", every_n_beats=4)
     assert json.loads(raw)["ok"] is True
 
     from agent.heartbeat.config import ScheduleMode, get_heartbeat_config
     cfg = get_heartbeat_config()
-    sched = cfg.get_schedule("ia")
+    sched = cfg.get_schedule("self_reflection")
     assert sched.mode == ScheduleMode.IDLE
     assert sched.every_n_beats == 4
 
@@ -143,14 +143,17 @@ async def test_set_task_schedule_idle_single_instance() -> None:
     assert cfg.get_schedule("ib") is None
 
     # 同一任务重设 idle（upsert 自身）不触发单例冲突
-    raw = await task_tools.set_task_schedule("ia", "idle", every_n_beats=6)
+    raw = await task_tools.set_task_schedule("self_reflection", "idle", every_n_beats=6)
     assert json.loads(raw)["ok"] is True
-    assert get_heartbeat_config().get_schedule("ia").every_n_beats == 6
+    assert get_heartbeat_config().get_schedule("self_reflection").every_n_beats == 6
 
-    # 切回 heartbeat 后，其他任务可再设 idle
-    await task_tools.set_task_schedule("ia", "heartbeat", every_n_beats=10)
+    # 切回 manual 后，其他任务可再设 idle
+    await task_tools.set_task_schedule("self_reflection", "manual")
     raw = await task_tools.set_task_schedule("ib", "idle", every_n_beats=4)
     assert json.loads(raw)["ok"] is True
+    for mode in ("heartbeat", "scheduled"):
+        raw = await task_tools.set_task_schedule("self_reflection", mode, schedule_times="09:00")
+        assert "error" in json.loads(raw)
 
 
 # ==================================================================

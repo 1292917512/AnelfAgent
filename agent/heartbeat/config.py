@@ -159,8 +159,10 @@ class HeartbeatConfig:
         仅在新旧双方都是计数类模式（heartbeat/idle）时继承，其余归零。
         Web 整表保存不走此路径（前端全量回传自带计数值，含显式清零）。
         """
-        if schedule.task_name == SELF_REFLECTION_TASK and schedule.mode != ScheduleMode.MANUAL:
-            raise ValueError("自我反思由自主决策按需执行，仅支持 manual 调度")
+        schedules = [s for s in self.task_schedules if s.task_name != schedule.task_name]
+        schedules.append(schedule)
+        if error := validate_schedules(schedules):
+            raise ValueError(error)
         for i, s in enumerate(self.task_schedules):
             if s.task_name == schedule.task_name:
                 counter_modes = (ScheduleMode.HEARTBEAT, ScheduleMode.IDLE)
@@ -201,7 +203,7 @@ class HeartbeatConfig:
         except Exception as exc:
             log(f"心跳配置加载失败，使用默认值: {exc}", "WARNING", tag="心跳")
             return cls()
-        if any(s.get("task_name") == SELF_REFLECTION_TASK and s.get("mode", "manual") != "manual"
+        if any(s.get("task_name") == SELF_REFLECTION_TASK and s.get("mode", "manual") not in ("manual", "idle")
                for s in raw.get("task_schedules", [])):
             try:
                 cfg.save(p)
@@ -216,8 +218,9 @@ def validate_schedules(schedules: List["TaskSchedule"]) -> Optional[str]:
     idle 模式全局仅允许一条：思考会刷新空闲计数（含 idle 任务自身），
     多条 idle 调度会互相抢占计数语义，必须在写入侧拒绝。
     """
-    if any(s.task_name == SELF_REFLECTION_TASK and s.mode != ScheduleMode.MANUAL for s in schedules):
-        return "自我反思由自主决策按需执行，仅支持 manual 调度"
+    if any(s.task_name == SELF_REFLECTION_TASK and s.mode not in (ScheduleMode.MANUAL, ScheduleMode.IDLE)
+           for s in schedules):
+        return "自我反思支持 manual 或 idle 调度，由自主决策按需或空闲时执行"
     idle_names = [s.task_name for s in schedules if s.mode == ScheduleMode.IDLE]
     if len(idle_names) > 1:
         return f"idle 模式调度仅允许一条（思考会刷新空闲计数，多条会互相抢占），当前有: {idle_names}"
@@ -241,7 +244,7 @@ def _dedupe_idle_schedules(schedules: List[TaskSchedule]) -> List[TaskSchedule]:
 def _parse_config(raw: Dict[str, Any]) -> HeartbeatConfig:
     schedules = [TaskSchedule.from_dict(s) for s in raw.get("task_schedules", [])]
     for schedule in schedules:
-        if schedule.task_name == SELF_REFLECTION_TASK:
+        if schedule.task_name == SELF_REFLECTION_TASK and schedule.mode != ScheduleMode.IDLE:
             schedule.mode = ScheduleMode.MANUAL
             schedule.beat_count = 0
             schedule.schedule_times = []
