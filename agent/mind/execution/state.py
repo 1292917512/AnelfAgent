@@ -48,6 +48,8 @@ class RoundState:
     """think_loop 的回合可变状态（计数器/水位/预算，每轮更新）。"""
 
     iteration: int = 0
+    # 本轮上下文准备完毕时固定，动态提示、流中提前执行和最终批次共用。
+    available_tool_names: frozenset[str] = frozenset()
     consecutive_empty_calls: int = 0
     consecutive_tool_errors: int = 0
     consecutive_security_leaks: int = 0

@@ -336,6 +336,9 @@ exec_context 本轮执行状态（每轮全量重建）
   assemble_runtime 提前导入清单中显式 import（守卫测试
   `tests/unit/agent/delegation/test_tool_registration.py`）
 - 工具激活状态按会话 scope 隔离；会话结束时按既定生命周期清理
+- Mind 分派的本地函数调用以合并新消息后的工具目录及模式限制为准。动态工具态势只展示其中可调用的名字。
+  流式提前执行与普通批次共用预检，目录外调用按原调用 ID 返回 `TOOL_UNAVAILABLE` 和未执行原因。
+  成功的发现或激活从下一轮更新目录时生效。发现和结束指令均以工具成功回执为准，审批拒绝保留在调用链中。
 - **反思工具族合并**：无选择器的反思/任务循环复用回复级装配（`reflect_share_reply_tools` 默认开，
   同族追加式冻结）——reply/默认 reflect 共享单一冻结数组族；带选择器的子代理档案仍走精简目录
 

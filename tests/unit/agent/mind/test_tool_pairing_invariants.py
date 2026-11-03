@@ -74,7 +74,7 @@ class TestAtomicChainAppend:
         tool_chain: List[dict] = []
         result = SimpleNamespace(content="")
         calls = [_tc("read_file", "a"), _tc("search_files", "b")]
-        await tl.execute_tool_calls(mock_mind, tool_chain, result, calls, 1)
+        await tl.execute_tool_calls(mock_mind, tool_chain, result, calls, 1, available_tool_names={"read_file", "search_files"})
         assert [m["role"] for m in tool_chain] == ["assistant", "tool", "tool"]
         assert tool_chain[0]["tool_calls"]
         assert tool_chain[1]["tool_call_id"] == "a"
@@ -92,7 +92,8 @@ class TestAtomicChainAppend:
         chain = []
         calls = [_tc("recognize_image", "a"), _tc("recognize_image", "b")]
         base = [{"role": "system", "content": "stable prefix"}]
-        await tl.execute_tool_calls(mock_mind, chain, SimpleNamespace(content=""), calls, 1, base_messages=base)
+        await tl.execute_tool_calls(mock_mind, chain, SimpleNamespace(content=""), calls, 1,
+                                    available_tool_names={"recognize_image"}, base_messages=base)
         assert [m["role"] for m in chain[:3]] == ["assistant", "tool", "tool"]
         assert all(data not in m["content"] for m in chain if m["role"] == "tool")
         blocks = [b for m in chain if isinstance(m["content"], list) for b in m["content"] if b["type"] == "image_url"]
@@ -122,7 +123,7 @@ class TestAtomicChainAppend:
         result = SimpleNamespace(content="")
         calls = [_tc("slow_tool", "a"), _tc("fast_tool", "b")]
         task = asyncio.create_task(
-            tl.execute_tool_calls(mock_mind, tool_chain, result, calls, 1)
+            tl.execute_tool_calls(mock_mind, tool_chain, result, calls, 1, available_tool_names={"slow_tool", "fast_tool"})
         )
         await asyncio.sleep(0.05)
         task.cancel()
@@ -153,7 +154,7 @@ class TestAtomicChainAppend:
         chain = []
         task = asyncio.create_task(tl.execute_tool_calls(
             mock_mind, chain, SimpleNamespace(content=""), [_tc("recognize_image", "a"), _tc("write_file", "b")],
-            1, abort_event=abort,
+            1, available_tool_names={"recognize_image", "write_file"}, abort_event=abort,
         ))
         await asyncio.wait_for(loading.wait(), timeout=2)
         abort.set()
@@ -172,7 +173,8 @@ class TestAtomicChainAppend:
         monkeypatch.setattr(tl, "execute_one_tool", boom)
         tool_chain: List[dict] = []
         result = SimpleNamespace(content="")
-        await tl.execute_tool_calls(mock_mind, tool_chain, result, [_tc("write_file", "a")], 1)
+        await tl.execute_tool_calls(mock_mind, tool_chain, result, [_tc("write_file", "a")], 1,
+                                    available_tool_names={"write_file"})
         assert [m["role"] for m in tool_chain] == ["assistant", "tool"]
         assert "炸了" in tool_chain[1]["content"]
 
@@ -190,7 +192,8 @@ class TestAtomicChainAppend:
         monkeypatch.setattr(tl, "execute_one_tool", execute)
         monkeypatch.setattr("agent.llm.image_utils.ensure_base64_report", prepare)
         chain = []
-        await tl.execute_tool_calls(mock_mind, chain, SimpleNamespace(content=""), [_tc("recognize_image", "a")], 1)
+        await tl.execute_tool_calls(mock_mind, chain, SimpleNamespace(content=""), [_tc("recognize_image", "a")], 1,
+                                    available_tool_names={"recognize_image"})
         assert [m["role"] for m in chain] == ["assistant", "tool"]
         assert "图片加载" in chain[1]["content"]
         assert "image preparation failed" in chain[1]["content"]
@@ -218,7 +221,8 @@ class TestAtomicChainAppend:
         tool_chain: List[dict] = []
         result = SimpleNamespace(content="")
         calls = [_tc("recognize_image", "a"), _tc("run_shell_command", "b")]
-        await tl.execute_tool_calls(mock_mind, tool_chain, result, calls, 1)
+        await tl.execute_tool_calls(mock_mind, tool_chain, result, calls, 1,
+                                    available_tool_names={"recognize_image", "run_shell_command"})
         assert [m["role"] for m in tool_chain] == ["assistant", "tool", "tool", "user"]
         assert tool_chain[1]["tool_call_id"] == "a"
         assert tool_chain[2]["tool_call_id"] == "b"

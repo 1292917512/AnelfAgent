@@ -93,9 +93,13 @@ async def prepare_round_context(
         except Exception as exc:
             log(f"跨会话上下文读取失败: {exc}", "WARNING", tag="思维")
 
+    # 合并新消息可能重建媒体工具目录，以本次模型请求的最终目录为准。
+    catalog = () if ctx.summary_only else ctx.active_tools
+    state.available_tool_names = frozenset(tool["function"]["name"] for tool in catalog) - ctx.blocked_tools
     exec_context = mind.context.build_execution_context(
         execution_steps, start_time, state.iteration,
         adapter_key=ctx.adapter_key, safety_limit=safety_limit,
+        available_tool_names=state.available_tool_names,
         anything=anything,
         budget_hint=_token_budget_hint(ctx, state),
         cache_hint=_cache_status_hint(state),

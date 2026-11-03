@@ -108,6 +108,7 @@ class TestToolFlow:
                                model_invoker=SimpleNamespace(get_context_length=lambda: 0))
         chain = []
         await execute_tool_calls(mind, chain, ChatResult(content=""), [call], 0,
+                                 available_tool_names={call.name},
                                  journal=ReplyToolJournal(sink, "audit-scope"))
         gate.check.assert_awaited_once()
         result = json.loads(chain[-1]["content"])

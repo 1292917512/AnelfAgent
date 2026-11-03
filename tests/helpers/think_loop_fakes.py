@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Iterable
 from contextvars import ContextVar
 from types import SimpleNamespace
 from typing import Any, List, Optional
@@ -92,8 +93,10 @@ class FakePFC:
 class FakeToolAssembly:
     """活跃工具目录与更新版本替身。"""
 
-    def __init__(self) -> None:
+    def __init__(self, tool_names: Iterable[str] = ()) -> None:
         self.tools_version = 0
+        self.schemas = [{"type": "function", "function": {"name": name}}
+                        for name in sorted({"end_reply", "recall", *tool_names})]
 
     def clear_dynamic_tools(self, **kwargs) -> None:
         pass
@@ -110,13 +113,13 @@ class FakeToolAssembly:
     async def get_active_tool_schemas(self, adapter_key: str = "", scope: str = "") -> list:
         # think_loop 版本元组含 EntityRegistry.version()：注册表在测试过程中
         # 被其他用例增删时会触发 active_tools 重建，打桩需提供该方法
-        return []
+        return self.schemas
 
     async def get_reflect_tool_schemas(
         self, adapter_key: str = "", scope: str = "", selectors: list | None = None,
     ) -> list:
         # REFLECT 模式重建路径的精简目录打桩（与上方同理）
-        return []
+        return self.schemas
 
 
 class FakeMind:
@@ -138,7 +141,8 @@ class FakeMind:
         context: Optional[FakeContext] = None,
     ) -> None:
         self.pfc = pfc if pfc is not None else FakePFC()
-        self.tool_assembly = tool_assembly if tool_assembly is not None else FakeToolAssembly()
+        scripted_tools = {call.name for result in rounds or [] for call in result.tool_calls or []}
+        self.tool_assembly = tool_assembly or FakeToolAssembly(scripted_tools.union(tool_results or {}))
         self.context = context if context is not None else FakeContext()
         self.compressor = None
         self.memory_store = None
@@ -233,7 +237,7 @@ async def run_think_loop(
             start_time=time.time(),
             safety_limit=safety_limit,
             collected_text=collected_text if collected_text is not None else [],
-            active_tools=tools if tools is not None else [],
+            active_tools=mind.tool_assembly.schemas if tools is None else tools,
             require_output=require_output,
             anything=anything,
             base_messages=base_messages if base_messages is not None

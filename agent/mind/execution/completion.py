@@ -41,6 +41,7 @@ async def _handle_summary_round(
         await execute_tool_calls(
             ctx.mind, ctx.tool_chain, result, tool_calls, state.iteration, ctx.anything,
             guardrail=ctx.guardrail, pipeline=ctx.pipeline,
+            available_tool_names=frozenset(),
             blocked_tools=ctx.blocked_tools | {tc.name for tc in tool_calls},
             abort_event=ctx.abort_event,
         )

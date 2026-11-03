@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 from helpers.think_loop_fakes import (
     FakeContext,
@@ -32,6 +34,18 @@ def _base() -> list:
 
 
 class TestReflectOutputSemantics:
+    async def test_empty_catalog_returns_paired_errors_without_executing_or_ending(self) -> None:
+        names = ["end_reply", "bilibili_check_messages"]
+        mind = _reflect_mind([tool_result("", names)])
+        completion: dict = {}
+        await run_think_loop(mind, mode=ThinkMode.REFLECT, tools=[], safety_limit=1, completion=completion)
+        receipts = {m["tool_call_id"]: json.loads(m["content"]) for m in completion["messages"] if m["role"] == "tool"}
+        assert set(receipts) == {f"tc_{name}" for name in names}
+        for name in names:
+            receipt = receipts[f"tc_{name}"]
+            assert receipt["code"] == "TOOL_UNAVAILABLE" and name in receipt["error"]
+        assert mind.executed_tools == [] and completion["reason"] == "budget_exhausted"
+
     async def test_interim_text_dropped_on_tool_round(self) -> None:
         """文本 → 工具 → 文本：中间独白被归档，产出只有最终总结段。"""
         # 末段连续 3 轮纯文本触发 REFLECT 收束（连续文本上限）

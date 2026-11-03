@@ -167,7 +167,7 @@ class TestExecuteToolCalls:
         tool_chain: List[dict] = []
         calls = [_tc("slow_safe", "a"), _tc("slow_safe", "b")]
         start = time.monotonic()
-        await tl.execute_tool_calls(mind, tool_chain, result, calls, 1)
+        await tl.execute_tool_calls(mind, tool_chain, result, calls, 1, available_tool_names={"slow_safe"})
         elapsed = time.monotonic() - start
         # 并行：总耗时约 0.05s 而非 0.1s
         assert elapsed < 0.09
@@ -179,7 +179,7 @@ class TestExecuteToolCalls:
         mind, result, records = mock_mind
         tool_chain: List[dict] = []
         calls = [_tc("write_file", "a"), _tc("write_file", "b")]
-        await tl.execute_tool_calls(mind, tool_chain, result, calls, 1)
+        await tl.execute_tool_calls(mind, tool_chain, result, calls, 1, available_tool_names={"write_file"})
         # 串行：a 完整结束后 b 才开始
         assert records == ["start:a", "end:a", "start:b", "end:b"]
 
@@ -191,7 +191,8 @@ class TestExecuteToolCalls:
 
         monkeypatch.setattr(tl, "execute_one_tool", boom)
         tool_chain: List[dict] = []
-        await tl.execute_tool_calls(mind, tool_chain, result, [_tc("write_file", "a")], 1)
+        await tl.execute_tool_calls(mind, tool_chain, result, [_tc("write_file", "a")], 1,
+                                    available_tool_names={"write_file"})
         tool_msg = [m for m in tool_chain if m["role"] == "tool"][0]
         assert "炸了" in tool_msg["content"]
 
@@ -202,6 +203,7 @@ class TestExecuteToolCalls:
         await tl.execute_tool_calls(
             mind, tool_chain, result, [_tc("send_message", "a")], 1,
             blocked_tools=frozenset({"send_message"}),
+            available_tool_names=frozenset(),
         )
         assert records == []  # 真实工具未执行
         tool_msg = [m for m in tool_chain if m["role"] == "tool"][0]
@@ -248,11 +250,12 @@ class TestInterruptedBatch:
             abort.set()
 
         trig = asyncio.get_running_loop().create_task(trigger())
-        partial = await tl.execute_tool_calls(
-            mind, tool_chain, result, calls, 1, abort_event=abort,
+        partial, completed = await tl.execute_tool_calls(
+            mind, tool_chain, result, calls, 1, available_tool_names={"slow_safe"}, abort_event=abort,
         )
         await trig
         assert partial is True
+        assert [tc.id for tc in completed] == ["fast"]
         tool_msgs = [m for m in tool_chain if m["role"] == "tool"]
         # 配对铁律：assistant 的两个调用都有 tool 响应，顺序一致
         assert [m["tool_call_id"] for m in tool_msgs] == ["fast", "slow"]
@@ -274,12 +277,12 @@ class TestInterruptedBatch:
 
         trig = asyncio.get_running_loop().create_task(trigger())
         calls = [_tc("write_file", "w1"), _tc("write_file", "w2"), _tc("write_file", "w3")]
-        partial = await tl.execute_tool_calls(
-            mind, tool_chain, result, calls, 1, abort_event=abort,
+        partial, completed = await tl.execute_tool_calls(
+            mind, tool_chain, result, calls, 1, available_tool_names={"write_file"}, abort_event=abort,
         )
         await trig
         # w1 串行批首调用在途被中止；w2/w3 未启动 → 未执行占位
-        assert partial is True
+        assert partial is True and not completed
         tool_msgs = [m for m in tool_chain if m["role"] == "tool"]
         assert len(tool_msgs) == 3
         assert "部分执行" in tool_msgs[0]["content"]
@@ -289,10 +292,10 @@ class TestInterruptedBatch:
 
     async def test_no_abort_returns_false(self, mock_mind):
         mind, result, _ = mock_mind
-        partial = await tl.execute_tool_calls(
-            mind, [], result, [_tc("write_file", "a")], 1,
+        partial, completed = await tl.execute_tool_calls(
+            mind, [], result, [_tc("write_file", "a")], 1, available_tool_names={"write_file"},
         )
-        assert partial is False
+        assert partial is False and [tc.id for tc in completed] == ["a"]
 
     async def test_cancelled_writer_preserves_partial_receipt_in_chain(self, mock_mind, monkeypatch):
         from core.cancellation import ToolCancelled
@@ -314,11 +317,12 @@ class TestInterruptedBatch:
         chain = []
         task = asyncio.create_task(tl.execute_tool_calls(
             mind, chain, result, [_tc("write_file", "partial"), _tc("write_file", "unstarted")],
-            1, abort_event=abort,
+            1, available_tool_names={"write_file"}, abort_event=abort,
         ))
         await started.wait()
         abort.set()
-        assert await task
+        partial, completed = await task
+        assert partial and not completed
         messages = [message for message in chain if message["role"] == "tool"]
         assert json.loads(messages[0]["content"])["completed"] == 2
         assert json.loads(messages[0]["content"])["process_stopped"]
@@ -350,7 +354,7 @@ class TestEarlyToolRunner:
 
     def test_submit_rejects_write_tools(self, mock_mind):
         mind, _ = mock_mind
-        runner = tl._EarlyToolRunner(mind, None, 0)
+        runner = tl._EarlyToolRunner(mind, None, 0, available_tool_names={"write_file"})
         runner.submit(_tc("write_file", "a"))
         assert runner._tasks == {}
 
@@ -360,7 +364,7 @@ class TestEarlyToolRunner:
         monkeypatch.setattr(
             "agent.security.session_token.detect_leak", lambda s: True,
         )
-        runner = tl_mod._EarlyToolRunner(mind, None, 0)
+        runner = tl_mod._EarlyToolRunner(mind, None, 0, available_tool_names={"slow_safe"})
         call = SimpleNamespace(
             name="slow_safe", id="a", arguments='{"q": "secret"}',
             raw={"id": "a", "function": {"name": "slow_safe", "arguments": "{}"}},
@@ -370,7 +374,7 @@ class TestEarlyToolRunner:
 
     async def test_collect_reuses_early_result(self, mock_mind):
         mind, records = mock_mind
-        runner = tl._EarlyToolRunner(mind, None, 0)
+        runner = tl._EarlyToolRunner(mind, None, 0, available_tool_names={"slow_safe"})
         call = _tc("slow_safe", "a")
         runner.submit(call)
         out = await runner.collect(call)
@@ -380,7 +384,7 @@ class TestEarlyToolRunner:
         # 工具批回收同 id：不再触发现场执行
         tool_chain: List[dict] = []
         await tl.execute_tool_calls(
-            mind, tool_chain, SimpleNamespace(content=""), [call], 1, early=runner,
+            mind, tool_chain, SimpleNamespace(content=""), [call], 1, available_tool_names={"slow_safe"}, early=runner,
         )
         assert records == ["a"]
         tool_msg = [m for m in tool_chain if m["role"] == "tool"][0]
@@ -388,7 +392,7 @@ class TestEarlyToolRunner:
 
     async def test_collect_drift_falls_back(self, mock_mind):
         mind, records = mock_mind
-        runner = tl._EarlyToolRunner(mind, None, 0)
+        runner = tl._EarlyToolRunner(mind, None, 0, available_tool_names={"slow_safe"})
         runner.submit(_tc("slow_safe", "a"))
         drifted = SimpleNamespace(
             name="slow_safe", id="a", arguments='{"changed": 1}',

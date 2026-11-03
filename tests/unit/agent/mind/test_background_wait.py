@@ -382,13 +382,10 @@ class _WaitMind(FakeMind):
 
 
 
-_SEND_MESSAGE_TOOL = [{"type": "function", "function": {"name": "send_message"}}]
-
-
 def _run_reply(mind, anything, steps: Optional[List[str]] = None, chain: Optional[List] = None):
     return run_think_loop(
         mind, anything=anything, steps=steps, chain=chain,
-        safety_limit=10, tools=_SEND_MESSAGE_TOOL,
+        safety_limit=10, tools=[{"type": "function", "function": {"name": "end_reply"}}],
         base_messages=[{"role": "user", "content": "图片好了吗"}],
     )
 

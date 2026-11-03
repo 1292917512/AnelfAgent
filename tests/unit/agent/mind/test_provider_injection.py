@@ -217,7 +217,7 @@ class TestProviderTailInjection:
         )
         base = [{"role": "system", "content": "BASE", "_layer": "stable"}]
         await run_think_loop(
-            mind, mode=ThinkMode.REPLY, base_messages=base, tools=[{"name": "recall"}],
+            mind, mode=ThinkMode.REPLY, base_messages=base,
         )
 
         assert len(mind.sent_messages) == 2

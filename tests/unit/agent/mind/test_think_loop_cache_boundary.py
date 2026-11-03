@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 from unittest.mock import AsyncMock
 
@@ -58,11 +59,11 @@ class TestThinkLoopChainBreakpoint:
         from agent.mind.execution.state import ThinkMode
         from core.entity import EntityRegistry
         for name in ("cache_parent", "cache_added"):
-            EntityRegistry.register_tool(name=name, func=lambda: "ok", group="cache_test")
+            EntityRegistry.register_tool(name=name, func=lambda: "ok", group="cache_test", meta={"concurrency_safe": True})
         try:
             initial = EntityRegistry.get_tool_schema_by_names(["cache_parent"])
             selected = EntityRegistry.get_tool_schema_by_names(["cache_added"])
-            mind = FakeMind(rounds=[tool_result("", ["recall"]), tool_result("", ["end_reply"])])
+            mind = FakeMind(rounds=[tool_result("", ["cache_added", "cache_parent"]), tool_result("", ["cache_added"])])
             mind.tool_assembly.tools_version = 0
             monkeypatch.setattr(mind.tool_assembly, "get_active_tool_schemas", AsyncMock(return_value=selected))
             original_invoke = mind.model_invoker.invoke
@@ -70,11 +71,19 @@ class TestThinkLoopChainBreakpoint:
             async def invoke(messages, tools, *args, **kwargs):
                 catalogs.append(deepcopy(tools))
                 mind.tool_assembly.tools_version += 1
-                return await original_invoke(messages, tools, *args, **kwargs)
+                result = await original_invoke(messages, tools, *args, **kwargs)
+                for call in result.tool_calls:
+                    kwargs["on_tool_call_ready"](call)
+                return result
             monkeypatch.setattr(mind.model_invoker, "invoke", invoke)
-            await run_think_loop(mind, mode=ThinkMode.REFLECT, tools=initial)
+            await run_think_loop(mind, mode=ThinkMode.REFLECT, tools=initial, safety_limit=2)
             assert catalogs[0] == initial
             assert catalogs[1] == initial + selected
+            receipt = next(m for m in mind.sent_messages[1] if m.get("tool_call_id") == "tc_cache_added")
+            error = json.loads(receipt["content"])
+            assert error["code"] == "TOOL_UNAVAILABLE" and error["retryable"] is False
+            assert "cache_added" in error["error"] and "未执行" in error["error"]
+            assert mind.executed_tools == ["cache_parent", "cache_added"]
         finally:
             for name in ("cache_parent", "cache_added"):
                 EntityRegistry.unregister(name)

@@ -9,18 +9,41 @@ from __future__ import annotations
 import asyncio
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from helpers.think_loop_fakes import FakeMind, run_think_loop, tool_result
 
+from agent.approval.types import ApprovalResult
 from agent.judgment.engine import JudgmentConfig
 from agent.judgment.types import ChoiceAnswer, JudgmentReport, JudgmentSource
 from agent.llm.types import ToolCall
 from agent.mind.execution import tool_recovery
 from agent.mind.execution.responses import _check_tool_results_all_errors, _collect_round_error_briefs
+from agent.mind.execution.state import ThinkMode
 from core.config import ConfigManager
 from core.tool_results import parse_tool_result_json
+
+
+@pytest.mark.parametrize("mode", [ThinkMode.REPLY, ThinkMode.REFLECT])
+async def test_discovery_and_end_require_successful_receipts(mode, anything, monkeypatch):
+    names = ["list_entity_methods", "end_reply"]
+    denied = ApprovalResult(False, "rule_deny", "拒绝执行")
+    gate = SimpleNamespace(check=AsyncMock(side_effect=[denied, denied] + [ApprovalResult(True, "rule_allow")] * 2))
+    monkeypatch.setattr("agent.approval.get_approval_gate", lambda: gate)
+    rounds = []
+    for _ in range(2):
+        result = tool_result("", ["list_entity_methods"], '{"group":"test"}')
+        result.tool_calls.extend(tool_result("", ["end_reply"]).tool_calls)
+        rounds.append(result)
+    mind = FakeMind(rounds=rounds, default_text=None)
+    discover = Mock()
+    monkeypatch.setattr(mind.tool_assembly, "expand_discovered_tools", discover)
+    await run_think_loop(mind, mode=mode, anything=anything if mode is ThinkMode.REPLY else None)
+    receipts = [json.loads(m["content"]) for m in mind.sent_messages[1] if m.get("role") == "tool"]
+    assert [r["permission_outcome"] for r in receipts] == ["rule_deny", "rule_deny"]
+    assert mind.executed_tools == names
+    assert [[tc.name for tc in call.args[0]] for call in discover.call_args_list] == [[], names]
 
 
 def _chain(*contents: str) -> list[dict]:

@@ -7,6 +7,10 @@
 - stable 层构建与指纹（Prompt 分层缓存的稳定前缀）
 - 完整 LLM 上下文组装（stable/context/volatile/对话历史分层）
 - 每轮执行上下文（轮次/工具态势/当前空间；跨会话通知独立放在动态区）
+
+模型看到：工具态势只列本轮可调用的工具。
+Token 影响：省去目录外工具名，每轮最多缩短一行提示。
+缓存影响：仅更新动态执行上下文，不改稳定前缀。
 """
 
 from __future__ import annotations
@@ -767,6 +771,7 @@ channel_id 和 target_id 取当前请求的频道与会话标签，群聊目标�
             *,
             adapter_key: str = "",
             safety_limit: int = 0,
+            available_tool_names: frozenset[str] = frozenset(),
             anything: Optional["Everything"] = None,
             budget_hint: str = "",
             cache_hint: str = "",
@@ -815,11 +820,13 @@ channel_id 和 target_id 取当前请求的频道与会话标签，群聊目标�
 
         # 工具态势摘要（名单截断展示： exec_context 每轮重建，全量名单是纯增量 token）
         tool_parts: list[str] = []
-        if ta.tag_activated_tools:
-            tool_parts.append(f"标签激活: {_cap_names(sorted(ta.tag_activated_tools))}")
-        if ta.discovered_tools:
-            tool_parts.append(f"动态发现: {_cap_names(sorted(ta.discovered_tools))}")
-        hot = ta.get_hot_tool_names()[:5]
+        tagged = ta.tag_activated_tools & available_tool_names
+        discovered = ta.discovered_tools & available_tool_names
+        if tagged:
+            tool_parts.append(f"标签激活: {_cap_names(sorted(tagged))}")
+        if discovered:
+            tool_parts.append(f"动态发现: {_cap_names(sorted(discovered))}")
+        hot = [name for name in ta.get_hot_tool_names() if name in available_tool_names][:5]
         if hot:
             tool_parts.append(f"热工具: {', '.join(hot)}")
         if tool_parts:

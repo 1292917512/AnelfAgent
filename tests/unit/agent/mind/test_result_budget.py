@@ -187,7 +187,7 @@ def test_execution_contract_does_not_require_optional_entities(tmp_path):
             mind = SimpleNamespace(set_phase=lambda phase: None, memory_store=None,
                                    model_invoker=SimpleNamespace(get_context_length=lambda: 0))
             messages = []
-            await execute_tool_calls(mind, messages, ChatResult(content=""), [call], 0)
+            await execute_tool_calls(mind, messages, ChatResult(content=""), [call], 0, available_tool_names={call.name})
             assert messages[-1]["_sensitive_result"] is True
             raw = messages[-1]["content"]
             EntityRegistry.unregister("system_probe")

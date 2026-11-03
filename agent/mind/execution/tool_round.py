@@ -71,6 +71,7 @@ async def _handle_tool_round(
         )
         ctx.collected_text.clear()
     called = {tc.name for tc in tool_calls}
+    available_calls = [tc for tc in tool_calls if tc.name in state.available_tool_names]
     text = _strip_think_blocks(result.content or "").strip()
     from agent.mind.execution.reply_delivery import deliver_reply, observe_send_results, publish_delivery
     delivery_task = None
@@ -83,9 +84,10 @@ async def _handle_tool_round(
             ctx, state, text, interim=True, messages=ctx.base_messages + tool_chain,
         ), ctx.abort_event))
     try:
-        partial_abort = await execute_tool_calls(
+        partial_abort, successful_calls = await execute_tool_calls(
             mind, tool_chain, result, tool_calls, state.iteration, ctx.anything,
             guardrail=guardrail, pipeline=ctx.pipeline, blocked_tools=ctx.blocked_tools,
+            available_tool_names=state.available_tool_names,
             abort_event=ctx.abort_event, early=early_runner, journal=ctx.journal,
             base_messages=ctx.base_messages,
         )
@@ -106,14 +108,14 @@ async def _handle_tool_round(
         state.output_sent = True
         state.auto_reply_blocked = True
         state.reply_delivery_status = "sent"
-    observe_send_results(ctx, state, tool_calls)
+    observe_send_results(ctx, state, available_calls)
     if state.interrupted:
         return await _finish_round(ctx, state)
 
     # 记录目标工具使用（goal nag 提醒的计数依据）
     try:
         from agent.planning.nag import note_tools_used
-        note_tools_used(ctx.current_scope, [tc.name for tc in tool_calls])
+        note_tools_used(ctx.current_scope, [tc.name for tc in available_calls])
     except Exception:
         pass
 
@@ -131,9 +133,9 @@ async def _handle_tool_round(
     else:
         state.consecutive_tool_errors = 0
 
-    for tc in tool_calls:
+    for tc in available_calls:
         mind.tool_assembly.record_tool_use(tc.name)
-    mind.tool_assembly.expand_discovered_tools(tool_calls, scope=ctx.current_scope)
+    mind.tool_assembly.expand_discovered_tools(successful_calls, scope=ctx.current_scope)
 
     tool_names = ", ".join(tc.name for tc in tool_calls)
     failures = _collect_round_error_briefs(tool_chain, tool_calls)
@@ -152,7 +154,8 @@ async def _handle_tool_round(
             execution_steps.append("→ " + handoff_note)
             return await _finish_round(ctx, state)
 
-    if (guardrail.halt_decision is not None or state.consecutive_tool_errors >= 3) and not should_end_reply(tool_calls):
+    end_requested = should_end_reply(successful_calls)
+    if (guardrail.halt_decision is not None or state.consecutive_tool_errors >= 3) and not end_requested:
         from agent.context.observation import emit_context_update
         from agent.mind.execution.tool_recovery import assess_tool_recovery
 
@@ -185,7 +188,7 @@ async def _handle_tool_round(
             "_source": {"origin": "tool_recovery"},
         })
 
-    if should_end_reply(tool_calls):
+    if end_requested:
         if called & OUTPUT_TOOL_NAMES:
             from agent.mind.execution.reply_delivery import batch_deliveries_confirmed
 

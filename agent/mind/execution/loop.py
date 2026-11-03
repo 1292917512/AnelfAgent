@@ -210,6 +210,7 @@ async def _run_think_rounds(
         # 流中早执行：只读调用在流继续生成时提前分发，工具轮按 id 回收
         early_runner = _EarlyToolRunner(
             mind, anything, state.iteration,
+            available_tool_names=state.available_tool_names,
             blocked_tools=ctx.blocked_tools, guardrail=ctx.guardrail,
         )
         if ctx.summary_only:

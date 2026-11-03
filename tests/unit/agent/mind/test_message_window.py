@@ -215,7 +215,7 @@ class _MergeTools(FakeToolAssembly):
 
     async def get_active_tool_schemas(self, adapter_key: str = "", scope: str = "") -> list:
         self.tools_rebuilt += 1
-        return []
+        return self.schemas
 
 
 class _MergeModel(FakeModelInvoker):

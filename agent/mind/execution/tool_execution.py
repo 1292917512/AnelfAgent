@@ -1,4 +1,9 @@
-"""工具批次预检、并发执行、中断与结果落账。"""
+"""工具批次预检、并发执行、中断与结果落账。
+
+模型看到：调用本轮目录外的工具时收到具名的未执行回执。
+Token 影响：仅被拦截的调用增加一条简短错误说明。
+缓存影响：错误写入当前轮的工具结果，不改变工具目录或稳定前缀。
+"""
 
 
 from __future__ import annotations
@@ -23,7 +28,7 @@ from core.event_bus import (
 )
 from core.log import log
 from core.observation import ExecutionObservation
-from core.tool_errors import error_from_exception
+from core.tool_errors import ErrorCause, error_from_exception, tool_error
 from core.tool_results import extract_error_text, redact_tool_result
 
 if TYPE_CHECKING:
@@ -75,12 +80,14 @@ class _EarlyToolRunner:
             anything: Optional["Everything"],
             iteration: int,
             *,
+            available_tool_names: AbstractSet[str],
             blocked_tools: AbstractSet[str] = frozenset(),
             guardrail: Optional["GuardrailController"] = None,
     ) -> None:
         self._mind = mind
         self._anything = anything
         self._iteration = iteration
+        self._available_tool_names = available_tool_names
         self._blocked_tools = blocked_tools
         self._guardrail = guardrail
         self._semaphore = asyncio.Semaphore(_MAX_TOOL_CONCURRENCY)
@@ -94,11 +101,11 @@ class _EarlyToolRunner:
         if self._closed or tc.id in self._tasks:
             return
         if tc.name == END_REPLY_TOOL_NAME:
-            self._closed = True
+            self._closed = tc.name in self._available_tool_names
             return
         if not self._is_readonly(tc.name):
             return
-        if _precheck_tool_call(self._mind, tc, self._blocked_tools, self._guardrail) is not None:
+        if _precheck_tool_call(tc, self._available_tool_names, self._blocked_tools, self._guardrail) is not None:
             return
         # 参数复述会话令牌的调用不提前执行：泄露轮的整批丢弃语义保持在
         # 工具批层面统一裁决
@@ -175,22 +182,27 @@ def _consume_task_result(task: asyncio.Task) -> None:
 
 
 def _precheck_tool_call(
-        mind: Mind,
         tc: "ToolCall",
+        available_tool_names: AbstractSet[str],
         blocked_tools: Optional[AbstractSet[str]],
         guardrail: Optional["GuardrailController"],
 ) -> Optional[str]:
-    """执行前预检（模式禁用/守卫）；拦截时返回合成结果文本，放行返回 None。
+    """检查模式限制、本轮工具目录与守卫，拦截时返回错误回执。
 
     工具批与流中提前分发共用，保证两条路径的拦截语义一致。
     """
     if blocked_tools and tc.name in blocked_tools:
-        from core.tool_errors import ErrorCause, tool_error
         log(f"模式禁用工具拦截: {tc.name}", "DEBUG", tag="思维")
         return tool_error(
             f"工具 {tc.name} 在当前模式（内部任务/受限角色）下不可用",
             cause=ErrorCause.PERMISSION, retryable=False,
             hint="该工具仅被限制而非必需：请改用允许的工具完成任务，勿重复调用",
+        )
+    if tc.name not in available_tool_names:
+        return tool_error(
+            f"工具 {tc.name} 在当前会话的本轮工具目录中不可用，调用未执行。",
+            cause=ErrorCause.STATE, retryable=False, code="TOOL_UNAVAILABLE",
+            hint="请通过本轮提供的工具查询或激活所需分组；仍不可用时报告阻塞，勿用占位 shell 命令代替。",
         )
     if guardrail is not None:
         decision = guardrail.before_call(tc.name, tc.arguments or "")
@@ -224,7 +236,6 @@ async def _await_with_abort(aw: Any, abort_event: Optional[asyncio.Event]) -> tu
 
 def _aborted_tool_result(tc: "ToolCall", started: AbstractSet[str]) -> str:
     """中断占位结果：区分"未执行"与"执行中被中止（可能已部分执行）"。"""
-    from core.tool_errors import ErrorCause, tool_error
     if tc.id in started:
         return tool_error(
             "用户中断，该调用执行中被中止（可能已部分执行）",
@@ -248,16 +259,17 @@ async def execute_tool_calls(
         *,
         guardrail: Optional["GuardrailController"] = None,
         pipeline: Optional["ToolResultPipeline"] = None,
+        available_tool_names: AbstractSet[str],
         blocked_tools: Optional[AbstractSet[str]] = None,
         abort_event: Optional[asyncio.Event] = None,
         early: Optional[_EarlyToolRunner] = None,
         journal: Optional["ReplyToolJournal"] = None,
         base_messages: Optional[List[Dict]] = None,
-) -> bool:
+) -> tuple[bool, list[ToolCall]]:
     """执行工具调用并将 assistant + tool 消息追加到 tool_chain。
 
-    返回是否存在"执行中被中止"的调用（中断路径的占位结果提示可能已
-    部分执行，供收束元消息措辞使用）。
+    返回是否存在执行中被中止的调用，以及有成功回执的调用（按原始顺序）。
+    控制信号与目录发现依据原始回执判定，不受展示层截断或脱敏影响。
 
     并发边界（concurrency_safe 的契约）：
     - 并发段仅为 execute_one_tool（审批闸 + 工具体 + 事件/hook）——连续的
@@ -278,6 +290,7 @@ async def execute_tool_calls(
     实际发送内容由工具（如 send_message）的 _record_to_context 负责写入 DB。
     结果加工（脱敏/扫描/守卫/截断）由 ToolResultPipeline 统一处理。
     blocked_tools 为模式级禁用工具：执行侧拦截返回合成错误（可见性与权限分离）。
+    available_tool_names 来自发起本轮模型调用时的本地工具目录和模式限制，空集拒绝全部调用。
     journal 非空时逐调用落账（REPLY 模式的崩溃尾部账本，见 reply_journal）。
     """
     if pipeline is None:
@@ -303,11 +316,10 @@ async def execute_tool_calls(
     ended = False
     for tc in tool_calls:
         if ended:
-            from core.tool_errors import ErrorCause, tool_error
             blocked_results[tc.id] = tool_error("end_reply 之后的调用未执行", cause=ErrorCause.USER_CANCEL, retryable=False)
             continue
-        ended = tc.name == END_REPLY_TOOL_NAME
-        blocked = _precheck_tool_call(mind, tc, blocked_tools, guardrail)
+        blocked = _precheck_tool_call(tc, available_tool_names, blocked_tools, guardrail)
+        ended = tc.name == END_REPLY_TOOL_NAME and tc.name in available_tool_names
         if blocked is not None:
             blocked_results[tc.id] = blocked
 
@@ -351,6 +363,7 @@ async def execute_tool_calls(
     # output 紧邻 function_call），多模态 user 消息只落在全部结果之后的尾部
     batch_msgs: List[Dict] = []
     multimodal_msgs: List[Dict] = []
+    successful_calls: list[ToolCall] = []
 
     async def _emit(tc: ToolCall, output: Any) -> None:
         """单调用结果加工落链（真实输出/异常统一归因映射）+ 多模态展开 + 落账。"""
@@ -360,7 +373,9 @@ async def execute_tool_calls(
             output = error_from_exception(output, action=f"工具 {tc.name} 执行")
         output_str = output if isinstance(output, str) else str(output)
         output_str, images = split_multimodal_result(output_str)
-        sensitive_result = tc.id in sensitive_results and not was_exception and not extract_error_text(output_str)
+        succeeded = (tc.id not in blocked_results and tc.id not in cancelled_calls
+                     and not was_exception and not extract_error_text(output_str))
+        sensitive_result = tc.id in sensitive_results and succeeded
         process_failed = False
         try:
             final_output = pipeline.process(
@@ -392,10 +407,12 @@ async def execute_tool_calls(
             final_output += "\n" + error_from_exception(exc, action=f"工具 {tc.name} 图片加载")
             batch_msgs[-1]["content"] = final_output
             log(f"多模态工具结果展开失败: {exc}", "ERROR", tag="思维")
+        if succeeded and not process_failed:
+            successful_calls.append(tc)
         if journal is not None:
             status = (
                 "blocked" if tc.id in blocked_results
-                else ("error" if was_exception or process_failed else "ok")
+                else ("ok" if succeeded and not process_failed else "error")
             )
             await journal.record(tc.name, tc.arguments or "", final_output, status=status,
                                  sensitive_result=sensitive_result)
@@ -458,9 +475,10 @@ async def execute_tool_calls(
     tool_chain.extend(multimodal_msgs)
     log_tool_round(iteration, tool_calls)
     # 存在"已启动但未完成"的调用 = 中断中止了在途执行（可能部分执行）
-    return aborted and any(
+    partial_abort = aborted and any(
         tc.id in cancelled_calls or (tc.id in started and tc.id not in finished) for tc in tool_calls
     )
+    return partial_abort, successful_calls
 
 
 def _record_tool_result_failure(mind: Mind, tc: ToolCall, result: str) -> None:

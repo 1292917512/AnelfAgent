@@ -3,9 +3,11 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Dict, List
+from dataclasses import replace
+from typing import TYPE_CHECKING, List
+from uuid import uuid4
 
-from agent.context.message_schema import preserve_reasoning_fields
+from agent.llm.types import ToolCall
 from agent.mind.execution.background import _format_running_tasks, _format_task_completions, _suspend_for_background
 from agent.mind.execution.completion import _finish_round
 from agent.mind.execution.messages import (
@@ -19,6 +21,7 @@ from agent.mind.execution.responses import (
 )
 from agent.mind.execution.state import ExecutionContext, RoundOutcome, RoundState, ThinkMode
 from agent.mind.execution.tool_execution import _await_with_abort
+from agent.mind.execution.tool_round import _handle_tool_round
 from agent.mind.silence import should_suppress
 from agent.mind.tools.core import END_REPLY_TOOL_NAME
 from core.log import log
@@ -43,9 +46,6 @@ _PROMPT_TASKS_STILL_RUNNING = (
 
 
 _MAX_REFLECT_TEXT_ROUNDS = 3
-
-
-_SYNTHETIC_END_REPLY_CALL_ID = "call_end_reply_text_intent"
 
 
 async def _handle_text_only_round(
@@ -87,27 +87,11 @@ async def _handle_text_only_round(
         # function calling 形态入链（assistant tool_calls + tool 结果）：
         # 幻觉文本本身不留痕，上下文与执行摘要看到的都是正确格式，不强化文本形态调用
         if ctx.mode == ThinkMode.REPLY and _END_REPLY_TEXT_RE.match(raw_text):
-            assistant_msg: Dict[str, Any] = {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [{
-                    "id": _SYNTHETIC_END_REPLY_CALL_ID,
-                    "type": "function",
-                    "function": {"name": END_REPLY_TOOL_NAME, "arguments": "{}"},
-                }],
-            }
-            preserve_reasoning_fields(assistant_msg, result, tools_present=bool(ctx.active_tools))
-            tool_chain.append(assistant_msg)
-            tool_chain.append({
-                "role": "tool",
-                "tool_call_id": _SYNTHETIC_END_REPLY_CALL_ID,
-                "content": '{"ok": true, "action": "end_reply"}',
-            })
-            log("文本形态的 end_reply，按结束意图规范入链并结束（不投递）", "WARNING", tag="思维")
-            execution_steps.append(
-                f"→ 第{state.iteration + 1}轮: 文本形态 end_reply，按结束处理"
-            )
-            return await _finish_round(ctx, state, explicit_end=True)
+            call_id = f"call_end_reply_{uuid4().hex}"
+            call = ToolCall(id=call_id, name=END_REPLY_TOOL_NAME, arguments="{}",
+                            raw=ToolCall.wire_raw(call_id, END_REPLY_TOOL_NAME, "{}"))
+            normalized = replace(result, content="", tool_calls=[call])
+            return await _handle_tool_round(ctx, state, normalized, normalized.tool_calls)
         _append_assistant_msg(tool_chain, result, raw_text, tools_present=bool(ctx.active_tools))
         ctx.collected_text.append(raw_text)
 

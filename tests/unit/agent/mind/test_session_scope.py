@@ -216,6 +216,18 @@ class TestAdaptMessagesCacheControl:
 # ==================================================================
 
 class TestSessionNotification:
+    def test_tool_status_shows_only_callable_names(self) -> None:
+        tools = ToolAssembly()
+        tools.tag_activated_tools.update({"bilibili_check_messages", "read_image"})
+        tools._scope_discovered_tools["other"] = {"other_tool"}
+        tools.record_tool_use("bilibili_check_messages")
+        tools.record_tool_use("read_image")
+        ctx = ContextAssembly(_pfc(), tools).build_execution_context(
+            [], time.time(), 0, available_tool_names=frozenset({"read_image"}),
+        )
+        assert "标签激活: read_image" in ctx["content"] and "热工具: read_image" in ctx["content"]
+        assert "bilibili_check_messages" not in ctx["content"] and "other_tool" not in ctx["content"]
+
     @pytest.mark.parametrize("iteration", [0, 7, 50])
     def test_unlimited_execution_has_no_round_budget_warning(self, iteration: int) -> None:
         ctx = ContextAssembly(_pfc(), ToolAssembly()).build_execution_context(

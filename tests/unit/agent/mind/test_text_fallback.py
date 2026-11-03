@@ -153,17 +153,18 @@ async def test_end_reply_content_suppressed_after_send_message(anything, deliver
 
     deliver_mock.assert_not_awaited()
 
-async def test_text_form_end_reply_ends_without_delivery(anything, deliver_mock) -> None:
+@pytest.mark.parametrize("available", [True, False])
+async def test_text_form_end_reply_ends_without_delivery(anything, deliver_mock, available) -> None:
     """弱模型把 end_reply 写成文本：按结束意图处理，内部指令文本不投递。"""
     mind = _mind()
-    mind._rounds = [text_result("end_reply(reason=群员闲聊与我无关，静默结束)")]
-    steps: List[str] = []
+    mind._rounds = [text_result("end_reply(reason=群员闲聊与我无关，静默结束)"), text_result("[SILENT]")]
+    mind.tool_results["end_reply"] = '{"ok": true, "action": "end_reply"}'
     chain: List = []
-    await _run(mind, anything, steps, chain)
+    await _run(mind, anything, chain=chain, tools=None if available else [])
 
     deliver_mock.assert_not_awaited()
-    assert mind.llm_calls == 1
-    assert any("按结束处理" in s for s in steps)
+    assert mind.llm_calls == (1 if available else 2)
+    assert mind.executed_tools == (["end_reply"] if available else [])
     # 规范入链：幻觉文本不留痕，轨迹里是 assistant tool_calls + tool 结果
     assert not any(
         m.get("role") == "assistant" and "end_reply(" in (m.get("content") or "")
@@ -174,7 +175,5 @@ async def test_text_form_end_reply_ends_without_delivery(anything, deliver_mock)
         for tc in m.get("tool_calls") or []
     ]
     assert assistant_calls == ["end_reply"]
-    assert any(
-        m.get("role") == "tool" and '"action": "end_reply"' in m.get("content", "")
-        for m in chain
-    )
+    receipt = json.loads(next(m["content"] for m in chain if m.get("role") == "tool"))
+    assert receipt["action"] == "end_reply" if available else receipt["code"] == "TOOL_UNAVAILABLE"
