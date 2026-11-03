@@ -23,12 +23,14 @@ from core.sanitizer import sanitize_text
 from .recall_policy import RecallPolicy, apply_adaptive_recall, can_adapt_recall, current_recall_policy
 
 
-async def route_recall(conversation: list[dict], scope: str, *, summary: str = "",
+async def route_recall(conversation: list[dict], scope: str, *, summary: str | asyncio.Future[str] = "",
                        deadline: float | None = None) -> tuple[RecallPolicy, str]:
     """只在高置信且分布有效时减少检索；失败、缺上下文或不确定保留原策略。"""
     policy = current_recall_policy(scope)
     if not can_adapt_recall(scope):
         return policy, ""
+    loop = asyncio.get_running_loop()
+    route_start = loop.time()
     try:
         config = load_config()
     except Exception as exc:
@@ -37,8 +39,14 @@ async def route_recall(conversation: list[dict], scope: str, *, summary: str = "
     if not config.enabled or not config.native_configured or not get_config_bool("judgment_gate_enabled", True):
         return policy, ""
     budget = max(0.1, min(5.0, config.timeout, get_config_float("memory_recall_route_timeout", 1.0)))
-    loop = asyncio.get_running_loop()
-    deadline = min(deadline, loop.time() + budget) if deadline is not None else loop.time() + budget
+    route_deadline = route_start + budget
+    deadline = min(deadline, route_deadline) if deadline is not None else route_deadline
+    if isinstance(summary, asyncio.Future):
+        # 只有原生分级需要先读摘要；分级超时后，组装仍可使用同一份摘要。
+        done, _ = await asyncio.wait({summary}, timeout=max(0., deadline - loop.time()))
+        summary = summary.result() if done else ""
+        if not can_adapt_recall(scope):
+            return current_recall_policy(scope), ""
     threshold = max(0.8, min(1.0, get_config_float("memory_recall_route_confidence", 0.9)))
     selected = policy
     started = time.monotonic()

@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional
 from agent.context.inputs import RecollectionInputs
 from agent.judgment.evidence import dialogue_messages
 from agent.memory.memory_retriever import MemoryRetriever
-from agent.memory.recall_policy import can_adapt_recall, current_recall_policy
+from agent.memory.recall_policy import current_recall_policy
 from agent.mind.cross_channel import recall_cross_channel
 from agent.mind.recall.scopes import extract_related_scopes, extract_scopes_from_anything
 from core.config import get_config_bool, get_config_float
@@ -142,12 +142,13 @@ class Recollection:
             except Exception as exc:
                 log(f"复读提示获取失败: {exc}", "DEBUG", tag="思维")
 
-        async def summary() -> None:
+        async def summary() -> str:
             if anything:
                 try:
                     result.summary = await self.conversation_data.get_conversation_summary(anything)
                 except Exception as exc:
                     log(f"对话摘要获取失败: {exc}", "DEBUG", tag="思维")
+            return str((result.summary or {}).get("summary", ""))
 
         async def profile_blocks() -> None:
             store = self.memory_store
@@ -186,13 +187,8 @@ class Recollection:
                 vector_task = tasks.create_task(embed())
             if not lean:
                 from agent.memory.recall_routing import route_recall
-                route_deadline = min(deadline, asyncio.get_running_loop().time() + max(
-                    .1, min(5., get_config_float("memory_recall_route_timeout", 1.))))
-                if can_adapt_recall(scope):
-                    # 复用组装本来就需要的摘要读取；借用者不取消读取，等待也计入分级预算。
-                    await asyncio.wait({summary_task}, timeout=max(0., route_deadline - asyncio.get_running_loop().time()))
                 policy, result.recall_notice = await route_recall(
-                    conversation, scope, summary=str((result.summary or {}).get("summary", "")), deadline=route_deadline)
+                    conversation, scope, summary=summary_task, deadline=deadline)
             result.recall_level = policy.level
             if lean:
                 tasks.create_task(pins())
