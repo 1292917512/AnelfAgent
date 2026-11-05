@@ -91,6 +91,94 @@ async def test_cycle_requests_are_serial_and_latched(decision_clock: list[float]
         await mind.driver.close()
 
 
+async def test_conversation_attention_is_owned_by_the_main_execution() -> None:
+    mind = _fake_mind()
+    mind._active_scopes = set()
+    target = build_entity_scope("user", "qq", "1")
+    completed: list[bool] = []
+
+    async def isolated() -> None:
+        with mind.driver.conversation_attention("reflect:isolated") as enabled:
+            assert not enabled
+            assert not mind.driver.request_session_attention(target, origin="reflect:isolated")
+
+    async def cycle(*, is_heartbeat: bool) -> None:
+        with mind.driver.conversation_attention("reflect:main") as enabled:
+            assert enabled
+            await asyncio.create_task(isolated())
+            assert mind.driver.request_session_attention(target, origin="reflect:main")
+            assert mind.driver.request_session_attention(target, origin="reflect:main")
+            assert mind.driver._attention_targets == [target]
+        assert not mind.driver.request_session_attention(target, origin="reflect:main")
+        assert not mind.driver._attention_targets
+        mind._active_scopes.add(target)
+        with mind.driver.conversation_attention("reflect:inside-reply") as enabled:
+            assert not enabled
+        completed.append(True)
+
+    mind._autonomous_cycle = cycle
+    try:
+        await isolated()
+        mind.driver.request_cycle()
+        await asyncio.wait_for(mind.driver.when_idle(), 2)
+        assert completed == [True]
+        assert not mind.driver._attention_scope
+    finally:
+        await mind.driver.close()
+
+
+@pytest.mark.parametrize("outcome", ["failure", "cancel"])
+async def test_session_attention_restores_work_after_failed_or_cancelled_reply(
+    monkeypatch: pytest.MonkeyPatch, outcome: str,
+) -> None:
+    from agent.mind.execution.tool_execution import _await_with_abort
+
+    mind = _fake_mind()
+    mind._active_scopes = set()
+    mind._reflecting = True
+    target = build_entity_scope("user", "qq", "1")
+    waiting = build_entity_scope("user", "webui", "2")
+    mind.pfc.pending_user.append(target)
+    mind.pfc.pending_user.append(waiting)
+    entered, abort = asyncio.Event(), asyncio.Event()
+    closed: list[bool] = []
+    results: list[Any] = []
+
+    async def reply(*args: Any) -> bool:
+        entered.set()
+        assert mind.driver.current_work == "cycle" and not mind._reflecting
+        try:
+            if outcome == "failure":
+                raise RuntimeError("reply failed")
+            await asyncio.Event().wait()
+        finally:
+            closed.append(True)
+        return True
+
+    async def cycle(*, is_heartbeat: bool) -> None:
+        with mind.driver.conversation_attention("reflect:main") as enabled:
+            assert enabled
+            mind.driver.request_session_attention(target, origin="reflect:main")
+            results.append(await _await_with_abort(mind.driver.service_session_attention("reflect:main"), abort))
+            assert mind._reflecting
+
+    monkeypatch.setattr("agent.mind.decisions.execute_reply", reply)
+    mind._autonomous_cycle = cycle
+    try:
+        mind.driver.request_cycle()
+        await asyncio.wait_for(entered.wait(), 2)
+        if outcome == "cancel":
+            abort.set()
+        await asyncio.wait_for(mind.driver.when_idle(), 2)
+        assert closed == [True]
+        expected = (None, True) if outcome == "cancel" else ([(target, False)], False)
+        assert results == [expected]
+        assert waiting in mind.pfc.pending_user.queue
+        assert not mind.driver._attention_scope
+    finally:
+        await mind.driver.close()
+
+
 async def test_heartbeat_yields_at_completed_tick_before_starting_another_model_cycle(
     decision_clock: list[float],
 ) -> None:

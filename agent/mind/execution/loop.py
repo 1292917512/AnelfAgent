@@ -1,8 +1,8 @@
 """思维轮次编排：准备、调用、结果处理与终态收束。
 
-模型可见：默认不注入轮次上限或剩余轮次提醒，显式配置正数时沿用预算提示。
-Token 影响：不新增提示词；默认允许任务继续执行，实际用量随完成所需轮次增长。
-缓存影响：轮次状态仍在动态尾部，不改变稳定前缀与工具目录。
+模型可见：默认不注入轮次上限；主自主工作可在安全批次后处理外部会话并返回。
+Token 影响：让路执行独立回复，原任务仅追加恢复状态；实际用量随完成所需轮次增长。
+缓存影响：动态通知与恢复事实不改稳定前缀，原任务工具链保留。
 """
 
 
@@ -21,7 +21,7 @@ from agent.mind.execution.responses import (
     _handle_length_recovery,
     resolve_tool_calls,
 )
-from agent.mind.execution.round_context import prepare_round_context
+from agent.mind.execution.round_context import attend_pending_conversations, prepare_round_context
 from agent.mind.execution.session import _prepare_think_context
 from agent.mind.execution.state import ExecutionContext, RoundOutcome, RoundState, ThinkMode
 from agent.mind.execution.text_round import _handle_text_only_round
@@ -97,9 +97,12 @@ async def think_loop(
     async with manager as activity:
         recollection = DialogueRecollection(mind.recollection, ctx.current_scope, ctx.base_messages)
         try:
+            driver = getattr(mind, "driver", None)
+            attention = (driver.conversation_attention(ctx.current_scope)
+                         if mode == ThinkMode.REFLECT and driver is not None else nullcontext(False))
             with curation_window(), capture_deliveries(
                 ctx.current_scope, acknowledge=lambda scope, ts: mind.pfc.consume_scope_task(scope, through_ts=ts),
-            ):
+            ), attention as ctx.attend_conversations:
                 await _run_think_rounds(ctx, state, safety_limit, start_time, recollection)
         except Exception:
             state.completion_reason = "failed"
@@ -258,6 +261,10 @@ async def _run_think_rounds(
             outcome = await _handle_tool_round(
                 ctx, state, result, tool_calls, early_runner=early_runner,
             )
+        if ctx.attend_conversations and not state.interrupted:
+            await attend_pending_conversations(ctx, state)
+            if await _handle_interrupt(ctx, state):
+                return
         if outcome is RoundOutcome.BREAK:
             return
 

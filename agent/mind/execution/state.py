@@ -135,3 +135,4 @@ class ExecutionContext:
     require_output: bool = False
     summary_only: bool = False
     skill_context: SkillTagContext | None = None
+    attend_conversations: bool = False

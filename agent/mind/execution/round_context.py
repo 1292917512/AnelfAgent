@@ -1,7 +1,7 @@
 """执行轮次的上下文准备与发送快照组装。
 
-模型可见：主回复刷新当前对话、推送和跨会话通知；显式 skill 标签加载正文，内部执行只接收自己的任务与显式转向。
-Token：内部执行省去无关会话通知；主回复沿用压缩与动态提供者预算，显式 skill 标签另受技能正文预算约束。
+模型可见：主回复与主自主工作感知待回复消息；自主工作可选择先回复再继续，隔离执行仅接收任务与显式转向。
+Token：复用动态通知与正常回复调用；恢复只追加执行状态，显式 skill 标签沿用正文预算。
 缓存：对话只追加执行链；通知与实时状态仍在动态尾部，不改稳定前缀。
 """
 
@@ -83,10 +83,18 @@ async def prepare_round_context(
                           and isinstance(message.get("content"), str)]
         provider_msgs.extend(await ctx.skill_context.build(latest_input, provider_texts, scope=ctx.current_scope))
 
-    if mode == ThinkMode.REPLY:
+    if mode == ThinkMode.REPLY or ctx.attend_conversations:
         from agent.mind.cross_channel import build_cross_channel_narrative
         try:
             cross_messages = await build_cross_channel_narrative(mind, ctx.current_scope)
+            if cross_messages and ctx.attend_conversations:
+                cross_messages.append({
+                    "role": "system", "_layer": "provider", "_source": {"origin": "session_attention"},
+                    "content": "[自主工作中的新消息] 请自行判断是否现在处理以上会话，也可先继续当前工作。"
+                               "需要先处理时调用 switch_session(scope)：本批工具完成后将用目标会话的独立上下文回复，"
+                               "然后自动回到当前任务，保留已有进展，无需结束或重新启动任务。"
+                               "通知本身不表示已回复；不切换的待办会在当前工作结束后处理。",
+                })
             provider_msgs = cross_messages + provider_msgs
             from agent.context.observation import emit_cross_channel_updates
             await emit_cross_channel_updates(cross_messages, state.observed_cross_messages, state.iteration + 1)
@@ -128,3 +136,21 @@ async def prepare_round_context(
     observe_delivery_context(provider_msgs)
 
     return llm_messages, require_tools
+
+
+async def attend_pending_conversations(ctx: ExecutionContext, state: RoundState) -> None:
+    """让主自主工作在完整工具批次后处理其选中的会话，并记录恢复事实。"""
+    outcomes, aborted = await _await_with_abort(
+        ctx.mind.driver.service_session_attention(ctx.current_scope), ctx.abort_event,
+    )
+    if aborted:
+        state.interrupted = True
+        state.completion_reason = "interrupted"
+        return
+    for scope, ok in outcomes:
+        status = "回复执行已结束，送达情况以该会话回执为准" if ok else "回复执行失败，未确认送达"
+        ctx.tool_chain.append({
+            "role": "system", "content": f"[返回原任务] {scope}：{status}。当前已恢复原任务上下文，请从已有进展继续。",
+            "_layer": "tool_chain", "_source": {"origin": "session_resume"},
+        })
+        ctx.execution_steps.append(f"→ 处理会话 {scope} 后返回原任务：{status}")

@@ -7,9 +7,13 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import time
+from collections import Counter
+from copy import deepcopy
 from types import SimpleNamespace
-from typing import List
+from typing import Any, List
 from unittest.mock import AsyncMock
 
 import pytest
@@ -24,8 +28,14 @@ from helpers.think_loop_fakes import (
 )
 
 from agent.llm.types import ImageContent, ToolCall
-from agent.messages import MessageUser
+from agent.messages import Everything, MessageGroupUser, MessageUser
+from agent.mind.autonomous import MindPhase
+from agent.mind.driver import MindDriver
 from agent.mind.execution.messages import snapshot_watermark
+from agent.mind.execution.state import ThinkMode
+from agent.mind.mind import Mind
+from agent.mind.think_session import think_session
+from agent.runtime.assistant import AgentAssistant
 from agent.storage.data_center import ConversationData
 from agent.storage.storage_router import StorageDomain, StorageRouter
 from core.tags import format_time, get_time_tag
@@ -260,6 +270,201 @@ def _attach_pending_work(mind):
     work = PrefrontalCortex(SimpleNamespace(get_anything=AsyncMock(return_value=entity)))
     mind.pfc = work
     return work
+
+
+class _QueuedTools(FakeToolAssembly):
+    def clear_when_idle(self, active_scopes: set[str], idle: asyncio.Event) -> None:
+        self.clear_dynamic_tools()
+
+
+class _QueuedMind(FakeMind):
+    """真实受理、PFC、Driver 与回复循环；仅模型、工具外部效果和初始召回替换。"""
+
+    def __init__(self, conv_data: ConversationData) -> None:
+        super().__init__(tool_assembly=_QueuedTools(["switch_session", "send_message"]))
+        self.conversation_data = conv_data
+        _attach_pending_work(self)
+        self._active_scopes: set[str] = set()
+        self._reply_activated_at: dict[str, float] = {}
+        self._reply_idle_event = asyncio.Event()
+        self._reply_idle_event.set()
+        self._reflecting = False
+        self._reflect_depth = 0
+        self._auto_cycle_retry = 0
+        self.phase = MindPhase.IDLE
+        self.driver = MindDriver(self)
+        self.channel_manager = SimpleNamespace(reply=AsyncMock())
+        self.heartbeat_engine = SimpleNamespace(tick=AsyncMock(return_value=[]))
+        self.delivered_scopes: list[str] = []
+        self.tool_scopes: list[tuple[str, str]] = []
+
+    def set_phase(self, phase: MindPhase) -> None:
+        self.phase = phase
+
+    def _reset_phase_if_idle(self) -> None:
+        Mind._reset_phase_if_idle(self)
+
+    def _schedule_next_cycle(self, reason: str, *, backoff: bool = False) -> None:
+        Mind._schedule_next_cycle(self, reason, backoff=backoff)
+
+    async def accept_feel(self, anything: Everything) -> None:
+        await Mind.accept_feel(self, anything)
+
+    async def _autonomous_cycle(self, *, is_heartbeat: bool = False) -> None:
+        await Mind._autonomous_cycle(self, is_heartbeat=is_heartbeat)
+
+    async def reply(self, anything: Everything, *, adapter_key: str = "") -> bool:
+        with think_session(self.tool_assembly, anything.entity_scope):
+            base = await self.conversation_data.get_conversation_record_by_everything(anything)
+            await run_think_loop(self, anything=anything, base_messages=base)
+        return True
+
+    async def execute_tool(self, tc: ToolCall) -> str:
+        from agent.channel.delivery import delivery_tags, record_delivery
+        from agent.mind.tools.session_tools import switch_session
+        from core.conversation_scope import current_scope
+
+        scope = current_scope()
+        self.tool_scopes.append((scope, tc.name))
+        if tc.name == "switch_session":
+            return await switch_session(**json.loads(tc.arguments))
+        if tc.name == "send_message":
+            self.delivered_scopes.append(scope)
+            record_delivery(scope)
+            return json.dumps({"success": True, "delivery": delivery_tags("channel", "sent", scope)})
+        return await super().execute_tool(tc)
+
+
+@pytest.mark.parametrize("decision", ["switch", "defer", "fail"])
+async def test_reflection_receives_messages_and_drains_without_losing_work(
+    conv_data: ConversationData, monkeypatch: pytest.MonkeyPatch, decision: str,
+) -> None:
+    from agent.context.message_schema import normalize_for_send
+    from agent.mind.tools.ports import mind_port
+    from core.conversation_scope import current_scope
+
+    mind = _QueuedMind(conv_data)
+    assistant = AgentAssistant(mind, heartbeat_enabled=False)
+    reflection_entered, reflection_release = asyncio.Event(), asyncio.Event()
+    reply_entered, reply_release = asyncio.Event(), asyncio.Event()
+    reflection_scope = "reflect:attention-test"
+    messages = [
+        MessageUser(uid="1", adapter_key="qq", text_content="第一条需求"),
+        MessageUser(uid="1", adapter_key="qq", text_content="以这句补充为准"),
+        MessageUser(uid="1", adapter_key="webui", session_id="other", text_content="同用户另一个频道"),
+        MessageGroupUser(uid="2", group_id="3", adapter_key="qq", to_me=True, text_content="群里的定向请求"),
+    ]
+    selected = messages[0].entity_scope
+    correction = MessageUser(uid="1", adapter_key="qq", text_content="模型请求期间的最终纠正")
+    snapshots: dict[str, list[list[dict[str, Any]]]] = {}
+    order: list[str] = []
+
+    async def invoke(inputs: list[dict[str, Any]], tools: Any, anything: Any = None, **kwargs: Any) -> Any:
+        scope = current_scope()
+        sent = snapshots.setdefault(scope, [])
+        sent.append(deepcopy(normalize_for_send(inputs)))
+        order.append(scope)
+        if scope == reflection_scope:
+            if len(sent) == 1:
+                reflection_entered.set()
+                await reflection_release.wait()
+                return tool_result("", ["recall"])
+            if len(sent) == 2:
+                if decision == "fail":
+                    raise RuntimeError("reflection model unavailable")
+                if decision == "switch":
+                    return tool_result("", ["switch_session"], json.dumps({"scope": selected}))
+            return tool_result("", ["end_reply"])
+        if scope == selected and len(sent) == 1:
+            reply_entered.set()
+            await reply_release.wait()
+            return tool_result("", ["recall"])
+        return tool_result("", ["send_message", "end_reply"])
+
+    async def reflect(**kwargs: Any) -> list[str]:
+        mind._reflecting = True
+        try:
+            with think_session(mind.tool_assembly, reflection_scope, with_token=False):
+                await run_think_loop(mind, mode=ThinkMode.REFLECT,
+                                     base_messages=[{"role": "user", "content": "原自主任务：检查已有记录"}])
+        finally:
+            mind._reflecting = False
+        return []
+
+    monkeypatch.setattr(mind.model_invoker, "invoke", invoke)
+    mind.heartbeat_engine.tick.side_effect = reflect
+    mind_port.set(mind)
+    try:
+        mind.driver.request_cycle(is_heartbeat=True)
+        await asyncio.wait_for(reflection_entered.wait(), 2)
+        for message in messages:
+            await assistant.feel(message)
+        assert {scope for scope, *_ in mind.pfc.peek_all_tasks()} == {m.entity_scope for m in messages}
+        assert not mind.delivered_scopes
+        mind.channel_manager.reply.assert_not_called()
+        assert len(snapshots) == 1
+        reflection_release.set()
+        await asyncio.wait_for(reply_entered.wait(), 3)
+        await assistant.feel(correction)
+        reply_release.set()
+        await asyncio.wait_for(mind.driver.when_idle(), 3)
+
+        notices = str(snapshots[reflection_scope][1])
+        assert all(message.text_content in notices for message in messages)
+        assert "[自主工作中的新消息]" in notices
+        assert Counter(mind.delivered_scopes) == Counter({m.entity_scope: 1 for m in messages})
+        assert not mind.pfc.has_pending_tasks()
+        for message in [*messages, correction]:
+            final = snapshots[message.entity_scope][-1]
+            assert sum(message.text_content in str(item["content"]) for item in final if item["role"] == "user") == 1
+        assert correction.text_content not in str(snapshots[selected][0])
+        assert mind.tool_scopes.count((reflection_scope, "recall")) == 1
+        if decision == "switch":
+            resumed = snapshots[reflection_scope][2]
+            assert order[:5] == [reflection_scope, reflection_scope, selected, selected, reflection_scope]
+            assert "原自主任务：检查已有记录" in str(resumed)
+            assert "[返回原任务]" in str(resumed)
+            assert any(item["role"] == "tool" and item["tool_call_id"] == "tc_recall" for item in resumed)
+            assert all(item.get("tool_call_id") != "tc_send_message" for item in resumed)
+            assert current_scope() != selected
+        else:
+            assert order[:2] == [reflection_scope, reflection_scope]
+            assert len(snapshots[reflection_scope]) == 2
+        mind.channel_manager.reply.assert_not_called()
+    finally:
+        reflection_release.set()
+        reply_release.set()
+        await assistant.stop()
+        mind_port.unbind()
+
+
+async def test_message_during_explicit_end_is_handled_by_the_next_admitted_cycle(
+    conv_data: ConversationData, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mind = _QueuedMind(conv_data)
+    assistant = AgentAssistant(mind, heartbeat_enabled=False)
+    first = MessageUser(uid="1", adapter_key="qq", text_content="原请求")
+    late = MessageUser(uid="1", adapter_key="qq", text_content="结束请求途中又到达的补充")
+    snapshots: list[list[dict[str, Any]]] = []
+
+    async def invoke(inputs: list[dict[str, Any]], *args: Any, **kwargs: Any) -> Any:
+        snapshots.append(deepcopy(inputs))
+        if len(snapshots) == 1:
+            await assistant.feel(late)
+        return tool_result("", ["send_message", "end_reply"])
+
+    monkeypatch.setattr(mind.model_invoker, "invoke", invoke)
+    try:
+        await assistant.feel(first)
+        await asyncio.wait_for(mind.driver.when_idle(), 3)
+        assert len(snapshots) == 2
+        assert late.text_content not in str(snapshots[0])
+        assert sum(late.text_content in str(item["content"]) for item in snapshots[1] if item["role"] == "user") == 1
+        assert mind.delivered_scopes == [first.entity_scope, late.entity_scope]
+        assert not mind.pfc.has_pending_tasks()
+        mind.channel_manager.reply.assert_not_called()
+    finally:
+        await assistant.stop()
 
 
 class TestThinkLoopMerge:

@@ -286,7 +286,7 @@ class TestSwitchSession:
         mind = SimpleNamespace(
             pfc=pfc,
             _active_scopes=set(),
-            driver=SimpleNamespace(request_cycle=MagicMock()),
+            driver=SimpleNamespace(request_cycle=MagicMock(), request_session_attention=MagicMock(return_value=False)),
         )
         mind_port.set(mind)  # type: ignore[arg-type]
         try:
@@ -306,7 +306,7 @@ class TestSwitchSession:
         pfc = _pfc()
         append = AsyncMock(return_value=True)
         monkeypatch.setattr(pfc, "append_notification", append)
-        mind = SimpleNamespace(pfc=pfc, _active_scopes=set(), driver=SimpleNamespace(request_cycle=MagicMock()))
+        mind = SimpleNamespace(pfc=pfc, _active_scopes=set(), driver=SimpleNamespace(request_cycle=MagicMock(), request_session_attention=MagicMock(return_value=False)))
         mind_port.set(mind)
         token = bind_scope("user_webui:shared#origin")
         try:
@@ -331,7 +331,7 @@ class TestSwitchSession:
         mind = SimpleNamespace(
             pfc=pfc,
             _active_scopes=set(),
-            driver=SimpleNamespace(request_cycle=MagicMock()),
+            driver=SimpleNamespace(request_cycle=MagicMock(), request_session_attention=MagicMock(return_value=False)),
         )
         mind_port.set(mind)  # type: ignore[arg-type]
         try:

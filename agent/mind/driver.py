@@ -9,16 +9,17 @@ LLM 钩子 / 工作流 ask / Minecraft 自主轮次），它们不经本调度�
 被即时唤醒取代时不重复触发。任务在排队前即认领（queued 与 running 共用
 任务在飞集合），未开始的认领在关停时释放。
 
-模型可见：周期异常后的未消费待办按新态势重新进入主周期，不注入额外提示；
-定时自主决策只在独立间隔到期后收集态势，维护和事件驱动周期沿用原通道。
-Token：恢复复用正常周期的模型调用；退避等待与未到期的心跳不调用决策模型。
-缓存：不改上下文组装或稳定前缀，仅改变已有待办的调度时机。
+模型可见：主自主工作可感知外部待办，并选择在工具批次结束后处理指定会话再继续。
+Token：感知复用动态通知；切换复用正常回复调用，恢复仅追加执行结果。
+缓存：保留原执行的消息与工具链，通知和恢复事实不改稳定前缀。
 """
 
 from __future__ import annotations
 
 import asyncio
 from collections import deque
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from time import monotonic
 from typing import TYPE_CHECKING, List, Optional
@@ -59,6 +60,8 @@ class MindDriver:
         self._closed = False
         self._interleaved_cycle = False
         self._last_autonomous_decision_at = monotonic()
+        self._attention_scope = ""
+        self._attention_targets: list[str] = []
 
     # ------------------------------------------------------------------
     # 只读状态
@@ -83,6 +86,60 @@ class MindDriver:
     def current_work(self) -> str:
         """当前主工作标识（cycle / heartbeat / tick / task:<名>），空闲为空。"""
         return self._current_work
+
+    @contextmanager
+    def conversation_attention(self, scope: str) -> Iterator[bool]:
+        """仅主 worker 的顶层内部执行可自主让路；隔离任务和嵌套回复不继承。"""
+        enabled = (bool(scope) and not self._closed and asyncio.current_task() is self._worker
+                   and not self._mind._active_scopes and not self._attention_scope)
+        if not enabled:
+            yield False
+            return
+        self._attention_scope = scope
+        try:
+            yield True
+        finally:
+            self._attention_scope = ""
+            self._attention_targets.clear()
+
+    def request_session_attention(self, scope: str, *, origin: str) -> bool:
+        """登记当前自主执行明确选择的会话；工具自身不递归执行回复。"""
+        if self._closed or not origin or origin != self._attention_scope:
+            return False
+        if scope not in self._attention_targets:
+            self._attention_targets.append(scope)
+        return True
+
+    async def service_session_attention(self, origin: str) -> list[tuple[str, bool]]:
+        """安全批次边界串行回复所选待办，随后返回原执行，不重放原工作。"""
+        if not origin or origin != self._attention_scope or self._closed:
+            return []
+        from agent.mind.autonomous import Decision, DecisionType
+        from agent.mind.decisions import execute_reply
+        from core.activity import activity_owner
+
+        outcomes: list[tuple[str, bool]] = []
+        targets, self._attention_targets = self._attention_targets, []
+        for scope in targets:
+            if scope in self._mind._active_scopes or not any(
+                pending == scope for pending, *_ in self._mind.pfc.peek_all_tasks()
+            ):
+                continue
+            previous_work, previous_reflecting = self._current_work, self._mind._reflecting
+            self._current_work = "cycle"
+            self._mind._reflecting = False
+            self._interleaved_cycle = True
+            try:
+                with activity_owner(kind="conversation", label=scope, scope=scope, trigger="session_switch"):
+                    ok = await execute_reply(self._mind, Decision(type=DecisionType.REPLY, target=scope))
+                outcomes.append((scope, ok))
+            except Exception as exc:
+                log(f"自主工作让路回复失败 ({scope}): {exc}", "WARNING", tag="思维")
+                outcomes.append((scope, False))
+            finally:
+                self._current_work = previous_work
+                self._mind._reflecting = previous_reflecting
+        return outcomes
 
     # ------------------------------------------------------------------
     # 受理入口（只登记与唤醒，不执行）

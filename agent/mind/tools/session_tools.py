@@ -3,9 +3,9 @@
 - list_sessions：列出活跃会话（未读消息 + 近期活动），供 AI 感知其他窗口动态。
 - switch_session：将目标会话排入回复队列，以其独立隔离的上下文开启一轮 REPLY。
 
-模型可见：诊断工具按需返回摘录、耗时和回执；会话交接明确返回当前与目标 scope，保持当前上下文。
-Token 影响：仅工具查询时提供有界结果，不自动注入诊断或调用模型总结。
-缓存影响：不改变稳定前缀、已读水位或实时会话内容。
+模型可见：会话交接明确区分排队与主自主工作让路；让路回复后恢复原任务。
+Token 影响：工具返回有界状态；让路复用目标会话的正常回复调用。
+缓存影响：不改变原任务稳定前缀，目标会话独立构建上下文。
 
 通过 deferred_tool 模式注册（group="session"），bootstrap 阶段激活。
 """
@@ -173,11 +173,12 @@ async def list_sessions() -> str:
 
 @deferred_tool(
     group="session", tags=["always"], source="mind.session",
-    description="将另一个会话排队，由后续独立回复处理。调用不会切换当前上下文或默认收件人；"
-                "已排队时无需重复调用，完成当前工作后结束本轮即可。scope 格式：user_qq:123 / group_qq:456 / user_webui:u#chat_id。",
+    description="请求处理指定会话。主自主工作中，本批工具完成后先用目标会话独立上下文回复，再自动返回原任务继续；"
+                "其他执行中仅排队，当前上下文和默认收件人不变。按返回的 status 判断，无需重复调用。"
+                "scope 格式：user_qq:123 / group_qq:456 / user_webui:u#chat_id。",
 )
 async def switch_session(scope: str, reason: str = "") -> str:
-    """请求指定会话的独立回复，不改变调用方会话。
+    """请求指定会话的独立回复；主自主工作可在批次边界让路并恢复。
 
     Args:
         scope: 目标会话标识（user_qq:123 / group_qq:456 / user_webui:u#chat_id，可由 list_sessions 获取）
@@ -208,25 +209,20 @@ async def switch_session(scope: str, reason: str = "") -> str:
             "hint": "该会话正在处理中，无需重复切换",
         }, ensure_ascii=False)
 
-    if scope in mind.pfc.pending_user.queue or scope in mind.pfc.pending_group.queue:
-        mind.driver.request_cycle()
-        return json.dumps({
-            "ok": True, "scope": scope, "current_scope": current, "status": "queued",
-            "hint": "目标已在队列中，无需重复交接或代发；当前上下文和默认收件人未改变，完成当前工作后结束本轮即可",
-        }, ensure_ascii=False)
+    if scope not in mind.pfc.pending_user.queue and scope not in mind.pfc.pending_group.queue:
+        preview = _snapshot_activities(mind.pfc).get(scope, {}).get("last_preview", "")
+        prompt = "[会话切换] 你主动切换到该会话处理消息"
+        if reason:
+            prompt += f"，原因：{reason}"
+        prompt += "。请阅读上方消息后决定回复内容。"
+        await mind.pfc.enqueue_reply(
+            scope, scope_adapter,
+            preview or f"会话切换: {reason or '主动处理'}"[:60],
+            prompt,
+        )
+    from agent.mind.tool_activation import ToolActivationManager
 
-    preview = _snapshot_activities(mind.pfc).get(scope, {}).get("last_preview", "")
-
-    prompt = "[会话切换] 你主动切换到该会话处理消息"
-    if reason:
-        prompt += f"，原因：{reason}"
-    prompt += "。请阅读上方消息后决定回复内容。"
-
-    await mind.pfc.enqueue_reply(
-        scope, scope_adapter,
-        preview or f"会话切换: {reason or '主动处理'}"[:60],
-        prompt,
-    )
+    attending = mind.driver.request_session_attention(scope, origin=ToolActivationManager.current_scope())
     mind.driver.request_cycle()
     log(f"AI 切换会话: scope={scope} reason={reason}", tag="会话")
 
@@ -235,6 +231,7 @@ async def switch_session(scope: str, reason: str = "") -> str:
         "scope": scope,
         "channel": scope_adapter,
         "current_scope": current,
-        "status": "queued",
-        "hint": "目标已排队，将由独立回复处理；当前上下文和默认收件人未改变，无需重复交接或代发，完成当前工作后结束本轮即可",
+        "status": "yield_requested" if attending else "queued",
+        "hint": ("本批工具完成后先处理目标会话，再自动返回当前任务继续；已有进展保留，无需重复调用或结束任务。"
+                 if attending else "目标已排队，将由独立回复处理；当前上下文和默认收件人未改变，完成当前工作后结束本轮即可"),
     }, ensure_ascii=False)
