@@ -608,12 +608,12 @@ class TestSearchFiles:
                                        sandbox=True, expected="directory"))
         assert "existing_parent" not in result
 
-    async def test_discovery_tools_available_with_shell(self) -> None:
+    async def test_file_workflow_available_without_discovery(self) -> None:
         from agent.mind.tool_assembly import ToolAssembly
 
         schemas = await ToolAssembly().get_active_tool_schemas()
         names = {schema["function"]["name"] for schema in schemas}
-        assert {"run_shell_command", "search_files", "list_directory"} <= names
+        assert {"run_shell_command", "search_files", "list_directory", "read_file", "edit_file"} <= names
 
     def test_glob_mode_sorted_by_mtime(self, workspace):
         old = workspace / "old.txt"

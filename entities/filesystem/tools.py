@@ -29,9 +29,9 @@ Model Experience（写操作成功结果 location 标注）:
 - 缓存影响：不触碰任何前缀层（工具结果在尾部动态区）
 
 Model Experience（文件发现与路径反馈）:
-- 模型看到什么：list_directory/search_files 与 Shell 一起常驻；搜索回显绝对根目录、
+- 模型看到什么：read_file 与编辑、发现工具及 Shell 一起常驻；搜索回显绝对根目录、
   是否截断，目录列表限制总项数且不递归噪声目录；定位失败给已验证目录和下一步指引。
-- token 影响：两份发现工具 schema 为固定开销；路径回执约增 50~200 token，不注入全目录树。
+- token 影响：读取与发现工具 schema 为固定开销，读取工具约数百 token；路径回执约增 50~200 token。
 - 缓存影响：schema/说明在加载后稳定，目录事实只进入工具结果尾部，不逐轮重写前缀。
 
 Python 超时沿统一错误契约反馈结果未知与状态核查指引，仅增加少量工具回执字段。
@@ -279,7 +279,7 @@ def _read_character_window(fp: str, content: str, start: int, limit: int) -> str
     return _read_receipt(fp, content, start, end, numbered, numbered + "\n" + note)
 
 
-@tool(name="read_file", group="os", tags=["media:file"], concurrency_safe=True, description=_READ_FILE_PROMPT)
+@tool(name="read_file", group="os", tags=["always", "media:file"], concurrency_safe=True, description=_READ_FILE_PROMPT)
 @track_fs_op("file_path")
 def read_file(file_path: str, offset: int = 0, limit: int = 0, encoding: str = "utf-8",
               offset_unit: Literal["line", "char"] = "line") -> str:
