@@ -1,7 +1,7 @@
 """按当前对话需要选择自动召回强度，显式策略和手动检索优先。
 
 模型看到：动态区说明实际自动检索范围；需要历史事实时可主动 recall。
-Token：一个有界的原生判断请求，共享近期对话与已有摘要；明确可独立完成时省去多路召回。
+Token：一个有界的原生判断请求，共享已有摘要；准备超时不再启动判断，明确可独立完成时省去多路召回。
 缓存：只改本轮策略及尾部提示，不修改历史或稳定前缀。
 """
 
@@ -41,9 +41,11 @@ async def route_recall(conversation: list[dict], scope: str, *, summary: str | a
     budget = max(0.1, min(5.0, config.timeout, get_config_float("memory_recall_route_timeout", 1.0)))
     route_deadline = route_start + budget
     deadline = min(deadline, route_deadline) if deadline is not None else route_deadline
+    summary_timed_out = False
     if isinstance(summary, asyncio.Future):
         # 只有原生分级需要先读摘要；分级超时后，组装仍可使用同一份摘要。
         done, _ = await asyncio.wait({summary}, timeout=max(0., deadline - loop.time()))
+        summary_timed_out = not done
         summary = summary.result() if done else ""
         if not can_adapt_recall(scope):
             return current_recall_policy(scope), ""
@@ -69,7 +71,7 @@ async def route_recall(conversation: list[dict], scope: str, *, summary: str | a
                              "summary_truncated": len(summary) > len(summary_excerpt)},
             }
             record.input_chars = len(evidence_json(state))
-            if not evidence or record.input_chars > auto_input_budget() or loop.time() >= deadline:
+            if summary_timed_out or not evidence or record.input_chars > auto_input_budget() or loop.time() >= deadline:
                 record.status, record.reason = "fallback", "缺少对话证据或准备预算不足，保留深入召回"
                 return policy, ""
             run.model_calls = 1

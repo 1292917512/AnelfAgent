@@ -109,6 +109,11 @@ class TestLeanRecollection:
         if summary_state != "without_jev":
             monkeypatch.setattr(recall_routing, "load_config", lambda: SN(
                 enabled=True, native_configured=True, timeout=5, model="test"))
+        if summary_state == "slow":
+            async def early_timeout(futures, *, timeout):
+                # asyncio 计时器可在时钟精度内提前唤醒，返回未完成即表示等待已超时。
+                return set(), set(futures)
+            monkeypatch.setattr(recall_routing.asyncio, "wait", early_timeout)
 
         async def read_summary(message):
             if summary_state in {"slow", "without_jev"}:
