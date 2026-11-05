@@ -73,6 +73,7 @@ from core.provider_keys import (  # 组件凭据中心桥
 )
 from core.tool_errors import ErrorCause, error_from_exception, tool_error
 from core.tool_registry import activate_group, deferred_tool, entity, tool
+from core.tool_results import PresentedToolResult
 from core.tool_schema import coerce_bool_arg
 
 __registration_bridge__ = True
@@ -112,6 +113,7 @@ __all__ = [
     "async_network_client", "async_network_client2", "network_client", "get_proxy_url", "resolve_network_route",
     "RecallPolicy", "recall_options", "set_turn_recall_policy",
     "tool", "deferred_tool", "entity", "activate_group",
+    "PresentedToolResult",
     "entity_manifest", "entity_config", "context_provider",
     "push_notify", "register_entity_llm_hook", "emit_chat_extension",
     "channel_sensitive_allowed", "sync_channel_modules",

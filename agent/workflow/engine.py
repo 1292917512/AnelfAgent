@@ -22,8 +22,8 @@ terminate 可停、完成通知自动路由）；步骤/事件落 journal 供 We
 结局、run 结算 stopped(user) 可续跑；进程关停的 CancelledError 原样
 上抛，run 留待启动收敛标 interrupted。
 
-Model Experience：模型收到显式步骤背景与依赖证据；未知执行效果保留进展并要求核验。
-Token：步骤背景按需进入本次委托；没有背景时不增加内容。
+Model Experience：模型收到步骤背景与依赖证据；工具展示回执只认可实际落账的数据。
+Token：步骤背景按需进入本次委托；内部展示回执不增加内容。
 缓存：背景属于步骤输入指纹与动态指令，不改变全局稳定前缀。
 """
 
@@ -54,7 +54,7 @@ from agent.workflow.spec import (
 )
 from core.config import get_config_bool, get_config_int, register_configs_safe
 from core.log import log
-from core.tool_results import extract_error_text, parse_tool_result_json
+from core.tool_results import PresentedToolResult, extract_error_text, parse_tool_result_json
 
 if TYPE_CHECKING:
     from agent.delegation.delegation_manager import DelegationManager
@@ -522,12 +522,16 @@ class WorkflowEngine:
                 await self._emit_settled(run_id, step.key, ordinal, "cancelled",
                                          error=_bounded(outcome.error, 400))
                 return outcome
+            stored_result = str(_bounded(outcome.result, _NODE_RESULT_MAX_CHARS)) if outcome.result else ""
             await self._journal.settle_node(
                 run_id, step.key, ordinal,
-                result_text=_bounded(outcome.result, _NODE_RESULT_MAX_CHARS) if outcome.result else "",
+                result_text=stored_result,
                 error_text=_bounded(outcome.error, 4000) if outcome.error else "",
                 delegation_id=outcome.delegation_id, usage=outcome.usage,
             )
+            if isinstance(outcome.result, PresentedToolResult):
+                outcome.result.acknowledge(stored_result)
+                outcome.result = str(outcome.result)
             await self._emit_settled(run_id, step.key, ordinal, outcome.status,
                                      error=_bounded(outcome.error, 400))
 
@@ -745,9 +749,16 @@ class WorkflowEngine:
                 and parsed.get("outcome") != "unknown"
             return _StepOutcome(status=NODE_FAILED, error=error[:4000], result=result_str, retryable=retryable)
         if decision.notice:
+            source_result = result_str
             payload = parsed if isinstance(parsed, dict) else {"result": result_str}
             payload["permission_notice"] = decision.notice
             result_str = json.dumps(payload, ensure_ascii=False)
+            if isinstance(source_result, PresentedToolResult):
+                def acknowledge(visible: str) -> None:
+                    delivered = parse_tool_result_json(visible)
+                    text = delivered.get("result", "") if isinstance(delivered, dict) else ""
+                    source_result.acknowledge(text if isinstance(text, str) else "")
+                result_str = PresentedToolResult(result_str, acknowledge)
         return _StepOutcome(status=NODE_COMPLETED, result=result_str)
 
     async def _request_approval(self, step: Any, run: Dict[str, Any]) -> "ApprovalResult":

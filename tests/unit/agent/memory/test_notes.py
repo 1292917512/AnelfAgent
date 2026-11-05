@@ -36,6 +36,13 @@ def test_note_keys_cannot_leave_the_memory_namespace(tmp_path, monkeypatch, key)
         notes.resolve_memory_file(key)
 
 
+@pytest.mark.parametrize("key", ["memory/../STRATEGY.md", "workspace/README.md"])
+async def test_read_rejects_project_paths_with_file_tool_guidance(memory_dir: Path, key: str) -> None:
+    result = json.loads(await notes._tool_read_memory_file(key))
+    assert result["cause"] == "param" and result["retryable"] is False
+    assert "read_file" in result["hint"] and "list_memory_files" in result["hint"]
+
+
 @pytest.fixture
 def memory_dir(tmp_path, monkeypatch) -> Path:
     """隔离的记忆工作区。"""

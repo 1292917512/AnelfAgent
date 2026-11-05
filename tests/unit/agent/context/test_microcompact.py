@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
 from types import SimpleNamespace
 from typing import Dict, List
 
@@ -102,7 +101,7 @@ class TestRehydration:
         file_state.clear_scope("_rehy")
         fp = tmp_path / "work.py"
         fp.write_text("print('hello')")
-        file_state.record_read(str(fp), "print('hello')", os.path.getmtime(fp))
+        file_state.record_read(str(fp), "print('hello')", read_ranges=((1, 1),))
 
         out = _rehydrate_recent_files("_rehy")
         assert "work.py" in out

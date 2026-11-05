@@ -1025,6 +1025,7 @@ async def list_memory_files() -> str:
     group="notes", tags=["always", "core", "heartbeat"], source="mind.notes",
     description=(
         "读取指定记忆文件的内容（memory/reflections.md、memory/entities.md 等）。"
+        "memory/ 是便签索引命名空间，不能使用 .. 跳转；普通项目文件（包括 .md）请用 read_file。"
         "recall 结果中 file 来源标注的路径去掉行号后缀（如 memory/heartbeat.md:1-20 → "
         "memory/heartbeat.md）即可直接作为 file_path，读取该条记忆的完整上下文。"
         "默认全量读取；文件超过全量上限会被拒绝，此时用 offset/limit 按行号窗口分段读取，"
@@ -1115,6 +1116,11 @@ async def _tool_read_memory_file(
                 f"窗口超出读取预算，已裁掉 {dropped} 行（保留{'最新' if keep_tail else '起点'}侧）"
             )
         return json.dumps(payload, ensure_ascii=False)
+    except ValueError as e:
+        return error_from_exception(
+            e, action="读取记忆文件",
+            hint="便签路径请从 list_memory_files 获取；普通项目文件请用 read_file，不要用 .. 拼接便签路径。",
+        )
     except Exception as e:
         return error_from_exception(e, action="读取记忆文件")
 

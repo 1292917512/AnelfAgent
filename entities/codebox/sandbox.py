@@ -5,8 +5,11 @@
 - 资源上限在子进程内自设（rlimit，见 runner.py）；墙钟超时由本侧强杀
 - 工具桥：每次子调用过统一审批门（channel=None 语义，同 workflow 引擎样板）
   + EntityRegistry.execute_tool；输出/编排/交互类工具在脚本内不可用
-- 子调用结果截断为头尾保留：脚本可用带 offset/limit 的调用自行分页精读，
-  比落盘预览更贴合脚本语义（脚本有变量，不需要文件兜底）
+- 子调用完整返回或明确拒绝超限数据；交付给脚本后提交展示回执，分页由脚本控制。
+
+模型可见：脚本仍只返回打印输出；读取凭据依据脚本实际收到的完整数据。
+Token 影响：内部回执不增加模型文本。
+缓存影响：只处理工具响应，不修改稳定前缀。
 """
 
 from __future__ import annotations
@@ -24,6 +27,7 @@ from core.config import get_config_int
 from core.log import log
 from core.process import managed_process
 from core.tool_errors import ErrorCause, tool_error
+from core.tool_results import PresentedToolResult
 
 _TAG = "代码编排"
 
@@ -322,3 +326,6 @@ async def _reply(proc: asyncio.subprocess.Process, payload: Dict[str, Any]) -> N
     assert proc.stdin is not None
     proc.stdin.write((json.dumps(payload, ensure_ascii=False) + "\n").encode())
     await proc.stdin.drain()
+    result = payload.get("result")
+    if isinstance(result, PresentedToolResult):
+        result.acknowledge(str(result))

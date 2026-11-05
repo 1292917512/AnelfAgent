@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from core.tool_results import PresentedToolResult
 from entities.filesystem import file_state, tools
 
 
@@ -25,7 +26,10 @@ def workspace(tmp_path, monkeypatch):
 
 
 def _read(fp, **kwargs):
-    return tools.read_file(str(fp), **kwargs)
+    output = tools.read_file(str(fp), **kwargs)
+    if isinstance(output, PresentedToolResult):
+        output.acknowledge(output)
+    return output
 
 
 def _edit(fp, old, new, replace_all=False):
@@ -237,12 +241,11 @@ class TestReadFile:
         assert "5→line5" not in out
         assert "offset=5" in out  # 继续读取指引
 
-    def test_dedup_stub_on_reread(self, workspace):
+    def test_explicit_reread_returns_content(self, workspace):
         fp = workspace / "a.txt"
         fp.write_text("hello")
         _read(fp)
-        result = json.loads(_read(fp))
-        assert result["unchanged"] is True
+        assert _read(fp) == "1→hello"
 
     def test_reread_after_change_returns_content(self, workspace):
         fp = workspace / "a.txt"
@@ -271,6 +274,131 @@ class TestReadFile:
         fp.write_bytes(b"\x89PNG")
         result = json.loads(_read(fp))
         assert result["type"] == "binary"
+
+
+class TestReadProtection:
+    def test_paginated_default_read_and_local_reread(self, workspace: Path) -> None:
+        fp = workspace / "large.txt"
+        fp.write_text("\n".join(f"line{i}" for i in range(2105)), encoding="utf-8")
+        first = _read(fp)
+        assert "offset=2001" in first and "line2104" not in first
+        assert "部分读取" in _edit(fp, "line2104", "changed")["error"]
+        _read(fp, offset=2001)
+        _read(fp, offset=1, limit=1)
+        assert _edit(fp, "line2104", "changed")["ok"]
+
+    @pytest.mark.parametrize("budget", ["chars", "bytes"])
+    def test_window_budget_keeps_complete_lines_and_resumable_offset(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch, budget: str,
+    ) -> None:
+        fp = workspace / "window.txt"
+        fp.write_text("甲乙丙丁\n戊己庚辛\n末行", encoding="utf-8")
+        monkeypatch.setattr(tools, "_READ_MAX_TOKENS", 2 if budget == "chars" else 25000)
+        monkeypatch.setattr(tools, "_READ_MAX_BYTES", 13 if budget == "bytes" else 256 * 1024)
+        first = _read(fp, offset=1, limit=100)
+        assert "1→甲乙丙丁" in first and "offset=2" in first and "戊己" not in first
+        assert "部分读取" in _edit(fp, "末行", "完成")["error"]
+        _read(fp, offset=2, limit=1)
+        _read(fp, offset=3, limit=1)
+        assert _edit(fp, "末行", "完成")["ok"]
+
+    def test_overlong_line_and_invalid_window_do_not_authorize_write(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        fp = workspace / "single.txt"
+        fp.write_text("x" * 50, encoding="utf-8")
+        monkeypatch.setattr(tools, "_READ_MAX_TOKENS", 10)
+        assert "单行长度" in json.loads(_read(fp, limit=1))["error"]
+        for window in ({"offset": -1}, {"limit": -1}, {"offset": 2}):
+            assert json.loads(_read(fp, **window))["cause"] == "param"
+        assert "尚未读取" in _edit(fp, "x", "y", replace_all=True)["error"]
+
+    @pytest.mark.parametrize("writer", ["edit", "write", "append"])
+    @pytest.mark.parametrize("mtime_delta", [-10, 0, 10])
+    def test_every_writer_rejects_changed_content_independently_of_mtime(
+        self, workspace: Path, writer: str, mtime_delta: int,
+    ) -> None:
+        fp = workspace / "conflict.txt"
+        fp.write_text("original", encoding="utf-8")
+        _read(fp)
+        stamp = fp.stat().st_mtime
+        fp.write_text("external", encoding="utf-8")
+        os.utime(fp, (stamp + mtime_delta, stamp + mtime_delta))
+        if writer == "edit":
+            result = _edit(fp, "external", "lost")
+        elif writer == "write":
+            result = json.loads(tools.write_file(str(fp), "lost"))
+        else:
+            result = json.loads(tools.append_file(str(fp), "lost"))
+        assert result["cause"] == "state" and "已被修改" in result["error"]
+        assert fp.read_text(encoding="utf-8") == "external"
+
+    @pytest.mark.parametrize("encoding", ["utf-8", "utf-16"])
+    def test_timestamp_touch_preserves_encoding_and_line_endings(self, workspace: Path, encoding: str) -> None:
+        fp = workspace / "touch.txt"
+        fp.write_bytes("alpha\r\nbeta\r\n".encode(encoding))
+        _read(fp)
+        stamp = fp.stat().st_mtime + 10
+        os.utime(fp, (stamp, stamp))
+        assert _edit(fp, "beta", "gamma")["ok"]
+        assert fp.read_bytes().decode(encoding) == "alpha\r\ngamma\r\n"
+
+    @pytest.mark.parametrize("mode", ["truncate", "persist", "omit", "sanitize"])
+    def test_pipeline_only_authorizes_presented_lines(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch, mode: str,
+    ) -> None:
+        from agent.mind.execution.result_pipeline import ToolResultPipeline, shell_persist_port
+        from agent.mind.result_budget import ResultBudget
+
+        fp = workspace / "visible.txt"
+        content = "\n".join(f"line{i}: " + "x" * 100 for i in range(600))
+        fp.write_text(content, encoding="utf-8")
+        pipeline = ToolResultPipeline(0)
+        monkeypatch.setattr(pipeline, "_sanitize", lambda value, **kwargs: value)
+        monkeypatch.setattr(pipeline, "_threat_warning", lambda *args: "")
+        monkeypatch.setattr(shell_persist_port, "_box", [])
+        if mode == "persist":
+            shell_persist_port.set(lambda *_: str(workspace / "preview.txt"))
+        if mode == "omit":
+            pipeline._budget = ResultBudget(8000, 1)
+            pipeline._turn_used_chars = 1
+        if mode == "sanitize":
+            pipeline = ToolResultPipeline(1_000_000)
+            monkeypatch.setattr(pipeline, "_sanitize", lambda value, **kwargs: value.replace("line300:", "[hidden]:"))
+            monkeypatch.setattr(pipeline, "_threat_warning", lambda *args: "")
+        output = tools.read_file(str(fp))
+        assert "尚未读取" in _edit(fp, "line300:", "changed:")["error"]
+        visible = pipeline.process("read_file", "{}", output)
+        assert not _edit(fp, "line300:", "changed:").get("ok")
+        if mode == "omit":
+            assert file_state.get_cache().get(str(fp)) is None
+        else:
+            state = file_state.get_cache().get(str(fp))
+            assert state is not None and not state.is_complete
+        if mode == "persist":
+            assert "persisted-output" in visible
+        # 显式重读的实际正文可继续建立完整基线，不会收到旧读取存根。
+        _read(fp)
+        assert _edit(fp, "line300:", "changed:")["ok"]
+
+    async def test_registry_preserves_receipt_until_pipeline_and_scope(self, workspace: Path) -> None:
+        from agent.mind.execution.result_pipeline import ToolResultPipeline
+        from core.conversation_scope import bind_scope, reset_scope
+        from core.entity import EntityRegistry
+
+        fp = workspace / "receipt.txt"
+        fp.write_text("alpha\nbeta", encoding="utf-8")
+        output = await EntityRegistry.execute_tool("read_file", json.dumps({"file_path": str(fp)}))
+        assert isinstance(output, PresentedToolResult)
+        assert "尚未读取" in _edit(fp, "beta", "gamma")["error"]
+        token = bind_scope("receipt-other")
+        try:
+            assert "2→beta" in ToolResultPipeline(128_000).process("read_file", "{}", output)
+            assert "尚未读取" in _edit(fp, "beta", "gamma")["error"]
+        finally:
+            reset_scope(token)
+            file_state.clear_scope("receipt-other")
+        assert _edit(fp, "beta", "gamma")["ok"]
 
 
 # ------------------------------------------------------------------

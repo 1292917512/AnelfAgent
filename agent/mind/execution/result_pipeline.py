@@ -7,8 +7,8 @@
 4. 整轮预算：本轮结果总量超限后进一步收紧
 5. 失败回执与指引：保留关键错误并追加安全/守卫提示
 
-模型可见：权限放行后的 sensitive_result 成功结果保留明文，仅供当前任务使用。
-Token 影响：敏感工具结果保留原文，仍受结果与整轮预算限制。
+模型可见：权限放行后的 sensitive_result 成功结果保留明文；展示回执只认可最终保留的正文。
+Token 影响：内部展示回执不增加模型文本，结果仍受单条与整轮预算限制。
 缓存影响：只作用于工具链尾部，不触碰稳定前缀；敏感结果不自动落盘。
 
 预算裁剪保留失败原因、操作指引与调用标识，守卫提醒在裁剪后追加。
@@ -28,7 +28,7 @@ from agent.mind.result_budget import (
 from core.latebind import LateBinding
 from core.log import log
 from core.tags import tag_label
-from core.tool_results import extract_error_text
+from core.tool_results import PresentedToolResult, extract_error_text
 
 if TYPE_CHECKING:
     from agent.mind.guardrails import GuardrailController
@@ -104,6 +104,7 @@ class ToolResultPipeline:
             sensitive_result: bool = False,
     ) -> str:
         """按管线加工单个工具结果，返回可注入上下文的最终文本。"""
+        source_output = output
         # 0. 空结果占位（防止模型在空工具结果后复读 stop 序列）
         if not output or not output.strip():
             return f"({tool_name} 执行完成，无输出)"
@@ -125,6 +126,8 @@ class ToolResultPipeline:
         if error_summary is not None and final != output:
             final = error_summary
         final = warning + final + guidance
+        if isinstance(source_output, PresentedToolResult):
+            source_output.acknowledge(final)
         self._turn_used_chars += len(final)
 
         if len(final) < len(output):

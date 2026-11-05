@@ -127,7 +127,7 @@ def notebook_edit(path: str, cell_index: int, new_source: str = "",
             from entities.filesystem import file_state
             if file_state.get_cache().get(fp) is not None:
                 with open(fp, "r", encoding="utf-8") as f:
-                    file_state.record_write(fp, f.read(), os.path.getmtime(fp))
+                    file_state.record_write(fp, f.read())
         except Exception:
             log("notebook_edit 异常已忽略", "DEBUG")
         return json.dumps({"ok": True, "path": fp, "message": message}, ensure_ascii=False)

@@ -4,7 +4,14 @@
 沙箱通过 app_config.json 中的 workspace_root 和 sandbox_enabled 配置。
 
 edit_file/read_file/write_file 的编辑安全语义：
-read-before-write、mtime 过期检查、弯引号容忍匹配、行尾往返。
+read-before-write、正文冲突检查、弯引号容忍匹配、行尾往返。
+
+Model Experience（文件读取基线）:
+- 模型看到什么：显式读取始终返回正文；分页只展示完整行并给出继续位置，
+  同一正文的已读范围累计，写入冲突要求重新读取，Shell 不建立读取基线。
+- token 影响：重读增加所请求窗口的正文量，避免存根导致的重复调用与 Shell 绕行；
+  每次读取受行数、字节及字符预算约束，恢复提示仅增加数十 token。
+- 缓存影响：正文与状态提示仅进入工具结果尾部；工具说明加载后稳定，不逐轮改写前缀。
 
 Model Experience（run_shell_command 便签键空间守卫 + 失败归因 notes）:
 - 模型看到什么：命令 token 触碰记忆便签树（便签索引键误作相对路径，或路径解析
@@ -42,9 +49,11 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from entities._sdk import (
     ErrorCause,
+    PresentedToolResult,
     coerce_bool_arg,
     entity,
     error_from_exception,
+    get_current_scope,
     tool,
     tool_error,
 )
@@ -121,21 +130,24 @@ _READ_FILE_PROMPT = """读取文本文件内容，输出带行号（格式: 行�
 
 使用规则:
 - 行号前缀（如 "12→"）不是文件内容，edit_file 的 old_string/new_string 绝不可包含它。
-- 大文件必须用 offset/limit 分段读取（上限 2000 行 / 256KB / 25000 token）。
-- 同一文件同一范围重复读取会返回"未变化"存根，直接参考此前的读取结果。
+- 大文件用 offset/limit 分段读取，每次最多 2000 行 / 256KB / 约 25000 token，只返回完整行。
+- 按返回的 offset 继续读取；同一正文的分页会累计，全部读完后才允许修改已有文件。
+- 若结果管线再次截断或只返回落盘预览，减小 limit 继续读原文件；预览副本不建立原文件的完整基线。
+- 显式重读会返回正文；已有内容仍在上下文中时可直接参考，无需重复读取。
 - 读取图片/音频/视频等二进制文件请使用对应的媒体工具（recognize_image 等）。"""
 
 _WRITE_FILE_PROMPT = """写入文件（整体覆盖）。目录不存在时自动创建。
 
 使用规则:
-- 覆盖已有文件前必须先用 read_file 读取过该文件，否则本工具会报错。
+- 覆盖已有文件前必须先用 read_file 完整读取当前内容，可分段读完；Shell 读取不算。
 - 修改已有文件请优先使用 edit_file — 它只发送差异部分，更省 token 且不易出错。
 - 除非明确要求，不要新建文档类文件（*.md/README）。"""
 
 _EDIT_FILE_PROMPT = """在文件中执行精确的字符串替换 — 修改已有文件的首选方式。
 
 使用规则:
-- 修改文件前必须先用 read_file 读取过该文件，否则本工具会报错。
+- 修改前须用 read_file 完整读取当前内容，可分段累计；Shell 读取或写入不会建立基线。
+- 文件被其他工具或程序修改后，须重新读取当前内容再编辑。
 - old_string 必须与文件内容精确匹配：保持 read_file 输出中行号前缀（→）之后的原始缩进（tab/空格）。
 - old_string 不唯一时会失败：提供包含更多上下文的更大字符串以唯一定位，
   或设置 replace_all=True 替换所有出现处（适合重命名变量/函数）。
@@ -229,10 +241,26 @@ def _add_line_numbers(content: str, start_line: int = 1) -> str:
     return "\n".join(f"{i:>{width}}→{line}" for i, line in enumerate(lines, start_line))
 
 
+def _read_receipt(fp: str, content: str, start_line: int, numbered: str, output: str) -> str:
+    """仅把最终工具结果中完整保留的原文行登记为已读。"""
+    scope = get_current_scope()
+    numbered_lines = numbered.split("\n")
+
+    def on_presented(visible: str) -> None:
+        visible_lines = set(visible.split("\n"))
+        ranges = tuple(
+            (start_line + i, start_line + i)
+            for i, line in enumerate(numbered_lines) if line in visible_lines
+        )
+        file_state.record_read(fp, content, read_ranges=ranges, scope=scope)
+
+    return PresentedToolResult(output, on_presented)
+
+
 @tool(name="read_file", group="os", tags=["media:file"], concurrency_safe=True, description=_READ_FILE_PROMPT)
 @track_fs_op("file_path")
 def read_file(file_path: str, offset: int = 0, limit: int = 0, encoding: str = "utf-8") -> str:
-    """读取文本文件内容，带行号输出（格式: 行号→内容）。大文件请用 offset/limit 分段读取。
+    """读取文本文件内容，带行号输出；同一正文的完整行分页可累计建立写入基线。
 
     Args:
         file_path: 文件路径（相对于 workspace 或绝对路径）
@@ -241,6 +269,8 @@ def read_file(file_path: str, offset: int = 0, limit: int = 0, encoding: str = "
         encoding: 文件编码，默认 utf-8
     """
     try:
+        if offset < 0 or limit < 0:
+            return tool_error("offset/limit 不能为负数", cause=ErrorCause.PARAM, retryable=False)
         fp = safe_path(file_path)
         if not os.path.isfile(fp):
             return path_error(file_path, fp, _ws_root(), sandbox=_SANDBOX, expected="file",
@@ -287,10 +317,11 @@ def read_file(file_path: str, offset: int = 0, limit: int = 0, encoding: str = "
                 "hint": hint,
             }, ensure_ascii=False)
 
-        # 内容级二进制嗅探：扩展名表覆盖不到无扩展名/冷门扩展名的二进制文件，
-        # 而下方文本读取走 errors="replace" 永不抛解码异常——NUL 采样是唯一防线
+        # UTF-16 BOM 由文本读取器处理，其 NUL 字节不代表二进制内容。
         from entities.filesystem.scan import looks_binary
-        if looks_binary(fp):
+        with open(fp, "rb") as source:
+            utf16 = source.read(2) in (b"\xff\xfe", b"\xfe\xff")
+        if not utf16 and looks_binary(fp):
             return json.dumps({
                 "type": "binary",
                 "path": fp,
@@ -310,60 +341,43 @@ def read_file(file_path: str, offset: int = 0, limit: int = 0, encoding: str = "
             )
 
         content, _, _ = _read_text_with_metadata(fp, encoding)
-        mtime = os.path.getmtime(fp)
         start_line = max(1, offset) if offset > 0 else 1
-        max_lines = limit if limit > 0 else _READ_MAX_LINES
+        max_lines = min(limit, _READ_MAX_LINES) if limit > 0 else _READ_MAX_LINES
 
         all_lines = content.split("\n")
         total_lines = len(all_lines)
-        selected = all_lines[start_line - 1: start_line - 1 + max_lines]
+        if start_line > total_lines:
+            return tool_error(
+                f"offset {start_line} 超出文件范围（共 {total_lines} 行）",
+                cause=ErrorCause.PARAM, retryable=False, path=fp,
+            )
+        selected: list[str] = []
+        chars = byte_count = 0
+        for line in all_lines[start_line - 1: start_line - 1 + max_lines]:
+            separator = int(bool(selected))
+            chars += len(line) + separator
+            byte_count += len(line.encode("utf-8")) + separator
+            if chars > _READ_MAX_TOKENS * 4 or byte_count > _READ_MAX_BYTES:
+                break
+            selected.append(line)
+        if not selected:
+            return tool_error(
+                f"第 {start_line} 行单行长度超过读取预算，无法用 offset/limit 完整读取该行",
+                cause=ErrorCause.PARAM, retryable=False, path=fp,
+            )
+
         body = "\n".join(selected)
-
-        # token 估算上限：超出则截断并引导分段
-        est_tokens = len(body) // 4
-        truncated = False
-        if est_tokens > _READ_MAX_TOKENS:
-            keep_chars = _READ_MAX_TOKENS * 4
-            body = body[:keep_chars]
-            truncated = True
-
-        # 完整读取判定：实际覆盖到文件末尾且未被 token 截断才算完整
-        # （无 offset 读取 10k 行文件被 2000 行截断 → 仍是部分读取，不授权写入）
         end_line = start_line + len(selected) - 1
-        covers_all = start_line == 1 and end_line >= total_lines and not truncated
-        is_full_read = covers_all
-
-        # 读重去重：相同范围且文件未变 → 返回存根
-        cached = file_state.get_cache().get(fp)
-        if cached is not None and mtime <= cached.mtime:
-            same_range = (is_full_read and not cached.is_partial_view) or (
-                not is_full_read
-                and cached.offset == (offset or None) and cached.limit == (limit or None))
-            if same_range:
-                return json.dumps({
-                    "unchanged": True,
-                    "path": fp,
-                    "message": "文件自上次读取后未变化，本次会话中此前的读取结果仍然有效，"
-                               "请直接参考，不必重复读取。",
-                }, ensure_ascii=False)
-
         numbered = _add_line_numbers(body, start_line)
         tail_notes: List[str] = []
         if end_line < total_lines:
             tail_notes.append(f"（第 {start_line}-{end_line} 行，共 {total_lines} 行；"
                               f"可用 offset={end_line + 1} 继续读取）")
-        if truncated:
-            tail_notes.append("（内容超出 token 上限已截断，请用更小的 limit 分段读取）")
         if total_lines == 1 and not all_lines[0]:
-            numbered = ""
             tail_notes.append("（文件存在但内容为空）")
 
-        file_state.record_read(
-            fp, content, mtime,
-            offset=None if is_full_read else (offset or None),
-            limit=None if is_full_read else (limit or None),
-        )
-        return numbered + ("\n" + " ".join(tail_notes) if tail_notes else "")
+        output = numbered + ("\n" + " ".join(tail_notes) if tail_notes else "")
+        return _read_receipt(fp, content, start_line, numbered, output)
     except UnicodeDecodeError:
         size = os.path.getsize(fp)
         return json.dumps({
@@ -395,18 +409,18 @@ def write_file(file_path: str, content: str) -> str:
             if guard:
                 return guard
         if exists:
-            ok, message = file_state.check_writable(fp)
-            if not ok:
-                return tool_error(message, cause=ErrorCause.STATE, retryable=False, path=fp)
             # 保留已有文件的行尾风格：edit_file 维护的 CRLF 文件不应被
             # 整体覆盖洗成 LF（git 会显示全文件变更）
-            _, encoding, eol = _read_text_with_metadata(fp)
+            existing, encoding, eol = _read_text_with_metadata(fp)
+            ok, message = file_state.check_writable(fp, existing)
+            if not ok:
+                return tool_error(message, cause=ErrorCause.STATE, retryable=False, path=fp)
         else:
             encoding, eol = "utf-8", "LF"
         before = capture_file(fp)
         _write_text_with_metadata(fp, content, encoding, eol)
         emit_file_change(fp, before, capture_file(fp))
-        file_state.record_write(fp, content.replace("\r\n", "\n"), os.path.getmtime(fp))
+        file_state.record_write(fp, content)
         return json.dumps({"ok": True, "path": fp, "size": len(content),
                            "location": _location_of(fp)}, ensure_ascii=False)
     except Exception as e:
@@ -423,7 +437,7 @@ def edit_file(file_path: str, old_string: str, new_string: str, replace_all: boo
     """在文件中执行精确的字符串替换。修改已有文件的首选方式（只发送差异，而非全文）。
 
     使用规则:
-    - 修改文件前必须先用 read_file 读取过该文件，否则本工具会报错。
+    - 修改文件前必须先用 read_file 完整读取当前内容，可分段累计。
     - old_string 必须精确匹配文件内容（保持 read_file 输出中行号前缀→之后的原始缩进）。
     - old_string 在文件中不唯一时会失败：请提供包含更多上下文的更大字符串，
       或设置 replace_all=True 替换所有出现处（适合重命名变量）。
@@ -445,7 +459,7 @@ def edit_file(file_path: str, old_string: str, new_string: str, replace_all: boo
 
     def _err(message: str, code: int, cause: Optional[ErrorCause] = None,
              hint: Optional[str] = None) -> str:
-        return tool_error(message, code=code, cause=cause, hint=hint)
+        return tool_error(message, code=code, cause=cause, hint=hint, path=fp)
 
     if old_string == new_string:
         return _err("未做任何修改：old_string 与 new_string 完全相同。", 1)
@@ -463,7 +477,7 @@ def edit_file(file_path: str, old_string: str, new_string: str, replace_all: boo
             try:
                 _write_text_with_metadata(fp, new_string, "utf-8", "LF")
                 emit_file_change(fp, FileSnapshot(exists=False), capture_file(fp))
-                file_state.record_write(fp, new_string, os.path.getmtime(fp))
+                file_state.record_write(fp, new_string)
                 return json.dumps({"ok": True, "path": fp,
                                    "message": f"文件创建成功: {fp}",
                                    "location": _location_of(fp)}, ensure_ascii=False)
@@ -485,7 +499,7 @@ def edit_file(file_path: str, old_string: str, new_string: str, replace_all: boo
     except Exception as e:
         return _err(f"读取文件失败: {e}", 12)
 
-    ok, message = file_state.check_writable(fp)
+    ok, message = file_state.check_writable(fp, content)
     if not ok:
         # 与 write_file 对齐：补结构化 cause（守卫/重试按 cause 路由）
         return _err(message, 6, cause=ErrorCause.STATE)
@@ -518,7 +532,7 @@ def edit_file(file_path: str, old_string: str, new_string: str, replace_all: boo
     except Exception as e:
         return _err(f"写入文件失败: {e}", 14)
 
-    file_state.record_write(fp, updated, os.path.getmtime(fp))
+    file_state.record_write(fp, updated)
     additions, removals = edit_utils.diff_stats(content, updated)
     emit_file_change(fp, before, capture_file(fp))
     replaced = occurrences if replace_all else 1
@@ -568,15 +582,16 @@ def append_file(path: str, content: str) -> str:
     try:
         fp = safe_path(path)
         before = capture_file(fp)
+        existing = ""
         # 追加同样会改写文件：与 write_file/edit_file 一致接入严格 read-before-write 门
         # （不自动建基线——未读取过的已有文件须先 read_file，防止盲追加重复/错位内容；
-        # 已读取后外部修改仍被 check_writable 的 mtime+内容比对捕获）
+        # 已读取后外部修改仍被 check_writable 的正文比对捕获）
         if os.path.exists(fp):
-            ok, message = file_state.check_writable(fp)
+            existing, encoding, eol = _read_text_with_metadata(fp)
+            ok, message = file_state.check_writable(fp, existing)
             if not ok:
                 return tool_error(message, cause=ErrorCause.STATE, retryable=False, path=fp)
             # 原子追加：读原文 + 拼接 + 原子重写（追加语义下崩溃/断电不损原文）
-            existing, encoding, eol = _read_text_with_metadata(fp)
             _write_text_with_metadata(fp, existing + content, encoding, eol)
         else:
             guard = notes_guard.key_create_guard(path)
@@ -584,10 +599,7 @@ def append_file(path: str, content: str) -> str:
                 return guard
             _write_text_with_metadata(fp, content, "utf-8", "LF")
         emit_file_change(fp, before, capture_file(fp))
-        # 若缓存中有该文件的读取记录，追加后同步刷新，避免后续编辑被误判为过期
-        if file_state.get_cache().get(fp) is not None:
-            new_content, _, _ = _read_text_with_metadata(fp)
-            file_state.record_write(fp, new_content, os.path.getmtime(fp))
+        file_state.record_write(fp, existing + content)
         return json.dumps({"ok": True, "path": fp,
                            "location": _location_of(fp)}, ensure_ascii=False)
     except Exception as e:

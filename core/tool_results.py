@@ -1,13 +1,14 @@
 """工具结果的 JSON 解析与错误判定，供执行器、追踪与思维守卫共用。
 
-模型可见：错误摘要保留输出证据；声明 sensitive_result 的工具可在权限放行后返回临时明文。
-Token 影响：敏感结果只在当前任务工具链中增加原文长度，观测与续跑记录使用短占位。
+模型可见：错误摘要保留输出证据；敏感结果可在权限放行后返回明文；展示回执只供内部使用。
+Token 影响：回执不增加文本；敏感结果增加原文长度，观测与续跑记录使用短占位。
 缓存影响：仅工具反馈与动态态势使用，不触碰稳定前缀。
 """
 from __future__ import annotations
 
 import json
-from typing import Any, Optional
+from collections.abc import Callable
+from typing import Any, Optional, Self
 
 from core.sanitizer import sanitize_text
 
@@ -22,11 +23,28 @@ _SENSITIVE_RESULT_PLACEHOLDER = json.dumps({
 }, ensure_ascii=False)
 
 
+class PresentedToolResult(str):
+    """携带一次性展示回执的内部字符串，回执不参与序列化或模型输入。"""
+
+    _on_presented: Callable[[str], None] | None
+
+    def __new__(cls, text: str, on_presented: Callable[[str], None]) -> Self:
+        result = super().__new__(cls, text)
+        result._on_presented = on_presented
+        return result
+
+    def acknowledge(self, visible: str) -> None:
+        """以执行宿主实际交付给接收方的文本提交一次展示事实。"""
+        callback, self._on_presented = self._on_presented, None
+        if callback is not None:
+            callback(visible)
+
+
 def redact_tool_result(output: str, *, sensitive_result: bool = False) -> str:
     """按执行宿主提供的可见性生成结果副本，不查询注册表或依赖工具实现。"""
     if sensitive_result and not extract_error_text(output):
         return _SENSITIVE_RESULT_PLACEHOLDER
-    return sanitize_text(output)
+    return sanitize_text(str(output))
 
 
 def redact_tool_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -71,8 +89,8 @@ def parse_tool_result_json(text: str) -> Optional[Any]:
 def extract_error_text(payload: Any) -> str:
     """从工具结果 payload（dict 或 JSON 字符串）中提取错误文本，无错误返回空串。
 
-    回退链（仅失败分支内）：error/message/stderr/detail → notes（工具自身的
-    语义解释）→ returncode/exit_code 与 stdout（远端脚本可能只向 stdout 写诊断）。
+    回退链（仅失败分支内）：error/message/stderr/detail → stdout 与退出码
+    → notes → 仅退出码。通用提示不能遮盖程序输出的具体诊断。
     避免把"搜索无匹配"这类否定结果渲染成无信息的"未知错误"。
     """
     if isinstance(payload, str):
@@ -90,16 +108,17 @@ def extract_error_text(payload: Any) -> str:
                     brief = f"命令退出码 {rc}；stderr: {' '.join(str(value).split())}"
                     return brief[:_FALLBACK_BRIEF_MAX] + ("…" if len(brief) > _FALLBACK_BRIEF_MAX else "")
                 return str(value)
+        stdout = payload.get("stdout")
+        if isinstance(stdout, str) and stdout.strip():
+            prefix = f"命令退出码 {rc}；" if rc is not None else ""
+            brief = f"{prefix}stdout: {' '.join(stdout.split())}"
+            return brief[:_FALLBACK_BRIEF_MAX] + ("…" if len(brief) > _FALLBACK_BRIEF_MAX else "")
         notes = payload.get("notes")
         if isinstance(notes, list) and notes:
             text = "；".join(str(n) for n in notes if n)
             if text:
                 return text[:_FALLBACK_BRIEF_MAX] + ("…" if len(text) > _FALLBACK_BRIEF_MAX else "")
         if rc is not None:
-            stdout = payload.get("stdout")
-            if isinstance(stdout, str) and stdout.strip():
-                brief = f"命令退出码 {rc}；stdout: {' '.join(stdout.split())}"
-                return brief[:_FALLBACK_BRIEF_MAX] + ("…" if len(brief) > _FALLBACK_BRIEF_MAX else "")
             return f"命令退出码 {rc}（无错误输出）"
         return "工具返回失败但未提供错误详情"
     if payload.get("error"):

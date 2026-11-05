@@ -24,6 +24,9 @@ def _parse(result: str) -> dict:
     ({"ok": False, "exit_code": 1, "notes": ["搜索没有匹配"]}, "搜索没有匹配"),
     ({"ok": True, "exit_code": 0, "stdout": "NO_SUDO", "stderr": "warning"}, ""),
     ({"success": False, "error": "explicit failure", "exit_code": 1}, "explicit failure"),
+    ({"ok": False, "returncode": 1, "stderr": "", "stdout": "ERROR: missing asset", "notes": ["grep may return 1"]},
+     "命令退出码 1；stdout: ERROR: missing asset"),
+    ({"ok": False, "stdout": "build failed", "notes": ["generic hint"]}, "stdout: build failed"),
 ])
 def test_command_error_evidence(payload: dict, expected: str) -> None:
     assert extract_error_text(payload) == expected

@@ -138,6 +138,39 @@ class TestDispatch:
 # ------------------------------------------------------------------
 
 class TestRunScript:
+    @pytest.mark.parametrize("result_limit", [1024, 8000])
+    async def test_file_read_receipt_requires_successful_delivery(
+        self, gate, tmp_path, monkeypatch, result_limit,
+    ) -> None:
+        from core.config import ConfigManager
+        from core.conversation_scope import bind_scope, reset_scope
+        from entities.filesystem import file_state, tools
+
+        monkeypatch.setattr(tools, "_load_config", lambda: None)
+        monkeypatch.setattr(tools, "_ws_root", lambda: str(tmp_path))
+        monkeypatch.setattr(tools, "_SANDBOX", True)
+        ConfigManager.set("codebox_max_result_chars", result_limit)
+        fp = tmp_path / "script.txt"
+        fp.write_text("alpha\n" + "x" * 2000, encoding="utf-8")
+        token = bind_scope("codebox-receipt")
+        try:
+            output = await sandbox.run_script(
+                "try:\n"
+                "    tools.read_file(file_path='script.txt')\n"
+                "except ToolError:\n"
+                "    pass\n"
+                "print(tools.edit_file(file_path='script.txt', old_string='alpha', new_string='beta'))\n",
+                workspace_root=str(tmp_path),
+            )
+            assert fp.read_text(encoding="utf-8").startswith("beta" if result_limit == 8000 else "alpha")
+            if result_limit == 1024:
+                assert "尚未读取" in output
+            else:
+                assert "文件编辑成功" in output or '"ok": true' in output
+        finally:
+            reset_scope(token)
+            file_state.clear_scope("codebox-receipt")
+
     async def test_script_can_parse_large_json_and_return_only_summary(self, gate, ws, monkeypatch) -> None:
         from unittest.mock import AsyncMock
 

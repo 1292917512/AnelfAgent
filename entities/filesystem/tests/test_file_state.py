@@ -1,19 +1,17 @@
-"""file_state 文件读取状态缓存测试（read-before-write 与过期检查语义）。"""
+"""文件读取基线：覆盖累计、内容冲突、scope 隔离与缓存配额。"""
 
 from __future__ import annotations
 
-import os
-import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
 from entities.filesystem import file_state
-from entities.filesystem.file_state import FileStateCache
+from entities.filesystem.file_state import FileState, FileStateCache
 
 
 @pytest.fixture()
-def cache_scope(tmp_path, monkeypatch):
-    """隔离的 scope，避免污染全局缓存。"""
+def cache_scope(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(file_state, "get_current_scope", lambda: "_test")
     file_state.clear_scope("_test")
     yield
@@ -21,83 +19,76 @@ def cache_scope(tmp_path, monkeypatch):
 
 
 class TestFileStateCache:
-    def test_lru_eviction_by_entries(self):
+    def test_lru_eviction_by_entries(self) -> None:
         cache = FileStateCache(max_entries=3)
-        for i in range(4):
-            cache.set(f"/f{i}", file_state.FileState("x", 1.0, 1.0))
-        assert cache.get("/f0") is None
-        assert cache.get("/f3") is not None
+        for i in range(3):
+            cache.set(f"/f{i}", FileState("x", ((1, 1),)))
+        cache.get("/f0")
+        cache.set("/f3", FileState("x", ((1, 1),)))
+        assert cache.get("/f1") is None
+        assert cache.get("/f0") is not None
 
-    def test_lru_eviction_by_bytes(self):
+    def test_lru_eviction_counts_utf8_bytes(self) -> None:
         cache = FileStateCache(max_entries=100, max_bytes=10)
-        cache.set("/a", file_state.FileState("12345", 1.0, 1.0))
-        cache.set("/b", file_state.FileState("67890", 1.0, 1.0))
-        cache.set("/c", file_state.FileState("abc", 1.0, 1.0))
+        cache.set("/a", FileState("中文", ((1, 1),)))
+        cache.set("/b", FileState("文本", ((1, 1),)))
         assert cache.get("/a") is None
-        assert cache.get("/c") is not None
+        assert cache.get("/b") is not None
+        cache.set("/b", FileState("x", ((1, 1),)))
+        cache.set("/c", FileState("中文", ((1, 1),)))
+        assert cache.get("/b") is not None
 
-    def test_path_normalization(self):
+    def test_path_normalization(self) -> None:
         cache = FileStateCache()
-        cache.set("/a/./b", file_state.FileState("x", 1.0, 1.0))
+        cache.set("/a/./b", FileState("x", ((1, 1),)))
         assert cache.get("/a/b") is not None
 
+    def test_concurrent_pages_keep_all_coverage(self) -> None:
+        cache = FileStateCache()
+        content = "\n".join(str(i) for i in range(100))
+        with ThreadPoolExecutor(max_workers=10) as pool:
+            list(pool.map(lambda i: cache.record_read("/a", content, ((i, i),)), range(1, 101)))
+        state = cache.get("/a")
+        assert state is not None and state.is_complete
 
+    def test_scope_isolation(self) -> None:
+        try:
+            file_state.record_read("/a", "x", read_ranges=((1, 1),), scope="reader")
+            assert file_state.check_writable("/a", "x", scope="reader")[0]
+            assert not file_state.check_writable("/a", "x", scope="other")[0]
+        finally:
+            file_state.clear_scope("reader")
+            file_state.clear_scope("other")
+
+
+@pytest.mark.usefixtures("cache_scope")
 class TestCheckWritable:
-    def test_not_read_rejected(self, cache_scope, tmp_path):
-        fp = tmp_path / "a.txt"
-        fp.write_text("hello")
-        ok, message = file_state.check_writable(str(fp))
-        assert not ok
-        assert "尚未读取" in message
+    def test_missing_partial_and_complete_reads(self) -> None:
+        assert "尚未读取" in file_state.check_writable("/a", "a\nb\nc")[1]
+        file_state.record_read("/a", "a\nb\nc", read_ranges=((3, 3),))
+        assert "offset=1" in file_state.check_writable("/a", "a\nb\nc")[1]
+        file_state.record_read("/a", "a\nb\nc", read_ranges=((1, 1),))
+        assert "offset=2" in file_state.check_writable("/a", "a\nb\nc")[1]
+        file_state.record_read("/a", "a\nb\nc", read_ranges=((2, 3),))
+        assert file_state.check_writable("/a", "a\nb\nc")[0]
+        file_state.record_read("/a", "a\nb\nc", read_ranges=((2, 2),))
+        assert file_state.check_writable("/a", "a\nb\nc")[0]
 
-    def test_partial_read_rejected(self, cache_scope, tmp_path):
-        fp = tmp_path / "a.txt"
-        fp.write_text("hello")
-        file_state.record_read(str(fp), "hello", os.path.getmtime(fp), offset=1, limit=5)
-        ok, message = file_state.check_writable(str(fp))
-        assert not ok
-        assert "部分读取" in message
+    def test_changed_content_restarts_coverage(self) -> None:
+        file_state.record_read("/a", "a\nb", read_ranges=((1, 2),))
+        assert "已被修改" in file_state.check_writable("/a", "a\nc")[1]
+        file_state.record_read("/a", "a\nc", read_ranges=((2, 2),))
+        assert "offset=1" in file_state.check_writable("/a", "a\nc")[1]
+        file_state.record_read("/a", "a\nc", read_ranges=((1, 1),))
+        assert file_state.check_writable("/a", "a\nc")[0]
 
-    def test_full_read_allowed(self, cache_scope, tmp_path):
-        fp = tmp_path / "a.txt"
-        fp.write_text("hello")
-        file_state.record_read(str(fp), "hello", os.path.getmtime(fp))
-        ok, _ = file_state.check_writable(str(fp))
-        assert ok
+    def test_write_refreshes_normalized_baseline(self) -> None:
+        file_state.record_write("/a", "a\r\nb\r\n")
+        assert file_state.check_writable("/a", "a\nb\n")[0]
 
-    def test_stale_content_rejected(self, cache_scope, tmp_path):
-        fp = tmp_path / "a.txt"
-        fp.write_text("hello")
-        file_state.record_read(str(fp), "hello", os.path.getmtime(fp))
-        # 外部修改：mtime 变晚且内容不同
-        time.sleep(0.01)
-        fp.write_text("changed by someone else")
-        os.utime(fp, (time.time() + 1, time.time() + 1))
-        ok, message = file_state.check_writable(str(fp))
-        assert not ok
-        assert "已被修改" in message
-
-    def test_mtime_bump_same_content_allowed(self, cache_scope, tmp_path):
-        fp = tmp_path / "a.txt"
-        fp.write_text("hello")
-        file_state.record_read(str(fp), "hello", os.path.getmtime(fp))
-        # 仅触碰 mtime（云同步/杀软场景），内容不变 → 放行
-        os.utime(fp, (time.time() + 1, time.time() + 1))
-        ok, _ = file_state.check_writable(str(fp))
-        assert ok
-
-    def test_crlf_content_compare_normalized(self, cache_scope, tmp_path):
-        fp = tmp_path / "a.txt"
-        fp.write_bytes(b"line1\r\nline2\r\n")
-        file_state.record_read(str(fp), "line1\nline2\n", os.path.getmtime(fp))
-        os.utime(fp, (time.time() + 1, time.time() + 1))
-        ok, _ = file_state.check_writable(str(fp))
-        assert ok
-
-    def test_deleted_after_read_allowed(self, cache_scope, tmp_path):
-        fp = tmp_path / "a.txt"
-        fp.write_text("hello")
-        file_state.record_read(str(fp), "hello", os.path.getmtime(fp))
-        fp.unlink()
-        ok, _ = file_state.check_writable(str(fp))
-        assert ok
+    def test_invalid_or_unseen_range_cannot_authorize_write(self) -> None:
+        file_state.record_read("/a", "x", read_ranges=())
+        assert not file_state.check_writable("/a", "x")[0]
+        with pytest.raises(ValueError):
+            file_state.record_read("/a", "x", read_ranges=((1, 2),))
+        assert not file_state.check_writable("/a", "x")[0]

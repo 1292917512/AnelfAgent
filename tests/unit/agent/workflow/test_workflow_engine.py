@@ -118,6 +118,36 @@ async def _approval_ok(self, step, run):
     return ApprovalResult(True, "rule_allow")
 
 
+@pytest.mark.parametrize("notice", ["", "approval notice"])
+@pytest.mark.parametrize("oversized", [False, True])
+async def test_tool_receipt_uses_committed_result(engine, monkeypatch, notice, oversized):
+    from unittest.mock import AsyncMock
+
+    from agent.approval.types import ApprovalResult
+    from core.entity import EntityRegistry
+    from core.tool_results import PresentedToolResult
+
+    delivered = []
+    content = "1→alpha\n2→" + "x" * (20000 if oversized else 20)
+    source = PresentedToolResult(content, delivered.append)
+    monkeypatch.setattr(EntityRegistry, "execute_tool", AsyncMock(return_value=source))
+    monkeypatch.setattr(engine, "_request_approval", AsyncMock(return_value=ApprovalResult(
+        True, "rule_allow", notice=notice,
+    )))
+    summary = await engine.start({"name": "receipt", "steps": [
+        {"key": "read", "kind": "tool", "tool": "read_file", "args": {}},
+    ]})
+    run = await wait_run_terminal(engine.journal, summary["run_id"])
+    assert run["status"] == wf_journal.COMPLETED
+    nodes = await engine.journal.nodes_of_run(summary["run_id"])
+    stored = nodes[0]["result_text"]
+    expected = ("" if oversized else content) if notice else stored
+    assert delivered == [expected]
+    assert (len(expected) < len(content)) == oversized
+    source.acknowledge(content)
+    assert delivered == [expected]
+
+
 @pytest.mark.parametrize("payload", [
     {"success": False, "message": "target not reached", "retryable": False},
     {"ok": False, "detail": "result unknown", "outcome": "unknown"},
