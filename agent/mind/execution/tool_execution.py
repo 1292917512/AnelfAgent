@@ -221,6 +221,10 @@ async def _await_with_abort(aw: Any, abort_event: Optional[asyncio.Event]) -> tu
     if abort_event is None:
         return await aw, False
     task = asyncio.ensure_future(aw)
+    if abort_event.is_set():
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        return None, True
     abort_task = asyncio.ensure_future(abort_event.wait())
     try:
         done, _ = await asyncio.wait({task, abort_task}, return_when=asyncio.FIRST_COMPLETED)

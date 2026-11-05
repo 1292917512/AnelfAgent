@@ -16,12 +16,58 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from helpers.think_loop_fakes import FakeMind
+from helpers.think_loop_fakes import FakeMind, run_think_loop, tool_result
 
 import agent.mind.llm_invoker as li
 from agent.llm import LLMCallAborted
 from agent.llm.types import ChatStreamDelta
 from agent.mind.interrupt import InterruptRegistry
+from core.conversation_scope import bind_scope, reset_scope
+
+
+async def test_shutdown_during_tool_round_preserves_receipts_without_another_model_call(monkeypatch, anything):
+    import agent.mind.execution.tool_execution as execution
+
+    mind = FakeMind(rounds=[tool_result("", ["request_shutdown", "write_file"])], default_text=None)
+    mind.interrupts = InterruptRegistry()
+    invoked: list[str] = []
+
+    async def execute(mind, call, *args, **kwargs):
+        invoked.append(call.name)
+        mind.interrupts.quiesce()
+        return '{"ok": true}'
+
+    monkeypatch.setattr(execution, "execute_one_tool", execute)
+    completion: dict = {}
+    scope = anything.entity_scope
+    token = bind_scope(scope)
+    try:
+        with mind.interrupts.execution("run", scope):
+            await run_think_loop(mind, anything=anything, completion=completion)
+        assert invoked == ["request_shutdown"]
+        assert mind.llm_calls == 1
+        assert completion["reason"] == "interrupted"
+        receipts = [message for message in completion["messages"] if message["role"] == "tool"]
+        assert len(receipts) == 2
+        assert receipts[0]["content"] == '{"ok": true}'
+        assert "未执行" in receipts[1]["content"]
+        assert any("服务正在关闭或重启" in call.args[1] for call in mind.conversation_data.append_context.call_args_list)
+    finally:
+        reset_scope(token)
+
+
+async def test_already_interrupted_await_does_not_start_side_effect():
+    from agent.mind.execution.tool_execution import _await_with_abort
+
+    called: list[bool] = []
+
+    async def write() -> None:
+        called.append(True)
+
+    abort = asyncio.Event()
+    abort.set()
+    assert await _await_with_abort(write(), abort) == (None, True)
+    assert called == []
 
 
 async def test_stop_during_context_preparation_closes_work_and_reports_cancelled(monkeypatch, anything):

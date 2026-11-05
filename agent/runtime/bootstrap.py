@@ -447,7 +447,7 @@ def create_bootstrap() -> FlowMachine:
         )
         Lifecycle.register(
             "hooks_llm", hooks_llm_runtime,
-            cleanup=hooks_llm_runtime.drain,
+            cleanup=hooks_llm_runtime.drain, on_quiesce=hooks_llm_runtime.stop,
         )
         from agent.storage.conversation_fold import conversation_folder
         Lifecycle.register(
@@ -480,7 +480,11 @@ def create_bootstrap() -> FlowMachine:
         await app.start()
 
         Lifecycle.register("agent_app", app, cleanup=app.stop)
-        Lifecycle.register("assistant", runtime.assistant, cleanup=runtime.assistant.stop)
+        Lifecycle.register("assistant", runtime.assistant, cleanup=runtime.assistant.stop,
+                           on_quiesce=runtime.mind.driver.quiesce, critical_cleanup=True)
+        Lifecycle.register("mind_executions", runtime.mind.interrupts,
+                           on_quiesce=runtime.mind.interrupts.quiesce,
+                           cleanup=runtime.mind.interrupts.drain, critical_cleanup=True)
         log("AgentApp + Assistant 已启动")
 
     @machine.node(skip_on_error=True, depends_on=["assemble_runtime"])

@@ -6,10 +6,10 @@
 若进程并非由启动脚本拉起，则等同于普通关闭。
 
 AI 工具发起的重启走"重启交接"闭环：调用时把目标会话 scope / 回复路由 /
-AI 留言落盘（<data_dir>/restart_handoff.json），随后等待思维空闲再关停
-（当前回复轮自然收尾，不产生"被意外中断"残留检查点）；进程重新拉起后由
+AI 留言落盘（<data_dir>/restart_handoff.json），随后与手动操作共用宿主关停。
+Lifecycle 先中断在途会话、封闭新工作，再等待记录落盘与存储关闭；进程重新拉起后由
 tools.py 的 RestartHandoffWatcher 消费交接，向原会话推送"重启成功 + 留言"
-一次性通知并唤醒思维。Web/API 路径不等待、不写交接，行为与历史一致。
+一次性通知并唤醒思维。Web/API 路径不写 AI 交接。
 
 AI 工具（tools.py，同步工作线程）与 HTTP 路由（router.py，主事件循环）
 统一走本模块，杜绝平行实现。
@@ -31,18 +31,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from core.cancellation import get_execution_signal
 from core.command import run_command
 from core.host_protocol import HostLock
 from core.lifecycle import Lifecycle
 from core.log import log
 from core.path import data_dir
-from entities._sdk import is_mind_busy
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 FRONTEND_DIR = PROJECT_ROOT / "web" / "frontend"
 
-# 延迟触发关闭，确保触发重启的 HTTP 响应/工具结果先行返回
-_SHUTDOWN_DELAY = 1.0
 # 重启看门狗：排定重启后超过该时长进程仍存活（优雅关停卡死），
 # 仅在关键存储确认关闭后允许 os._exit(42)，避免中断原生写盘。
 # 取值需覆盖正常关停耗时（记忆兜底 30s 上限 + 各组件 per_timeout 清理）
@@ -51,9 +49,6 @@ _RESTART_WATCHDOG_SECONDS = 90.0
 _BUILD_TIMEOUT = 300
 # 构建日志仅保留尾部，避免状态接口返回过大
 _LOG_TAIL_LIMIT = 4000
-# 等待思维空闲的轮询间隔 / 上限（超时强制关停，防死等）
-_IDLE_POLL_INTERVAL = 0.5
-_IDLE_WAIT_CAP = 120.0
 # 交接留言长度上限（对齐推送通道单条内容上限）
 _HANDOFF_MESSAGE_LIMIT = 2000
 # 交接有效期限：正常重启秒级完成即被消费，超时残留的一律视为陈旧，
@@ -113,28 +108,10 @@ def _arm_restart_watchdog() -> None:
     threading.Thread(target=_restart_watchdog, daemon=True, name="devops.restart_watchdog").start()
 
 
-def schedule_restart(delay: float = _SHUTDOWN_DELAY) -> None:
-    """延迟触发优雅关闭并标记重启意图（任意线程可调）。"""
-    _arm_restart_watchdog()
-    threading.Timer(delay, Lifecycle.request_shutdown, args=(True,)).start()
-
-
-def _wait_idle_then_shutdown() -> None:
-    """等待思维空闲（无进行中回复/反思）后触发优雅关闭，超上限强制关停。"""
-    deadline = time.monotonic() + _IDLE_WAIT_CAP
-    while is_mind_busy() and time.monotonic() < deadline:
-        time.sleep(_IDLE_POLL_INTERVAL)
+def schedule_restart() -> None:
+    """立即请求宿主关停；会话中断和资源收尾统一由 Lifecycle 编排。"""
     Lifecycle.request_shutdown(True)
-    _arm_restart_watchdog()  # 关停请求发出后才布防，避免看门狗在等空闲期间误触发
-
-
-def schedule_restart_when_idle(delay: float = _SHUTDOWN_DELAY) -> None:
-    """宽限 delay 后等思维空闲再触发优雅关闭（任意线程可调）。
-
-    AI 工具发起的重启走此路径：当前回复轮自然收尾（检查点正常清除，
-    重启后不会产生"被意外中断"元消息），随后才进入关停流程。
-    """
-    threading.Timer(delay, _wait_idle_then_shutdown).start()
+    _arm_restart_watchdog()
 
 
 # ── 重启交接 ─────────────────────────────────────────────────────────
@@ -195,8 +172,6 @@ def consume_handoff() -> Optional[Dict[str, Any]]:
 
 def request_restart(
     source: str = "api",
-    delay: float = _SHUTDOWN_DELAY,
-    wait_idle: bool = False,
     handoff: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """请求优雅重启（由外层启动脚本按退出码 42 重新拉起）。
@@ -206,7 +181,6 @@ def request_restart(
     进程非守护脚本拉起时拒绝，避免"重启变关机"。
 
     Args:
-        wait_idle: True 时等思维空闲再关停（AI 工具路径，让当前回复轮收尾）
         handoff: 重启交接（scope/channel/message），仅在重启确认排定后落盘，
             重启完成重新拉起后由原会话消费
     """
@@ -240,10 +214,7 @@ def request_restart(
         write_handoff(handoff.get("scope", ""), handoff.get("channel", ""),
                       handoff.get("message", ""), source)
     log(f"收到重启请求（来源 {source}），即将优雅关闭并重启", tag="运维")
-    if wait_idle:
-        schedule_restart_when_idle(delay)
-    else:
-        schedule_restart(delay)
+    schedule_restart()
     return {"ok": True, "restarting": True, "runtime_id": _runtime_id}
 
 
@@ -346,7 +317,6 @@ async def _run_build() -> None:
 
 
 async def build_and_restart(
-    wait_idle: bool = False,
     handoff: Optional[Dict[str, str]] = None,
     update: bool = False,
 ) -> Dict[str, Any]:
@@ -354,11 +324,11 @@ async def build_and_restart(
     error = _begin_operation("pulling" if update else "building")
     if error:
         return error
-    return await _complete_build(wait_idle=wait_idle, handoff=handoff, update=update)
+    return await _complete_build(handoff=handoff, update=update)
 
 
 async def _complete_build(
-    wait_idle: bool = False, handoff: Optional[Dict[str, str]] = None, update: bool = False,
+    handoff: Optional[Dict[str, str]] = None, update: bool = False,
 ) -> Dict[str, Any]:
     """执行已占用构建名额的更新、构建、重启流程，并保留完整终态。"""
     result: Dict[str, Any] = {"ok": False, "error": "cancelled", "message": "操作已取消"}
@@ -384,7 +354,10 @@ async def _complete_build(
         if not last or not last["ok"]:
             result = {"ok": False, "error": "build_failed", "build": last}
         else:
-            restart = request_restart(source="build_and_restart", wait_idle=wait_idle, handoff=handoff)
+            signal = get_execution_signal()
+            if signal is not None:
+                signal.checkpoint()
+            restart = request_restart(source="build_and_restart", handoff=handoff)
             result = {**restart, "build": last}
         if pull_result:
             result["pull_result"] = pull_result
@@ -400,12 +373,11 @@ async def _complete_build(
 
 
 def build_and_restart_blocking(
-    wait_idle: bool = False,
     handoff: Optional[Dict[str, str]] = None,
     update: bool = False,
 ) -> Dict[str, Any]:
     """build_and_restart 的同步包装（供工具工作线程使用，私有循环内执行子进程）。"""
-    return asyncio.run(build_and_restart(wait_idle=wait_idle, handoff=handoff, update=update))
+    return asyncio.run(build_and_restart(handoff=handoff, update=update))
 
 
 _background_tasks: set[asyncio.Task[Dict[str, Any]]] = set()

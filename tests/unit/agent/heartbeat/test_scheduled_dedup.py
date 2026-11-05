@@ -375,6 +375,7 @@ async def test_driver_rechecks_queued_task_definition_after_running_task(change,
     from unittest.mock import Mock
 
     from agent.mind.driver import MindDriver
+    from agent.mind.interrupt import InterruptRegistry
 
     tasks = {name: _task(name) for name in ("running", "queued")}
     engine = _make_engine([], tasks, monkeypatch)
@@ -382,6 +383,9 @@ async def test_driver_rechecks_queued_task_definition_after_running_task(change,
     mind.heartbeat_engine = engine
     mind._reset_phase_if_idle = Mock()
     mind._autonomous_cycle = AsyncMock()
+    mind.interrupts = InterruptRegistry()
+    mind._reply_idle_event = asyncio.Event()
+    mind._reply_idle_event.set()
     mind.driver = MindDriver(mind)
     entered, release = asyncio.Event(), asyncio.Event()
     executed = []

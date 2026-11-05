@@ -25,8 +25,8 @@ def handoff_file(monkeypatch: pytest.MonkeyPatch, tmp_path):
 def test_request_restart_refused_without_supervisor(monkeypatch: pytest.MonkeyPatch):
     """进程非 start.sh 守护拉起时拒绝重启（防止"重启变关机"）。"""
     monkeypatch.setattr(service, "_is_supervised", lambda: False)
-    scheduled: list[float] = []
-    monkeypatch.setattr(service, "schedule_restart", lambda delay=1.0: scheduled.append(delay))
+    scheduled: list[bool] = []
+    monkeypatch.setattr(service, "schedule_restart", lambda: scheduled.append(True))
 
     result = service.request_restart(source="tool:restart_app")
     assert result["ok"] is False
@@ -37,8 +37,8 @@ def test_request_restart_refused_without_supervisor(monkeypatch: pytest.MonkeyPa
 def test_request_restart_dedupes_pending(monkeypatch: pytest.MonkeyPatch):
     """重复请求只调度一次，后续返回 already_pending。"""
     monkeypatch.setattr(service, "_is_supervised", lambda: True)
-    scheduled: list[float] = []
-    monkeypatch.setattr(service, "schedule_restart", lambda delay=1.0: scheduled.append(delay))
+    scheduled: list[bool] = []
+    monkeypatch.setattr(service, "schedule_restart", lambda: scheduled.append(True))
 
     first = service.request_restart(source="http:127.0.0.1")
     second = service.request_restart(source="tool:restart_app")
@@ -47,61 +47,14 @@ def test_request_restart_dedupes_pending(monkeypatch: pytest.MonkeyPatch):
     assert len(scheduled) == 1
 
 
-def test_request_restart_wait_idle_uses_idle_scheduler(monkeypatch: pytest.MonkeyPatch):
-    """wait_idle=True 走思维空闲等待调度，而非立即定时关停。"""
+@pytest.mark.parametrize("source", ["tool:restart_app", "http:127.0.0.1", "host"])
+def test_restart_requests_shutdown_before_arming_watchdog(monkeypatch: pytest.MonkeyPatch, source: str) -> None:
     monkeypatch.setattr(service, "_is_supervised", lambda: True)
-    idle: list[float] = []
-    monkeypatch.setattr(
-        service, "schedule_restart_when_idle", lambda delay=1.0: idle.append(delay))
-    monkeypatch.setattr(
-        service, "schedule_restart",
-        lambda delay=1.0: pytest.fail("wait_idle 不应走立即定时关停"))
-
-    result = service.request_restart(source="tool:restart_app", wait_idle=True)
-    assert result["ok"] and result["restarting"]
-    assert idle == [1.0]
-
-
-def test_wait_idle_then_shutdown_waits_for_quiet(monkeypatch: pytest.MonkeyPatch):
-    """思维忙碌时等待，空闲后才触发优雅关闭。"""
-    monkeypatch.setattr(service, "_IDLE_POLL_INTERVAL", 0.01)
-    monkeypatch.setattr(service, "_arm_restart_watchdog", lambda: None)
-    busy_states = iter([True, True, False])
-    monkeypatch.setattr(service, "is_mind_busy", lambda: next(busy_states, False))
-    calls: list[bool] = []
-    monkeypatch.setattr(
-        service.Lifecycle, "request_shutdown", staticmethod(lambda restart: calls.append(restart)))
-
-    service._wait_idle_then_shutdown()
-    assert calls == [True]
-
-
-def test_wait_idle_then_shutdown_cap_forces(monkeypatch: pytest.MonkeyPatch):
-    """思维持续忙碌超上限时强制关停（防死等）。"""
-    monkeypatch.setattr(service, "_IDLE_POLL_INTERVAL", 0.01)
-    monkeypatch.setattr(service, "_IDLE_WAIT_CAP", 0.05)
-    monkeypatch.setattr(service, "_arm_restart_watchdog", lambda: None)
-    monkeypatch.setattr(service, "is_mind_busy", lambda: True)
-    calls: list[bool] = []
-    monkeypatch.setattr(
-        service.Lifecycle, "request_shutdown", staticmethod(lambda restart: calls.append(restart)))
-
-    service._wait_idle_then_shutdown()
-    assert calls == [True]
-
-
-def test_schedule_restart_arms_watchdog(monkeypatch: pytest.MonkeyPatch):
-    """立即重启路径：排定时布防看门狗（关停卡死保底 _exit(42)）。"""
-    armed: list[bool] = []
-    monkeypatch.setattr(service, "_arm_restart_watchdog", lambda: armed.append(True))
-    monkeypatch.setattr(
-        service.Lifecycle, "request_shutdown", staticmethod(lambda restart: None))
-
-    service.schedule_restart(delay=0.01)
-    import time as _time
-
-    _time.sleep(0.1)  # 等 Timer 线程触发
-    assert armed == [True]
+    events: list[str] = []
+    monkeypatch.setattr(service.Lifecycle, "request_shutdown", lambda restart: events.append("shutdown"))
+    monkeypatch.setattr(service, "_arm_restart_watchdog", lambda: events.append("watchdog"))
+    assert service.request_restart(source=source)["ok"]
+    assert events == ["shutdown", "watchdog"]
 
 
 def test_restart_watchdog_forces_exit_42(monkeypatch: pytest.MonkeyPatch):
@@ -123,21 +76,6 @@ def test_restart_watchdog_waits_for_native_database(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr("os._exit", lambda code: events.append(code))
     service._restart_watchdog()
     assert events == ["wait", "wait", "wait", 42]
-
-
-def test_idle_path_arms_watchdog_after_shutdown_request(monkeypatch: pytest.MonkeyPatch):
-    """等空闲路径：看门狗在关停请求发出后才布防（避免等空闲期间误触发）。"""
-    monkeypatch.setattr(service, "_IDLE_POLL_INTERVAL", 0.01)
-    monkeypatch.setattr(service, "is_mind_busy", lambda: False)
-    events: list[str] = []
-    monkeypatch.setattr(
-        service.Lifecycle, "request_shutdown",
-        staticmethod(lambda restart: events.append("shutdown")))
-    monkeypatch.setattr(
-        service, "_arm_restart_watchdog", lambda: events.append("watchdog"))
-
-    service._wait_idle_then_shutdown()
-    assert events == ["shutdown", "watchdog"]
 
 
 def test_handoff_roundtrip(handoff_file):
@@ -179,14 +117,14 @@ def test_already_pending_empty_message_keeps_handoff(
         monkeypatch: pytest.MonkeyPatch, handoff_file):
     """重启已排定时，空留言的重复调用不覆盖已写入的交接。"""
     monkeypatch.setattr(service, "_is_supervised", lambda: True)
-    monkeypatch.setattr(service, "schedule_restart_when_idle", lambda delay=1.0: None)
+    monkeypatch.setattr(service, "schedule_restart", lambda: None)
 
     first = service.request_restart(
-        source="tool:restart_app", wait_idle=True,
+        source="tool:restart_app",
         handoff={"scope": "user_qq:1", "channel": "qq", "message": "旧留言"},
     )
     second = service.request_restart(
-        source="tool:restart_app", wait_idle=True,
+        source="tool:restart_app",
         handoff={"scope": "user_qq:1", "channel": "qq", "message": "  "},
     )
     assert first["ok"] and second.get("already_pending") is True
@@ -198,10 +136,10 @@ def test_request_restart_with_handoff_persists_state(
         monkeypatch: pytest.MonkeyPatch, handoff_file):
     """重启确认排定后交接才落盘。"""
     monkeypatch.setattr(service, "_is_supervised", lambda: True)
-    monkeypatch.setattr(service, "schedule_restart_when_idle", lambda delay=1.0: None)
+    monkeypatch.setattr(service, "schedule_restart", lambda: None)
 
     result = service.request_restart(
-        source="tool:restart_app", wait_idle=True,
+        source="tool:restart_app",
         handoff={"scope": "user_qq:1", "channel": "qq", "message": "继续"},
     )
     assert result["ok"]
@@ -215,7 +153,7 @@ def test_request_restart_refused_writes_no_handoff(
     monkeypatch.setattr(service, "_is_supervised", lambda: False)
 
     result = service.request_restart(
-        source="tool:restart_app", wait_idle=True,
+        source="tool:restart_app",
         handoff={"scope": "user_qq:1", "channel": "qq", "message": "继续"},
     )
     assert result["ok"] is False
@@ -226,14 +164,14 @@ def test_already_pending_updates_handoff(
         monkeypatch: pytest.MonkeyPatch, handoff_file):
     """重启已排定时重复调用允许补充/更新交接留言。"""
     monkeypatch.setattr(service, "_is_supervised", lambda: True)
-    monkeypatch.setattr(service, "schedule_restart_when_idle", lambda delay=1.0: None)
+    monkeypatch.setattr(service, "schedule_restart", lambda: None)
 
     first = service.request_restart(
-        source="tool:restart_app", wait_idle=True,
+        source="tool:restart_app",
         handoff={"scope": "user_qq:1", "channel": "qq", "message": "旧留言"},
     )
     second = service.request_restart(
-        source="tool:restart_app", wait_idle=True,
+        source="tool:restart_app",
         handoff={"scope": "user_qq:1", "channel": "qq", "message": "新留言"},
     )
     assert first["ok"] and second.get("already_pending") is True

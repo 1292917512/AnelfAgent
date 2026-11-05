@@ -13,6 +13,10 @@
 - scope 粒度：中断只影响目标对话，其他 scope 的回复/反思不受影响。
 - 触发源：Web 控制、频道命令和内部调用通过 Mind.interrupt(scope) 请求中断；
   聊天正文不触发关键词中断。
+
+模型可见：服务关停复用会话中断回执，不等待模型主动结束。
+Token：关停不追加模型调用，只保留已有执行事实与中断原因。
+缓存：不修改稳定前缀，中断记录写入原会话尾部。
 """
 from __future__ import annotations
 
@@ -41,6 +45,10 @@ class InterruptRegistry:
         self._requests: Dict[str, InterruptRequest] = {}
         self._signals: dict[str, ExecutionSignal] = {}
         self._executions: dict[str, str] = {}
+        self._tasks: dict[str, asyncio.Task | None] = {}
+        self._closing = False
+        self._idle = asyncio.Event()
+        self._idle.set()
 
     @contextmanager
     def execution(self, run_id: str, scope: str) -> Iterator[None]:
@@ -48,6 +56,11 @@ class InterruptRegistry:
         if run_id in self._executions or scope in self._executions.values():
             raise ValueError("执行标识或 scope 已在运行")
         self._executions[run_id] = scope
+        self._idle.clear()
+        try:
+            self._tasks[run_id] = asyncio.current_task()
+        except RuntimeError:
+            self._tasks[run_id] = None
         signal = self.signal(scope)
         signal.run_id = run_id
         try:
@@ -55,7 +68,27 @@ class InterruptRegistry:
                 yield
         finally:
             self._executions.pop(run_id, None)
+            self._tasks.pop(run_id, None)
             self.clear(scope)
+            if not self._executions:
+                self._idle.set()
+
+    def owns_task(self, task: asyncio.Task | None) -> bool:
+        """指定任务是否正在执行回复或隔离反思，用于区分协作收尾与普通 worker 取消。"""
+        return task is not None and task in self._tasks.values()
+
+    def quiesce(self) -> None:
+        """封闭新思维执行并唤醒所有在途会话；只能在所属事件循环调用。"""
+        if self._closing:
+            return
+        self._closing = True
+        for scope in set(self._signals) | set(self._executions.values()):
+            self.request(scope, "服务正在关闭或重启")
+
+    async def drain(self) -> None:
+        """等待在途执行保存工具链与中断记录；存储关闭前必须完成。"""
+        self.quiesce()
+        await self._idle.wait()
 
     def scope_for_run(self, run_id: str) -> str | None:
         """只返回仍在运行的精确控制目标，不依赖展示记录的保留期限。"""
@@ -87,6 +120,8 @@ class InterruptRegistry:
         """SDK 与思维循环共享同一信号，不另建取消通道。"""
         if scope not in self._signals:
             self._signals[scope] = ExecutionSignal(scope)
+            if self._closing:
+                self.request(scope, "服务正在关闭或重启")
         return self._signals[scope]
 
     def is_requested(self, scope: str) -> bool:

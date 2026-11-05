@@ -14,6 +14,7 @@ from agent.config import MindConfig
 from agent.messages import build_entity_scope
 from agent.mind.autonomous import MindTask, TaskType
 from agent.mind.driver import MindDriver
+from agent.mind.interrupt import InterruptRegistry
 from agent.mind.mind import Mind
 from agent.mind.prefrontal_cortex import PrefrontalCortex
 
@@ -22,11 +23,14 @@ def _fake_mind() -> Any:
     claimed: set[str] = set()
     mind = SimpleNamespace(
         config=MindConfig(),
+        interrupts=InterruptRegistry(),
+        _reply_idle_event=asyncio.Event(),
         _reset_phase_if_idle=Mock(),
         _autonomous_cycle=AsyncMock(),
         _auto_cycle_retry=0,
         pfc=PrefrontalCortex(SimpleNamespace()),
     )
+    mind._reply_idle_event.set()
     mind._schedule_next_cycle = Mock(wraps=MethodType(Mind._schedule_next_cycle, mind))
 
     def claim_task(name: str) -> tuple[bool, str]:
@@ -807,3 +811,38 @@ async def test_cancelled_task_waiters_do_not_release_claims_or_duplicate_admitte
     finally:
         release.set()
         await mind.driver.close()
+
+
+@pytest.mark.parametrize("during_checkpoint", [False, True])
+async def test_shutdown_drains_interrupted_reply_and_checkpoint_before_releasing_worker(
+    during_checkpoint: bool,
+) -> None:
+    mind = _fake_mind()
+    entered, persist, persisted = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    events: list[str] = []
+
+    async def cycle(*, is_heartbeat: bool) -> None:
+        mind._reply_idle_event.clear()
+        with mind.interrupts.execution("run", "scope"):
+            if not during_checkpoint:
+                entered.set()
+                await mind.interrupts.event("scope").wait()
+            events.append("interrupted")
+        entered.set()
+        await persist.wait()
+        events.append("checkpoint_cleared")
+        mind._reply_idle_event.set()
+        persisted.set()
+
+    mind._autonomous_cycle = cycle
+    mind.driver.request_cycle()
+    await entered.wait()
+    mind.driver.quiesce()
+    closing = asyncio.create_task(mind.driver.close())
+    await mind.interrupts.drain()
+    assert not closing.done() and not persisted.is_set()
+    mind.driver.request_cycle()
+    persist.set()
+    await asyncio.wait_for(closing, 2)
+    assert events == ["interrupted", "checkpoint_cleared"]
+    assert not mind.driver.is_busy

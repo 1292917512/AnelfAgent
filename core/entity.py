@@ -7,6 +7,10 @@
 实体分组（group）支持注册描述信息，供 AI 进行两级能力发现：
   Level 1: 实体目录（分组名 + 描述 + 工具数）
   Level 2: 查看具体分组的方法列表
+
+模型可见：协作停止沿用中断回执，同步工具退出前不进入下一轮。
+Token：不新增模型调用；停止原因仅记录在工具链尾部。
+缓存：不改变工具 schema 或稳定前缀。
 """
 from __future__ import annotations
 
@@ -26,7 +30,7 @@ from typing import Any, Callable, Dict, List, Optional, Type
 
 from pydantic import TypeAdapter, ValidationError
 
-from core.cancellation import ToolCancelled
+from core.cancellation import ToolCancelled, get_execution_signal
 from core.event_bus import EVENT_TRACE_CALL_END, EVENT_TRACE_CALL_START, event_bus
 from core.exceptions import catch_exceptions
 from core.log import log
@@ -43,6 +47,29 @@ from core.tool_results import extract_error_text, parse_tool_result_json, redact
 
 # 非法控制字符（\x00-\x1f 中排除 \t \n \r）
 _CTRL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+async def _run_sync_tool(name: str, func: Callable[..., Any], kwargs: Dict[str, Any]) -> Any:
+    """同步工具无法取消线程；协作停止时等待其退出，避免会话先于副作用收尾。"""
+    task = asyncio.create_task(asyncio.to_thread(func, **kwargs), name=f"tool.sync:{name}")
+
+    def consume(done: asyncio.Task[Any]) -> None:
+        if not done.cancelled() and done.exception() is not None:
+            log(f"同步工具执行异常: {done.exception()}", "DEBUG", tag="实体")
+
+    task.add_done_callback(consume)
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        signal = get_execution_signal()
+        if signal is not None and signal.cancelled:
+            log(f"执行已停止，等待同步工具安全退出: {name}", tag="实体")
+            while not task.done():
+                try:
+                    await asyncio.wait({task})
+                except asyncio.CancelledError:
+                    continue
+        raise
 
 
 def repair_json_arguments(arguments: str) -> str:
@@ -1314,10 +1341,13 @@ class EntityRegistry:
 
         deadline = asyncio.timeout(tool_timeout)
         try:
+            signal = get_execution_signal()
+            if signal is not None:
+                signal.checkpoint()
             if entity.is_async:
                 coro = entity.func(**kwargs)
             else:
-                coro = asyncio.to_thread(entity.func, **kwargs)
+                coro = _run_sync_tool(name, entity.func, kwargs)
             async with deadline:
                 return _serialize_result(await coro)
         except asyncio.CancelledError as exc:

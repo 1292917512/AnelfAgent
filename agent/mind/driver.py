@@ -192,11 +192,14 @@ class MindDriver:
         while self.is_busy:
             await self._idle.wait()
 
-    async def close(self) -> None:
-        """停止受理并终止 worker；未开始的任务认领立即释放。"""
+    def quiesce(self) -> None:
+        """停止受理与续轮；在途会话走协作中断，其余等待可直接取消。"""
         if self._closed:
             return
         self._closed = True
+        drain_worker = (not self._mind._reply_idle_event.is_set()
+                        or self._mind.interrupts.owns_task(self._worker))
+        self._mind.interrupts.quiesce()
         self._cancel_delayed_cycle()
         self._cycle_requested = False
         self._heartbeat_requested = False
@@ -211,9 +214,14 @@ class MindDriver:
             if not request.future.done():
                 request.future.cancel()
         self._wake.set()
+        if self._worker is not None and not drain_worker:
+            self._worker.cancel()
+
+    async def close(self) -> None:
+        """等待会话及检查点收尾后释放 worker；未开始的任务认领立即释放。"""
+        self.quiesce()
         worker = self._worker
         if worker is not None and worker is not asyncio.current_task():
-            worker.cancel()
             await asyncio.gather(worker, return_exceptions=True)
         self._worker = None
         self._running = False
@@ -300,7 +308,7 @@ class MindDriver:
                     checkpoint=self._maintenance_checkpoint, should_yield=self._user_waiting)
                 if self._cycle_requested or self._interleaved_cycle:
                     log("心跳任务已收束，先处理新消息；自主决策留待后续周期", "DEBUG", tag="思维")
-                elif self._autonomous_decision_due():
+                elif not self._closed and self._autonomous_decision_due():
                     await self._mind._autonomous_cycle(is_heartbeat=True)
             else:
                 await self._run_tick()

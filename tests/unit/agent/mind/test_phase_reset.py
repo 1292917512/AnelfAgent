@@ -32,6 +32,9 @@ def _bare_mind() -> Any:
     mind.phase = MindPhase.IDLE
     mind._active_scopes = set()
     mind._reflect_depth = 0
+    mind.interrupts = InterruptRegistry()
+    mind._reply_idle_event = asyncio.Event()
+    mind._reply_idle_event.set()
     mind.heartbeat_engine = SimpleNamespace(tick=AsyncMock(return_value=[]))
     mind.driver = MindDriver(mind)
     return mind

@@ -73,6 +73,10 @@ def _make_engine(
         pfc=SimpleNamespace(pending_analysis=[]),
     )
     from agent.mind.driver import MindDriver
+    from agent.mind.interrupt import InterruptRegistry
+    mind.interrupts = InterruptRegistry()
+    mind._reply_idle_event = asyncio.Event()
+    mind._reply_idle_event.set()
     mind.driver = MindDriver(mind)
     config = HeartbeatConfig(task_schedules=schedules)
 

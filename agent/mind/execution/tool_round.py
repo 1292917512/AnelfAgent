@@ -7,7 +7,7 @@ import asyncio
 from typing import TYPE_CHECKING, List, Optional
 
 from agent.channel.delivery import delivery_count, delivery_tags
-from agent.mind.execution.completion import _finish_round
+from agent.mind.execution.completion import _finish_round, _handle_interrupt
 from agent.mind.execution.messages import (
     merge_after_messages,
 )
@@ -109,6 +109,8 @@ async def _handle_tool_round(
         state.auto_reply_blocked = True
         state.reply_delivery_status = "sent"
     observe_send_results(ctx, state, available_calls)
+    if await _handle_interrupt(ctx, state):
+        return RoundOutcome.BREAK
     if state.interrupted:
         return await _finish_round(ctx, state)
 

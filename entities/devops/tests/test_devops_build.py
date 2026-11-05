@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 
+from core.cancellation import ExecutionSignal, execution_signal
 from entities.devops import service
 
 
@@ -76,6 +77,22 @@ def test_build_cancellation_releases_claim(monkeypatch: pytest.MonkeyPatch) -> N
     assert not service.get_build_state()["building"]
     assert service.get_build_state()["result"]["error"] == "cancelled"
     assert not service._restart_pending
+
+
+def test_stop_during_build_does_not_schedule_restart(monkeypatch: pytest.MonkeyPatch) -> None:
+    signal = ExecutionSignal("scope")
+
+    async def build_then_stop() -> None:
+        await successful_build()
+        signal.request("服务正在关闭或重启")
+
+    monkeypatch.setattr(service, "_run_build", build_then_stop)
+    with execution_signal(signal), pytest.raises(asyncio.CancelledError):
+        service.build_and_restart_blocking()
+    assert not service._restart_pending
+    state = service.get_build_state()
+    assert state["last"]["ok"] and state["result"]["error"] == "cancelled"
+    assert not state["building"]
 
 
 def test_git_status_failure_never_pulls(monkeypatch: pytest.MonkeyPatch) -> None:

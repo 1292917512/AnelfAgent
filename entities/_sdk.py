@@ -315,23 +315,6 @@ def get_current_channel() -> str:
         return ""
 
 
-def is_mind_busy() -> bool:
-    """思维是否有进行中的回复/反思（延迟导入 agent.runtime）。
-
-    供 entities 层在破坏性操作（如重启）前等待思维空闲；运行时未就绪
-    或查询失败按不忙碌处理（fail-open，不阻塞操作流程）。
-    """
-    try:
-        from agent.runtime.singleton import get_runtime
-        rt = get_runtime()
-        if rt is None:
-            return False
-        mind = rt.mind
-        return bool(mind.is_reply or mind.is_reflecting)
-    except Exception:
-        return False
-
-
 def get_background_registry() -> BackgroundTaskRegistry | None:
     """获取后台任务注册表（延迟导入 agent.runtime，未初始化返回 None）。
 

@@ -33,6 +33,7 @@ from agent.mind.autonomous import MindPhase
 from agent.mind.driver import MindDriver
 from agent.mind.execution.messages import snapshot_watermark
 from agent.mind.execution.state import ThinkMode
+from agent.mind.interrupt import InterruptRegistry
 from agent.mind.mind import Mind
 from agent.mind.think_session import think_session
 from agent.runtime.assistant import AgentAssistant
@@ -292,6 +293,7 @@ class _QueuedMind(FakeMind):
         self._reflect_depth = 0
         self._auto_cycle_retry = 0
         self.phase = MindPhase.IDLE
+        self.interrupts = InterruptRegistry()
         self.driver = MindDriver(self)
         self.channel_manager = SimpleNamespace(reply=AsyncMock())
         self.heartbeat_engine = SimpleNamespace(tick=AsyncMock(return_value=[]))

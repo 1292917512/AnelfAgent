@@ -2,10 +2,43 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from agent.mind.interrupt import InterruptRegistry
 
 
 class TestInterruptRegistry:
+    async def test_shutdown_interrupts_all_scopes_and_waits_for_records(self) -> None:
+        reg = InterruptRegistry()
+        entered, release = asyncio.Event(), asyncio.Event()
+        count = 0
+        saved: list[str] = []
+
+        async def execute(scope: str) -> None:
+            nonlocal count
+            with reg.execution(scope, scope):
+                count += 1
+                if count == 2:
+                    entered.set()
+                await reg.event(scope).wait()
+                assert reg.consume(scope) == "服务正在关闭或重启"
+                await release.wait()
+                saved.append(scope)
+
+        tasks = [asyncio.create_task(execute(scope)) for scope in ("conversation", "reflect:test")]
+        await entered.wait()
+        reg.quiesce()
+        drain = asyncio.create_task(reg.drain())
+        await asyncio.sleep(0)
+        assert not drain.done()
+        release.set()
+        await asyncio.gather(*tasks, drain)
+        assert set(saved) == {"conversation", "reflect:test"}
+        with reg.execution("late", "late"):
+            assert reg.event("late").is_set()
+            assert reg.is_requested("late")
+        assert reg.pending_scopes() == []
+
     def test_request_and_consume(self) -> None:
         reg = InterruptRegistry()
         assert not reg.is_requested("user_1")

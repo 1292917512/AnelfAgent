@@ -14,11 +14,11 @@
 ③ 结果进入工具链尾部，工具目录更新沿用注册表版本和追加冻结，不改稳定消息前缀。
 
 重启交接体验（Model Experience 三行声明）：
-① 模型看到什么——重启类工具返回值指示 AI 立即 end_reply 结束本轮；
-   系统等待当前回复轮收尾后才真正关停；进程重新拉起后由
+① 模型看到什么——重启成功受理后，宿主立即以现有会话中断机制结束在途思维；
+   系统保存中断记录并安全关停；进程重新拉起后由
    RestartHandoffWatcher 向原会话推送 [push:devops] 一次性通知
    （写对话历史 system 角色），含"重启成功"与 AI 重启前的留言，并唤醒一轮思维。
-② token 影响——仅重启后首轮一条通知（≤2000 字符），常态为零。
+② token 影响——不再增加 end_reply 模型轮次；重启后首轮一条通知（≤2000 字符），常态为零。
 ③ 缓存影响——通知写对话历史尾部纯追加（conversation 层），不触碰前缀缓存。
 """
 
@@ -122,21 +122,21 @@ def restart_app(message: str = "") -> str:
     触发优雅关闭（完整清理 WebUI / 频道 / MCP 等资源）后退出，
     由外层启动脚本（start.sh / start.bat）自动重新拉起应用。
     进程若非启动脚本守护拉起，重启等同关机，请求会被拒绝并说明。
-    调用成功后请立即调用 end_reply 结束本轮回复：系统会等本轮思考
-    收尾后再执行重启，重启完成后会自动唤醒你并回报重启结果。
+    成功受理后系统立即中断在途对话和反思，无需调用 end_reply。
+    执行记录与存储安全收尾后重启，完成后自动唤醒你并回报重启结果。
 
     Args:
         message: 给重启后的自己的留言（接续指令 / 待办 / 要验证的事项），可空
     """
     result = service.request_restart(
-        source="tool:restart_app", wait_idle=True,
+        source="tool:restart_app",
         handoff=_restart_handoff(message),
     )
     if not result.get("ok"):
         return _result("restart_app", ok=False,
                        message=result.get("message", "重启请求被拒绝"))
-    note = "重启已排定：请立即调用 end_reply 结束本轮回复（不要再调用其他工具）。" \
-           "系统会等本轮思考收尾后自动重启，重启完成后会唤醒你并回报结果"
+    note = "重启已受理，系统正在中断在途会话并安全保存执行记录。" \
+           "重启完成后会唤醒你并回报结果"
     if message.strip():
         note += "（含你的留言）。"
     else:
@@ -161,18 +161,18 @@ def build_and_restart(message: str = "") -> str:
     """重新构建前端（npm run build）并重启应用。
 
     构建成功后自动重启；构建失败则取消重启并返回构建日志尾部。
-    重启语义同 restart_app：构建成功后请立即 end_reply 结束本轮回复，
-    系统会等本轮思考收尾后再重启，完成后自动唤醒你并回报结果。
+    重启语义同 restart_app：成功受理后系统立即中断在途会话，
+    安全保存执行记录后重启，完成后自动唤醒你并回报结果。
 
     Args:
         message: 给重启后的自己的留言（接续指令 / 待办 / 要验证的事项），可空
     """
     result = service.build_and_restart_blocking(
-        wait_idle=True, handoff=_restart_handoff(message))
+        handoff=_restart_handoff(message))
     if result["ok"]:
         return _result("build_and_restart", ok=True,
-                       message="前端构建成功。请立即调用 end_reply 结束本轮回复，"
-                               "系统会等本轮思考收尾后自动重启，完成后唤醒你并回报结果。",
+                       message="前端构建成功，重启已受理。系统正在中断在途会话，"
+                               "安全保存执行记录后重启，完成后唤醒你并回报结果。",
                        duration=result["build"]["duration"])
     error = result.get("error")
     if error == "build_failed":
@@ -201,18 +201,18 @@ def update_and_restart(message: str = "") -> str:
 
     流程：git pull → 检查冲突 → 构建前端 → 构建成功则重启。
     遇到冲突或构建失败时不会重启，请主动联系主人解决。
-    重启语义同 restart_app：成功后请立即 end_reply 结束本轮回复。
+    重启语义同 restart_app：成功受理后系统立即中断在途会话。
 
     Args:
         message: 给重启后的自己的留言（接续指令 / 待办 / 要验证的事项），可空
     """
     result = service.build_and_restart_blocking(
-        wait_idle=True, handoff=_restart_handoff(message), update=True)
+        handoff=_restart_handoff(message), update=True)
     if result["ok"]:
         return _result("update_and_restart", ok=True,
                        pull_result=result.get("pull_result"),
-                       message="代码已更新、前端已构建。请立即调用 end_reply 结束本轮回复，"
-                               "系统会等本轮思考收尾后自动重启，完成后唤醒你并回报结果。")
+                       message="代码已更新、前端已构建，重启已受理。系统正在中断在途会话，"
+                               "安全保存执行记录后重启，完成后唤醒你并回报结果。")
     return _result("update_and_restart", ok=False,
                    error=result.get("error"), pull_result=result.get("pull_result"),
                    conflict=result.get("conflict", False), detail=result.get("detail", ""),
