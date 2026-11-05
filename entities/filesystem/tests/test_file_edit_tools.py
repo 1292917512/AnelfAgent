@@ -548,6 +548,22 @@ class TestAtomicWrite:
 # ------------------------------------------------------------------
 
 class TestSearchFiles:
+    @pytest.mark.parametrize("content_pattern", ["", "mood-chip|ceremony"])
+    def test_explicit_file_stays_within_target(self, workspace: Path, content_pattern: str) -> None:
+        target = workspace / "v10-browser-test.mjs"
+        target.write_text("// ceremony\n// mood-chip\n", encoding="utf-8")
+        (workspace / "other.mjs").write_text("// ceremony", encoding="utf-8")
+        result = json.loads(tools.search_files(str(target), "**/*.mjs", content_pattern))
+        assert result["root"] == str(target)
+        assert result["count"] == 1 and not result["truncated"]
+        assert result["results"][0]["path"] == str(target)
+        if content_pattern:
+            assert result["results"][0]["matches"] == ["1:// ceremony", "2:// mood-chip"]
+            assert result["coverage"]["scanned_files"] == 1
+            assert result["coverage"]["complete"]
+        assert json.loads(tools.search_files(str(target), "*.py", content_pattern))["count"] == 0
+        assert _edit(target, "ceremony", "next")["code"] == 6
+
     def test_recover_moved_directory_from_verified_parent(self, workspace: Path) -> None:
         """错误路径的回执可接到发现工具，最终读到真实文件，无需猜替代路径。"""
         actual = workspace / "agent" / "memory" / "graph"

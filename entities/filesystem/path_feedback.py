@@ -40,7 +40,7 @@ def path_error(
     workspace: str,
     *,
     sandbox: bool,
-    expected: Literal["file", "directory"],
+    expected: Literal["file", "directory", "path"],
     hint: str | None = None,
     detail: str = "",
     code: int | None = None,
@@ -50,7 +50,7 @@ def path_error(
         return tool_error("目标不在工作区允许范围内", cause=ErrorCause.PERMISSION,
                           retryable=False, resolved=resolved)
     exists = os.path.exists(resolved)
-    label = "文件" if expected == "file" else "目录"
+    label = {"file": "文件", "directory": "目录", "path": "文件或目录"}[expected]
     message = f"目标不是{label}: {requested}" if exists else f"{label}不存在: {requested}"
     directory = resolved
     existing_parent: str | None = None

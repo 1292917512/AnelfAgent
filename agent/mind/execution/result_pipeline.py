@@ -8,7 +8,7 @@
 5. 失败回执与指引：保留关键错误并追加安全/守卫提示
 
 模型可见：权限放行后的 sensitive_result 成功结果保留明文；展示回执只认可最终保留的正文。
-Token 影响：内部展示回执不增加模型文本，结果仍受单条与整轮预算限制。
+Token 影响：内部展示回执不增加模型文本；所有文本格式共用单条与整轮预算，不按内容猜测另行限长。
 缓存影响：只作用于工具链尾部，不触碰稳定前缀；敏感结果不自动落盘。
 
 预算裁剪保留失败原因、操作指引与调用标识，守卫提醒在裁剪后追加。
@@ -39,7 +39,6 @@ shell_persist_port: LateBinding[Callable[[str, str], str]] = LateBinding("mind.s
 
 # 工具输出裁剪阈值（字符数）——静态兜底（无法获取模型窗口时使用）
 _TOOL_RESULT_MAX_CHARS = 8000
-_TOOL_RESULT_HTML_MAX_CHARS = 3000
 _TOOL_RESULT_HEAD_RATIO = 0.75
 _TOOL_JSON_STR_MAX_CHARS = 1200
 _TOOL_JSON_LIST_MAX_ITEMS = 40
@@ -216,9 +215,6 @@ class ToolResultPipeline:
         else:
             limit = _TOOL_RESULT_MAX_CHARS
 
-        if _looks_like_html_payload(output) or "html" in tool_name.lower():
-            limit = min(limit, _TOOL_RESULT_HTML_MAX_CHARS)
-
         if len(output) <= limit:
             return output
 
@@ -274,17 +270,6 @@ class ToolResultPipeline:
 # ----------------------------------------------------------------------
 # 截断辅助（JSON 结构化裁剪）
 # ----------------------------------------------------------------------
-
-
-def _looks_like_html_payload(text: str) -> bool:
-    """判断工具结果是否近似 HTML 文档。"""
-    sample = text.lstrip().lower()[:1500]
-    return (
-        sample.startswith("<!doctype html")
-        or sample.startswith("<html")
-        or "<html" in sample
-        or "<body" in sample
-    )
 
 
 def _error_summary(output: str) -> Optional[str]:

@@ -109,11 +109,19 @@ class TestTruncateWithBudget:
         assert len(result) < len(output)
         assert "已自动截断" in result
 
-    def test_html_stricter_limit(self) -> None:
+    @pytest.mark.parametrize(("name", "source"), [
+        ("read_file", "const ref = useRef<HTMLCanvasElement>(null);"),
+        ("read_file", "const root = document.querySelector<HTMLElement>('#app');"),
+        ("read_file", "const data = get<Body>();"),
+        ("fetch_page", "<!DOCTYPE html><html><body>page</body></html>"),
+        ("get_html", "<html lang='en'><body>page</body></html>"),
+    ])
+    def test_text_formats_share_result_budget(self, name: str, source: str) -> None:
         budget = ResultBudget(per_result_chars=100_000, per_turn_chars=200_000)
-        output = "<!DOCTYPE html><html><body>" + "z" * 10_000 + "</body></html>"
-        result = truncate_tool_output("fetch_page", output, budget=budget)
-        assert len(result) <= 3000 + 200  # HTML 特例 3000 + 截断标记
+        output = "1→" + source + "\n" + "// source code\n" * 600
+        assert truncate_tool_output(name, output, budget=budget) == output
+        limited = truncate_tool_output(name, output, budget=ResultBudget(2000, 5000))
+        assert "已自动截断" in limited and len(limited) < len(output)
 
     def test_no_budget_fallback(self) -> None:
         output = "w" * 10_000

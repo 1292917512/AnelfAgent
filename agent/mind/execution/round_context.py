@@ -8,6 +8,7 @@ Token：复用动态通知与正常回复调用；恢复只追加执行状态，
 from __future__ import annotations
 
 from agent.channel.delivery import observe_delivery_context
+from agent.context.compressor import ContextCompressor
 from agent.context.dynamic import append_execution_status, format_delivery_status
 from agent.context.providers import collect_provider_messages
 from agent.judgment.evidence import dialogue_messages
@@ -29,14 +30,21 @@ async def prepare_round_context(
     """完成压缩和动态媒体准备后，合并实时消息并组装本次调用的输入。"""
     mind, anything, mode = ctx.mind, ctx.anything, ctx.mode
     execution_steps = ctx.execution_steps
-    # Microcompact：完整压缩前的轻量清理（旧只读工具结果 → 占位符）
-    if mind.compressor is not None:
-        mind.compressor.microcompact(ctx.tool_chain)
+    compression_input_tokens = state.last_input_tokens
+    # 只有容量达到既有压缩阈值才清理旧结果，调用次数不代表上下文压力。
+    if mind.compressor is not None and mind.compressor.should_compress(
+        ctx.base_messages + ctx.tool_chain, last_input_tokens=state.last_input_tokens,
+    ):
+        before = ContextCompressor.estimate_tokens(ctx.tool_chain)
+        if mind.compressor.microcompact(ctx.tool_chain):
+            saved = max(0, before - ContextCompressor.estimate_tokens(ctx.tool_chain))
+            # 扣除已释放的正文，保留供应商统计中工具 schema 等本地估算外的占用。
+            compression_input_tokens = max(0, state.last_input_tokens - saved)
 
     # 上下文压缩：溢出风险（或手动请求）时压缩中间轮次
     if mind.compressor is not None and mind.compressor.should_compress(
         ctx.base_messages + ctx.tool_chain,
-        last_input_tokens=state.last_input_tokens,
+        last_input_tokens=compression_input_tokens,
         scope=ctx.current_scope,
     ):
         async def compress() -> None:

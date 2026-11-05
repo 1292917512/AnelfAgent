@@ -65,13 +65,13 @@ def iter_matches(
     *,
     on_error: Callable[[OSError], None] | None = None,
 ) -> Iterator[MatchEntry]:
-    """按 glob 模式遍历匹配（剪枝噪声目录）。
+    """按 glob 模式匹配文件或遍历目录（剪枝噪声目录）。
 
     pattern 对相对路径 fnmatch：``*.png`` 命中任意深度文件（fnmatch 的
     ``*`` 天然跨 ``/``），``config/*.json`` 限定一级子目录。前导 ``**/``
     额外按文件名匹配余下模式——补齐 glob 递归模式的"零目录"语义
     （``**/*.py`` 也命中根级 a.py）。
-    目录同样参与匹配。
+    目录同样参与匹配；显式文件只匹配其名称，不扩大到父目录。
     """
     exclude = DEFAULT_EXCLUDE_DIRS if exclude is None else exclude
     # 前导 **/ 剥离后的备选模式（按 basename 匹配，覆盖零目录情形）
@@ -85,6 +85,18 @@ def iter_matches(
         if fnmatch.fnmatch(rel, pattern):
             return True
         return alt != pattern and fnmatch.fnmatch(name, alt)
+
+    if os.path.isfile(root):
+        name = os.path.basename(root)
+        if _matched(name, name):
+            try:
+                stat = os.stat(root)
+            except OSError as exc:
+                if on_error is not None:
+                    on_error(exc)
+            else:
+                yield MatchEntry(name, root, False, stat.st_size, stat.st_mtime)
+        return
 
     for dirpath, dirnames, filenames in os.walk(root, onerror=on_error):
         kept = sorted(d for d in dirnames if d not in exclude)

@@ -15,9 +15,9 @@
 - 压缩后使 Prompt 层缓存失效（volatile 层内容已变化）
 
 Model Experience:
-- 模型看到什么：只在触发压缩时看到既有摘要；推理字段仅参与本地估算。
-- token 影响：新增推理体量可提前触发压缩，减少溢出后的重试。
-- 缓存影响：估算不改前缀；压缩仍按既有机制登记合法断裂。
+- 模型看到什么：自动折叠或摘要由容量阈值触发；容量充足且未请求手动压缩时保留已呈现的原文。
+- token 影响：原文保留至容量需要释放时，清理后重新评估占用，避免重复压缩。
+- 缓存影响：容量充足时不因调用次数改写工具链前缀；完整压缩仍登记合法断裂。
 """
 from __future__ import annotations
 
@@ -75,7 +75,7 @@ class CompressionConfig:
     keep_user_messages: bool = True
     # 保留的 user 消息单条字符上限（0 = 不截断；防超大粘贴常驻上下文）
     user_max_chars: int = 2000
-    # Microcompact：工具链超过此条数时，清理较早的只读工具结果（0=关闭）
+    # Microcompact：容量达到压缩阈值后，工具链还需达到此条数才清理（0=关闭）
     microcompact_chain_threshold: int = 40
     # Microcompact 保留的最新工具结果条数
     microcompact_keep_recent: int = 6
@@ -323,7 +323,7 @@ class ContextCompressor:
     def microcompact(self, tool_chain: List[Dict]) -> int:
         """清理工具链中较早的只读工具结果为占位符（microCompact）。
 
-        在完整压缩之前先做轻量清理：工具链较长时，只读工具的旧结果
+        调用方确认容量达到压缩阈值后，在完整压缩之前先做轻量清理：只读工具的旧结果
         （文件读取、检索等）正文替换为执行回执，
         避免触发更重 LLM 摘要压缩。返回清理条数。
 
@@ -1317,7 +1317,7 @@ _COMPRESSION_CONFIGS = {
             "unit": "字符",
         },
         "compression_microcompact_threshold": {
-            "description": "Microcompact 触发条数（工具链超过此条数时清理较早的只读工具结果，0 = 关闭）",
+            "description": "容量达到压缩阈值后，允许 Microcompact 的最少工具链条数（0 = 关闭）",
             "default": 40,
             "advanced": True,
             "unit": "条",

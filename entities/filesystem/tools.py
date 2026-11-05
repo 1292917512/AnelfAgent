@@ -30,7 +30,7 @@ Model Experience（写操作成功结果 location 标注）:
 
 Model Experience（文件发现与路径反馈）:
 - 模型看到什么：read_file 与编辑、发现工具及 Shell 一起常驻；搜索回显绝对根目录、
-  是否截断，目录列表限制总项数且不递归噪声目录；定位失败给已验证目录和下一步指引。
+  是否截断，支持搜索目录或指定文件，文件目标不扩大范围；目录列表限制总项数且不递归噪声目录。
 - token 影响：读取与发现工具 schema 为固定开销，读取工具约数百 token；路径回执约增 50~200 token。
 - 缓存影响：schema/说明在加载后稳定，目录事实只进入工具结果尾部，不逐轮重写前缀。
 
@@ -160,7 +160,8 @@ _LIST_DIRECTORY_PROMPT = """列出已知目录的内容，返回可直接用于�
 默认只列一层，支持 recursive 树形浏览；递归不展开搜索排除目录或符号链接。
 两种模式均最多返回 200 项，超出标记 truncated；请缩小 path 或用 search_files 搜索。"""
 
-_SEARCH_FILES_PROMPT = """从已知目录搜索文件/目录名，或按正则搜索文件内容；结果返回可直接使用的绝对路径。
+_SEARCH_FILES_PROMPT = """按名称或内容搜索已知文件或目录；结果返回可直接使用的绝对路径。
+path 可以是目录或文件；目录递归搜索，文件只搜索自身，pattern 对文件名继续生效。
 仅知道名称时先搜索，不要拼接猜测的路径。例如 pattern="graph" 可找到嵌套的 memory/graph。
 零匹配是正常查询结果；truncated=true 表示有结果未展示，应缩小 path/pattern/content_pattern。
 内容搜索的 coverage 表示当前过滤范围内的覆盖情况；有跳过或读取失败时，零匹配不能证明内容不存在。
@@ -837,10 +838,10 @@ def mkdir(path: str) -> str:
 @track_fs_op("path")
 def search_files(path: str = ".", pattern: str = "*", content_pattern: str = "",
                  max_results: int = 50) -> str:
-    """从已知目录搜索文件/目录名，或按正则搜索文件内容；结果返回可直接使用的绝对路径。
+    """按名称或内容搜索已知文件或目录；结果返回可直接使用的绝对路径。
 
     Args:
-        path: 已知存在的搜索根目录（相对于工作区根或绝对路径）
+        path: 搜索目录或单个文件（相对于工作区根或绝对路径）
         pattern: 文件/目录名 glob，如 'graph'、'*.png'（任意深度）；含 / 时匹配相对路径
         content_pattern: 文件内容正则（可选）。提供时返回匹配的文件及命中行，
             如 'def \\w+\\('、'TODO'
@@ -848,8 +849,8 @@ def search_files(path: str = ".", pattern: str = "*", content_pattern: str = "",
     """
     try:
         fp = safe_path(path)
-        if not os.path.isdir(fp):
-            return path_error(path, fp, _ws_root(), sandbox=_SANDBOX, expected="directory")
+        if not (os.path.isdir(fp) or os.path.isfile(fp)):
+            return path_error(path, fp, _ws_root(), sandbox=_SANDBOX, expected="path")
 
         max_results = min(200, max(1, max_results))
 

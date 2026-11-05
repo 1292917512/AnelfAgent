@@ -7,13 +7,17 @@ from __future__ import annotations
 
 import json
 from copy import deepcopy
-from unittest.mock import AsyncMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
+import pytest
 from helpers.think_loop_fakes import FakeMind, run_think_loop, text_result, tool_result
 
+from agent.context.compressor import CompressionConfig, ContextCompressor
 from agent.context.message_schema import normalize_for_send
 from agent.context.providers import collect_provider_messages
 from agent.llm.prompt_cache import count_breakpoints, decorate_messages
+from agent.llm.types import UsageInfo
 from core.context_provider import ContextProviderRegistry, ProviderMeta
 
 
@@ -33,7 +37,60 @@ def _loop_mind() -> FakeMind:
     )
 
 
+def _read_chain() -> list[dict]:
+    source = "const MOODS: Mood[] = ['calm', 'happy', 'tender', 'sad', 'hope'];\n" * 8
+    chain = []
+    for index in range(24):
+        chain.extend([
+            {"role": "assistant", "tool_calls": [{
+                "id": f"read-{index}", "type": "function",
+                "function": {"name": "read_file", "arguments": json.dumps({"file_path": f"{index}.ts"})},
+            }]},
+            {"role": "tool", "tool_call_id": f"read-{index}", "content": source},
+        ])
+    return chain
+
+
 class TestThinkLoopChainBreakpoint:
+    @pytest.mark.parametrize("enabled", [True, False])
+    async def test_read_results_survive_long_chain_without_context_pressure(self, enabled: bool) -> None:
+        chain = _read_chain()
+        prefix = deepcopy(chain)
+        mind = _loop_mind()
+        mind.compressor = ContextCompressor(
+            SimpleNamespace(get_context_length=lambda: 200_000, get_max_output=lambda: 0),
+            CompressionConfig(enabled=enabled),
+        )
+        await run_think_loop(mind, chain=chain, base_messages=_base())
+        for messages in mind.sent_messages:
+            assert messages[2:2 + len(prefix)] == prefix
+
+    @pytest.mark.parametrize(("input_tokens", "enabled", "summaries"), [
+        (76_000, True, 0), (100_000, True, 1), (100_000, False, 0),
+    ])
+    async def test_pressure_cleanup_rechecks_capacity_without_changing_usage(
+        self, monkeypatch, input_tokens: int, enabled: bool, summaries: int,
+    ) -> None:
+        first = tool_result("", ["recall"])
+        first.usage = UsageInfo(prompt_tokens=input_tokens, cache_read_input_tokens=70_000)
+        mind = FakeMind(rounds=[first, tool_result("", ["end_reply"], '{"silent": true}')])
+        mind.compressor = ContextCompressor(
+            SimpleNamespace(get_context_length=lambda: 100_000, get_max_output=lambda: 0),
+            CompressionConfig(enabled=enabled),
+        )
+        summarize = AsyncMock(return_value=(_base(), []))
+        build_context = Mock(wraps=mind.context.build_execution_context)
+        monkeypatch.setattr(mind.context, "build_execution_context", build_context)
+        monkeypatch.setattr("agent.mind.execution.round_context._compress_context", summarize)
+        monkeypatch.setattr("agent.mind.execution.round_context._precompact_flush", AsyncMock(return_value=False))
+        await run_think_loop(mind, chain=_read_chain(), base_messages=_base())
+        assert summarize.await_count == summaries
+        sent = mind.sent_messages[1]
+        if not summaries:
+            receipt = next(m for m in sent if m.get("tool_call_id") == "read-0")
+            assert (receipt["content"] == ContextCompressor._MICROCOMPACT_PLACEHOLDER) is enabled
+            assert f"输入 {input_tokens:,} tokens" in build_context.call_args_list[1].kwargs["cache_hint"]
+
     async def test_deployment_completion_is_dynamic_state_without_changing_conversation(self, monkeypatch, tmp_path):
         from agent.retrieval.deployment import RetrievalDeployment
         from agent.retrieval.deployment_context import deployment_context
