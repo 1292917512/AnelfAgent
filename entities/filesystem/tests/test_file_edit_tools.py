@@ -263,11 +263,13 @@ class TestReadFile:
         out = _read(fp)
         assert "内容为空" in out
 
-    def test_oversize_file_requires_pagination(self, workspace):
+    def test_oversize_file_returns_resumable_window(self, workspace):
         fp = workspace / "big.txt"
         fp.write_text("x" * (300 * 1024))
-        result = json.loads(_read(fp))
-        assert "offset/limit" in result["error"]
+        result = _read(fp)
+        assert result.startswith("1→" + "x" * 4096 + "\n")
+        assert 'offset_unit="char", offset=4097' in result
+        assert not file_state.get_cache().get(str(fp)).is_complete
 
     def test_binary_returns_metadata(self, workspace):
         fp = workspace / "a.png"
@@ -277,6 +279,47 @@ class TestReadFile:
 
 
 class TestReadProtection:
+    @pytest.mark.parametrize("kind", ["json", "svg"])
+    def test_persisted_long_line_round_trips_through_real_pipeline(self, workspace: Path, kind: str) -> None:
+        from agent.mind.execution.result_pipeline import ToolResultPipeline
+        from core.config import ConfigManager
+
+        text = "汉字😀→" * 14000
+        content = json.dumps({"text": text}, ensure_ascii=False) if kind == "json" else f"<svg>{text}</svg>"
+        ConfigManager.set("workspace_root", str(workspace))
+        pipeline = ToolResultPipeline(0)
+        preview = pipeline.process("list_directory", "{}", content)
+        assert "persisted-output" in preview
+        fp = next((workspace / ".tool-results").glob("*.txt"))
+        recovered = ""
+        while len(recovered) < len(content):
+            pipeline.begin_turn()
+            output = (tools.read_file(str(fp)) if not recovered else
+                      tools.read_file(str(fp), offset_unit="char", offset=len(recovered) + 1, limit=4096))
+            visible = pipeline.process("read_file", "{}", output)
+            assert "persisted-output" not in visible
+            page = visible.split("\n", 1)[0].split("→", 1)[1]
+            assert 0 < len(page) <= 4096
+            recovered += page
+            assert content.startswith(recovered)
+            state = file_state.get_cache().get(str(fp))
+            assert state is not None and state.is_complete == (recovered == content)
+            if recovered != content:
+                assert "部分读取" in _edit(fp, "汉字", "text", replace_all=True)["error"]
+        assert recovered == content
+        assert fp.read_text(encoding="utf-8") == content
+        assert _edit(fp, "汉字", "text", replace_all=True)["ok"]
+
+    def test_line_and_character_windows_share_coverage(self, workspace: Path) -> None:
+        fp = workspace / "mixed.txt"
+        fp.write_bytes("head\r\nβ😀tail\r\nend".encode("utf-8"))
+        _read(fp, offset=1, limit=1)
+        _read(fp, offset_unit="char", offset=6, limit=3)
+        assert "offset=9" in _edit(fp, "tail", "done")["error"]
+        _read(fp, offset_unit="char", offset=9)
+        assert _edit(fp, "tail", "done")["ok"]
+        assert fp.read_bytes().decode("utf-8") == "head\r\nβ😀done\r\nend"
+
     def test_paginated_default_read_and_local_reread(self, workspace: Path) -> None:
         fp = workspace / "large.txt"
         fp.write_text("\n".join(f"line{i}" for i in range(2105)), encoding="utf-8")
@@ -302,16 +345,19 @@ class TestReadProtection:
         _read(fp, offset=3, limit=1)
         assert _edit(fp, "末行", "完成")["ok"]
 
-    def test_overlong_line_and_invalid_window_do_not_authorize_write(
+    def test_partial_line_and_invalid_window_do_not_authorize_write(
         self, workspace: Path, monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         fp = workspace / "single.txt"
         fp.write_text("x" * 50, encoding="utf-8")
         monkeypatch.setattr(tools, "_READ_MAX_TOKENS", 10)
-        assert "单行长度" in json.loads(_read(fp, limit=1))["error"]
-        for window in ({"offset": -1}, {"limit": -1}, {"offset": 2}):
+        assert 'offset_unit="char", offset=41' in _read(fp, limit=1)
+        for window in ({"offset": -1}, {"limit": -1}, {"offset": 2},
+                       {"offset_unit": "byte"}, {"offset_unit": "char", "offset": 52}):
             assert json.loads(_read(fp, **window))["cause"] == "param"
-        assert "尚未读取" in _edit(fp, "x", "y", replace_all=True)["error"]
+        assert "部分读取" in _edit(fp, "x", "y", replace_all=True)["error"]
+        _read(fp, offset_unit="char", offset=41)
+        assert _edit(fp, "x", "y", replace_all=True)["ok"]
 
     @pytest.mark.parametrize("writer", ["edit", "write", "append"])
     @pytest.mark.parametrize("mtime_delta", [-10, 0, 10])
@@ -644,6 +690,36 @@ class TestLocationAnnotation:
 
         result = json.loads(tools.delete_file(str(outside)))
         assert result["ok"] and result["location"] == "outside_workspace"
+
+
+class TestDirectoryView:
+    def test_recursive_budget_is_shared_and_noise_remains_discoverable(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from entities.filesystem import scan
+
+        monkeypatch.setattr(scan, "resolve_exclude_dirs", lambda: frozenset({"node_modules", "generated"}))
+        for folder in ("node_modules", "generated", "src"):
+            directory = workspace / folder
+            directory.mkdir()
+            for index in range(210):
+                (directory / f"file{index:03}.ts").write_text("text", encoding="utf-8")
+        result = json.loads(tools.list_directory(str(workspace), recursive=True, max_depth=1000))
+        assert result["truncated"] and result["count"] == 200
+        roots = {item["name"]: item for item in result["tree"]}
+        assert roots["node_modules"]["children"] == roots["generated"]["children"] == "..."
+        assert len(roots["src"]["children"]) == 197
+        assert "search_files" in result["hint"]
+        # 明确指定排除目录仍可浏览，排除只控制递归展开。
+        direct = json.loads(tools.list_directory(str(workspace / "generated")))
+        assert direct["count"] == 210 and len(direct["items"]) == 200
+
+    def test_small_recursive_tree_reports_complete(self, workspace: Path) -> None:
+        (workspace / "src").mkdir()
+        (workspace / "src" / "app.ts").write_text("text", encoding="utf-8")
+        result = json.loads(tools.list_directory(str(workspace), recursive=True))
+        assert result["count"] == 2 and not result["truncated"]
+        assert result["tree"][0]["children"][0]["name"] == "app.ts"
 
 
 class TestLongPrompts:

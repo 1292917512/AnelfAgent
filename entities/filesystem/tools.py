@@ -7,7 +7,7 @@ edit_file/read_file/write_file 的编辑安全语义：
 read-before-write、正文冲突检查、弯引号容忍匹配、行尾往返。
 
 Model Experience（文件读取基线）:
-- 模型看到什么：显式读取始终返回正文；分页只展示完整行并给出继续位置，
+- 模型看到什么：显式读取始终返回正文；行窗口或长行的字符窗口给出继续位置，
   同一正文的已读范围累计，写入冲突要求重新读取，Shell 不建立读取基线。
 - token 影响：重读增加所请求窗口的正文量，避免存根导致的重复调用与 Shell 绕行；
   每次读取受行数、字节及字符预算约束，恢复提示仅增加数十 token。
@@ -30,7 +30,7 @@ Model Experience（写操作成功结果 location 标注）:
 
 Model Experience（文件发现与路径反馈）:
 - 模型看到什么：list_directory/search_files 与 Shell 一起常驻；搜索回显绝对根目录、
-  是否截断，定位失败给已验证目录和下一步指引；Shell 回执区分执行目录与后续目录。
+  是否截断，目录列表限制总项数且不递归噪声目录；定位失败给已验证目录和下一步指引。
 - token 影响：两份发现工具 schema 为固定开销；路径回执约增 50~200 token，不注入全目录树。
 - 缓存影响：schema/说明在加载后稳定，目录事实只进入工具结果尾部，不逐轮重写前缀。
 
@@ -45,7 +45,7 @@ import re
 import shlex
 import sys
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from entities._sdk import (
     ErrorCause,
@@ -130,7 +130,7 @@ _READ_FILE_PROMPT = """读取文本文件内容，输出带行号（格式: 行�
 
 使用规则:
 - 行号前缀（如 "12→"）不是文件内容，edit_file 的 old_string/new_string 绝不可包含它。
-- 大文件用 offset/limit 分段读取，每次最多 2000 行 / 256KB / 约 25000 token，只返回完整行。
+- 默认 offset/limit 按行计；超长行自动返回字符窗口，按提示用 offset_unit="char" 继续。字符窗口默认 4096 字符。
 - 按返回的 offset 继续读取；同一正文的分页会累计，全部读完后才允许修改已有文件。
 - 若结果管线再次截断或只返回落盘预览，减小 limit 继续读原文件；预览副本不建立原文件的完整基线。
 - 显式重读会返回正文；已有内容仍在上下文中时可直接参考，无需重复读取。
@@ -157,7 +157,8 @@ _EDIT_FILE_PROMPT = """在文件中执行精确的字符串替换 — 修改已�
 
 _LIST_DIRECTORY_PROMPT = """列出已知目录的内容，返回可直接用于文件工具的绝对路径。
 不确定目录结构时先列举，再使用返回的路径；只知道名称时用 search_files。
-默认只列一层，支持 recursive 树形浏览。非递归结果超过 200 项会标记 truncated，需按名称搜索缩小范围。"""
+默认只列一层，支持 recursive 树形浏览；递归不展开搜索排除目录或符号链接。
+两种模式均最多返回 200 项，超出标记 truncated；请缩小 path 或用 search_files 搜索。"""
 
 _SEARCH_FILES_PROMPT = """从已知目录搜索文件/目录名，或按正则搜索文件内容；结果返回可直接使用的绝对路径。
 仅知道名称时先搜索，不要拼接猜测的路径。例如 pattern="graph" 可找到嵌套的 memory/graph。
@@ -196,6 +197,7 @@ _SHELL_PROMPT = """在系统 shell 中执行命令并返回输出。
 _READ_MAX_LINES = 2000
 _READ_MAX_BYTES = 256 * 1024
 _READ_MAX_TOKENS = 25000  # 按 ~4 字符/token 估算
+_READ_CHAR_WINDOW = 4096
 
 
 def _read_text_with_metadata(fp: str, encoding: str = "utf-8") -> Tuple[str, str, str]:
@@ -241,36 +243,60 @@ def _add_line_numbers(content: str, start_line: int = 1) -> str:
     return "\n".join(f"{i:>{width}}→{line}" for i, line in enumerate(lines, start_line))
 
 
-def _read_receipt(fp: str, content: str, start_line: int, numbered: str, output: str) -> str:
-    """仅把最终工具结果中完整保留的原文行登记为已读。"""
+def _read_receipt(fp: str, content: str, start_char: int, end_char: int, numbered: str, output: str) -> str:
+    """把最终结果中完整保留的展示行映射到原文件字符范围。"""
     scope = get_current_scope()
-    numbered_lines = numbered.split("\n")
+    segments: list[tuple[str, int, int]] = []
+    cursor = start_char
+    for line in numbered.split("\n"):
+        end = min(end_char, cursor + len(line.split("→", 1)[1]) + 1)
+        segments.append((line, cursor, end))
+        cursor = end
 
     def on_presented(visible: str) -> None:
         visible_lines = set(visible.split("\n"))
         ranges = tuple(
-            (start_line + i, start_line + i)
-            for i, line in enumerate(numbered_lines) if line in visible_lines
+            (start, end) for line, start, end in segments if line in visible_lines
         )
         file_state.record_read(fp, content, read_ranges=ranges, scope=scope)
 
     return PresentedToolResult(output, on_presented)
 
 
+def _read_character_window(fp: str, content: str, start: int, limit: int) -> str:
+    """返回不拆分 Unicode 字符的有界片段，明确后续读取的字符位置。"""
+    if start >= max(1, len(content)):
+        return tool_error(f"offset {start + 1} 超出文件范围（共 {len(content)} 字符）",
+                          cause=ErrorCause.PARAM, retryable=False, path=fp)
+    size = min(limit or _READ_CHAR_WINDOW, _READ_MAX_TOKENS * 4)
+    body = content[start:start + size].encode("utf-8")[:_READ_MAX_BYTES].decode("utf-8", errors="ignore")
+    end = start + len(body)
+    numbered = _add_line_numbers(body, content.count("\n", 0, start) + 1)
+    note = f"（字符窗口 {start + 1}-{end}，共 {len(content)} 字符；行号对应原文件，首尾行可能为片段"
+    if end < len(content):
+        note += f'；继续 read_file(offset_unit="char", offset={end + 1}, limit={limit or _READ_CHAR_WINDOW})'
+    note += "）" if content else "；文件存在但内容为空）"
+    return _read_receipt(fp, content, start, end, numbered, numbered + "\n" + note)
+
+
 @tool(name="read_file", group="os", tags=["media:file"], concurrency_safe=True, description=_READ_FILE_PROMPT)
 @track_fs_op("file_path")
-def read_file(file_path: str, offset: int = 0, limit: int = 0, encoding: str = "utf-8") -> str:
-    """读取文本文件内容，带行号输出；同一正文的完整行分页可累计建立写入基线。
+def read_file(file_path: str, offset: int = 0, limit: int = 0, encoding: str = "utf-8",
+              offset_unit: Literal["line", "char"] = "line") -> str:
+    """读取文本窗口，带原始行号输出；行和字符分页累计建立同一写入基线。
 
     Args:
         file_path: 文件路径（相对于 workspace 或绝对路径）
-        offset: 起始行号（从 1 开始），0 表示从头读取
-        limit: 最多读取行数，0 表示读取到上限（2000 行）
+        offset: 起始位置（从 1 开始），0 表示从头；单位由 offset_unit 指定
+        limit: 最多读取的行数或字符数；0 使用默认窗口
         encoding: 文件编码，默认 utf-8
+        offset_unit: line 按行读取；char 按规范化正文的 Unicode 字符读取，适合长行 JSON/SVG
     """
     try:
         if offset < 0 or limit < 0:
             return tool_error("offset/limit 不能为负数", cause=ErrorCause.PARAM, retryable=False)
+        if offset_unit not in {"line", "char"}:
+            return tool_error("offset_unit 必须是 line 或 char", cause=ErrorCause.PARAM, retryable=False)
         fp = safe_path(file_path)
         if not os.path.isfile(fp):
             return path_error(file_path, fp, _ws_root(), sandbox=_SANDBOX, expected="file",
@@ -332,15 +358,9 @@ def read_file(file_path: str, offset: int = 0, limit: int = 0, encoding: str = "
                         "to inspect the file type.",
             }, ensure_ascii=False)
 
-        size = os.path.getsize(fp)
-        if size > _READ_MAX_BYTES and offset <= 0 and limit <= 0:
-            return tool_error(
-                f"文件过大（{size} 字节，上限 {_READ_MAX_BYTES}）。"
-                "请使用 offset/limit 参数分段读取。",
-                cause=ErrorCause.PARAM, retryable=False, path=fp,
-            )
-
         content, _, _ = _read_text_with_metadata(fp, encoding)
+        if offset_unit == "char":
+            return _read_character_window(fp, content, max(0, offset - 1), limit)
         start_line = max(1, offset) if offset > 0 else 1
         max_lines = min(limit, _READ_MAX_LINES) if limit > 0 else _READ_MAX_LINES
 
@@ -351,9 +371,12 @@ def read_file(file_path: str, offset: int = 0, limit: int = 0, encoding: str = "
                 f"offset {start_line} 超出文件范围（共 {total_lines} 行）",
                 cause=ErrorCause.PARAM, retryable=False, path=fp,
             )
+        start_char = sum(len(line) + 1 for line in all_lines[:start_line - 1])
         selected: list[str] = []
         chars = byte_count = 0
         for line in all_lines[start_line - 1: start_line - 1 + max_lines]:
+            if len(line) > _READ_CHAR_WINDOW:
+                break
             separator = int(bool(selected))
             chars += len(line) + separator
             byte_count += len(line.encode("utf-8")) + separator
@@ -361,10 +384,7 @@ def read_file(file_path: str, offset: int = 0, limit: int = 0, encoding: str = "
                 break
             selected.append(line)
         if not selected:
-            return tool_error(
-                f"第 {start_line} 行单行长度超过读取预算，无法用 offset/limit 完整读取该行",
-                cause=ErrorCause.PARAM, retryable=False, path=fp,
-            )
+            return _read_character_window(fp, content, start_char, 0)
 
         body = "\n".join(selected)
         end_line = start_line + len(selected) - 1
@@ -377,7 +397,8 @@ def read_file(file_path: str, offset: int = 0, limit: int = 0, encoding: str = "
             tail_notes.append("（文件存在但内容为空）")
 
         output = numbered + ("\n" + " ".join(tail_notes) if tail_notes else "")
-        return _read_receipt(fp, content, start_line, numbered, output)
+        end_char = min(len(content), start_char + len(body) + 1)
+        return _read_receipt(fp, content, start_char, end_char, numbered, output)
     except UnicodeDecodeError:
         size = os.path.getsize(fp)
         return json.dumps({
@@ -623,8 +644,14 @@ def list_directory(path: str = ".", recursive: bool = False, max_depth: int = 3)
             return path_error(path, fp, _ws_root(), sandbox=_SANDBOX, expected="directory")
 
         if recursive:
-            tree = _build_tree(fp, max_depth, 0)
-            return json.dumps({"path": fp, "tree": tree}, ensure_ascii=False)
+            from entities.filesystem.scan import resolve_exclude_dirs
+            excluded = resolve_exclude_dirs()
+            tree, count, truncated = _build_tree(fp, max(0, max_depth), excluded)
+            tree_payload: dict[str, Any] = {"path": fp, "tree": tree, "count": count, "truncated": truncated,
+                                            "excluded_dirs": sorted(excluded)}
+            if truncated:
+                tree_payload["hint"] = "目录树未全部展开；请缩小 path 或用 search_files 按名称搜索。"
+            return json.dumps(tree_payload, ensure_ascii=False)
 
         items: List[Dict[str, Any]] = []
         for name in sorted(os.listdir(fp)):
@@ -649,29 +676,42 @@ def list_directory(path: str = ".", recursive: bool = False, max_depth: int = 3)
         return error_from_exception(e, action="列出目录")
 
 
-def _build_tree(dir_path: str, max_depth: int, depth: int) -> List[Dict[str, Any]]:
-    """递归构建目录树。"""
-    items: List[Dict[str, Any]] = []
-    try:
-        for name in sorted(os.listdir(dir_path)):
-            full = os.path.join(dir_path, name)
-            entry: Dict[str, Any] = {"name": name, "path": full}
-            if os.path.isdir(full):
-                entry["type"] = "dir"
-                if depth < max_depth:
-                    entry["children"] = _build_tree(full, max_depth, depth + 1)
+def _build_tree(dir_path: str, max_depth: int, excluded: frozenset[str]) -> tuple[list[dict[str, Any]], int, bool]:
+    """使用整棵树共享的项数预算，不跟随目录符号链接或展开噪声目录。"""
+    remaining = 200
+    truncated = False
+
+    def walk(path: str, depth: int) -> list[dict[str, Any]]:
+        nonlocal remaining, truncated
+        items: list[dict[str, Any]] = []
+        try:
+            for name in sorted(os.listdir(path)):
+                if not remaining:
+                    truncated = True
+                    break
+                remaining -= 1
+                full = os.path.join(path, name)
+                entry: dict[str, Any] = {"name": name, "path": full}
+                if os.path.isdir(full):
+                    entry["type"] = "dir"
+                    entry["children"] = (
+                        walk(full, depth + 1)
+                        if depth < max_depth and name not in excluded and not os.path.islink(full) else "..."
+                    )
                 else:
-                    entry["children"] = "..."
-            else:
-                entry["type"] = "file"
-                try:
-                    entry["size"] = os.path.getsize(full)
-                except OSError:
-                    log("_build_tree 异常已忽略", "DEBUG")
-            items.append(entry)
-    except PermissionError:
-        log("_build_tree 异常已忽略", "DEBUG")
-    return items
+                    entry["type"] = "file"
+                    try:
+                        entry["size"] = os.path.getsize(full)
+                    except OSError:
+                        log("目录项信息读取失败", "DEBUG")
+                items.append(entry)
+        except OSError as exc:
+            truncated = True
+            log(f"目录树读取不完整: {exc}", "DEBUG")
+        return items
+
+    tree = walk(dir_path, 0)
+    return tree, 200 - remaining, truncated
 
 
 @tool(name="file_info", group="os", concurrency_safe=True)

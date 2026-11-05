@@ -1,4 +1,4 @@
-"""按会话记录文件正文与已展示行范围，提供完整读取和内容冲突检查。
+"""按会话记录文件正文与已展示字符范围，提供完整读取和内容冲突检查。
 
 同一正文的分页读取合并覆盖范围；内容变化后重新累计。写入者传入本次实际
 读到的规范化正文进行比较，不依赖 mtime，也不把 Shell 操作视为读取凭据。
@@ -20,14 +20,14 @@ MAX_CACHE_BYTES = 25 * 1024 * 1024
 
 @dataclass(frozen=True)
 class FileState:
-    """规范化正文与已展示的闭区间行范围；相邻区间合并。"""
+    """规范化正文与零起点、右端不含的字符范围；相邻区间合并。"""
 
     content: str
     read_ranges: tuple[tuple[int, int], ...]
 
     @property
     def is_complete(self) -> bool:
-        return self.read_ranges == ((1, self.content.count("\n") + 1),)
+        return self.read_ranges == ((0, len(self.content)),)
 
 
 class FileStateCache:
@@ -68,17 +68,19 @@ class FileStateCache:
 
     def record_read(self, path: str, content: str, read_ranges: tuple[tuple[int, int], ...]) -> None:
         """原子合并同一正文的实际展示范围，内容变化时丢弃旧范围。"""
-        total_lines = content.count("\n") + 1
         if not read_ranges:
             return
-        if any(not 1 <= start <= end <= total_lines for start, end in read_ranges):
+        if any(not 0 <= start <= end <= len(content) for start, end in read_ranges):
             raise ValueError("读取范围超出文件正文")
+        read_ranges = tuple((start, end) for start, end in read_ranges if start < end or not content)
+        if not read_ranges:
+            return
         with self._lock:
             previous = self.get(path)
             ranges = previous.read_ranges if previous is not None and previous.content == content else ()
             merged: list[tuple[int, int]] = []
             for start, end in sorted((*ranges, *read_ranges)):
-                if merged and start <= merged[-1][1] + 1:
+                if merged and start <= merged[-1][1]:
                     merged[-1] = (merged[-1][0], max(merged[-1][1], end))
                 else:
                     merged.append((start, end))
@@ -119,14 +121,14 @@ def clear_scope(scope: str) -> None:
 
 
 def record_read(path: str, content: str, *, read_ranges: tuple[tuple[int, int], ...], scope: str = "") -> None:
-    """登记本次实际展示的完整行范围，不根据调用参数推测完整性。"""
+    """登记实际展示的字符范围，行窗口与字符窗口共用同一覆盖记录。"""
     get_cache(scope).record_read(path, content, read_ranges)
 
 
 def record_write(path: str, content: str, scope: str = "") -> None:
     """写入成功后刷新完整基线，后续编辑无需重新读取。"""
     content = content.replace("\r\n", "\n")
-    get_cache(scope).set(path, FileState(content, ((1, content.count("\n") + 1),)))
+    get_cache(scope).set(path, FileState(content, ((0, len(content)),)))
 
 
 def check_writable(path: str, content: str, scope: str = "") -> tuple[bool, str]:
@@ -140,13 +142,13 @@ def check_writable(path: str, content: str, scope: str = "") -> tuple[bool, str]
             "请用 read_file 重新完整读取当前内容，再根据最新内容修改。"
         )
     if not state.is_complete:
-        next_line = 1
+        next_char = 0
         for start, end in state.read_ranges:
-            if start > next_line:
+            if start > next_char:
                 break
-            next_line = end + 1
+            next_char = end
         return False, (
-            f"文件只被部分读取过。请用 read_file(offset={next_line}) 从首个未读行继续读完当前内容；"
-            "已读页面会累计；若结果被截断，请减小 limit 继续读取原文件。"
+            f'文件只被部分读取过。请用 read_file(offset_unit="char", offset={next_char + 1}, limit=4096) '
+            "继续读取原文件；已读范围会累计。"
         )
     return True, ""

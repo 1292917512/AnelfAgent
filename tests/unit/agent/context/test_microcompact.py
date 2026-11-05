@@ -101,7 +101,7 @@ class TestRehydration:
         file_state.clear_scope("_rehy")
         fp = tmp_path / "work.py"
         fp.write_text("print('hello')")
-        file_state.record_read(str(fp), "print('hello')", read_ranges=((1, 1),))
+        file_state.record_read(str(fp), "print('hello')", read_ranges=((0, len("print('hello')")),))
 
         out = _rehydrate_recent_files("_rehy")
         assert "work.py" in out
