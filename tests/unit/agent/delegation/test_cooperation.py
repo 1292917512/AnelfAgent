@@ -243,9 +243,22 @@ async def test_shutdown_before_background_start_closes_record_and_retains_resume
 
 async def test_explicit_caller_deadline_still_stops_execution_and_preserves_receipts(harness):
     h = harness
-    with pytest.raises(TimeoutError):
-        async with asyncio.timeout(0.03):
+    deadline = asyncio.timeout(None)
+
+    async def call():
+        async with deadline:
             await h.manager.delegate("工作流显式截止", scope_hint=SCOPE)
+
+    caller = asyncio.create_task(call())
+    try:
+        await h.started.wait()
+        deadline.reschedule(asyncio.get_running_loop().time())
+        with pytest.raises(TimeoutError):
+            await caller
+    finally:
+        if not caller.done():
+            caller.cancel()
+        await asyncio.gather(caller, return_exceptions=True)
     assert h.stopping.is_set() and not h.manager._running
     result = h.registry.completed(SCOPE)[0]
     transcript = journal.load_transcript(result.task_id)
