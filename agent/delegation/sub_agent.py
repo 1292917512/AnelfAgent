@@ -14,19 +14,19 @@
 DelegationManager 事件桥追加）、最终产出（追加进进度流供增量读取）、
 transcript 消息链（completion 容器带出，follow_up_agent 的续跑数据源）。
 
-模型可见：默认不附加子代理轮次限制，显式预算沿用反思动态状态提示。
-Token 影响：不新增提示词；实际用量随任务完成所需轮次增长。
-缓存影响：仅轮次执行策略变化，不改变任务前缀或工具目录。
+模型可见：执行耗时只提醒主 AI；主动中断保留消息链供续跑，显式轮次预算仍生效。
+Token 影响：不因耗时强制重做任务；进度按需查询，停止不追加模型调用。
+缓存影响：任务提示模板更新一次；运行状态只追加动态区和工具结果。
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import re
 from contextvars import ContextVar, Token
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
+from agent.mind.background.tasks import current_background_task_id
 from agent.mind.scope_usage import current_usage_scope
 from core.log import log
 from core.trace_session import thinking_session
@@ -58,12 +58,14 @@ class SubAgentResult:
     role: str = _ROLE_LEAF
     task_index: int = 0
     cancelled: bool = False
+    cancel_source: str = ""
+    delegation_id: str = ""
     # 结束原因：completed（正常收束）/ budget_exhausted（轮次预算用尽，
     # 产出可能只是中途状态，父级可决策拆小重委托）/ interrupted / no_output
     completed_reason: str = "completed"
     # 执行用量（LLM 事件归集）：turns / input_tokens / output_tokens / duration_ms
     usage: Dict[str, int] = field(default_factory=dict)
-    # reflect 结束时的完整消息链（transcript 持久化用；取消/超时路径无值）
+    # reflect 结束时的消息链（包括中断后的部分执行回执）。
     messages: Optional[List[Dict]] = None
     # 输出契约校验：JSON 示例中的字段与类型均满足时为 True，无契约时为 None
     schema_ok: Optional[bool] = None
@@ -84,6 +86,8 @@ class SubAgentResult:
             "role": self.role,
             "task_index": self.task_index,
             "cancelled": self.cancelled,
+            "cancel_source": self.cancel_source,
+            "delegation_id": self.delegation_id,
             "completed_reason": self.completed_reason,
             "usage": dict(self.usage),
             "schema_ok": self.schema_ok,
@@ -143,7 +147,7 @@ def resolve_iteration_budget(value: int) -> tuple[int, tuple[str, ...]]:
 
 
 def delegation_timeout_seconds() -> float:
-    """单个子代理整体执行超时（配置 delegation_timeout_seconds，默认 600s）。"""
+    """执行总耗时提醒阈值（兼容 delegation_timeout_seconds，默认 600s）。"""
     from core.config import get_config_float
     return max(1.0, get_config_float("delegation_timeout_seconds", 600.0))
 
@@ -158,8 +162,8 @@ _SUB_AGENT_PROMPT = """你是一个子代理，负责完成主代理委托的子
 {history_block}{instructions_block}{schema_block}[执行要求]
 1. 专注于完成上述子任务，不要偏离目标
 2. 你可以使用工具完成查询、计算、分析等操作
-3. 完成后，{summary_noun}总结结果（主代理只能看到你的最终总结）{schema_rule}
-4. 总结必须自包含：主代理看不到你的中间过程，关键数据和结论都要写进总结
+3. 完成后，{summary_noun}总结结果（主代理可查询运行状态和工具进度）{schema_rule}
+4. 总结必须自包含：关键数据和结论都要写进总结，不依赖主代理阅读执行日志
 {role_hint}
 """
 
@@ -265,6 +269,17 @@ class SubAgent:
         self.base_messages = base_messages
         # 续跑血缘（上次委托 ID；空 = 全新委托）
         self.parent_delegation_id = parent_delegation_id
+        self.completion: Dict[str, Any] = {}
+
+    def request_stop(self, reason: str) -> bool:
+        """向本次 reflect 的精确执行目标发信号，不中断父会话或其他子代理。"""
+        interrupts = getattr(self._mind, "interrupts", None)
+        run_id = self.completion.get("turn_id")
+        scope = interrupts.scope_for_run(run_id) if interrupts is not None and run_id else None
+        if interrupts is None or scope is None:
+            return False
+        interrupts.request(scope, reason)
+        return True
 
     # ------------------------------------------------------------------
     # prompt 构建
@@ -332,7 +347,7 @@ class SubAgent:
             extra_blocked.update(self.facets.blocked_tools)
 
         token = _delegate_depth.set(depth + 1)
-        timeout = delegation_timeout_seconds()
+        background_token = current_background_task_id.set(self.delegation_id)
         # 性价比模型：经已验证的 _model_id 覆盖管道注入（与 TaskExecutor 同路径）
         options = {"_model_id": self.model_id} if self.model_id else None
         tool_tags = list(self.facets.tool_tags) if self.facets and self.facets.tool_tags else None
@@ -349,10 +364,11 @@ class SubAgent:
             return steer_inbox.drain(delegation_id, mode)
 
         drain = _drain if self.delegation_id else _drain_noop
-        completion: Dict[str, Any] = {}
+        completion = self.completion
         messages = self.base_messages
         if messages is None:
             messages = [{"role": "user", "content": self.build_prompt()}]
+        completion["messages"] = messages
         try:
             with bind_steer_drain(drain):
                 # 子代理独立的思维链路会话：链路节点不混入父会话（并发委托
@@ -367,32 +383,17 @@ class SubAgent:
                     "role": self.role,
                     "delegation_id": self.delegation_id,
                 }):
-                    output = await asyncio.wait_for(
-                        self._mind.reflect(
-                            messages,
-                            max_iterations=self.max_iterations,
-                            iteration_config_keys=self.iteration_config_keys,
-                            allow_output_tools=False,
-                            extra_blocked_tools=extra_blocked or None,
-                            tool_tags=tool_tags,
-                            options=options,
-                            completion=completion,
-                            require_output=True,
-                        ),
-                        timeout=timeout,
+                    output = await self._mind.reflect(
+                        messages,
+                        max_iterations=self.max_iterations,
+                        iteration_config_keys=self.iteration_config_keys,
+                        allow_output_tools=False,
+                        extra_blocked_tools=extra_blocked or None,
+                        tool_tags=tool_tags,
+                        options=options,
+                        completion=completion,
+                        require_output=True,
                     )
-        except asyncio.TimeoutError:
-            log(
-                f"子代理整体超时（>{timeout:.0f}s）: {self.goal[:60]}",
-                "WARNING", tag="委托",
-            )
-            return SubAgentResult(
-                goal=self.goal, success=False,
-                error=(f"子代理执行超时（>{timeout:.0f}s），已中断；"
-                       "操作可能已生效，请先只读核验或基于已有上下文续跑，不要从头重做"),
-                role=self.role, task_index=self.task_index,
-                completed_reason="interrupted", messages=completion.get("messages"),
-            )
         except Exception as exc:
             log(f"子代理失败: {self.goal[:60]}: {type(exc).__name__}: {exc}", "WARNING", tag="委托")
             return SubAgentResult(
@@ -402,18 +403,26 @@ class SubAgent:
                 completed_reason="interrupted", messages=completion.get("messages"),
             )
         finally:
-            # 委托执行结束（无论成败/超时）：清箱防残留指令误入后续同名委托
+            # 委托执行结束：清箱防残留指令误入后续同名委托
             from core.tool_context import forget_control_delegate
 
             forget_control_delegate(self.delegation_id)
             if self.delegation_id:
                 steer_inbox.clear(self.delegation_id)
             _delegate_depth.reset(token)
+            current_background_task_id.reset(background_token)
         output = (output or "").strip()
         reason = completion.get("reason", "completed")
         # reflect 的最终消息链（think_loop 收口写入 completion 容器；
         # 中断/异常路径容器无消息 → transcript 不可续跑）
         final_messages = completion.get("messages")
+        if reason == "interrupted":
+            return SubAgentResult(
+                goal=self.goal, success=False, output=output,
+                error="子代理执行已中断；已保留执行记录，需要继续时用 follow_up_agent，勿自动重做。",
+                role=self.role, task_index=self.task_index, cancelled=True, cancel_source="runtime",
+                completed_reason=reason, messages=final_messages,
+            )
         schema_ok: Optional[bool] = None
         schema_error = ""
         if self.facets and self.facets.output_schema:

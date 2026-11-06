@@ -52,3 +52,16 @@ it("lets a failed cancellation be retried without reverting a terminal result", 
   store.markCancelling("one", "active", false);
   expect(store.getChatDelegations("one")[0]?.status).toBe("cancelled");
 });
+
+it("restores progress and a pending stop from server facts without marking a timeout as failure", () => {
+  const store = useDelegationStore.getState();
+  store.rehydrate("one", [{ ...node, elapsed_seconds: 650, iteration: 4, current_tool: "probe",
+    phase: "tool", overdue: true, execution_seconds: 600, idle_seconds: 2 }]);
+  expect(store.getChatDelegations("one")[0]).toMatchObject({ status: "running", overdue: true, iteration: 4, current_tool: "probe" });
+  store.updateProgress("one", { chat_id: "one", delegation_id: "active", kind: "state",
+    progress: { phase: "stopping", cancel_requested: true, cancel_source: "ai" } });
+  expect(store.getChatDelegations("one")[0]).toMatchObject({ status: "running", cancelling: true });
+  store.resolveDelegation("one", "active", false, "partial receipt", "stopped", true);
+  store.updateProgress("one", { chat_id: "one", delegation_id: "active", kind: "state", progress: { phase: "model" } });
+  expect(store.getChatDelegations("one")[0]).toMatchObject({ status: "cancelled", output: "partial receipt" });
+});

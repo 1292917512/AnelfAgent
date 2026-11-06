@@ -27,7 +27,21 @@ export interface PlanRecord {
 
 export type DelegationStatus = "running" | "completed" | "failed" | "cancelled";
 
-export interface DelegationNode {
+export interface DelegationRuntimeProgress {
+  phase?: "queued" | "preparing" | "model" | "tool" | "processing" | "stopping" | "completed" | "failed" | "cancelled";
+  operation?: string;
+  iteration?: number;
+  current_tool?: string;
+  execution_seconds?: number;
+  queued_seconds?: number;
+  idle_seconds?: number;
+  expected_seconds?: number;
+  overdue?: boolean;
+  cancel_requested?: boolean;
+  cancel_source?: string;
+}
+
+export interface DelegationNode extends DelegationRuntimeProgress {
   delegation_id: string;
   chat_id: string;
   goal: string;
@@ -54,7 +68,8 @@ export interface DelegationNode {
 }
 
 /** GET /chat/delegations 返回的运行中委托快照（刷新后恢复卡片用） */
-export interface RunningDelegation {
+export interface RunningDelegation extends DelegationRuntimeProgress {
+  depth?: number;
   delegation_id: string;
   goal: string;
   role: "leaf" | "orchestrator";
@@ -69,7 +84,7 @@ export interface RunningDelegation {
 // ── 全局子代理总览（Dashboard「子代理」面板 → /delegations/*） ──
 
 /** GET /delegations/overview 的全局运行中委托条目（全 scope，含实时进度与用量） */
-export interface DelegationOverviewItem {
+export interface DelegationOverviewItem extends DelegationRuntimeProgress {
   parent_id?: string;
   depth?: number;
   state: "queued" | "running";

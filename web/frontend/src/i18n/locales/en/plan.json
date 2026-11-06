@@ -62,7 +62,15 @@
       "statusCancelled": "Cancelled",
       "statusLost": "Interrupted"
     },
-    "queued": "Waiting for capacity"
+    "queued": "Waiting for capacity",
+    "overdue": "Reminder threshold exceeded; still running",
+    "executionTime": "Executing for {{n}}s",
+    "lastActivity": "Last activity {{n}}s ago",
+    "phases": {
+      "queued": "Queued", "preparing": "Preparing context", "model": "Calling model",
+      "tool": "Running tools", "processing": "Processing", "stopping": "Stopping and saving records",
+      "completed": "Completed", "failed": "Failed", "cancelled": "Cancelled"
+    }
   },
   "activity": {
     "title": "Activity",

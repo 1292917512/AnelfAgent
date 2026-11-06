@@ -15,6 +15,7 @@ import { chatApi } from "@/lib/api";
 import { useNow } from "@/hooks/useNow";
 import { useDelegationStore } from "@/stores/delegation-store";
 import type { DelegationNode } from "@/lib/types";
+import { ProgressFacts } from "./ProgressFacts";
 
 interface Props {
   node: DelegationNode;
@@ -114,6 +115,7 @@ export function DelegationCard({ node, compact = false }: Props) {
           </div>
         )}
 
+        {running && <div className="px-3 pb-2"><ProgressFacts progress={node} /></div>}
         {cancel.error && <div className="p-2"><QueryError compact error={cancel.error} /></div>}
         {expanded && (
           <div className="px-3 pb-2 space-y-1.5 border-t border-border/50">

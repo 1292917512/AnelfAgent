@@ -8,8 +8,8 @@
   Level 1: 实体目录（分组名 + 描述 + 工具数）
   Level 2: 查看具体分组的方法列表
 
-模型可见：协作停止沿用中断回执，同步工具退出前不进入下一轮。
-Token：不新增模型调用；停止原因仅记录在工具链尾部。
+模型可见：协作停止沿用中断回执，同步工具退出前不进入下一轮，收尾结果保留在工具链中。
+Token：不新增模型调用；停止时复用已执行工具的真实结果。
 缓存：不改变工具 schema 或稳定前缀。
 """
 from __future__ import annotations
@@ -69,6 +69,12 @@ async def _run_sync_tool(name: str, func: Callable[..., Any], kwargs: Dict[str, 
                     await asyncio.wait({task})
                 except asyncio.CancelledError:
                     continue
+            if not task.cancelled():
+                try:
+                    receipt = _serialize_result(task.result())
+                except Exception as exc:
+                    receipt = error_from_exception(exc, action=f"工具 {name} 收尾")
+                raise ToolCancelled(receipt) from None
         raise
 
 

@@ -65,7 +65,7 @@ async def wait_background_tasks(task_id: str, timeout: float = 30) -> str:
         )
         return json.dumps({"ok": True, "reason": result.reason,
                            "completions": [asdict(item) for item in result.completions],
-                           "hint": "只有 completed 表示完成；timeout/interrupted 不取消后台任务。"},
+                           "hint": "只有 completed 表示完成；timeout/interrupted/alert 不取消后台任务。alert 表示有进度提醒，请查询当前执行情况。"},
                           ensure_ascii=False)
     except Exception as exc:
         return error_from_exception(exc, action="等待后台任务")

@@ -155,7 +155,7 @@ async def _handle_text_only_round(
                     ),
                     "_source": {"origin": "background_task"},
                 })
-            # interrupted：不追加提示，循环顶部统一并入新消息 / 处理中断
+            # interrupted/alert：循环顶部统一并入新消息、进度报告或处理中断
             state.iteration += 1
             return RoundOutcome.CONTINUE
 

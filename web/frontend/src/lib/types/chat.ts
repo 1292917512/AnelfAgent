@@ -1,6 +1,6 @@
 export type StreamStatus = "stopped" | "connecting" | "connected" | "reconnecting" | "stalled";
 
-import type { PlanStepStatus } from "./plan";
+import type { DelegationRuntimeProgress, PlanStepStatus } from "./plan";
 import type { JsonObject } from "./json";
 
 export interface ChatExtension {
@@ -282,7 +282,8 @@ export interface SseDelegationStartedEvent extends SseEventBase {
 export interface SseDelegationProgressEvent extends SseEventBase {
   delegation_id: string;
   /** round=新思考轮次 / tool_start=工具开始 / tool_end=工具结束 */
-  kind?: "round" | "tool_start" | "tool_end";
+  kind?: "round" | "tool_start" | "tool_end" | "state";
+  progress?: DelegationRuntimeProgress;
   iteration?: number;
   tool?: string;
   success?: boolean;

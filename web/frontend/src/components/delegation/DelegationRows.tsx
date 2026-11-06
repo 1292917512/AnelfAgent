@@ -2,6 +2,7 @@ import { useTranslation } from "react-i18next";
 import { Bot, CircleSlash, Loader2, ScrollText, SendHorizontal, Zap } from "lucide-react";
 import type { DelegationOverviewItem } from "@/lib/types";
 import { formatDuration, formatTokens, scopeAdapter } from "./format";
+import { ProgressFacts } from "./ProgressFacts";
 export function RunningRow({
   item,
   extraSeconds,
@@ -67,6 +68,7 @@ export function RunningRow({
           <span>{t("delegation.panel.tokens", { n: formatTokens(totalTokens) })}</span>
         )}
       </div>
+      <ProgressFacts progress={item} />
       <div className="delegation-actions">
         <button
           onClick={onShowProgress}
@@ -84,11 +86,11 @@ export function RunningRow({
         </button>
         <button
           onClick={onCancel}
-          disabled={cancelling}
+          disabled={cancelling || item.cancel_requested}
           className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-danger hover:bg-danger-subtle transition-colors disabled:opacity-50"
         >
           <CircleSlash size={11} />
-          {cancelling ? t("delegation.cancelling") : t("delegation.panel.stop")}
+          {cancelling || item.cancel_requested ? t("delegation.cancelling") : t("delegation.panel.stop")}
         </button>
       </div>
     </div>

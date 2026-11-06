@@ -14,12 +14,30 @@
 `agent/mind/background/tasks.py` 负责按会话登记与等待；同目录 `routing.py` 处理完成通知，`evidence.py` 保存操作证据，生命周期由宿主管理。
 查询、等待和终止工具统一放在 `agent/mind/tools/background.py`，不依赖子代理是否启用。
 `wait_background_tasks(task_id, timeout)` 等待指定任务，超时只结束此次等待，不取消执行。
+进度提醒会以 `alert` 原因唤醒等待；消息正文仍由原有通知路由写入所属会话，不启动并行主思维循环。
+查询有无日志文件均返回同一套阶段、耗时、操作证据和提醒字段；UI 读取日志尾部不推进模型的增量游标。
 新私聊或群聊 @ 到达会让等待返回，由 AI 在下一轮动态上下文中判断安排；不会自动改换回复目标。
 指定等待仅领取对应任务，其余完成事实仍按各自通知策略路由；等待被打断时未领取的结果转为通知。
 无独立工作时可用 `end_reply` 收束，后台完成后按原会话续接。状态摘要有界，完整结果按 ID 查询。
 任务登记保留发起轮次 ID，完成后继续更新该轮的 Web 状态，不挂到后来开始的其他会话。
 
 ## 子代理档案体系
+
+模型工具 `delegate_task`（含批量）与 `follow_up_agent` 从受理时就把执行交给管理器托管。
+`background=true` 立即返回 ID；默认最多等待 30 秒，完成则返回结果，否则返回 `pending_ids` 和进度。
+工具等待到期或被新输入打断不取消子任务；完成结果由等待者或后台通知领取，有界等待退出后释放认领。
+工作流内部 `delegate()` 仍等待执行结束，工作流显式 deadline、轮次预算和服务关停保持原有约束。
+
+`delegation_timeout_seconds` 保留原配置键，语义为获得并发槽后的总执行耗时提醒（默认 600 秒），
+不再强制结束子代理。`delegation_stall_seconds` 控制无可观察活动提醒（默认 600 秒，0 关闭）；
+相同活动水位的提醒合并，有新活动后可再次提醒。排队准入超时独立报告“尚未开始执行”。
+`progress.py` 投影模型、工具及流式活动，主 AI 查询、动态尾部、SSE 和刷新快照共用同一份事实；
+超时不变更执行终态，前端不根据本地计时判定失败。
+
+主 AI 经 `terminate_background_task`、UI 经取消接口请求停止，均汇入管理器并级联后代。
+运行中的 reflect 使用其精确执行中断信号，停止发起后续调用，待在途操作收尾后确认取消。
+取消保留停止来源、部分操作回执和 transcript；续跑沿用既有消息链并创建新的委托 ID。
+未执行的排队任务保留原始任务记录。transcript 仍遵循原有开关、大小上限、脱敏与保留期。
 
 子代理默认不另设轮次上限：`delegation_default_iterations=0` 沿用主思维的
 `max_tool_iterations`（默认 `0`，不限轮次），`delegation_max_iterations_cap=0` 关闭硬上限。
@@ -59,9 +77,9 @@
 | 进度流 | journal `<id>.log` + `attach_output_file` 接入注册表 | 轮次/工具事件行追加；`check_background_tasks(task_id=...)` 单游标增量管线立即可读子代理中间进展（与后台 shell 同构：每次只返回新增输出，轮询长任务不再全量重读） |
 | 用量归集 | EVENT_THINKING_LLM_END 按 ContextVar 归属 delegation_id 分桶 | turns/input/output/duration 随 SubAgentResult.usage 进聚合结果与 resolved 事件——父 AI 可判断「烧了 30 轮才出这点结论，该拆任务了」 |
 | 崩溃账本 | ledger.jsonl started/closed 各一行 + bootstrap recover_interrupted 节点 | 扫未闭合条目 → 按归属会话聚合注入「后台委托被进程中断」元消息（at-most-once：扫描即闭合；同 scope 一条防轰炸）；retention 滚动清理（`delegation_journal_retention_days` 默认 7 天）；`delegation_transcript_enabled` 可关 |
-| 前台委托注册表化 | `delegate()` registry 登记 + killer + `complete(claimed=True)` | 前台/嵌套委托同样登记 BackgroundTaskRegistry：check_background_tasks 可见（含耗时）、terminate_background_task 可单独停止（killer 走 _cancel_marks + 桥回主循环 cancel，转「用户取消」结果返回父级）；完成走 `complete(..., claimed=True)`（结果已被工具返回值消费，跳过轮外完成回调防双投递）。归属登记从 `_global` 改为 `_owner_scope`（usage_scope 绑定 > 激活上下文）——嵌套委托用量归属父会话 |
+| 委派与等待分离 | `dispatch.py` + `DelegationManager` + `BackgroundTaskRegistry.reserve_results` | 模型工具只做有界等待，任务由管理器持有；等待退出后未领取的结果恢复通知。内部阻塞调用仍以 `complete(claimed=True)` 收尾，工作流控制不变。归属按 usage_scope 绑定 > 激活上下文解析 |
 | 日志 actor 归因 | `core/log.py`（`bind_log_actor` ContextVar）+ DelegationManager 绑定 | 委托在 `bind_delegation_id` 同位绑定 `[子代理@{agent|role}#id尾6位]` 前缀，console/文件/环形缓冲/监听器全链路一致；嵌套委托内层覆盖外层（归因到最内层执行者） |
-| 全局总览与面板操作 | `DelegationManager.running_snapshot_all` + `journal.recent_history` + `services/delegation.py` + `web/routers/delegation.py` + 前端 `pages/dashboard/DelegationsPanel.tsx` | 全 scope 运行快照（归属/实时进度/用量）；历史由账本 started/closed 配对折叠。面板操作汇入既有闭环：**指令**（steer/after 双档，消息标注「来自 Web 面板」）、**停止**（cancel 级联）、**进度**（Drawer 轮询进度流尾部） |
+| 全局总览与面板操作 | `DelegationManager.running_snapshot_all` + `journal.recent_history` + `services/delegation.py` + `web/routers/delegation.py` + 前端 `components/delegation/DelegationsPanel.tsx` | 全 scope 运行快照（归属/实时进度/用量）；历史由账本 started/closed 配对折叠。面板操作汇入既有闭环：**指令**（steer/after 双档，消息标注「来自 Web 面板」）、**停止**（cancel 级联）、**进度**（Drawer 轮询进度流尾部） |
 | 子代理独立思维会话 | `SubAgent.run`（`thinking_session(is_delegation=...)` 包裹 reflect）+ `core/tracer.py` | 思维链路页区分主 AI 与子代理（并发委托共享父会话曾致 round/llm 节点配对错配与孤儿节点；独立会话后配对状态天然隔离，嵌套委托各自再开） |
 
 ## 工作流引擎（agent/workflow/）

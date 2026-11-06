@@ -4,10 +4,9 @@ DelegationManager 引用经 ``delegation_manager_port`` 晚绑定端口分发
 （工具 import 时注册、拿不到 Mind 构造参数；由 agent.runtime.wiring 统一施绑）。
 
 Model Experience:
-- 模型看到：delegate_task schema 新增 agent_name 参数（静态），命名档案内容不注入
-  任何 prompt 层，AI 经 list_sub_agents 工具按需发现
-- token 影响：schema 增量极小（一次性），档案查询按需
-- KV Cache 影响：一次性 schema 变更（部署后新会话生效），无持续前缀层影响
+- 模型看到：委派与续跑返回已完成结果或仍在执行的 ID，超时仅提醒，可查询、等待和主动停止。
+- token 影响：运行状态按需读取；等待不额外调用模型，也不因等待到期重复执行任务。
+- KV Cache 影响：工具说明更新一次，运行事实只追加工具结果和动态尾部。
 """
 from __future__ import annotations
 
@@ -15,6 +14,7 @@ import json
 from typing import Optional
 
 from agent.delegation.delegation_manager import DelegationManager
+from agent.delegation.dispatch import dispatch_delegations
 from agent.delegation.sub_agent import current_depth, max_spawn_depth
 from core.entity import EntityRegistry
 from core.latebind import LateBinding
@@ -74,8 +74,8 @@ async def delegate_task(
         tasks: 并行任务数组的 JSON 字符串，如 [{"goal":"...","context":"..."}, ...]（提供时忽略 goal）；
             每项可用 "agent" 指定子代理档案、"difficulty" 指定难度（缺省继承顶层参数）
         role: 子代理角色：leaf（默认，不可再委托）/ orchestrator（可再委托，有深度限制）
-        background: 是否后台执行（立即返回 delegation_id；完成时系统自动通知并触发新一轮回复，
-            期间可用 check_background_tasks 查询进度）
+        background: true 立即返回任务 ID；false 最多等待 30 秒，等待到期仍继续执行。
+            超时仅提醒，可查询进度、等待或主动停止；单个与批量任务均适用
         max_iterations: 子代理迭代预算（轮次）；0 沿用配置，默认不设上限，正数显式限制
         difficulty: 难度挡位，等价于指定内置档案 agent_name：1=easy（简单，检索/格式化等机械任务）
             2=medium（中等，常规分析/执行）3=hard（困难，复杂推理/多步规划）。
@@ -131,40 +131,28 @@ async def delegate_task(
 
         log(f"并行委托 {len(task_list)} 个子任务 (role={role})", tag="委托")
         try:
-            results = await manager.delegate_batch(
-                task_list, role=role, max_iterations=max_iterations,
-                difficulty=difficulty, agent_name=agent_name,
-            )
-        except ValueError as exc:
+            result = await dispatch_delegations(manager, [dict(
+                goal=t["goal"], context=t.get("context", ""), role=t.get("role") or role,
+                max_iterations=max_iterations, difficulty=t.get("difficulty", difficulty),
+                agent_name=str(t.get("agent") or agent_name),
+                fork_context=bool(t.get("fork_context", fork_context)),
+            ) for t in task_list], background=background)
+        except Exception as exc:
             return error_from_exception(exc, action="并行委托")
-        return manager.aggregate_results(results)
+        return json.dumps(result, ensure_ascii=False)
 
     # 单任务模式
     if not goal.strip():
         return tool_error("必须提供 goal 或 tasks 参数", cause=ErrorCause.PARAM, retryable=False)
 
-    if background:
-        from agent.mind.tool_activation import current_owner_scope
-        # 归属会话解析（委托链绑定的父会话优先）：子代理内发起的后台委托
-        # 也登记到发起会话，完成通知才能路由回对话
-        delegation_id = manager.delegate_background(
-            goal, context, role=role, max_iterations=max_iterations,
-            scope=current_owner_scope(),
-            difficulty=difficulty, agent_name=agent_name,
-            fork_context=fork_context,
-        )
-        return json.dumps({
-            "ok": True,
-            "mode": "background",
-            "delegation_id": delegation_id,
-            "message": "子代理已在后台执行，完成后系统会自动通知你（可用 check_background_tasks 查询进度）。",
-        }, ensure_ascii=False)
-
-    result = await manager.delegate(
-        goal, context, role=role, max_iterations=max_iterations,
-        difficulty=difficulty, agent_name=agent_name, fork_context=fork_context,
-    )
-    return manager.aggregate_results([result])
+    try:
+        result = await dispatch_delegations(manager, [dict(
+            goal=goal, context=context, role=role, max_iterations=max_iterations,
+            difficulty=difficulty, agent_name=agent_name, fork_context=fork_context,
+        )], background=background)
+        return json.dumps(result, ensure_ascii=False)
+    except Exception as exc:
+        return error_from_exception(exc, action="委托子代理")
 
 
 def _validate_agent_name(agent_name: str) -> str:
@@ -256,7 +244,7 @@ async def follow_up_agent(
     Args:
         delegation_id: 上次委托的 ID（delegate_task 返回 / check_background_tasks 已完成列表）
         message: 续跑指令（要继续做什么、补充什么信息、修正什么方向）
-        background: 是否后台执行（立即返回新 delegation_id，完成自动通知）
+        background: true 立即返回新 ID；false 最多等待 30 秒，等待到期不停止续跑
         max_iterations: 续跑迭代预算（0 = 沿用上次委托的预算）
     """
     if not _delegation_enabled():

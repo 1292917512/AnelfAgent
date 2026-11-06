@@ -69,6 +69,10 @@ export const useDelegationStore = create<DelegationState>((set, get) => ({
       if (data.kind === "tool_end") {
         patch.current_tool = "";
       }
+      if (data.progress) {
+        Object.assign(patch, data.progress);
+        if (data.progress.cancel_requested) patch.cancelling = true;
+      }
       if (Object.keys(patch).length === 0) return {};
       return {
         delegations: {
@@ -145,13 +149,23 @@ export const useDelegationStore = create<DelegationState>((set, get) => ({
           role: r.role,
           task_index: r.task_index,
           background: r.background,
-          depth: existing?.depth ?? 0,
+          depth: r.depth ?? existing?.depth ?? 0,
           model: r.model ?? existing?.model,
           agent: r.agent ?? existing?.agent,
           status: "running",
           started_at: existing?.started_at ?? now - r.elapsed_seconds,
-          iteration: existing?.iteration,
-          current_tool: existing?.current_tool,
+          iteration: r.iteration ?? existing?.iteration,
+          current_tool: r.current_tool ?? existing?.current_tool,
+          phase: r.phase,
+          operation: r.operation,
+          execution_seconds: r.execution_seconds,
+          queued_seconds: r.queued_seconds,
+          idle_seconds: r.idle_seconds,
+          expected_seconds: r.expected_seconds,
+          overdue: r.overdue,
+          cancel_requested: r.cancel_requested,
+          cancel_source: r.cancel_source,
+          cancelling: r.cancel_requested || existing?.cancelling,
         });
         chatNodes[r.delegation_id] = node;
         changed ||= node !== existing;

@@ -22,10 +22,11 @@ import inspect
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Awaitable, Callable, Coroutine, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Coroutine, Dict, Iterator, List, Optional, Sequence
 
 from agent.mind.background.evidence import TaskEvidence
 from core.activity import EVENT_BACKGROUND_TASK_UPDATED, current_activity_id
@@ -64,8 +65,7 @@ class BackgroundTaskInfo:
     kind: str
     description: str
     started_at: float
-    # 预期时长（秒，0=未声明）：超出时向 AI 发送超时提醒（不终止任务，
-    # 去留由 AI 决策——系统提供可见性，不替 AI 做决定）
+    # 预期时长元数据（秒，0=未声明）；生产者按自身执行起点安排提醒，登记本身不启动计时器。
     expected_seconds: float = 0.0
     notification: CompletionNotification = CompletionNotification.ALWAYS
     joinable: bool = True
@@ -110,6 +110,8 @@ class _TaskRecord:
     evidence: TaskEvidence = field(default_factory=TaskEvidence)
     stall_timer: asyncio.TimerHandle | None = None
     alerted_progress_at: float | None = None
+    alert: str = ""
+    alert_revision: int = 0
 
     def to_completion(self) -> TaskCompletion:
         return TaskCompletion(
@@ -127,7 +129,7 @@ class _TaskRecord:
 class WaitResult:
     """wait_any 的等待结果。
 
-    reason: completed（有任务完成）/ timeout（超时）/ interrupted（被外部信号打断）
+    reason: completed（有任务完成）/ timeout（等待到期）/ interrupted（外部信号）/ alert（进度提醒）
     """
 
     reason: str
@@ -141,6 +143,7 @@ class BackgroundTaskRegistry:
         self._records: Dict[str, _TaskRecord] = {}
         self._admission_lock = threading.RLock()
         self._events: Dict[str, asyncio.Event] = {}
+        self._alert_revision = 0
         self._wait_targets: dict[str, list[str]] = {}
         self._tasks: set[asyncio.Task[Any]] = set()
         self._closing = False
@@ -389,12 +392,12 @@ class BackgroundTaskRegistry:
         if rec.info.scope != (scope or "_global"):
             return {"ok": False, "error": f"任务 {task_id} 不属于当前会话"}
         facts = {"notification": rec.info.notification.value,
-                 "evidence": rec.evidence.read(after_sequence)}
+                 "evidence": rec.evidence.read(after_sequence),
+                 "elapsed_seconds": max(0, int((rec.finished_at or time.time()) - rec.info.started_at)),
+                 "progress": self.progress(task_id), "summary": rec.summary,
+                 "success": rec.success if rec.done else None, "alert": rec.alert}
         if not rec.output_file:
             return {"ok": True, "task_id": task_id, "done": rec.done, **facts,
-                    "elapsed_seconds": max(0, int((rec.finished_at or time.time()) - rec.info.started_at)),
-                    "progress": self.progress(task_id), "summary": rec.summary,
-                    "success": rec.success if rec.done else None,
                     "hint": "evidence 为有界操作证据；传 after_sequence=next_sequence 获取后续记录。耗时或暂无进展不代表失败。通知遵循 notification 策略。"}
         offset = self._output_cursors.get(task_id, 0)
         try:
@@ -531,7 +534,16 @@ class BackgroundTaskRegistry:
     def _alert(self, task_id: str, detail: str) -> None:
         """超时提醒的实际实现（须运行在主循环线程；任务已结束时丢弃）。"""
         rec = self._records.get(task_id)
-        if rec is None or rec.done or self._on_alert is None:
+        if rec is None or rec.done or self._closing:
+            return
+        rec.alert = detail
+        rec.alerted_progress_at = float(self.progress(task_id).get("updated_at", rec.info.started_at))
+        self._alert_revision += 1
+        rec.alert_revision = self._alert_revision
+        event = self._events.get(rec.info.scope)
+        if event is not None:
+            event.set()
+        if self._on_alert is None:
             return
         try:
             result = self._on_alert(rec.info.scope, rec.info.description, detail, task_id)
@@ -616,8 +628,9 @@ class BackgroundTaskRegistry:
                     "description": t.description,
                     "elapsed_seconds": int(t.elapsed),
                     # 预期时长（0=未声明）：超出即已/将收到超时提醒
-                    "expected_seconds": int(t.expected_seconds),
+                    "expected_seconds": int(self.progress(t.task_id).get("expected_seconds", t.expected_seconds)),
                     "progress": self.progress(t.task_id),
+                    "alert": self._records[t.task_id].alert,
                     "notification": t.notification.value,
                     "joinable": t.joinable,
                 }
@@ -640,6 +653,37 @@ class BackgroundTaskRegistry:
     # ------------------------------------------------------------------
     # 等待原语
     # ------------------------------------------------------------------
+
+    @contextmanager
+    def reserve_results(self, scope: str, task_ids: Sequence[str]) -> Iterator[None]:
+        """有界等待期间保留指定结果；退出时未领取的完成事实恢复正常通知。"""
+        for task_id in task_ids:
+            rec = self._records.get(task_id)
+            if rec is None or rec.info.scope != scope:
+                raise ValueError("任务不存在或不属于当前会话")
+        targets = self._wait_targets.setdefault(scope, [])
+        targets.extend(task_ids)
+        try:
+            yield
+        finally:
+            for task_id in task_ids:
+                targets.remove(task_id)
+            if not targets:
+                self._wait_targets.pop(scope, None)
+            for rec in self._collect_undelivered(scope):
+                if not any(target == rec.info.task_id or (not target and rec.info.joinable)
+                           for target in targets):
+                    self._notify(rec)
+
+    def claim_completed(self, scope: str, task_ids: Sequence[str]) -> list[TaskCompletion]:
+        """领取指定任务的完成事实；不读取日志游标，也不领取其他任务。"""
+        results = []
+        for task_id in task_ids:
+            rec = self._records.get(task_id)
+            if rec is not None and rec.info.scope == scope and rec.done:
+                rec.delivered = True
+                results.append(rec.to_completion())
+        return results
 
     async def wait_any(
             self,
@@ -667,6 +711,7 @@ class BackgroundTaskRegistry:
                 rec.delivered = True
                 return WaitResult(reason="completed", completions=[rec.to_completion()])
         event = self._events.setdefault(scope, asyncio.Event())
+        alert_revision = self._alert_revision
         self._wait_targets.setdefault(scope, []).append(task_id)
         deadline = time.monotonic() + max(0.0, timeout)
         try:
@@ -682,6 +727,9 @@ class BackgroundTaskRegistry:
                         reason="completed",
                         completions=[rec.to_completion() for rec in fresh],
                     )
+                if any(rec.alert_revision > alert_revision and rec.info.scope == scope
+                       for rec in self._snapshot_records()):
+                    return WaitResult(reason="alert")
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     return WaitResult(reason="timeout")

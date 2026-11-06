@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from core.cancellation import ExecutionSignal, execution_signal
+from core.cancellation import ExecutionSignal, ToolCancelled, execution_signal
 from core.entity import EntityRegistry
 from core.event_bus import EVENT_TRACE_CALL_END, EVENT_TRACE_CALL_START, event_bus
 from core.tool_context import tool_request
@@ -103,7 +103,8 @@ async def test_parallel_calls_do_not_mix_diagnostics(execution: AsyncMock) -> No
     assert first["request_id"] != second["request_id"]
 
 
-async def test_stop_waits_for_sync_tool_to_exit_before_closing_execution(execution: AsyncMock) -> None:
+@pytest.mark.parametrize("fails", [False, True])
+async def test_stop_waits_for_sync_tool_to_exit_before_closing_execution(execution: AsyncMock, fails: bool) -> None:
     started, release = threading.Event(), threading.Event()
     finished: list[bool] = []
 
@@ -111,7 +112,9 @@ async def test_stop_waits_for_sync_tool_to_exit_before_closing_execution(executi
         started.set()
         release.wait(5)
         finished.append(True)
-        return '{"ok": true}'
+        if fails:
+            raise RuntimeError("receipt unavailable")
+        return '{"ok": true, "receipt": "saved"}'
 
     EntityRegistry.register_tool(name="execution_probe", func=probe)
     signal = ExecutionSignal("scope", "run")
@@ -124,8 +127,10 @@ async def test_stop_waits_for_sync_tool_to_exit_before_closing_execution(executi
         assert not task.done()
         task.cancel()
         release.set()
-        with pytest.raises(asyncio.CancelledError):
+        with pytest.raises(ToolCancelled) as cancelled:
             await task
+        receipt = json.loads(cancelled.value.result)
+        assert "receipt unavailable" in receipt["error"] if fails else receipt["receipt"] == "saved"
     assert finished == [True]
     assert execution.await_args_list[-1].args[1]["cancelled"] is True
 

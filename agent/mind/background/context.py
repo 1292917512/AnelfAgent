@@ -1,4 +1,9 @@
-"""后台任务的会话摘要，只追加到逐轮动态尾部。"""
+"""后台任务的会话摘要，只追加到逐轮动态尾部。
+
+模型可见：阶段、轮次、最近活动、超时提醒和停止请求；完整证据按 ID 查询。
+Token 影响：每项增加有界状态短句，最多展示八项运行任务。
+缓存影响：只更新动态尾部，不改稳定前缀。
+"""
 
 from __future__ import annotations
 
@@ -33,7 +38,10 @@ def background_context(registry: BackgroundTaskRegistry | None, scope: str) -> s
         operation = " ".join(sanitize_text(str(progress.get("operation", ""))).split())[:120]
         idle = max(0, int(time.time() - float(progress.get("updated_at", task.started_at))))
         lines.append(f"{labels} 已耗时 {max(0, int(task.elapsed))} 秒，距最近进展 {idle} 秒：{description}"
-                     + (f"；当前 {operation}" if operation else ""))
+                     + (f"；当前 {operation}" if operation else "")
+                     + (f"；第 {progress['iteration']} 轮" if progress.get("iteration") else "")
+                     + ("；已超过提醒阈值，仍在运行" if progress.get("overdue") else "")
+                     + ("；已请求停止，等待收尾" if progress.get("cancel_requested") else ""))
     lines.append("耗时/暂无进展仅为事实，不代表失败。check_background_tasks(task_id=...) 查看详情；需要结果时 wait_background_tasks(task_id=...)；确认无需继续时 terminate_background_task。当前任务用 end_reply 收束。")
     if len(tasks) > 8:
         lines.append(f"另有 {len(tasks) - 8} 项；check_background_tasks 可查询完整状态。")
