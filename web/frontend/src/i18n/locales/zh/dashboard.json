@@ -29,7 +29,8 @@
     "allClear": "运行正常，未发现需要关注的问题",
     "notReady": "Agent 尚未就绪",
     "mcpDown": "MCP 服务器「{{name}}」未连接",
-    "channelError": "通道「{{name}}」状态异常"
+    "channelError": "通道「{{name}}」状态异常",
+    "repeated": "最近记录中重复 {{count}} 次"
   },
   "comp": {
     "llm": "LLM",

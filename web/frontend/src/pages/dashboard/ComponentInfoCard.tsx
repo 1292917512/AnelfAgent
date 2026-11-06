@@ -13,7 +13,7 @@ export function ComponentInfoCard() {
   const { data, error, refetch } = useQuery({
     queryKey: ["components"],
     queryFn: () => statusApi.components().then((r) => r.data),
-    refetchInterval: 10000,
+    staleTime: 10_000,
   });
 
   const c = data?.structured;

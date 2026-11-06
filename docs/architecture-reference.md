@@ -320,7 +320,7 @@ SQLite 管理连接关闭失败保留句柄并阻止释放实例所有权，避�
 1. 后端 `@tool(group=...)` / `@deferred_tool(group=...)` / `entity(group, ...)` / `activate_group(...)`
 2. 前端翻译：核心分组（agent 层）改 `i18n/locales/{zh,en}/tools.json` 的 `groups` 对象；
    **实体分组改其实体 `panels/locales/{zh,en}.json` 的 `_registry.groups` / `_registry.configSections`**
-   （启动时 eager 自注册，核心 locale 不写实体条目）
+   （按当前及回退语言加载注册，核心 locale 不写实体条目）
 3. 组归属模块的 `EntityRegistry.register_group_order(group, 权重)` 自声明（实体在 `entity_manifest(order=)`，
    agent 侧在工具模块顶层调用处）
 

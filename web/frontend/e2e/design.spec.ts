@@ -310,3 +310,62 @@ test("management dialogs and popovers finish exit motion and respect reduced mot
   await expect(dialog).toHaveCount(0);
   await expect(edit).toBeFocused();
 });
+
+
+test("language chunks preserve cold reload, module names and repeated switching", async ({ page }) => {
+  const errors: string[] = [];
+  page.on("pageerror", (error) => errors.push(error.message));
+  await page.goto("/webui/");
+  await openWebChat(page);
+  await expect(page.locator(".chat-tabs").getByRole("button", { name: "Default Chat", exact: true })).toBeVisible();
+  await page.goto("/webui/config");
+  await page.getByRole("button", { name: "Appearance & language", exact: true }).click();
+  await page.getByRole("button", { name: "简体中文", exact: true }).click();
+  await expect(page.getByRole("button", { name: "外观与语言", exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+  const requests: string[] = [];
+  page.on("request", (request) => requests.push(request.url()));
+  await page.reload();
+  await expect(page.getByRole("button", { name: "外观与语言", exact: true })).toBeVisible();
+  expect(requests.some((url) => /locales-en[-.]/.test(url))).toBe(false);
+  await page.getByRole("button", { name: "外观与语言", exact: true }).click();
+  await page.getByRole("button", { name: "English", exact: true }).click();
+  await expect(page.getByRole("button", { name: "Appearance & language", exact: true })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("switch")).toHaveCount(0);
+  await expect(page.getByRole("textbox", { name: "Bot token" })).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test("metadata titles keep descriptions and stable controls through a save", async ({ page, isMobile }, info) => {
+  let value = true;
+  const description = "Enable streamed output while preserving prefix cache observations and existing delivery behavior.";
+  await page.route("**/api/config/meta", (route) => route.fulfill({ json: { groups: [{ group: "mind/core", items: [{
+    key: "stream_test", title: "Stream output", description, type: "boolean", value, default: true, editable: true, advanced: false,
+  }] }] } }));
+  await page.route("**/api/config/meta/stream_test", (route) => {
+    value = (route.request().postDataJSON() as { value: boolean }).value;
+    return route.fulfill({ json: { key: "stream_test", value } });
+  });
+  await page.goto("/webui/config?group=mind%2Fcore");
+  const row = page.locator(".config-item");
+  const control = row.getByRole("switch", { name: "Stream output", exact: true });
+  await expect(control).toBeChecked();
+  await expect(row).toContainText(description);
+  const before = await control.boundingBox();
+  await control.click();
+  await expect(control).not.toBeChecked();
+  await expect(row.getByRole("button", { name: "Reset to default", exact: true })).toBeEnabled();
+  const after = await control.boundingBox();
+  expect(Math.abs(before!.x - after!.x)).toBeLessThan(1);
+  if (isMobile) {
+    const title = await row.getByTitle("View config detail", { exact: true }).boundingBox();
+    expect(before!.x).toBeGreaterThan(title!.x + title!.width);
+    expect(before!.y).toBeLessThan(title!.y + title!.height);
+  }
+  await page.screenshot({ path: info.outputPath("config-titles.png"), animations: "disabled" });
+  await row.getByTitle("View config detail", { exact: true }).click();
+  const drawer = page.getByRole("dialog", { name: "Stream output", exact: true });
+  await expect(drawer).toContainText(description);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});

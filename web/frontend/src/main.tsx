@@ -11,7 +11,7 @@ import { createQueryClient } from "./lib/query-client";
 import { initChannelPlugins } from "./lib/channel-plugins";
 import { initUiContributions } from "./lib/ui-contribution-registry";
 import { recoverChunk } from "./lib/chunk-recovery";
-import i18n from "./i18n";
+import i18n, { i18nReady } from "./i18n";
 import "./styles/globals.css";
 
 const queryClient = createQueryClient();
@@ -33,6 +33,7 @@ async function bootstrap() {
   const root = createRoot(container);
   root.render(<div role="status" aria-busy="true" className="flex min-h-dvh items-center justify-center text-sm text-muted">{i18n.t("loading")}</div>);
   try {
+    await i18nReady;
     await Promise.all([initChannelPlugins(), initUiContributions()]);
     root.render(<StrictMode><QueryClientProvider client={queryClient}><App /></QueryClientProvider></StrictMode>);
   } catch (error) {

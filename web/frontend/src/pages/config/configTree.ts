@@ -62,7 +62,7 @@ export function searchConfigItems(
     for (const s of m.sections) {
       const items = s.items.filter(
         (i) =>
-          i.key.toLowerCase().includes(q) || i.description.toLowerCase().includes(q),
+          i.key.toLowerCase().includes(q) || i.description.toLowerCase().includes(q) || !!i.title?.toLowerCase().includes(q),
       );
       if (items.length > 0) results.push({ group: s.group, items });
     }

@@ -168,6 +168,7 @@ class ConfigItem:
     tag: str = ""  # 条件显示标记（如频道 ws_mode 的 forward/reverse，仅供 UI 分组过滤）
     validator: Optional[Callable[[Any], Any]] = None
     related_key: str = ""
+    title: str = ""  # 可选短标题；description 保留完整说明
 
     def __post_init__(self) -> None:
         if self.value_type == ConfigValueType.AUTO or self.value_type == "auto":
@@ -681,6 +682,7 @@ def register_configs(configs: Dict[str, Dict[str, Any]]) -> None:
                 tag=config_info.get("tag", ""),
                 validator=config_info.get("validator"),
                 related_key=config_info.get("related_key", ""),
+                title=str(config_info.get("title", "")),
             )
 
             # 注册配置项并初始化默认值
@@ -821,6 +823,7 @@ def register_model_configs(
             unit=str(extras.get("unit", "")),
             tag=str(extras.get("tag", "")),
             related_key=str(extras.get("related_key", "")),
+            title=field.title or "",
         ))
         if not ConfigManager.has(key):
             ConfigManager.set(key, default)

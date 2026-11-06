@@ -1,5 +1,5 @@
 import AxeBuilder from "@axe-core/playwright";
-import { test, expect } from "./fixtures";
+import { test, expect, openActivityDetails } from "./fixtures";
 import type { ActivityRun } from "../src/lib/types/activity";
 import type { HookExecution } from "../src/lib/types/hooks";
 
@@ -28,7 +28,7 @@ test("recall routing distinguishes local search from skipping and shows the actu
     { ...hook, ts: now - 5, kind: "hook", name: "memory.route", status: "done", judgments: [assessment] }] };
   await page.route(/\/api\/workspace\/activity(?:\?.*)?$/, route => route.fulfill({ json: { epoch: "recall-budget", revision: 1, runs: [run] } }));
   await page.goto("/webui/");
-  await page.getByRole("button", { name: "Decisions", exact: true }).click();
+  await openActivityDetails(page, "Decisions");
   const judgment = page.locator('[data-judgment="route-native"]');
   await expect(judgment.getByText("Local recall", { exact: true })).toBeVisible();
   await expect(judgment.getByText("Skip this task", { exact: true })).toHaveCount(0);
@@ -36,8 +36,7 @@ test("recall routing distinguishes local search from skipping and shows the actu
   await expect(judgment).toContainText("not recall accuracy");
   await expect(judgment).toContainText("not complete history");
   await page.keyboard.press("Escape");
-  await page.getByRole("button", { name: "Recollection", exact: true }).click();
-  const panel = page.getByRole("dialog", { name: "Recollection", exact: true });
+  const panel = await openActivityDetails(page, "Recollection");
   await expect(panel).toContainText("Retrieved material: 2 prepared, 1 in context");
   await panel.getByRole("button", { name: /Memory and context/ }).click();
   const budget = page.getByRole("region", { name: "Recall and context budget", exact: true });
@@ -59,7 +58,7 @@ test("background hook details show real execution and update without cluttering 
   const feed = page.getByRole("region", { name: "Global execution" });
   await expect(page.locator('.activity-feed [data-activity-run="hook-child"]')).toHaveCount(0);
   await expect(page.getByRole("button", { name: /skill_review Reply complete/ })).toHaveCount(0);
-  await page.getByRole("button", { name: "Background tasks", exact: true }).click();
+  await openActivityDetails(page, "Background tasks");
   await page.getByRole("button", { name: /skill_review Reply complete/ }).click();
   await expect(page.getByText("Full transcript · 109 messages")).toBeVisible();
   await page.getByRole("button", { name: "View execution details", exact: true }).click();
@@ -132,7 +131,7 @@ test("Jev decisions remain visible after later work and expose slow responses", 
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto("/webui/");
   await expect(page.locator('[data-judgment]')).toHaveCount(0);
-  await page.getByRole("button", { name: "Decisions", exact: true }).click();
+  await openActivityDetails(page, "Decisions");
   const judgment = page.locator('[data-judgment="jev-1"]');
   await expect(judgment.getByText("Skip this task", { exact: true })).toBeVisible();
   await expect(judgment.getByText("Need to execute 2%")).toHaveCount(0);

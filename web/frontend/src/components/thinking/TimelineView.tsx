@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ChevronDown, Search, SlidersHorizontal } from "lucide-react";
 import type { ThinkingSession } from "@/lib/types";
@@ -14,7 +14,7 @@ type Filter = "all" | "issues" | TraceStage;
 const FILTERS: Filter[] = ["all", "issues", "prepare", "reason", "act", "finish"];
 
 /** Groups the recorded execution into rounds with searchable events and explicit status filters. */
-export function TimelineView({ session, selectedNodeId, autoFollow, onSelect, compact = false }: Props) {
+export const TimelineView = memo(function TimelineView({ session, selectedNodeId, autoFollow, onSelect, compact = false }: Props) {
   const { t } = useTranslation("thinking");
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
@@ -22,7 +22,7 @@ export function TimelineView({ session, selectedNodeId, autoFollow, onSelect, co
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const scrollRef = useRef<HTMLDivElement>(null);
   const groups = useMemo(() => traceGroups(session.nodes), [session.nodes]);
-  const terms = query.trim().toLocaleLowerCase();
+  const terms = useDeferredValue(query.trim().toLocaleLowerCase());
   const visibleGroups = groups.map((group) => ({
     ...group, visible: group.nodes.filter((node) => {
       if (node.id === selectedNodeId) return true;
@@ -84,11 +84,11 @@ export function TimelineView({ session, selectedNodeId, autoFollow, onSelect, co
             </button>
             {isOpen && <div className={cn("trace-events relative", compact && "text-xs")}>
               {group.visible.map((node) => <TraceNodeRow key={node.id} node={node} compact={compact}
-                selected={selectedNodeId === node.id} onSelect={() => onSelect(node.id)} />)}
+                selected={selectedNodeId === node.id} onSelect={onSelect} />)}
             </div>}
           </section>;
         })}
       </div>
     </div>
   </div>;
-}
+});

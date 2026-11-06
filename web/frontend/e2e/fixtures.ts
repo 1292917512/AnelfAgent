@@ -13,7 +13,7 @@ export const metadata = { groups: [{ group: "adapter/telegram", items: [
 ] }] };
 
 export async function mockApi(page: Page) {
-  await page.addInitScript(() => { localStorage.setItem("i18nextLng", "en"); localStorage.setItem("theme", "light"); });
+  await page.addInitScript(() => { if (!localStorage.getItem("i18nextLng")) localStorage.setItem("i18nextLng", "en"); localStorage.setItem("theme", "light"); });
   await page.route("**/api/**", async (route) => {
     if (!new URL(route.request().url()).pathname.startsWith("/api/")) { await route.continue(); return; }
     const path = new URL(route.request().url()).pathname.replace(/^\/api/, "").replace(/\/$/, "");
@@ -89,9 +89,36 @@ export async function closeWebChatOverlay(page: Page) {
   if (await dialog.isVisible()) await dialog.getByRole("button", { name: "Close", exact: true }).click();
 }
 
+/** 桌面侧栏与手机详情抽屉共用的分类入口。 */
+export async function activityCategory(page: Page, name: string) {
+  const drawer = page.getByRole("dialog", { name: "Execution details", exact: true });
+  if (await drawer.and(page.locator('[data-state="open"]')).isVisible()) {
+    const tab = drawer.getByRole("tab", { name, exact: true });
+    await tab.scrollIntoViewIfNeeded();
+    return tab;
+  }
+  const rail = page.getByRole("complementary", { name: "Execution details", exact: true });
+  await rail.waitFor();
+  const mobile = rail.getByRole("button", { name: "Execution details", exact: true });
+  if (await mobile.isVisible()) {
+    await mobile.click();
+    const tab = drawer.getByRole("tab", { name, exact: true });
+    await tab.scrollIntoViewIfNeeded();
+    return tab;
+  }
+  return rail.getByRole("button", { name, exact: true });
+}
+
+export async function openActivityDetails(page: Page, name: string) {
+  const category = await activityCategory(page, name);
+  const mobile = await category.getAttribute("role") === "tab";
+  await category.click();
+  return page.getByRole("dialog", { name: mobile ? "Execution details" : name, exact: true });
+}
+
 /** 可控浏览器事件流，沿用真实前端解码与恢复链路。 */
-export async function installEventStream(page: Page) {
-  await page.addInitScript(() => {
+export async function installEventStream(page: Page, path = "/chat/stream") {
+  await page.addInitScript((streamPath) => {
     let connections = 0;
     class TestEventSource extends EventTarget {
       static CONNECTING = 0; static OPEN = 1; static CLOSED = 2;
@@ -109,7 +136,7 @@ export async function installEventStream(page: Page) {
       };
       constructor(url: string) {
         super();
-        if (url.includes("/chat/stream")) {
+        if (url.includes(streamPath)) {
           window.addEventListener("test-activity", this.deliver);
           Object.assign(window, { testStreamConnections: ++connections });
         }
@@ -118,5 +145,5 @@ export async function installEventStream(page: Page) {
       close() { this.readyState = 2; window.removeEventListener("test-activity", this.deliver); }
     }
     Object.defineProperty(window, "EventSource", { value: TestEventSource });
-  });
+  }, path);
 }

@@ -1,20 +1,28 @@
 /**
  * ChatTabs — 多会话横向切换 Tab。
  *
- * 顶部横向排列的 chat 列表：当前激活高亮、新建按钮、右键/长按删除（默认会话除外）。
+ * 顶部横向排列的 chat 列表：当前激活高亮、新建按钮、重命名、关闭与会话检索（默认会话不可关闭）。
  * 数据来自 chat-store.chats，切换 chat 触发 activeChatId 变更 → 消息流/执行记录 自动切换。
  *
  * 性能：每个 tab 的未读数由 ChatTabItem 独立订阅（细粒度 selector），
  * 任意会话的流式 delta 不会导致整个 tabs 条重渲染。
  */
-import { ConfirmDialog } from "@/components/ui";
-import { memo, useState } from "react";
+import { Button, ConfirmDialog, Input } from "@/components/ui";
+import * as Popover from "@radix-ui/react-popover";
+import { PopoverContent } from "@/components/ui/PopoverContent";
+import { TabStrip } from "@/components/common/TabStrip";
+import { memo, useCallback, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Check, MessageSquare, Pencil, Plus, X } from "lucide-react";
+import { Check, List, MessageSquare, Pencil, Plus, Search, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useChatStore } from "@/stores/chat-store";
 import type { ChatMeta } from "@/lib/types";
 import type { TFunction } from "i18next";
+
+/** 未命名会话在展示时翻译，避免冷启动或语言切换把翻译键写入数据。 */
+function chatTitle(chat: ChatMeta, t: TFunction): string {
+  return chat.title || t(chat.chat_id === "default" ? "defaultChat" : "newChat");
+}
 
 interface ChatTabItemProps {
   chat: ChatMeta;
@@ -50,12 +58,13 @@ const ChatTabItem = memo(function ChatTabItem({
     else removeChat(c.chat_id);
   };
   const isDefault = c.chat_id === "default";
+  const title = chatTitle(c, t);
 
   return (
     <>
     <div
       className={cn(
-        "group flex items-center gap-1 pl-2.5 pr-1 py-1 rounded-md border text-xs whitespace-nowrap transition-colors shrink-0",
+        "chat-tab group flex items-center gap-1 pl-2.5 pr-1 py-1 rounded-md border text-xs whitespace-nowrap transition-colors shrink-0",
         isActive
           ? "bg-accent-subtle border-accent/50 text-foreground"
           : "bg-card border-border text-muted hover:text-foreground hover:border-border-strong",
@@ -77,12 +86,12 @@ const ChatTabItem = memo(function ChatTabItem({
       ) : (
         <button
           onClick={() => setActiveChat(c.chat_id)}
-          onDoubleClick={() => onStartEdit(c.chat_id, c.title)}
+          onDoubleClick={() => onStartEdit(c.chat_id, title)}
           className="text-xs font-medium max-w-[160px] truncate"
           aria-pressed={isActive}
-          title={c.title}
+          title={title}
         >
-          {c.title}
+          {title}
         </button>
       )}
       {!isActive && unread > 0 && (
@@ -96,7 +105,7 @@ const ChatTabItem = memo(function ChatTabItem({
       {!isDefault && !editing && (
         <>
           <button
-            onClick={() => onStartEdit(c.chat_id, c.title)}
+            onClick={() => onStartEdit(c.chat_id, title)}
             className="p-1 opacity-100 md:opacity-0 md:group-hover:opacity-100 focus-visible:opacity-100 transition-opacity text-muted hover:text-foreground"
             title={t("tabs.rename")}
             aria-label={t("tabs.rename")}
@@ -140,26 +149,27 @@ export function ChatTabs() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editTitle, setEditTitle] = useState("");
 
-  const handleStartEdit = (chatId: string, currentTitle: string) => {
+  const handleStartEdit = useCallback((chatId: string, currentTitle: string) => {
     setEditingId(chatId);
     setEditTitle(currentTitle);
-  };
+  }, []);
 
-  const handleCommitEdit = () => {
+  const handleCommitEdit = useCallback(() => {
     if (editingId && editTitle.trim()) {
       renameChat(editingId, editTitle.trim());
     }
     setEditingId(null);
     setEditTitle("");
-  };
+  }, [editingId, editTitle, renameChat]);
 
-  const handleCancelEdit = () => {
+  const handleCancelEdit = useCallback(() => {
     setEditingId(null);
     setEditTitle("");
-  };
+  }, []);
 
   return (
-    <div className="chat-tabs flex items-center gap-1.5 overflow-x-auto no-scrollbar shrink-0">
+    <div className="chat-tabs flex min-w-0 flex-1 items-center gap-1">
+      <TabStrip role="group" label={t("tabs.sessions")} activeKey={activeChatId} className="flex-1" contentClassName="gap-1.5">
       {chats.map((c) => (
         <ChatTabItem
           key={c.chat_id}
@@ -174,15 +184,43 @@ export function ChatTabs() {
           t={t}
         />
       ))}
-      <button
-        onClick={() => newChat()}
-        className="flex items-center gap-1 px-2.5 py-1 rounded-md border border-dashed border-border text-xs text-muted hover:text-foreground hover:border-accent transition-colors shrink-0"
-        title={t("tabs.new")}
-        aria-label={t("tabs.new")}
-      >
-        <Plus size={11} />
-        <span>{t("tabs.new")}</span>
-      </button>
+      </TabStrip>
+      <ChatSessionPicker />
+      <Button onClick={() => void newChat()} variant="ghost" size="icon" title={t("tabs.new")}><Plus size={16} /></Button>
     </div>
   );
+}
+
+function ChatSessionPicker() {
+  const { t } = useTranslation("chat");
+  const chats = useChatStore((state) => state.chats);
+  const activeId = useChatStore((state) => state.activeChatId);
+  const select = useChatStore((state) => state.setActiveChat);
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+  const terms = search.trim().toLocaleLowerCase();
+  const matches = chats.filter((chat) => chatTitle(chat, t).toLocaleLowerCase().includes(terms));
+  return <Popover.Root open={open} onOpenChange={(value) => { setOpen(value); if (!value) setSearch(""); }}>
+    <Popover.Trigger asChild><Button size="icon" variant="ghost" title={t("tabs.sessions")}><List size={16} /></Button></Popover.Trigger>
+    <PopoverContent align="end" className="w-80 p-2" aria-label={t("tabs.sessions")}>
+      <div className="relative mb-2"><Search size={14} className="pointer-events-none absolute left-3 top-3 text-muted" />
+        <Input aria-label={t("tabs.search")} placeholder={t("tabs.search")} value={search} onChange={(event) => setSearch(event.target.value)} className="pl-9" />
+      </div>
+      <div className="max-h-[min(50dvh,360px)] overflow-y-auto">
+        {matches.map((chat) => <button key={chat.chat_id} type="button" aria-pressed={chat.chat_id === activeId}
+          className="flex min-h-11 w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm hover:bg-hover aria-pressed:bg-accent-subtle aria-pressed:text-accent"
+          onClick={() => { void select(chat.chat_id); setOpen(false); setSearch(""); }}>
+          <MessageSquare size={14} className="shrink-0" /><span className="min-w-0 flex-1 break-words">{chatTitle(chat, t)}</span>
+          <SessionUnread chatId={chat.chat_id} />{chat.chat_id === activeId && <Check size={14} className="shrink-0" />}
+        </button>)}
+        {!matches.length && <p role="status" className="p-3 text-sm text-muted">{t("tabs.noMatches")}</p>}
+      </div>
+    </PopoverContent>
+  </Popover.Root>;
+}
+
+function SessionUnread({ chatId }: { chatId: string }) {
+  const { t } = useTranslation("chat");
+  const count = useChatStore((state) => state.buckets[chatId]?.unread ?? 0);
+  return count > 0 ? <span className="rounded-full bg-accent-subtle px-2 text-xs text-accent" aria-label={t("tabs.unread", { count })}>{count > 99 ? "99+" : count}</span> : null;
 }

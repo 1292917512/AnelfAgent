@@ -45,7 +45,10 @@
     "rename": "重命名",
     "close": "关闭",
     "confirm": "确认",
-    "unread": "{{count}} 条新消息"
+    "unread": "{{count}} 条新消息",
+    "sessions": "全部会话",
+    "search": "搜索会话",
+    "noMatches": "没有匹配的会话"
   },
   "stop": "停止",
   "stopTitle": "停止当前生成（协作式中断，含运行中的子代理）",

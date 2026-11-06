@@ -15,7 +15,7 @@ export function ActivityRuntime() {
     observed: state.runs.some(hasActiveWork), loaded: state.loaded,
     unobserved: waitingIds.some((id) => !activeChatRun(state.runs, id)),
   })));
-  const status = useQuery({ ...runtimeStatusQuery(), refetchInterval: observed && !waiting ? 15_000 : 5000, refetchOnWindowFocus: true });
+  const status = useQuery(runtimeStatusQuery());
   const thinking = useQuery({ ...runtimeThinkingQuery(), enabled: !observed || waiting > 0, refetchInterval: 5000, refetchOnWindowFocus: true });
   const phase = !status.isError ? status.data?.status?.mind_phase : undefined;
   const busy = !!phase && !["idle", "unknown"].includes(phase);

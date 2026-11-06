@@ -97,7 +97,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     initialBuckets[DEFAULT_CHAT_ID] = emptyBucket();
     initialChats.push({
       chat_id: DEFAULT_CHAT_ID,
-      title: i18n.t("defaultChat", { ns: "chat" }),
+      title: "",
       last_ts: 0,
       message_count: 0,
     });
@@ -109,7 +109,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     initialBuckets[initialChatId] = emptyBucket();
     initialChats.unshift({
       chat_id: initialChatId,
-      title: i18n.t("defaultChat", { ns: "chat" }),
+      title: "",
       last_ts: 0,
       message_count: 0,
     });

@@ -279,3 +279,37 @@ test("runtime facts recover other channel work when heartbeats arrive but activi
   await expect(page.getByRole("button", { name: "Stop execution", exact: true })).toHaveCount(0);
   expect(snapshots).toBeGreaterThan(recoveredRequests);
 });
+
+
+test("many conversations remain searchable with active tab visible and drafts intact", async ({ page }, info) => {
+  await page.addInitScript(() => {
+    localStorage.setItem("anelf:chats", JSON.stringify(Array.from({ length: 24 }, (_, index) => ({
+      chat_id: `session-${index}`, title: `Project conversation ${index}`, last_ts: index + 1, message_count: 0,
+    }))));
+    localStorage.setItem("anelf:activeChatId", "session-23");
+  });
+  await page.goto("/webui/");
+  await openWebChat(page);
+  const tabs = page.locator(".chat-tabs");
+  const activeVisible = () => tabs.locator('[role="group"]').evaluate((element) => {
+    const selected = element.querySelector('[aria-pressed="true"]')?.getBoundingClientRect();
+    const bounds = element.getBoundingClientRect();
+    return !!selected && selected.left >= bounds.left - 1 && selected.right <= bounds.right + 1;
+  });
+  await expect.poll(activeVisible).toBe(true);
+  await expect(tabs.getByRole("button", { name: "New", exact: true })).toBeInViewport();
+  await page.getByRole("textbox", { name: "Message", exact: true }).fill("Keep this session draft");
+  await tabs.getByRole("button", { name: "All conversations", exact: true }).click();
+  const picker = page.getByRole("dialog", { name: "All conversations", exact: true });
+  await picker.getByRole("textbox").fill("conversation 2");
+  await picker.getByRole("button", { name: "Project conversation 2", exact: true }).click();
+  await expect(page.getByRole("textbox", { name: "Message", exact: true })).toHaveValue("");
+  await expect.poll(activeVisible).toBe(true);
+  await tabs.getByRole("button", { name: "All conversations", exact: true }).click();
+  await picker.getByRole("textbox").fill("conversation 23");
+  await picker.getByRole("button", { name: "Project conversation 23", exact: true }).click();
+  await expect(page.getByRole("textbox", { name: "Message", exact: true })).toHaveValue("Keep this session draft");
+  await expect.poll(activeVisible).toBe(true);
+  await page.screenshot({ path: info.outputPath("conversation-overflow.png"), animations: "disabled" });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+});

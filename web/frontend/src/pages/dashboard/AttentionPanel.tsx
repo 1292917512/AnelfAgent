@@ -3,6 +3,8 @@ import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
 import { statusApi, mcpApi, adaptersApi } from "@/lib/api";
+import { runtimeStatusQuery } from "@/lib/runtime-queries";
+import { groupAttentionLogs } from "./log-buffer";
 import type { MCPServer, AdapterInfo } from "@/lib/types";
 import { Card } from "@/components/common/Card";
 import { QueryError } from "@/components/common/AsyncState";
@@ -43,11 +45,7 @@ const SEVERITY_ICON: Record<Severity, string> = {
 export function AttentionPanel() {
   const { t } = useTranslation(["dashboard", "common"]);
 
-  const { data: status, isPending: statusPending, error: statusError } = useQuery({
-    queryKey: ["status"],
-    queryFn: () => statusApi.get().then((r) => r.data),
-    refetchInterval: 3000,
-  });
+  const { data: status, isPending: statusPending, error: statusError } = useQuery(runtimeStatusQuery());
   const { data: errorLogs, isPending: errorLogsPending, error: errorLogsError } = useQuery({
     queryKey: ["logs", "ERROR"],
     queryFn: async () => {
@@ -117,23 +115,14 @@ export function AttentionPanel() {
     }
   });
 
-  // 最近的 ERROR / WARNING 日志（相同消息去重，避免重复告警刷屏）
-  const seen = new Set<string>();
-  const recentLogs = [...(errorLogs?.logs ?? []), ...(warnLogs?.logs ?? [])]
-    .sort((a, b) => b.timestamp - a.timestamp)
-    .filter((log) => {
-      if (seen.has(log.message)) return false;
-      seen.add(log.message);
-      return true;
-    })
-    .slice(0, 5);
-  recentLogs.forEach((log, i) => {
+  const recentLogs = groupAttentionLogs([...(errorLogs?.logs ?? []), ...(warnLogs?.logs ?? [])]).slice(0, 5);
+  recentLogs.forEach(({ log, count, danger }) => {
     items.push({
-      key: `log-${i}`,
-      severity: log.level === "ERROR" || log.level === "CRITICAL" ? "danger" : "warn",
+      key: `log-${log.tag}-${log.message}`,
+      severity: danger ? "danger" : "warn",
       icon: ScrollText,
       title: log.message.length > 120 ? `${log.message.slice(0, 120)}…` : log.message,
-      desc: [log.time, log.tag].filter(Boolean).join(" · "),
+      desc: [log.time, log.tag, count > 1 ? t("attention.repeated", { count }) : ""].filter(Boolean).join(" · "),
       to: `/dashboard?tab=logs&jump=${encodeURIComponent(log.message)}`,
     });
   });

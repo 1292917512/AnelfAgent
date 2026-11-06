@@ -1,7 +1,11 @@
+import { Drawer } from "@/components/common/Drawer";
+import { TabBar } from "@/components/common/TabBar";
+import { Button } from "@/components/ui/Button";
+import { useIsMobile } from "@/lib/use-media-query";
 import { PopoverContent } from "@/components/ui/PopoverContent";
-import { useContext, useMemo, useState } from "react";
+import { useCallback, useContext, useMemo, useState } from "react";
 import * as Popover from "@radix-ui/react-popover";
-import { ArrowUpRight, Bot, Brain, FileDiff, Gauge, ListTodo, Webhook, X } from "lucide-react";
+import { ArrowUpRight, Bot, Brain, FileDiff, Gauge, ListTodo, PanelsTopLeft, Webhook, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { ActivityRun } from "@/lib/types/activity";
 import { formatElapsedCompact } from "@/lib/format";
@@ -38,11 +42,16 @@ export function ActivitySidePanel({ runs, work, changesRuns }: { runs: ActivityR
   const { t } = useTranslation("workbench");
   const [selected, setSelected] = useState<ActivitySideView | "changes" | null>(null);
   const inspect = useContext(ActivityInspection);
+  const mobile = useIsMobile();
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const reveal = useCallback((ids: string[]) => {
+    setMobileOpen(false);
+    setSelected(null);
+    inspect?.(ids);
+  }, [inspect]);
   const groups = useMemo(() => activitySideGroups(runs, work), [runs, work]);
   const files = useMemo(() => activityFileChanges(changesRuns), [changesRuns]);
-  return <aside className="activity-side-rail" aria-label={t("activity.side.title")}>
-    {sections.map((section) => <div key={section.id} className="activity-side-section" role="group" aria-label={t(`activity.side.${section.id}`)}>
-    {section.views.map(({ id, icon: Icon }) => {
+  const views = sections.flatMap((section) => section.views.map(({ id, icon: Icon }) => {
       const items = id === "changes" ? [] : groups[id];
       const entries = items.flatMap((group) => group.entries);
       const count = id === "changes" ? files.length : id === "judgments" ? entries.reduce((total, entry) => total + (entry.kind === "hook" ? entry.judgments?.length ?? 0 : 0), 0)
@@ -50,29 +59,49 @@ export function ActivitySidePanel({ runs, work, changesRuns }: { runs: ActivityR
       const running = section.id === "running" ? count > 0 : entries.some((entry) => id === "judgments" && entry.kind === "hook"
         ? entry.judgments?.some((judgment) => judgment.status === "running") : "status" in entry && entry.status === "running");
       const label = id === "changes" ? t("activity.changes.title") : id === "recollection" ? t("activity.recollectionTitle") : t(`activity.side.${id}`);
-      return <Popover.Root key={id} open={selected === id} onOpenChange={(open) => setSelected(open ? id : null)}>
-        <Popover.Trigger asChild><button type="button" className="activity-side-trigger" aria-label={label} title={label} data-running={running}>
-          <Icon size={16} /><span className="activity-side-label">{label}</span><span className="activity-side-count">{count || ""}</span>
-        </button></Popover.Trigger>
-        <PopoverContent side="left" align="start" sideOffset={8} collisionPadding={12} className={`activity-side-window${id === "changes" ? " activity-changes-window" : ""}`} aria-label={label}>
-          <header><h3>{label}</h3><Popover.Close asChild><button type="button" aria-label={t("activity.side.close")}><X size={16} /></button></Popover.Close></header>
-          <div className="activity-side-body">
+      return { id, Icon, label, count, running, section: section.id, items };
+  }));
+  const renderContent = (view: (typeof views)[number]) => {
+    const { id, count, items, section } = view;
+    return <ActivityInspection.Provider value={reveal}><div className="activity-side-body">
             {id === "changes" ? <ActivityChanges files={files} incomplete={changesRuns.some((run) => run.truncated)} /> : <>
             {id === "recollection" && <p className="activity-note">{t("activity.recollectionHint")}</p>}
-            {section.id === "running" && count > 0 && <p className="activity-note">{t("activity.side.runningHint")}</p>}
-            {!items.length && <p className="activity-note">{t(section.id === "running" ? "activity.side.noRunning" : "activity.side.empty")}</p>}
+            {section === "running" && count > 0 && <p className="activity-note">{t("activity.side.runningHint")}</p>}
+            {!items.length && <p className="activity-note">{t(section === "running" ? "activity.side.noRunning" : "activity.side.empty")}</p>}
             {items.map(({ run, entries: records }) => <section key={`${run.id}:${records[0]?.id ?? "run"}`} className="space-y-2">
               <div className="activity-side-source"><ActivitySourceLabel source={run.source} />{records.length > 0 && <h4>{run.label || run.actor}</h4>}</div>
               {!records.length && <RunningExecution run={run} />}
               {records.map((entry) => id === "judgments" && entry.kind === "hook"
                 ? <div key={entry.id} className="space-y-2">{entry.judgments?.map((judgment) => <HookJudgmentRow key={judgment.id} judgment={judgment} />)}</div>
-                : <ActivityEntryView key={entry.id} entry={entry} current={false} live={run.status === "running"} onReveal={(runId) => inspect?.([runId])} />)}
+                : <ActivityEntryView key={entry.id} entry={entry} current={false} live={run.status === "running"} onReveal={(runId) => reveal([runId])} />)}
             </section>)}
             </>}
-          </div>
-        </PopoverContent>
-      </Popover.Root>;
-    })}
+    </div></ActivityInspection.Provider>;
+  };
+  if (mobile) {
+    const active = views.find((view) => view.id === selected) ?? views[0]!;
+    return <aside className="activity-side-mobile" aria-label={t("activity.side.title")}>
+      <Button variant="ghost" size="sm" onClick={() => setMobileOpen(true)}><PanelsTopLeft size={16} />{t("activity.side.title")}</Button>
+      <Drawer open={mobileOpen} onClose={() => setMobileOpen(false)} title={t("activity.side.title")}>
+        <TabBar tabs={views.map((view) => ({ key: view.id, label: view.label, icon: view.Icon, count: view.count }))} activeTab={active.id} onChange={setSelected} />
+        {mobileOpen && renderContent(active)}
+      </Drawer>
+    </aside>;
+  }
+  return <aside className="activity-side-rail" aria-label={t("activity.side.title")}>
+    {sections.map((section) => <div key={section.id} className="activity-side-section" role="group" aria-label={t(`activity.side.${section.id}`)}>
+      {views.filter((view) => view.section === section.id).map((view) => {
+        const { id, Icon, label, count, running } = view;
+        return <Popover.Root key={id} open={selected === id} onOpenChange={(open) => setSelected(open ? id : null)}>
+          <Popover.Trigger asChild><button type="button" className="activity-side-trigger" aria-label={label} title={label} data-running={running}>
+            <Icon size={16} /><span className="activity-side-label">{label}</span><span className="activity-side-count">{count || ""}</span>
+          </button></Popover.Trigger>
+          <PopoverContent side="left" align="start" className={`activity-side-window${id === "changes" ? " activity-changes-window" : ""}`} aria-label={label}>
+            <header><h3>{label}</h3><Popover.Close asChild><button type="button" aria-label={t("activity.side.close")}><X size={16} /></button></Popover.Close></header>
+            {renderContent(view)}
+          </PopoverContent>
+        </Popover.Root>;
+      })}
     </div>)}
   </aside>;
 }

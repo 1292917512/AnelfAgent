@@ -29,7 +29,8 @@
     "allClear": "All systems normal, no issues found",
     "notReady": "Agent is not ready",
     "mcpDown": "MCP server \"{{name}}\" is not connected",
-    "channelError": "Channel \"{{name}}\" is in error state"
+    "channelError": "Channel \"{{name}}\" is in error state",
+    "repeated": "Repeated {{count}} times in recent logs"
   },
   "comp": {
     "llm": "LLM",

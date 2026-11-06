@@ -1,5 +1,5 @@
 import type { Page } from "@playwright/test";
-import { test, expect, installEventStream, openWebChat, closeWebChatOverlay } from "./fixtures";
+import { test, expect, openActivityDetails, installEventStream, openWebChat, closeWebChatOverlay } from "./fixtures";
 import type { ActivityRun, ActivitySnapshot } from "../src/lib/types/activity";
 
 function run(id: string, patch: Partial<ActivityRun> = {}): ActivityRun {
@@ -55,8 +55,7 @@ test("busy cross-channel streaming cannot mask a lost child terminal and snapsho
     await page.clock.runFor(1000);
   }
   expect(snapshots).toBe(baseline + 1);
-  await page.getByRole("button", { name: "Running subagents", exact: true }).click();
-  const children = page.getByRole("dialog", { name: "Running subagents", exact: true });
+  const children = await openActivityDetails(page, "Running subagents");
   await expect(children.getByText("Worker", { exact: true })).toHaveCount(0);
   await children.getByRole("button", { name: "View details: Reviewer", exact: true }).click();
   await expect(page.getByRole("dialog", { name: "Reviewer", exact: true }).getByText("Queued review", { exact: true })).toBeVisible();

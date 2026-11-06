@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { ChevronRight } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { TraceNode } from "@/lib/types";
@@ -5,12 +6,12 @@ import { cn } from "@/lib/utils";
 import { TraceStatus } from "./TraceStatus";
 import { durationLabel, nodeStage, nodeSummary, nodeTitle } from "./trace-model";
 
-export function TraceNodeRow({ node, selected, onSelect, compact = false }: {
-  node: TraceNode; selected: boolean; onSelect: () => void; compact?: boolean;
+export const TraceNodeRow = memo(function TraceNodeRow({ node, selected, onSelect, compact = false }: {
+  node: TraceNode; selected: boolean; onSelect: (id: string) => void; compact?: boolean;
 }) {
   const { t } = useTranslation("thinking");
   const summary = nodeSummary(node, t);
-  return <button type="button" aria-pressed={selected} onClick={onSelect}
+  return <button type="button" aria-pressed={selected} onClick={() => onSelect(node.id)}
     data-trace-node={node.id}
     className={cn("group relative flex w-full min-w-0 items-start gap-3 rounded-lg px-3 py-3 text-left transition-colors",
       selected ? "bg-accent-subtle ring-1 ring-inset ring-accent/30" : node.status === "error" ? "bg-danger-subtle/40" : "hover:bg-hover")}>
@@ -25,4 +26,4 @@ export function TraceNodeRow({ node, selected, onSelect, compact = false }: {
     </span>
     <ChevronRight size={13} className="mt-1 shrink-0 text-muted" aria-hidden />
   </button>;
-}
+});

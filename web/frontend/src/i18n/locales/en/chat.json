@@ -45,7 +45,10 @@
     "rename": "Rename",
     "close": "Close",
     "confirm": "Confirm",
-    "unread": "{{count}} new messages"
+    "unread": "{{count}} new messages",
+    "sessions": "All conversations",
+    "search": "Search conversations",
+    "noMatches": "No matching conversations"
   },
   "stop": "Stop",
   "stopTitle": "Stop current generation (cooperative interrupt, includes running sub-agents)",

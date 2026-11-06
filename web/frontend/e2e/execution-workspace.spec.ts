@@ -1,5 +1,5 @@
 import AxeBuilder from "@axe-core/playwright";
-import { test, expect, openWebChat, closeWebChatOverlay, installEventStream } from "./fixtures";
+import { test, expect, activityCategory, openActivityDetails, openWebChat, closeWebChatOverlay, installEventStream } from "./fixtures";
 import type { ActivityRun } from "../src/lib/types/activity";
 
 function activity(id: string, patch: Partial<ActivityRun> = {}): ActivityRun {
@@ -555,7 +555,7 @@ test("streams through a busy workspace without remounting completed tool results
 });
 
 
-test("round changes collect child edits, stay lazy, and update without mixing other sessions", async ({ page }, info) => {
+test("round changes collect child edits, stay lazy, and update without mixing other sessions", async ({ page, isMobile }, info) => {
   await installEventStream(page);
   const root = activity("file-parent", { truncated: true, entries: [
     { id: "f1", ts: 1, kind: "file", path: "src/note.txt", operation: "modified", additions: 1, removals: 1,
@@ -570,11 +570,10 @@ test("round changes collect child edits, stay lazy, and update without mixing ot
   let records = [other, root, child];
   await page.route(/\/api\/workspace\/activity(?:\?.*)?$/, (route) => route.fulfill({ json: { epoch: "changes", revision: 10, runs: records } }));
   await page.goto("/webui/");
-  const trigger = page.getByRole("button", { name: "Round changes", exact: true });
+  const trigger = await activityCategory(page, "Round changes");
   await expect(trigger).toContainText("3");
   await expect(page.locator(".activity-changes")).toHaveCount(0);
-  await trigger.click();
-  const panel = page.getByRole("dialog", { name: "Round changes", exact: true });
+  const panel = await openActivityDetails(page, "Round changes");
   await expect(panel.locator(".activity-change-toggle")).toHaveCount(3);
   await expect(panel.locator("table")).toHaveCount(0);
   await expect(panel).toContainText("may be incomplete");
@@ -599,18 +598,20 @@ test("round changes collect child edits, stay lazy, and update without mixing ot
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.screenshot({ path: info.outputPath("round-changes.png"), animations: "disabled" });
   await page.keyboard.press("Escape");
-  await expect(trigger).toBeFocused();
+  await expect(isMobile ? page.getByRole("button", { name: "Execution details", exact: true }) : trigger).toBeFocused();
   await expect(page.locator(".activity-changes")).toHaveCount(0);
   const updated = { ...root, revision: 2, entries: [...root.entries,
     { id: "f5", ts: 5, kind: "file" as const, path: "live.txt", diff: "+live", additions: 1, removals: 0 },
   ] };
   records = [other, updated, child];
   await page.evaluate((run) => window.dispatchEvent(new CustomEvent("test-activity", { detail: { event: "activity", data: { epoch: "changes", run } } })), updated);
+  await activityCategory(page, "Round changes");
   await expect(trigger).toContainText("4");
+  if (isMobile) await page.keyboard.press("Escape");
   await page.getByRole("button", { name: /qq · other/ }).click();
-  await trigger.click();
+  await openActivityDetails(page, "Round changes");
   await expect(panel).toContainText("No file changes recorded");
   await page.keyboard.press("Escape");
   await page.reload();
-  await expect(trigger).toBeVisible();
+  await expect(await activityCategory(page, "Round changes")).toBeVisible();
 });

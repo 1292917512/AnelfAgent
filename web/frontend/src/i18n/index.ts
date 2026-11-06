@@ -1,49 +1,37 @@
-import i18n from "i18next";
-import type { Resource, ResourceLanguage } from "i18next";
+import i18n, { type BackendModule, type ResourceLanguage } from "i18next";
 import { initReactI18next } from "react-i18next";
 import LanguageDetector from "i18next-browser-languagedetector";
-import { registerEntityPluginLocales } from "@/lib/entity-plugin-locales";
+import { entityLocaleNamespaces, loadEntityLocale } from "@/lib/entity-plugin-locales";
+import zhCommon from "./locales/zh/common.json";
+import enCommon from "./locales/en/common.json";
 
-// 自动加载所有 locales/<lang>/<ns>.json，命名规则决定 namespace 名
-// 新增 namespace 只需新建文件，无需改动本模块
-const modules = import.meta.glob("./locales/*/*.json", { eager: true });
+const modules = import.meta.glob<{ default: ResourceLanguage }>("./locales/*/*.json");
+const namespaces = [...new Set([...Object.keys(modules).map((path) => path.split("/").pop()!.slice(0, -5)), ...entityLocaleNamespaces])];
 
-interface LocaleModule {
-  default: ResourceLanguage;
-}
+/** Vite 资源经 i18next 后端协议加载，语言切换沿用其等待、回退与并发协调。 */
+const backend: BackendModule = {
+  type: "backend",
+  init() {},
+  read(language, namespace, callback) {
+    const load = async () => {
+      const core = await modules[`./locales/${language}/${namespace}.json`]?.();
+      if (core) i18n.addResourceBundle(language, namespace, core.default, true, true);
+      await loadEntityLocale(language, namespace);
+      return i18n.getResourceBundle(language, namespace) ?? {};
+    };
+    void load().then((bundle) => callback(null, bundle), (error: unknown) => callback(error instanceof Error ? error : new Error(String(error)), false));
+  },
+};
 
-const resources: Record<string, Record<string, ResourceLanguage>> = {};
-const namespaces = new Set<string>();
-
-for (const [path, mod] of Object.entries(modules)) {
-  const m = path.match(/\.\/locales\/([^/]+)\/([^/]+)\.json$/);
-  if (!m) continue;
-  const lang = m[1];
-  const ns = m[2];
-  if (!lang || !ns) continue;
-  (resources[lang] ??= {})[ns] = (mod as LocaleModule).default;
-  namespaces.add(ns);
-}
-
-i18n
-  .use(LanguageDetector)
-  .use(initReactI18next)
-  .init({
-    resources: resources as Resource,
-    fallbackLng: "zh",
-    supportedLngs: ["zh", "en"],
-    defaultNS: "common",
-    ns: Array.from(namespaces),
-    interpolation: {
-      escapeValue: false,
-    },
-    detection: {
-      order: ["localStorage", "navigator"],
-      caches: ["localStorage"],
-    },
-  });
-
-// 实体面板 locale 启动时注册（面板组件懒加载，组名等全局词汇须首帧前就绪）
-registerEntityPluginLocales();
+export const i18nReady = new Promise<void>((resolve, reject) => {
+  void i18n.use(LanguageDetector).use(backend).use(initReactI18next).init({
+    resources: { zh: { common: zhCommon }, en: { common: enCommon } },
+    partialBundledLanguages: true,
+    fallbackLng: "zh", supportedLngs: ["zh", "en"], load: "languageOnly",
+    defaultNS: "common", ns: namespaces,
+    interpolation: { escapeValue: false },
+    detection: { order: ["localStorage", "navigator"], caches: ["localStorage"] },
+  }, (error: unknown) => { if (error) reject(error); else resolve(); });
+});
 
 export default i18n;

@@ -38,8 +38,9 @@ function ConfigDetailSession({ item, group, onClose }: ConfigDetailDrawerProps &
   const isDefault = JSON.stringify(item.value) === JSON.stringify(item.default);
 
   return (
-    <Drawer {...session.surfaceProps} onClose={session.close} title={item.description} width="max-w-sm">
+    <Drawer {...session.surfaceProps} onClose={session.close} title={item.title || item.description} width="max-w-sm">
       <div className="space-y-4">
+        {item.title && item.description !== item.title && <p className="text-sm leading-relaxed text-muted">{item.description}</p>}
         <div className="flex flex-wrap items-center gap-1.5">
           {group && (
             <Badge variant="neutral">

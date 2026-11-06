@@ -1,5 +1,5 @@
 import AxeBuilder from "@axe-core/playwright";
-import { test, expect, openWebChat } from "./fixtures";
+import { test, expect, openWebChat, installEventStream } from "./fixtures";
 import type { ThinkingSession, TraceNode } from "../src/lib/types";
 
 const makeNode = (id: string, type: string, parent_id: string | null = null): TraceNode => ({
@@ -110,4 +110,31 @@ test("historical traces start at the beginning and provider failures stay inside
   await expect(dialog.getByRole("alert")).toHaveCount(0);
   await dialog.getByRole("button", { name: "Close", exact: true }).click();
   await expect(page.getByRole("region", { name: "Run overview" })).toContainText("Review ended");
+});
+
+
+test("live graph updates preserve dragged positions and follow new nodes with reduced motion", async ({ page }) => {
+  await installEventStream(page, "/thinking/stream");
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const active: ThinkingSession = { ...trace, ended: false, end_time: null, nodes: [makeNode("root", "llm_call")], node_count: 1 };
+  await page.route("**/api/thinking/status", (route) => route.fulfill({ json: { enabled: true } }));
+  await page.route("**/api/thinking/sessions?*", (route) => route.fulfill({ json: { sessions: [active], count: 1 } }));
+  await page.route("**/api/thinking/sessions/trace-A", (route) => route.fulfill({ json: active }));
+  await page.goto("/webui/thinking?view=flow");
+  const root = page.locator('.react-flow__node[data-id="root"]');
+  await expect(root).toBeInViewport();
+  const box = await root.boundingBox();
+  await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box!.x + box!.width / 2 + 35, box!.y + box!.height / 2 + 35, { steps: 6 });
+  await page.mouse.up();
+  const position = await root.evaluate((element) => (element as HTMLElement).style.transform);
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent("test-activity", { detail: { event: "node_updated", data: {
+    session_id: "trace-A", node_id: "root", updates: { data: { model: "Streamed model result" }, status: "completed" },
+  } } })));
+  await expect(root).toContainText("Streamed model result");
+  expect(await root.evaluate((element) => (element as HTMLElement).style.transform)).toBe(position);
+  await page.evaluate((node) => window.dispatchEvent(new CustomEvent("test-activity", { detail: { event: "node_added", data: { session_id: "trace-A", node } } })), makeNode("next", "tool_call", "root"));
+  await expect(page.locator('.react-flow__node[data-id="next"]')).toBeInViewport();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
 });

@@ -6,10 +6,12 @@ export const runtimeStatusQuery = () => queryOptions({
   queryKey: ["status"],
   queryFn: ({ signal }) => statusApi.get(signal).then((response) => response.data),
   retry: false, throwOnError: false,
+  staleTime: 2000,
 });
 
 export const runtimeThinkingQuery = () => queryOptions({
   queryKey: ["thinking"],
   queryFn: ({ signal }) => statusApi.thinking(signal).then((response) => response.data),
   retry: false, throwOnError: false,
+  staleTime: 2000,
 });

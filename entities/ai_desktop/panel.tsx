@@ -5,7 +5,7 @@
  * （实时状态详情、实际注入文本、配置编辑、启停与手动刷新）。
  * 数据驱动自 /api/entity/ai_desktop/modules，新增后端组件自动出现卡片。
  *
- * i18n：locales/{zh,en}.json 由 lib/entity-plugin-locales.ts 启动时 eager
+ * i18n：locales/{zh,en}.json 由 lib/entity-plugin-locales.ts 按当前及回退语言
  * 注册（命名空间 ai_desktop），无需在本文件自行 registerPluginI18n；
  * _registry.groups/configSections 声明工具页与配置中心的分组名。
  */

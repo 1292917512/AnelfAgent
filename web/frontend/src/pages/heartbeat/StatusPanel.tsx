@@ -3,7 +3,8 @@ import { useTranslation } from "react-i18next";
 import { Card } from "@/components/common/Card";
 import { QueryError } from "@/components/common/AsyncState";
 import { StatusDot } from "@/components/common/StatusDot";
-import { heartbeatApi, statusApi, memoryApi, tasksApi } from "@/lib/api";
+import { heartbeatApi, memoryApi, tasksApi } from "@/lib/api";
+import { runtimeStatusQuery } from "@/lib/runtime-queries";
 import type { TaskConfig } from "@/lib/types";
 import { RefreshCw, Play, Zap } from "lucide-react";
 import { cn, formatAge, formatDurationMs } from "@/lib/utils";
@@ -11,11 +12,7 @@ import { cn, formatAge, formatDurationMs } from "@/lib/utils";
 export function StatusPanel() {
   const { t } = useTranslation("heartbeat");
 
-  const { data: agentStatus } = useQuery({
-    queryKey: ["status"],
-    queryFn: () => statusApi.get().then((r) => r.data),
-    refetchInterval: 5000,
-  });
+  const { data: agentStatus } = useQuery(runtimeStatusQuery());
 
   const { data: hbStatus } = useQuery({
     queryKey: ["heartbeat-status"],

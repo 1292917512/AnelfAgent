@@ -1,13 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { Wrench } from "lucide-react";
-import { statusApi } from "@/lib/api";
+import { runtimeThinkingQuery } from "@/lib/runtime-queries";
 import { Card } from "@/components/common/Card";
 import { QueryError } from "@/components/common/AsyncState";
 
 export function ToolsInsightPanel() {
   const { t } = useTranslation("status");
-  const query = useQuery({ queryKey: ["thinking"], queryFn: () => statusApi.thinking().then((r) => r.data), refetchInterval: 3000 });
+  const query = useQuery(runtimeThinkingQuery());
   const snapshot = query.data;
   const toolRecall = [...(snapshot?.tool_recall ?? [])].sort((a, b) => b.count - a.count);
   const maxCount = Math.max(1, ...toolRecall.map((tool) => tool.count));

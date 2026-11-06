@@ -70,7 +70,7 @@ class TestRegisterModelConfigs:
         from pydantic import BaseModel
 
         class _Model(BaseModel):
-            enabled: bool = Field(default=False, description="开关")
+            enabled: bool = Field(default=False, title="启用", description="开关")
             token: str = Field(
                 default="", description="令牌",
                 json_schema_extra={"value_type": "password"})
@@ -86,7 +86,9 @@ class TestRegisterModelConfigs:
         )
         assert keys == ["demo_enabled", "demo_token", "demo_mode", "demo_ratio", "demo_note"]
 
-        assert ConfigRegistry.get_item("demo_enabled").value_type == ConfigValueType.BOOLEAN  # type: ignore[union-attr]
+        enabled = ConfigRegistry.get_item("demo_enabled")
+        assert enabled is not None and enabled.value_type == ConfigValueType.BOOLEAN
+        assert enabled.title == "启用" and enabled.description == "开关"
         token = ConfigRegistry.get_item("demo_token")
         assert token is not None and token.is_secret
         mode = ConfigRegistry.get_item("demo_mode")

@@ -11,10 +11,13 @@ export function sessionChatId(session: ThinkingSession | null): string | null {
 
 /** Includes plans created in this trace's conversation and recorded time range. */
 export function tracePlanNodes(session: ThinkingSession, plans: Record<string, PlanRecord> | undefined): TraceNode[] {
-  const chatId = sessionChatId(session);
+  return planNodesInRange(sessionChatId(session), session.start_time, session.end_time, plans);
+}
+
+function planNodesInRange(chatId: string | null, start: number, end: number | null, plans: Record<string, PlanRecord> | undefined): TraceNode[] {
   if (!chatId || !plans) return [];
-  return Object.values(plans).filter((plan) => plan.chat_id === chatId && plan.created_at >= session.start_time &&
-    (!session.end_time || plan.updated_at <= session.end_time)).flatMap((plan) => {
+  return Object.values(plans).filter((plan) => plan.chat_id === chatId && plan.created_at >= start &&
+    (!end || plan.updated_at <= end)).flatMap((plan) => {
     const rootId = `plan:${plan.plan_id}`;
     const root: TraceNode = {
       id: rootId, type: "plan_root", label: plan.goal, parent_id: null, timestamp: plan.created_at,
@@ -34,5 +37,7 @@ export function tracePlanNodes(session: ThinkingSession, plans: Record<string, P
 export function useTracePlanNodes(session: ThinkingSession | null): TraceNode[] {
   const chatId = sessionChatId(session);
   const plans = usePlanStore((state) => chatId ? state.plans[chatId] : undefined);
-  return useMemo(() => session ? tracePlanNodes(session, plans) : [], [session, plans]);
+  const start = session?.start_time ?? 0;
+  const end = session?.end_time ?? null;
+  return useMemo(() => planNodesInRange(chatId, start, end, plans), [chatId, start, end, plans]);
 }

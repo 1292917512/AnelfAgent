@@ -1,6 +1,7 @@
-import { lazy, Suspense, useState } from "react";
+import { lazy, Suspense, useCallback, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Activity } from "lucide-react";
+import { useShallow } from "zustand/react/shallow";
 import { useThinkingStore } from "@/stores/thinking-store";
 import { useThinkingSessions } from "@/hooks/useThinking";
 import { useRouteTab } from "@/hooks/useRouteTab";
@@ -24,7 +25,14 @@ const FlowView = lazy(() => import("./FlowView").then((module) => ({ default: mo
 function ThinkingFlow({ compact }: { compact: boolean }) {
   const { t } = useTranslation("thinking");
   useThinkingSessions();
-  const state = useThinkingStore();
+  const state = useThinkingStore(useShallow((store) => ({
+    activeSession: store.activeSession, activeSessionId: store.activeSessionId, selectedNodeId: store.selectedNodeId,
+    sessions: store.sessions, sessionsLoading: store.sessionsLoading, sessionsError: store.sessionsError,
+    enabled: store.enabled, connected: store.connected, toggling: store.toggling, statusSynced: store.statusSynced,
+    statusError: store.statusError, sessionError: store.sessionError, sessionLoading: store.sessionLoading, autoFollow: store.autoFollow,
+    setSelectedNodeId: store.setSelectedNodeId, selectSession: store.selectSession, refreshSessions: store.refreshSessions,
+    setTracking: store.setTracking, setAutoFollow: store.setAutoFollow, initialize: store.initialize, refreshSession: store.refreshSession,
+  })));
   const [view, setView] = useRouteTab(["timeline", "flow"] as const, "timeline", "view");
   const [panel, setPanel] = useState<"tools" | "providers" | null>(null);
   const [showSessions, setShowSessions] = useState(false);
@@ -35,7 +43,10 @@ function ThinkingFlow({ compact }: { compact: boolean }) {
   const detailOverlay = (size?.width ?? 0) < 1240;
   const planNodes = useTracePlanNodes(state.activeSession);
   const selected = [...(state.activeSession?.nodes ?? []), ...planNodes].find((node) => node.id === state.selectedNodeId);
-  const selectNode = (id: string) => { state.setSelectedNodeId(id); };
+  const select = state.setSelectedNodeId;
+  const selectNode = useCallback((id: string) => select(id), [select]);
+  const flowSession = useMemo(() => state.activeSession ? { ...state.activeSession,
+    nodes: planNodes.length ? [...state.activeSession.nodes, ...planNodes] : state.activeSession.nodes } : null, [state.activeSession, planNodes]);
   return <div ref={ref} className="flex h-full min-h-0">
     <ThinkingSessionsPanel sessions={state.sessions} activeId={state.activeSessionId}
       onSelect={(id) => void state.selectSession(id)} onRefresh={() => void state.refreshSessions()}
@@ -54,7 +65,7 @@ function ThinkingFlow({ compact }: { compact: boolean }) {
         <SessionOverview compact={compact && !isMobile} session={state.activeSession} onSelect={selectNode} onSelectSession={(id) => void state.selectSession(id)} />
         <div className="relative min-h-0 flex-1">
           {view === "flow"
-            ? <Suspense fallback={<PageSkeleton />}><FlowView key={state.activeSession.id} session={{ ...state.activeSession, nodes: [...state.activeSession.nodes, ...planNodes] }} autoFollow={state.autoFollow} onNodeClick={selectNode} /></Suspense>
+            ? <Suspense fallback={<PageSkeleton />}><FlowView key={state.activeSession.id} session={flowSession!} autoFollow={state.autoFollow} onNodeClick={selectNode} /></Suspense>
             : <TimelineView key={state.activeSession.id} session={state.activeSession} selectedNodeId={state.selectedNodeId}
               autoFollow={state.autoFollow} onSelect={selectNode} />}
         </div>

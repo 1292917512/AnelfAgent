@@ -30,4 +30,8 @@
   .config-item-control { width: 100%; justify-content: flex-end; }
   .config-item-control > input:not([type="checkbox"]), .config-item-control > textarea, .config-item-control > .app-select-field { width: 100%; min-width: 0; min-height: 44px; }
   .config-item-control > button:not([role="switch"]) { min-width: 44px; min-height: 44px; }
+  .config-item[data-config-type="boolean"] { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
+  .config-item[data-config-type="boolean"] > button { min-height: 44px; }
+  .config-item[data-config-type="boolean"] .config-item-control { width: auto; gap: 4px; align-items: center; }
+  .config-item[data-config-type="boolean"] > a, .config-item[data-config-type="boolean"] > [role="alert"] { grid-column: 1 / -1; }
 }

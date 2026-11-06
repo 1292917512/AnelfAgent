@@ -7,7 +7,7 @@
  * 残留，实体目录增删经 prebuild / dev watcher 自动重写接入表）。
  * 面板可按实体拆分为 entities/<name>/panels/ 子目录，panel.tsx 内用相对
  * 导入引用子组件；面板专属 i18n 放 panels/locales/{zh,en}.json，
- * 由 lib/entity-plugin-locales.ts 启动时 eager 注册（保留键 _registry 的
+ * 由 lib/entity-plugin-locales.ts 按当前语言加载注册（保留键 _registry 的
  * groups/configSections 映射声明工具页/配置中心分组名），panel.tsx 无需自行
  * registerPluginI18n；无面板的实体可只建 locales 目录自持组名翻译。
  *

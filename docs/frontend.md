@@ -33,13 +33,18 @@ i18n/locales/{zh,en}/         # 核心 namespace（zh/en key 一一对应；插�
 
 核心页面在 `lib/core-routes.ts` 声明懒加载路由、导航分组与展示信息；导航、命令入口和路由宿主
 复用这份注册表，页面文案由对应 i18n namespace 提供。模块页面通过 `app.routes` 贡献点注册。
-应用先绘制启动状态，扩展清单就绪后才创建正式 Router，避免漏掉模块路由。
+应用先绘制启动状态，等待当前语言及回退语言、扩展清单就绪后创建正式 Router。
+store 的模块级初始化不读取尚未就绪的翻译；未命名会话由展示层提供本地化名称，不把翻译键保存成标题。
+核心与实体文案沿用 i18next 后端协议按语言加载，构建合并同语言资源；通用启动/错误文案内置。
+语言切换等待资源就绪，频道插件仍由自己的清单注册文案，核心不维护模块词汇。
 
 配置跳转由公共层维护：`lib/config-navigation.ts` 生成按注册键或分组定位的站内地址，
 `components/common/ConfigLink.tsx` 提供声明式入口，命令等程序化导航使用 `configHref(target)`。
 调用方传 `{ key }`、`{ group }` 或 `{ page: "models" }`，不拼接 `/webui`、配置路径或查询串；Router 统一处理 basename。
 配置页通过 `useConfigFocus` 在元数据加载和高级区展开后滚动、聚焦并高亮目标；再次导航、刷新和
 浏览器返回沿用 URL 定位，未注册键明确提示。配置搜索使用 `q` 参数，键定位优先。
+配置项可由所属模块声明 `title`（Pydantic 使用 `Field(title=...)`），与完整 `description` 分层展示；
+未提供标题时沿用原描述，搜索覆盖两者。保存状态和重置按钮保留空间，避免控件在保存前后位移。
 工作区只消费执行结果的 `limit` 事实（实际轮次和约束配置键），不推断配置归属、不维护跳转路由。
 单次调用直接指定的预算没有配置键，提示调用者调整该预算；不会误导用户修改无效的全局设置。
 
@@ -82,10 +87,10 @@ Cognee 同步队列概览独立于全量构建阶段展示：待同步为 `pendi
   独立路由复制频道面板。核心频道管理面由注册表驱动，禁止按具体频道 ID 硬编码
 - **实体面板**：`entities/<name>/panel.tsx`（+ `panels/` 子目录）经 `module-links.mjs` **代码生成**
   接入——扫描生成 `src/generated/entity-panels.ts`（懒加载表）与 `entity-panel-locales.ts`（locale
-  eager 表），面板源码经 `@entities` 别名以真实路径被 tsc/vite/eslint 直接消费（无软链、无提交
+  加载表与注册名称元数据），面板源码经 `@entities` 别名以真实路径被 tsc/vite/eslint 直接消费（无软链、无提交
   残留，生成文件 gitignored，prebuild/dev watcher 自动重写）；面板专属 i18n 放
-  `panels/locales/{zh,en}.json`，由 `lib/entity-plugin-locales.ts` eager 注册（locale 静态打入主
-  chunk）；locale 保留键 `_registry` 以显式映射声明全局词汇（`groups` / `configSections`）——
+  `panels/locales/{zh,en}.json`，由 `lib/entity-plugin-locales.ts` 按当前及回退语言加载注册；
+  locale 保留键 `_registry` 以显式映射声明全局词汇（`groups` / `configSections`）——
   实体组名翻译一律自持于模块目录，核心 tools.json/config.json 不写实体条目；无面板的实体也可只建
   `panels/locales/`（locale-only 实体同样被代码生成收录）；面板专属 API/类型放 `panels/api.ts` /
   `panels/types.ts`（不污染核心 lib）
@@ -316,3 +321,10 @@ Vite 开发服务默认将 API 与 WebSocket 转发到本地 WebUI 后端 `127.0
 
 实时表现验证复用浏览器事件流替身驱动真实前端解码与渲染，覆盖连接恢复、布局重建、连续更新与详情阅读。
 性能场景记录收帧到展示的样本并附到测试产物；浏览器视口测试不替代真实模型、网络或物理移动设备验收。
+
+运行状态由顶栏持有唯一轮询，页面通过 `runtimeStatusQuery` 订阅同一缓存；工作区、心跳页每 5 秒，
+总览忙碌时每 3 秒、空闲时每 10 秒，其余页面每 15 秒。思维快照由当前工作区/总览持有轮询，
+子面板只订阅；页面隐藏时暂停沿用 React Query 默认策略，重连恢复仍由原事件流触发查询失效。
+执行图仅在拓扑变化时重新布局，内容更新保留节点引用和拖动位置；自动跟随尊重减少动画偏好。
+`TabBar` 和会话导航复用 `TabStrip` 的溢出滚动与选中项定位，会话检索和新建入口保持可见。
+手机活动详情使用抽屉中的公共页签，阶段导航移到横向工具栏；两种布局复用同一活动快照与详情组件。

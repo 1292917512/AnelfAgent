@@ -27,6 +27,7 @@ _ENV_PREFIX = "ANELF_"
 _MIND_CONFIGS = {
     "mind/core": {
         "llm_stream_enabled": {
+            "title": "LLM 流式输出",
             "description": "LLM 流式输出（关闭则整段返回；前缀缓存读写仅在流式下可观测）",
             "default": True,
         },
@@ -38,6 +39,7 @@ _MIND_CONFIGS = {
             "unit": "秒",
         },
         "autonomous_decision_interval": {
+            "title": "定时自主决策间隔",
             "description": (
                 "定时自主决策间隔（默认 1 小时）：心跳维护后到期才调用决策模型；"
                 "不改变维护、定时任务或空闲任务的调度，不延迟消息和后台通知处理"
@@ -47,6 +49,7 @@ _MIND_CONFIGS = {
             "unit": "秒",
         },
         "heartbeat_busy_defer_seconds": {
+            "title": "心跳忙碌延后间隔",
             "description": "心跳忙碌延后轮询间隔（AI 回复/反思执行中时按此间隔轮询，空闲后立即补跑心跳）",
             "default": 60.0,
             "advanced": True,
@@ -54,6 +57,7 @@ _MIND_CONFIGS = {
             "unit": "秒",
         },
         "auto_cycle_base_delay": {
+            "title": "自主循环续轮退避",
             "description": "自主循环续轮退避基数（指数封顶 8s）；正常续轮有待回复消息时不退避，异常恢复始终退避",
             "default": 0.5,
             "advanced": True,
@@ -76,6 +80,7 @@ _MIND_CONFIGS = {
             "unit": "条",
         },
         "max_tool_iterations": {
+            "title": "最大工具调用轮次",
             "description": "最大工具调用轮次（0 = 不设上限，仅正数限制轮次）",
             "default": 0,
             "advanced": True,
@@ -83,6 +88,7 @@ _MIND_CONFIGS = {
             "unit": "轮",
         },
         "force_tool_use": {
+            "title": "强制工具选择",
             "description": "纯工具模式：强制 LLM 工具选择（tool_choice=required）；普通回复通常无需开启",
             "default": False,
             "advanced": True,
@@ -94,6 +100,7 @@ _MIND_CONFIGS = {
             "unit": "秒",
         },
         "background_wait_budget": {
+            "title": "后台任务等待预算",
             "description": "后台任务等待：单轮累计挂起预算，耗尽后将控制权交回 AI",
             "default": 120.0,
             "advanced": True,
@@ -104,16 +111,19 @@ _MIND_CONFIGS = {
             "default": True,
         },
         "send_interim_text": {
+            "title": "自动投递中间正文",
             "description": "自动投递中间正文：仅 Jev 明确确认是当前用户需要的进度才补投；不确定或审核不可用不投递，优先使用 send_message",
             "default": False,
         },
         "send_final_text": {
+            "title": "自动投递最终正文",
             "description": "自动投递最终正文：为漏用发送工具的模型保留兜底，仅 Jev 明确确认应发给当前用户才补投；不确定或审核不可用不投递，关闭不影响 send_message",
             "default": True,
         },
     },
     "mind/llm": {
         "llm_timeout": {
+            "title": "模型输出停滞超时",
             "description": "单次调用无输出停滞超时（秒）：持续有输出时不限时，仅静默超时判定挂死",
             "default": 120.0,
             "advanced": True,

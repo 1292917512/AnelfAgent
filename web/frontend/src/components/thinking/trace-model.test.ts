@@ -26,6 +26,22 @@ it("lays out every node once even when parent links form a cycle", () => {
   expect(new Set(result.nodes.map((item) => JSON.stringify(item.position))).size).toBe(3);
   expect(result.edges.some((edge) => edge.source === edge.target)).toBe(false);
 });
+it("preserves graph identities on streamed content updates and relayouts changed parents", () => {
+  const root = node("root", "llm_call");
+  const child: TraceNode = { ...node("child", "tool_call", "root"), status: "running" };
+  const first = buildFlowElements({ ...base, nodes: [root, child] });
+  const unchanged = buildFlowElements({ ...base, nodes: [root, child] }, first);
+  expect(unchanged.nodes).toBe(first.nodes);
+  expect(unchanged.edges).toBe(first.edges);
+  const next = buildFlowElements({ ...base, nodes: [root, { ...child, status: "error", data: { error: "offline" } }] }, first);
+  expect(next.nodes[0]).toBe(first.nodes[0]);
+  expect(next.nodes[1]?.position).toBe(first.nodes[1]?.position);
+  expect(next.nodes[1]?.data.trace.data.error).toBe("offline");
+  expect(next.edges[0]).toMatchObject({ animated: false, style: { stroke: "var(--danger)" } });
+  const moved = buildFlowElements({ ...base, nodes: [root, { ...child, parent_id: null }] }, next);
+  expect(moved.nodes[1]?.position.x).toBe(0);
+  expect(moved.edges[0]?.id).toBe("sequence:child");
+});
 it("never mixes plans from a different conversation or later historical state", () => {
   const plan: PlanRecord = { plan_id: "P", chat_id: "A", goal: "Inspect", steps: [], status: "executing", files: "", risks: "", created_at: 2, updated_at: 3 };
   expect(tracePlanNodes(base, { P: plan })).toHaveLength(1);

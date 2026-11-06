@@ -1,5 +1,5 @@
 import type { Page } from "@playwright/test";
-import { test, expect, installEventStream } from "./fixtures";
+import { test, expect, installEventStream, activityCategory, openActivityDetails } from "./fixtures";
 import type { ActivityRun, ActivitySnapshot } from "../src/lib/types/activity";
 
 function run(id: string, started: number, patch: Partial<ActivityRun> = {}): ActivityRun {
@@ -76,7 +76,7 @@ test("initial deep recall reports a budget cutoff and retains live terminal deta
   await page.screenshot({ path: info.outputPath("recall-terminal-detail.png"), animations: "disabled" });
 });
 
-test("recollection window separates conversations and observes background results without rendering closed details", async ({ page }, info) => {
+test("recollection window separates conversations and observes background results without rendering closed details", async ({ page, isMobile }, info) => {
   const start = Date.now() / 1000 - 10;
   const hook: ActivityRun["entries"][number] = { id: "recall", kind: "hook", name: "memory.probe", event: "context_refresh", mode: "async", source: "internal", scope: "user_qq:42", status: "running", ts: start, duration_ms: 0, detail: "Searching current deployment evidence" };
   let first = run("qq-recall", start, { label: "Investigate deployment", entries: [hook] });
@@ -88,8 +88,7 @@ test("recollection window separates conversations and observes background result
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto("/webui/");
   await expect(page.getByRole("dialog", { name: "Recollection", exact: true })).toHaveCount(0);
-  await page.getByRole("button", { name: "Recollection", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "Recollection", exact: true });
+  const dialog = await openActivityDetails(page, "Recollection");
   await expect(dialog.getByRole("heading", { name: "Investigate deployment", exact: true })).toBeVisible();
   await expect(dialog.getByRole("heading", { name: "Check project memory", exact: true })).toBeVisible();
   await expect(dialog.getByText("Searching current deployment evidence", { exact: true })).toHaveCount(0);
@@ -108,10 +107,10 @@ test("recollection window separates conversations and observes background result
   await expect(qq).not.toContainText("Separate Web conversation evidence");
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   const bounds = await dialog.boundingBox();
-  expect(bounds!.x).toBeGreaterThanOrEqual(11);
-  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(page.viewportSize()!.width - 11);
+  expect(bounds!.x).toBeGreaterThanOrEqual(isMobile ? 0 : 11);
+  expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(page.viewportSize()!.width - (isMobile ? 0 : 11));
   await page.screenshot({ path: info.outputPath("recollection.png"), animations: "disabled" });
-  await dialog.getByRole("button", { name: "Close details", exact: true }).click();
+  await dialog.getByRole("button", { name: /^Close(?: details)?$/, exact: true }).click();
   await expect(dialog).toHaveCount(0);
   await expect(page.locator(".activity-feed")).toHaveAttribute("data-following", "true");
   expect(errors).toEqual([]);
@@ -180,15 +179,16 @@ test("side rail separates records from running work and removes completed items 
   page.on("pageerror", (error) => errors.push(error.message));
   await page.goto("/webui/");
   const rail = page.getByRole("complementary", { name: "Execution details" });
-  await expect(rail.getByRole("button")).toHaveCount(6);
-  expect(await rail.getByRole("button").evaluateAll((buttons) => buttons.map((button) => button.getAttribute("aria-label"))))
+  await expect(rail.getByRole("button")).toHaveCount(isMobile ? 1 : 6);
+  await activityCategory(page, "Background tasks");
+  const categories = isMobile ? page.getByRole("dialog", { name: "Execution details", exact: true }).getByRole("tab") : rail.getByRole("button");
+  expect(await categories.evaluateAll((buttons) => buttons.map((button) => button.getAttribute("aria-label"))))
     .toEqual(["Recollection", "Decisions", "Round changes", "Running tasks", "Running subagents", "Background tasks"]);
-  const background = rail.getByRole("button", { name: "Background tasks", exact: true });
-  await expect(background.locator(".activity-side-count")).toHaveText("1");
-  expect(await background.evaluate((element) => element.getBoundingClientRect().right <= element.closest("aside")!.getBoundingClientRect().right)).toBe(true);
+  const background = await activityCategory(page, "Background tasks");
+  await expect(background.locator(".activity-side-count, [data-tab-count]")).toHaveText("1");
+  expect(await background.evaluate((element) => element.getBoundingClientRect().right <= (element.closest("aside") ?? element.closest('[role="dialog"]'))!.getBoundingClientRect().right)).toBe(true);
   expect(await background.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
-  await background.click();
-  const bgDialog = page.getByRole("dialog", { name: "Background tasks", exact: true });
+  const bgDialog = await openActivityDetails(page, "Background tasks");
   await expect(bgDialog).toContainText("Analyze the screenshot");
   await expect(bgDialog).not.toContainText("Already finished");
   await expect(bgDialog).not.toContainText("Review deployment");
@@ -196,11 +196,10 @@ test("side rail separates records from running work and removes completed items 
   await publish(parent);
   await expect(bgDialog).toContainText("Nothing running in this category");
   await expect(bgDialog).not.toContainText("Analyze the screenshot");
-  await bgDialog.getByRole("button", { name: "Close details" }).click();
-  const agents = rail.getByRole("button", { name: "Running subagents", exact: true });
-  await expect(agents.locator(".activity-side-count")).toHaveText("2");
-  await agents.click();
-  const agentDialog = page.getByRole("dialog", { name: "Running subagents", exact: true });
+  await bgDialog.getByRole("button", { name: /^Close(?: details)?$/ }).click();
+  const agents = await activityCategory(page, "Running subagents");
+  await expect(agents.locator(".activity-side-count, [data-tab-count]")).toHaveText("2");
+  const agentDialog = await openActivityDetails(page, "Running subagents");
   await expect(agentDialog).toContainText("Queued worker");
   await agentDialog.getByRole("button", { name: /Reviewer.*Review deployment/ }).click();
   const execution = page.getByRole("dialog", { name: "View execution details", exact: true });
@@ -208,13 +207,12 @@ test("side rail separates records from running work and removes completed items 
   await expect(agentDialog).toHaveCount(0);
   await execution.getByRole("button", { name: "Close", exact: true }).click();
   await publish({ ...reviewer, status: "completed", ended_at: start + 20 });
-  await expect(agents.locator(".activity-side-count")).toHaveText("1");
+  await activityCategory(page, "Running subagents");
+  await expect(agents.locator(".activity-side-count, [data-tab-count]")).toHaveText("1");
   parent = { ...parent, entries: parent.entries.map((entry) => entry.id === "queued" && entry.kind === "delegation" ? { ...entry, status: "done" } : entry) };
   await publish(parent);
-  await expect(agents.locator(".activity-side-count")).toBeEmpty();
-  const tasks = rail.getByRole("button", { name: "Running tasks", exact: true });
-  await tasks.click();
-  const taskDialog = page.getByRole("dialog", { name: "Running tasks", exact: true });
+  await expect(agents.locator(".activity-side-count, [data-tab-count]")).toBeEmpty();
+  const taskDialog = await openActivityDetails(page, "Running tasks");
   await expect(taskDialog).toContainText("Check service health");
   await expect(taskDialog).not.toContainText("Separate conversation");
   expect(await taskDialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
@@ -443,8 +441,7 @@ test("subagent summaries keep large live processes unmounted until explicitly ex
   await card.locator(".activity-run-heading").click();
   await expect(feed.locator(".activity-model-call, .activity-tool, .activity-thought-content")).toHaveCount(0);
   await expect(page.getByRole("navigation", { name: "Execution stages" })).toHaveCount(0);
-  await page.getByRole("button", { name: "Running subagents", exact: true }).click();
-  const agents = page.getByRole("dialog", { name: "Running subagents", exact: true });
+  const agents = await openActivityDetails(page, "Running subagents");
   await agents.getByRole("button", { name: /Reviewer 2.*Worker model 1/ }).click();
   const details = page.getByRole("dialog", { name: "View execution details", exact: true });
   await expect(details.getByText("Updated worker reasoning", { exact: true })).toBeVisible();

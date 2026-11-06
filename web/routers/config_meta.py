@@ -42,6 +42,7 @@ def _serialize_item(item: ConfigItem) -> Dict[str, Any]:
     return {
         "key": item.key,
         "description": item.description or item.key,
+        "title": item.title,
         "type": item.type_name,
         "value": _display_value(item),
         "default": item.default_value,

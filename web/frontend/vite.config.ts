@@ -131,6 +131,8 @@ export default defineConfig({
       output: {
         manualChunks(id) {
           const file = normalizePath(id);
+          const locale = file.match(/\/locales\/(zh|en)(?:\/[^/]+)?\.json$/);
+          if (locale && !file.endsWith("/common.json") && (file.includes("/web/frontend/src/i18n/") || file.includes("/entities/"))) return `locales-${locale[1]}`;
           if (/\/(?:entities\/[^/]+\/panels|channels\/[^/]+\/frontend)\/contributions\.ts$/.test(file)) return "module-manifests";
           for (const [chunk, packages] of Object.entries(vendorChunks)) {
             if (packages.some((name) => file.includes(`/node_modules/${name}/`))) return chunk;

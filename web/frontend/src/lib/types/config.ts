@@ -89,6 +89,8 @@ export interface TaskConfig {
 
 export interface ConfigMetaItem {
   key: string;
+  /** 由所属模块声明；旧服务缺省时回退完整描述。 */
+  title?: string;
   description: string;
   type: string;
   value: unknown;

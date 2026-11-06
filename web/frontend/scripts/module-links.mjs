@@ -9,7 +9,7 @@
  * 接入域：
  * - 实体面板：entities/<name>/panel.tsx（+ panels/ 子目录、panels/locales/）
  *   → 代码生成 src/generated/entity-panels.ts（面板懒加载表）与
- *   src/generated/entity-panel-locales.ts（locale eager 表），面板源码
+ *   src/generated/entity-panel-locales.ts（按需文案表与全局名称），面板源码
  *   经 @entities 别名（vite alias + tsconfig paths）以真实路径被
  *   tsc/vite/eslint 直接消费——无软链、无提交残留，实体目录增删即面板
  *   插拔。locale-only 实体（无 panel.tsx 但有 panels/locales/）同样收录
@@ -77,29 +77,18 @@ ${lines.join("\n")}
 }
 
 function renderLocalesCode(locales) {
-  const imports = [];
-  const entries = [];
-  locales.forEach(({ name, lang }, i) => {
-    imports.push(
-      `import locale${i} from "@entities/${name}/panels/locales/${lang}.json";`,
-    );
-    entries.push(
-      `  { name: ${JSON.stringify(name)}, lang: ${JSON.stringify(lang)}, bundle: locale${i} },`,
-    );
+  const entries = locales.map(({ name, lang }) => {
+    const file = path.join(entitiesDir, name, "panels/locales", `${lang}.json`);
+    const { _registry = {} } = JSON.parse(fs.readFileSync(file, "utf8"));
+    return `  { name: ${JSON.stringify(name)}, lang: ${JSON.stringify(lang)}, registry: ${JSON.stringify(_registry)}, load: () => import("@entities/${name}/panels/locales/${lang}.json") },`;
   });
-  return `/**
- * 实体面板 locale eager 表（代码生成，勿手改）。
- * 由 scripts/module-links.mjs 扫描 entities/<name>/panels/locales/{zh,en}.json
- * 生成；locale-only 实体（无 panel.tsx）同样收录。
- */
-${imports.join("\n")}
-
+  return `/** 实体文案加载表与全局名称元数据；由 module-links.mjs 生成。 */
 export interface PanelLocaleEntry {
   name: string;
   lang: "zh" | "en";
-  bundle: Record<string, unknown>;
+  registry: { groups?: Record<string, string>; configSections?: Record<string, string> };
+  load: () => Promise<{ default: Record<string, unknown> }>;
 }
-
 export const panelLocales: PanelLocaleEntry[] = [
 ${entries.join("\n")}
 ];

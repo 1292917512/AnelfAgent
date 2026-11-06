@@ -22,7 +22,7 @@ def demo_config():
     """注册一个测试配置项并在用后清理。"""
     ConfigRegistry.register(ConfigItem(
         key="meta_test_flag", group="测试组",
-        description="测试开关", default_value=True,
+        description="测试开关", title="测试", default_value=True,
     ))
     ConfigManager.set("meta_test_flag", True)
     yield "meta_test_flag"
@@ -51,6 +51,7 @@ class TestGetMeta:
         test_group = next(g for g in groups if g["group"] == "测试组")
         item = next(i for i in test_group["items"] if i["key"] == demo_config)
         assert item["description"] == "测试开关"
+        assert item["title"] == "测试"
         assert item["type"] == "boolean"
         assert item["value"] is True
         assert item["editable"] is True
@@ -64,6 +65,7 @@ class TestGetMeta:
             for item in g["items"]:
                 if item["key"] == "max_tool_iterations":
                     assert item["source"] == "mind"
+                    assert item["title"] == "最大工具调用轮次"
                     return
         pytest.fail("max_tool_iterations 未出现在元数据中")
 

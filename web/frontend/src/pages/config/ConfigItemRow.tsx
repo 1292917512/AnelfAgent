@@ -24,19 +24,20 @@ export function ConfigItemRow({ item, highlight, onOpenDetail }: ConfigItemRowPr
   const value = item.value;
   const isDefault = JSON.stringify(value) === JSON.stringify(item.default);
   const disabled = !item.editable || saving;
+  const label = item.title || item.description || item.key;
 
   const control = (() => {
     if (item.type === "boolean") {
-      return <SwitchField label={item.description || item.key} value={!!value} disabled={disabled} onCommit={save} />;
+      return <SwitchField label={label} value={!!value} disabled={disabled} onCommit={save} />;
     }
     if (item.type === "enum" && item.options) {
       return (
-        <SelectField label={item.description || item.key} value={String(value ?? "")} options={item.options} disabled={disabled} onCommit={save} />
+        <SelectField label={label} value={String(value ?? "")} options={item.options} disabled={disabled} onCommit={save} />
       );
     }
     if (item.type === "range" && item.min !== null && item.max !== null) {
       return (
-        <RangeField label={item.description || item.key}
+        <RangeField label={label}
           value={Number(value ?? item.default ?? 0)}
           min={item.min}
           max={item.max}
@@ -49,7 +50,7 @@ export function ConfigItemRow({ item, highlight, onOpenDetail }: ConfigItemRowPr
     }
     if (item.type === "model") {
       return (
-        <ModelField label={item.description || item.key}
+        <ModelField label={label}
           value={value == null ? "" : String(value)}
           allowEmpty={item.default === "" || item.default === null}
           disabled={disabled}
@@ -59,7 +60,7 @@ export function ConfigItemRow({ item, highlight, onOpenDetail }: ConfigItemRowPr
     }
     if (item.type === "integer" || item.type === "float" || item.type === "range") {
       return (
-        <NumberField label={item.description || item.key}
+        <NumberField label={label}
           value={Number(value ?? 0)}
           isFloat={item.type === "float"} min={item.min ?? undefined} max={item.max ?? undefined}
           unit={item.unit || undefined}
@@ -69,9 +70,9 @@ export function ConfigItemRow({ item, highlight, onOpenDetail }: ConfigItemRowPr
       );
     }
     if (item.type === "password") {
-      return <PasswordField label={item.description || item.key} value={value == null ? "" : String(value)} disabled={disabled} onCommit={save} />;
+      return <PasswordField label={label} value={value == null ? "" : String(value)} disabled={disabled} onCommit={save} />;
     }
-    return <TextField multiline={item.type === "text"} label={item.description || item.key} value={value == null ? "" : String(value)} disabled={disabled} onCommit={save} />;
+    return <TextField multiline={item.type === "text"} label={label} value={value == null ? "" : String(value)} disabled={disabled} onCommit={save} />;
   })();
 
   return (
@@ -79,6 +80,7 @@ export function ConfigItemRow({ item, highlight, onOpenDetail }: ConfigItemRowPr
       id={configItemId(item.key)}
       tabIndex={-1}
       data-config-highlight={highlight || undefined}
+      data-config-type={item.type}
       className={cn(
         "config-item flex flex-wrap items-center gap-3 p-4 rounded-xl border bg-card transition-colors",
         highlight ? "border-accent/40 bg-accent-subtle" : "border-border",
@@ -91,8 +93,9 @@ export function ConfigItemRow({ item, highlight, onOpenDetail }: ConfigItemRowPr
         title={t("detail.open")}
       >
         <div className="text-sm text-heading group-hover:text-accent transition-colors">
-          {item.description}
+          {label}
         </div>
+        {item.title && item.description !== item.title && <p className="mt-1 text-xs leading-relaxed text-muted">{item.description}</p>}
         <div className="text-xs text-muted font-mono truncate">{item.key}</div>
         <ConfigSource item={item} />
       </button>
@@ -100,14 +103,16 @@ export function ConfigItemRow({ item, highlight, onOpenDetail }: ConfigItemRowPr
       {item.related_key && <ConfigLink target="_blank" rel="noreferrer" config={{ key: item.related_key }}>{t("relatedSetting")}<ArrowUpRight size={13} /></ConfigLink>}
       <div className={cn("config-item-control flex max-w-full items-start gap-2", item.type === "text" && "w-full")}>
         {control}
-        {saving && <Loader2 size={14} className="animate-spin text-muted" />}
-        {saved && !saving && !error && <Check size={16} className="text-ok" />}
-        {!isDefault && item.editable && (
+        <span className="flex h-9 w-4 shrink-0 items-center" role="status" aria-label={saving ? t("common:saving") : saved && !error ? t("common:saved") : undefined}>
+          {saving && <Loader2 size={14} className="animate-spin text-muted" />}
+          {saved && !saving && !error && <Check size={16} className="text-ok" />}
+        </span>
+        {item.editable && (
           <button
             title={t("resetToDefault")}
             onClick={() => save(item.default)}
-            disabled={saving}
-            className="p-1.5 rounded-md text-muted hover:text-foreground hover:bg-hover transition-colors disabled:opacity-50"
+            disabled={saving || isDefault}
+            className="p-1.5 rounded-md text-muted hover:text-foreground hover:bg-hover transition-colors disabled:opacity-30"
           >
             <RotateCcw size={14} />
           </button>
