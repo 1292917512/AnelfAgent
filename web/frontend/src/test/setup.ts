@@ -1,8 +1,9 @@
 import { afterEach } from "vitest";
 import { cleanup } from "@testing-library/react";
-import { i18nReady } from "@/i18n";
+import i18n, { i18nReady } from "@/i18n";
 
 await i18nReady;
+await i18n.changeLanguage("en");
 
 afterEach(cleanup);
 Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value() {} });
