@@ -183,7 +183,28 @@ async def test_shutdown_closes_entry_and_reaps_active_work(isolated_worker):
 async def test_timeout_preserves_progress_and_releases_inputs(isolated_worker, monkeypatch):
     controller, _ = isolated_worker
     monkeypatch.setattr(desktop, "get_config_int", lambda *_: 1)
-    receipt = await controller.run("type", {"text": "abcdefghijklmnopqrstuvwxyz", "interval": .1})
+    loop = asyncio.get_running_loop()
+    call_later = loop.call_later
+    expire = []
+
+    def schedule(delay, callback, *args, **kwargs):
+        if controller.active and callback == controller.active.cancel:
+            assert delay == 1
+            expire.append(lambda: callback(*args))
+            delay = 60
+        return call_later(delay, callback, *args, **kwargs)
+
+    monkeypatch.setattr(loop, "call_later", schedule)
+    task = asyncio.create_task(controller.run("type", {"text": "abcdefghijklmnopqrstuvwxyz", "interval": .1}))
+    try:
+        await until(lambda: controller.active and controller.active.progress["completed"] >= 1)
+        assert len(expire) == 1
+        expire[0]()
+        receipt = await task
+    finally:
+        if not task.done():
+            task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
     assert receipt["status"] == "cancelled" and receipt["cause"] == "timeout"
     assert 0 < receipt["completed"] < receipt["total"]
     assert receipt["process_stopped"] and receipt["input_released"]

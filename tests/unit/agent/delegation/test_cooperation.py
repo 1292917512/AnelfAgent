@@ -145,6 +145,40 @@ async def test_outer_tool_timeout_does_not_own_child_lifetime(harness):
         EntityRegistry.unregister("cooperation_delegate")
 
 
+async def test_new_channel_message_interrupts_delegate_wait_without_cancelling_or_changing_owner(harness, monkeypatch):
+    from agent.messages.presets import MessageUser
+    from agent.mind.prefrontal_cortex import PrefrontalCortex
+
+    h = harness
+    entity = SimpleNamespace(add_conversations_num=lambda: 0, personality={}, uid=0)
+    h.mind.pfc = PrefrontalCortex(everything_data=SimpleNamespace(get_anything=AsyncMock(return_value=entity)))
+    monkeypatch.setattr("agent.delegation.dispatch.FOREGROUND_WAIT_SECONDS", 5)
+    monkeypatch.setattr("agent.mind.background.tasks._POLL_INTERVAL", 0.01)
+    waiter = asyncio.create_task(delegate_task(goal="等待期间接收其他频道消息"))
+    await h.started.wait()
+    incoming = MessageUser(uid="2", adapter_key="qq", text_content="另一频道有最新要求")
+    await h.mind.pfc.add_task(incoming)
+    payload = json.loads(await asyncio.wait_for(waiter, 1))
+    did = payload["delegation_id"]
+    task = h.manager._background_tasks[did]
+    assert payload["reason"] == "interrupted" and payload["pending_ids"] == [did]
+    assert not task.done() and not h.stopping.is_set()
+    assert h.registry.running(SCOPE)[0].task_id == did
+    assert not h.registry.read_task_output(incoming.entity_scope, did)["ok"]
+    assert h.mind.pfc.peek_all_tasks()[0][0] == incoming.entity_scope
+    assert "另一频道有最新要求" not in json.dumps(h.seen, ensure_ascii=False)
+    token = bind_usage_scope(incoming.entity_scope)
+    try:
+        h.release.set()
+        assert (await task).success
+        await asyncio.sleep(0)
+        h.unclaimed.assert_awaited_once()
+        assert h.unclaimed.await_args.args[0] == SCOPE
+        assert journal.load_transcript(did)["scope"] == SCOPE
+    finally:
+        reset_usage_scope(token)
+
+
 @pytest.mark.parametrize("source", ["ai", "user"])
 async def test_explicit_stop_waits_for_drain_preserves_transcript_and_follow_up(harness, source):
     h = harness
@@ -169,7 +203,11 @@ async def test_explicit_stop_waits_for_drain_preserves_transcript_and_follow_up(
     assert any(item["delegation_id"] == did and item["status"] == "cancelled" for item in journal.recent_history(50))
     h.release.set()
     resumed = json.loads(await follow_up_agent(did, "基于已有回执继续"))
-    assert resumed["completion_ready"] and resumed["delegation_id"] != did
+    resumed_id = resumed["delegation_id"]
+    assert resumed_id != did
+    if pending := h.manager._background_tasks.get(resumed_id):
+        assert (await pending).success
+    assert journal.load_transcript(resumed_id)["success"]
     assert "partial receipt" in json.dumps(h.seen[-1])
     assert h.seen[-1][-1]["content"].endswith("基于已有回执继续")
 
