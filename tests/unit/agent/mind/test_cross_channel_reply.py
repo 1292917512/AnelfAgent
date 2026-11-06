@@ -320,7 +320,8 @@ async def test_history_gate_uses_conversation_and_concurrent_searches(proceed, m
         config=mind.config, pfc=mind.pfc, conversation_data=mind.conversation_data, embedder=mind.embedder)
     state = decision.call_args.args[2]
     assert state["current_scope"] == "user_webui:other#a"
-    assert state["conversation"] == conversation[:2]
+    assert state["conversation"] == [{**conversation[0], "latest_user_turn": True}, conversation[1]]
+    assert "latest_user_turn" not in conversation[0]
     assert all(message["role"] != "tool" for message in state["conversation"])
     mind.embedder.embed_query.assert_not_called()
     if proceed:
