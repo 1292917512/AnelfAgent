@@ -30,7 +30,7 @@ export const i18nReady = new Promise<void>((resolve, reject) => {
     fallbackLng: "zh", supportedLngs: ["zh", "en"], load: "languageOnly",
     defaultNS: "common", ns: namespaces,
     interpolation: { escapeValue: false },
-    detection: { order: ["localStorage", "navigator"], caches: ["localStorage"] },
+    detection: { order: ["localStorage"], caches: ["localStorage"] },
   }, (error: unknown) => { if (error) reject(error); else resolve(); });
 });
 

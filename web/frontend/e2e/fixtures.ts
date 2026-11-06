@@ -12,8 +12,10 @@ export const metadata = { groups: [{ group: "adapter/telegram", items: [
   { key: "telegram_proxy_mode", type: "enum", description: "Network policy", value: "system", default: "system", editable: true, options: ["system", "direct", "proxy"], related_key: "proxy_enabled" },
 ] }] };
 
-export async function mockApi(page: Page) {
-  await page.addInitScript(() => { if (!localStorage.getItem("i18nextLng")) localStorage.setItem("i18nextLng", "en"); localStorage.setItem("theme", "light"); });
+export async function mockApi(page: Page, { seedAppearance = true }: { seedAppearance?: boolean } = {}) {
+  if (seedAppearance) {
+    await page.addInitScript(() => { if (!localStorage.getItem("i18nextLng")) localStorage.setItem("i18nextLng", "en"); localStorage.setItem("theme", "light"); });
+  }
   await page.route("**/api/**", async (route) => {
     if (!new URL(route.request().url()).pathname.startsWith("/api/")) { await route.continue(); return; }
     const path = new URL(route.request().url()).pathname.replace(/^\/api/, "").replace(/\/$/, "");

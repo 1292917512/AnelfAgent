@@ -1,5 +1,5 @@
 import AxeBuilder from "@axe-core/playwright";
-import { test, expect, openWebChat, closeWebChatOverlay } from "./fixtures";
+import { test, expect, mockApi, openWebChat, closeWebChatOverlay } from "./fixtures";
 import type { UiStateReport } from "../src/lib/types";
 
 test("shared selects animate inside dialogs without closing the editor or losing the draft", async ({ page }, info) => {
@@ -311,6 +311,39 @@ test("management dialogs and popovers finish exit motion and respect reduced mot
   await expect(edit).toBeFocused();
 });
 
+
+test("fresh visits default to Chinese and dark before hydration and preserve saved choices", async ({ browser, contextOptions, viewport, isMobile, hasTouch }, info) => {
+  const context = await browser.newContext({ ...contextOptions, viewport, isMobile, hasTouch, locale: "en-US", colorScheme: "light" });
+  try {
+    const page = await context.newPage();
+    const errors: string[] = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await mockApi(page, { seedAppearance: false });
+    let releaseScripts!: () => void;
+    const scriptsReady = new Promise<void>((resolve) => { releaseScripts = resolve; });
+    await page.route(/\/assets\/.*\.js$/, async (route) => { await scriptsReady; await route.continue(); });
+    await page.goto("/webui/config", { waitUntil: "commit" });
+    try {
+      await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+    } finally {
+      releaseScripts();
+    }
+    const appearance = page.getByRole("button", { name: "外观与语言", exact: true });
+    await expect(appearance).toBeVisible();
+    await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.screenshot({ path: info.outputPath("default-dark-chinese.png"), animations: "disabled" });
+    await appearance.click();
+    await page.getByRole("button", { name: "切换为浅色主题", exact: true }).click();
+    await page.getByRole("button", { name: "English", exact: true }).click();
+    await page.reload();
+    await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
+    await expect(page.getByRole("button", { name: "Appearance & language", exact: true })).toBeVisible();
+    expect(errors).toEqual([]);
+  } finally {
+    await context.close();
+  }
+});
 
 test("language chunks preserve cold reload, module names and repeated switching", async ({ page }) => {
   const errors: string[] = [];

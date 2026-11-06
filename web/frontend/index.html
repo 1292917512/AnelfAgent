@@ -14,10 +14,7 @@
           const theme =
             saved === "dark" || saved === "light"
               ? saved
-              : window.matchMedia &&
-                  window.matchMedia("(prefers-color-scheme: light)").matches
-                ? "light"
-                : "dark";
+              : "dark";
           document.documentElement.setAttribute("data-theme", theme);
           document.documentElement.classList.toggle("dark", theme === "dark");
         } catch {

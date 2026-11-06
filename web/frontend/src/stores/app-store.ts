@@ -28,7 +28,7 @@ interface AppState {
 
 export function getInitialTheme(): Theme {
   const saved = readLocal("theme");
-  return saved === "light" || saved === "dark" ? saved : window.matchMedia?.("(prefers-color-scheme: light)").matches ? "light" : "dark";
+  return saved === "light" || saved === "dark" ? saved : "dark";
 }
 
 function readFavorites(): string[] {
