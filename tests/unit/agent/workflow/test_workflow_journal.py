@@ -1,6 +1,7 @@
 """工作流 journal 测试：终态一笔写 / 事件单调序 / 导入表 / 收敛与清理。"""
 
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -123,7 +124,8 @@ async def test_list_non_terminal_and_purge(journal: WorkflowJournal):
     assert await journal.get_run("done") is None
 
 
-async def test_cleanup_preserves_running_resumable_sources_and_definitions(journal: WorkflowJournal):
+async def test_cleanup_preserves_running_resumable_sources_and_definitions(journal: WorkflowJournal, monkeypatch):
+    monkeypatch.setattr(wf_journal, "time", SimpleNamespace(time=lambda: 1000.0))
     for run_id, status in [("source", "completed"), ("stopped", "stopped"), ("failed", "failed"), ("live", "running")]:
         await journal.create_run(run_id, run_id, "{}", "h", "", "source" if run_id == "stopped" else "")
         await journal.admit_node(run_id, "a", 1, "ask", "h")
@@ -137,6 +139,7 @@ async def test_cleanup_preserves_running_resumable_sources_and_definitions(journ
         await journal.delete_run("live")
     with pytest.raises(ValueError):
         await journal.cleanup_runs(-1)
+    assert await journal.cleanup_runs(0, protected_ids=["failed"]) == 0
     assert await journal.cleanup_runs(0) == 1
     assert await journal.nodes_of_run("failed") == []
     assert await journal.list_events("failed", -1) == []

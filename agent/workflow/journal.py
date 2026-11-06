@@ -432,7 +432,7 @@ class WorkflowJournal:
         if days < 0:
             raise ValueError("保留天数不能为负数")
         db = await self._get_db()
-        cutoff = time.time() - days * 86400
+        cutoff = float("inf") if days == 0 else time.time() - days * 86400
         protected = protected_ids or []
         placeholders = ",".join("?" for _ in protected) or "NULL"
         async with self._write_lock:
