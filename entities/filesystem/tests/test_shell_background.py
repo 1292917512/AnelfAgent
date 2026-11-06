@@ -103,17 +103,22 @@ class TestLaunchBackground:
         alerts: list = []
         registry.set_alert_callback(
             lambda scope, desc, detail, tid: alerts.append((scope, desc, detail, tid)))
+        release = workspace / "release"
         shell_background.launch_background(
-            python_command("import time; print('start'); time.sleep(1.5)"), str(workspace), str(workspace), timeout_sec=0.3)
-        deadline = time.time() + 5
-        while time.time() < deadline and not alerts:
-            time.sleep(0.05)
-        # 提醒已到且附进度（报告式，不终止），任务仍在运行
-        assert alerts and alerts[0][0] == "_global"
-        assert "已运行" in alerts[0][2] and "勤勤恳恳" in alerts[0][2]
-        assert "start" in alerts[0][2]
-        assert alerts[0][3]  # task_id 已随提醒带出，AI 无需再查
-        assert len(registry.running("_global")) == 1
+            python_command("import time; from pathlib import Path; print('start'); "
+                           "exec(\"while not Path('release').exists(): time.sleep(0.01)\")"),
+            str(workspace), str(workspace), timeout_sec=0.3)
+        try:
+            deadline = time.time() + 5
+            while time.time() < deadline and not alerts:
+                time.sleep(0.05)
+            # 提醒可能早于解释器输出；进程在测试放行前不会自行完成。
+            assert alerts and alerts[0][0] == "_global"
+            assert "已运行" in alerts[0][2] and "勤勤恳恳" in alerts[0][2]
+            assert alerts[0][3]  # task_id 已随提醒带出，AI 无需再查
+            assert len(registry.running("_global")) == 1
+        finally:
+            release.touch()
         # 继续等待自然结束：正常完成（成功），不因超时失败
         deadline = time.time() + 8
         while time.time() < deadline:
@@ -123,6 +128,7 @@ class TestLaunchBackground:
         completed = registry.completed("_global")
         assert completed and completed[0].success
         assert "退出码 0" in completed[0].summary
+        assert "start" in completed[0].summary
 
     def test_terminate_while_process_is_starting(self, workspace, registry, monkeypatch):
         """进程创建期间也可取消：启动完成后立即击杀，并按终止态结算。"""

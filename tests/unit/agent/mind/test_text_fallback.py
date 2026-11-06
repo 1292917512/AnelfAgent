@@ -8,6 +8,8 @@ from typing import List
 import pytest
 from helpers.think_loop_fakes import FakeMind, run_think_loop, text_result, tool_result
 
+from core.conversation_scope import bind_scope, reset_scope
+
 _SEND_MESSAGE_RESULT = ('{"success": true, "target_id": "1", "message_id": "m1", '
                         '"delivery": "[delivery_mode:channel][delivery_status:sent][delivery_scope:_global]"}')
 
@@ -136,14 +138,20 @@ async def test_empty_output_quietly_ends(anything, deliver_mock) -> None:
     deliver_mock.assert_not_awaited()
     assert not any("禁止" in m.get("content", "") for m in chain if m.get("role") == "system")
 
-async def test_end_reply_content_fallback_on_zero_delivery(anything, deliver_mock) -> None:
-    """纯收束批次正文零送达时经 Jev 兜底（无真实频道时留未投递提示）。"""
+async def test_end_reply_without_judgment_records_skipped_delivery(anything, deliver_mock) -> None:
+    """未配置 Jev 时不补投，收束正文仍记录真实审核状态。"""
     mind = _mind()
     mind._rounds = [tool_result("这是最后一段话～", ["end_reply"])]
     steps: List[str] = []
-    await _run(mind, anything, steps)
+    token = bind_scope(anything.entity_scope)
+    try:
+        await _run(mind, anything, steps)
+    finally:
+        reset_scope(token)
 
-    assert any("兜底补投" in s or "未投递" in s for s in steps)
+    assert any("delivery_status:skipped" in step for step in steps)
+    deliver_mock.assert_not_awaited()
+    assert mind.llm_calls == 1
 
 async def test_end_reply_content_suppressed_after_send_message(anything, deliver_mock) -> None:
     """同轮 send_message 已送达，end_reply 附带正文不再重复投递。"""
