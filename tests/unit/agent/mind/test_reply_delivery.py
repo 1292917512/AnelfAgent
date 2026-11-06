@@ -60,14 +60,16 @@ async def test_explicit_end_never_sends_or_recovers(anything, sender, ending):
     sender.assert_not_awaited()
 
 
-async def test_end_reply_text_fallback_delivers_and_corrects(anything, sender):
-    """纯收束批次正文零送达时经 Jev 兜底：补投 + 纠偏提示，不写常规投递回执。"""
+async def test_end_reply_text_fallback_records_confirmed_delivery(anything, sender):
+    """收束正文经审核补投，使用同一真实回执且不追加模型调用。"""
     mind, completion = await _run([tool_result("答案是 42。", ["end_reply"])], anything)
     sender.assert_awaited_once()
     assert sender.await_args.args[2] == "答案是 42。"
     msgs = completion["messages"]
-    assert any(m.get("role") == "system" and "必须调用 send_message" in m.get("content", "") for m in msgs)
-    assert not any("按普通会话回复投递" in m.get("content", "") for m in msgs)
+    receipts = [m for m in msgs if m.get("_source", {}).get("origin") == "reply_delivery"]
+    assert len(receipts) == 1
+    assert "delivery_status:sent" in receipts[0]["content"]
+    assert completion["reason"] == "completed" and mind.llm_calls == 1
 
 
 @pytest.mark.parametrize("status", ["sent", "failed", "unknown", "missing"])
@@ -98,6 +100,10 @@ async def test_end_reply_text_rejected_keeps_text_intact(anything, sender, monke
     ]
     assert assistants, "未投递正文应保留在执行链中"
     assert all("未投递" not in (m["content"] or "") for m in assistants)
+    assert "delivery_status:skipped" in completion["messages"][-1]["content"]
+    assert completion["reason"] == "completed" and mind.llm_calls == 1
+    assert not any("内部收束说明" in call.args[1]
+                   for call in mind.conversation_data.append_context.await_args_list)
 
 
 async def test_tools_after_end_are_not_executed_and_results_stay_paired(anything, sender):
@@ -321,13 +327,19 @@ async def test_rejected_interim_continues_work_and_explicit_send_without_review(
     assert "delivery_status:sent" in str(completion["messages"])
 
 
-async def test_failed_auto_send_is_not_reported_as_sent(anything, sender):
+@pytest.mark.parametrize("ending", [False, True], ids=["plain", "end_reply"])
+@pytest.mark.parametrize("status", ["failed", "unknown"])
+async def test_failed_auto_send_is_not_reported_as_sent(anything, sender, ending, status):
     sender.side_effect = None
-    sender.return_value = json.dumps({"success": False, "error": "offline"})
-    _, completion = await _run([text_result("答案。")], anything)
+    sender.return_value = json.dumps({"success": False, "error": "offline", "outcome": status})
+    result = tool_result("答案。", ["end_reply"]) if ending else text_result("答案。")
+    mind, completion = await _run([result], anything)
     assert completion["reason"] == "failed"
-    assert "delivery_status:failed" in completion["messages"][-1]["content"]
+    assert f"delivery_status:{status}" in completion["messages"][-1]["content"]
+    assert any(f"delivery_status:{status}" in call.args[1]
+               for call in mind.conversation_data.append_context.await_args_list)
     assert sender.await_count == 1
+    assert mind.llm_calls == 1
 
 
 async def test_metadata_and_inline_reasoning_never_escape(anything, sender):
@@ -371,14 +383,16 @@ async def test_progress_and_work_in_same_batch_can_produce_final(anything, sende
     assert sender.await_args.args[2] == "最终结果。"
 
 
-async def test_interrupt_during_send_retains_unknown_receipt(anything, sender):
+@pytest.mark.parametrize("ending", [False, True], ids=["plain", "end_reply"])
+async def test_interrupt_during_send_retains_unknown_receipt(anything, sender, ending):
     from agent.mind.interrupt import InterruptRegistry
     started = asyncio.Event()
     async def sending(*args, **kwargs):
         started.set()
         await asyncio.Event().wait()
     sender.side_effect = sending
-    mind = FakeMind(rounds=[text_result("答案。")], default_text=None)
+    result = tool_result("答案。", ["end_reply"]) if ending else text_result("答案。")
+    mind = FakeMind(rounds=[result], default_text=None)
     mind.interrupts = InterruptRegistry()
     completion = {}
     token = bind_scope(_SCOPE)
@@ -394,5 +408,6 @@ async def test_interrupt_during_send_retains_unknown_receipt(anything, sender):
         reset_scope(token)
     assert completion["reason"] == "interrupted"
     assert any("delivery_status:unknown" in m.get("content", "") for m in completion["messages"])
-    assert "可能已经送达" in str(mind.conversation_data.append_context.await_args)
+    assert any("可能已经送达" in call.args[1]
+               for call in mind.conversation_data.append_context.await_args_list)
     assert sender.await_count == 1

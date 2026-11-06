@@ -11,7 +11,7 @@ from agent.hooks_llm.progress import HookProgress
 from agent.judgment import engine as engine_module
 from agent.judgment import gate
 from agent.judgment.engine import JudgmentConfig, JudgmentEngine
-from agent.judgment.evidence import conversation_evidence
+from agent.judgment.evidence import conversation_evidence, evidence_json
 from agent.judgment.types import ChoiceAnswer, JudgmentError, JudgmentReport, JudgmentSource, JudgmentUsage, NoulAnswer
 from core.hooks import HookMode, hook_execution
 from core.tool_errors import ErrorCause
@@ -134,7 +134,8 @@ def test_context_excludes_prefix_and_keeps_identity_tags():
     messages.extend({"role": "tool", "content": f"result {index}"} for index in range(12))
     result = conversation_evidence(messages)
     assert "stable-prefix" not in str(result) and "[uid:42]" in str(result)
-    assert len(result) == 6 and "result 11" in str(result)
+    assert all(f"result {index}" in str(result) for index in range(12))
+    assert len(evidence_json(result)) <= 3000
 
 
 @pytest.mark.parametrize("probability,basis,confidence,status", [

@@ -1,7 +1,7 @@
 """自动判断的有界会话证据。
 
-模型看到：按调用场景提取对话或执行证据，保留身份标签和摘录标记；自动召回只取对话。
-Token：共享字符预算，排除系统提示、多媒体载荷及重复正文，不另调用模型摘要。
+模型看到：优先保留最新用户请求及连续补充，再提供送达和执行证据；保留身份与摘录标记。
+Token：沿用共享字符预算，短消息不因固定条数被丢弃；排除媒体载荷和重复正文，不另调用模型摘要。
 缓存：只生成判断输入，不修改主模型上下文或历史前缀。
 """
 
@@ -82,13 +82,15 @@ def conversation_evidence(
     messages: Sequence[Mapping[str, Any]], *, max_chars: int | None = None,
     include_delivered: bool = False, exclude_content: str = "",
 ) -> list[JsonValue]:
-    """在共享预算内优先保留最新用户请求与送达事实，再按时间还原近期执行。"""
+    """在共享预算内优先保留最新用户轮次，再按时间还原送达与执行事实。"""
     configured = max(600, min(12000, get_config_int("judgment_evidence_max_chars", 3000)))
     budget = configured if max_chars is None else min(configured, max_chars)
     if budget < 160:
         return []
     indices: list[int] = []
     user_index: int | None = None
+    current_users: list[int] = []
+    user_turn_closed = False
     delivered: list[int] = []
     for index in range(len(messages) - 1, -1, -1):
         message = messages[index]
@@ -104,15 +106,18 @@ def conversation_evidence(
             continue
         if role == "user" and user_index is None:
             user_index = index
+        if role == "user" and not user_turn_closed:
+            current_users.append(index)
+        # 工具结果和未送达的助手过程文字不切断用户的连续补充。
+        if sent and current_users:
+            user_turn_closed = True
         if sent and len(delivered) < 3:
             delivered.append(index)
         indices.append(index)
-    priority = ([user_index] if user_index is not None else []) + (delivered if include_delivered else []) + indices
+    priority = current_users + (delivered if include_delivered else []) + indices
     selected: dict[int, JsonValue] = {}
     used = 2
     for index in dict.fromkeys(priority):
-        if len(selected) == 6:
-            break
         remaining = budget - used
         if remaining < 160:
             break
@@ -122,6 +127,8 @@ def conversation_evidence(
         if not text:
             continue
         item: dict[str, JsonValue] = {"role": str(message["role"]), "content": text}
+        if index in current_users:
+            item["latest_user_turn"] = True
         if include_delivered and message["role"] == "assistant" and _origin(message) == "conversation":
             item["delivered"] = True
         if shortened:

@@ -69,6 +69,36 @@ def test_delivery_fact_is_not_duplicated_and_candidate_is_not_reinjected() -> No
     assert "开始新任务" in encoded and "result 7" in encoded
 
 
+def test_delivery_evidence_keeps_user_supplements_before_old_replies() -> None:
+    messages = [
+        {"role": "assistant", "content": f"旧答复 {n}: " + "旧事实" * 200,
+         "_source": {"origin": "conversation"}}
+        for n in range(3)
+    ]
+    requests = ["先分析，不要发送", "目标是当前会话", "需要保留原文", "包括之前的限制", "按这些要求继续"]
+    for content in requests:
+        messages.extend([{"role": "user", "content": content}, {"role": "tool", "content": "查询结果"}])
+    original = deepcopy(messages)
+    evidence = conversation_evidence(messages, include_delivered=True)
+    assert [item["content"] for item in evidence if item["role"] == "user"] == requests
+    assert all(item.get("latest_user_turn") for item in evidence if item["role"] == "user")
+    assert any(item.get("delivered") for item in evidence)
+    assert len(evidence_json(evidence)) <= 3000
+    assert messages == original
+
+
+def test_latest_user_turn_excludes_earlier_answered_requests() -> None:
+    messages = [
+        {"role": "user", "content": "旧请求"},
+        {"role": "assistant", "content": "旧答复", "_source": {"origin": "conversation"}},
+        {"role": "user", "content": "新请求"},
+        {"role": "assistant", "content": "内部处理过程"},
+        {"role": "user", "content": "补充限制"},
+    ]
+    evidence = conversation_evidence(messages, include_delivered=True)
+    assert [item["content"] for item in evidence if item.get("latest_user_turn")] == ["新请求", "补充限制"]
+
+
 def test_text_blocks_and_tool_names_survive_without_serializing_media_payloads() -> None:
     messages = [
         {"role": "user", "content": [{"type": "text", "text": "[channel:webui][uid:web_user] 看这张图片"},
