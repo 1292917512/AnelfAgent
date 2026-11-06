@@ -174,6 +174,16 @@ it("merges only confirmed live text and preserves unpersisted replies, media and
   expect(buckets.A.messages.filter((message) => message.content === "Done")).toHaveLength(1);
 });
 
+it("merges a persisted media message by identity without duplicating its live frame", async () => {
+  const media = { role: "assistant", content: "Photo", cid: "media-id", media_type: "image", url: "/api/chat/files/image/a.png", caption: "Photo", ts: 4 };
+  buckets.A = { ...emptyBucket(), messages: [media] };
+  const history = makeHistory();
+  vi.mocked(chatApi.history).mockResolvedValue(response([{ ...media, id: 12 }]));
+  await history.load();
+  await history.refresh();
+  expect(buckets.A?.messages).toEqual([{ ...media, id: 12 }]);
+});
+
 it("releases persisted history without discarding local state and aborts the pending network request", async () => {
   const messages = Array.from({ length: 180 }, (_, id) => ({ id: id + 1, role: "assistant", content: "History" }));
   const local = { role: "user", content: "Draft submission", cid: "local" };

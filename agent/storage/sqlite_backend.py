@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -10,6 +11,7 @@ from typing import AsyncIterator, Optional, TypedDict
 
 import aiosqlite
 
+from agent.messages.media import MediaMessage
 from core.log import log
 from core.sqlite_utils import required_row
 from core.tags import etag_all, get_time_tag, tag_label
@@ -347,6 +349,12 @@ class SqliteBackend:
                 "CREATE INDEX IF NOT EXISTS idx_approval_audit_tool_user "
                 "ON approval_audit(tool_name, user_id, outcome);"
             )
+            cursor = await db.execute("PRAGMA table_info(conversation_messages)")
+            message_cols = {row[1] for row in await cursor.fetchall()}
+            if "media_json" not in message_cols:
+                await db.execute(
+                    "ALTER TABLE conversation_messages ADD COLUMN media_json TEXT NOT NULL DEFAULT ''"
+                )
             # id 水位线列：同 ts_ns 并列的消息靠 id 决胜，避免边界消息永久不可见
             cursor = await db.execute("PRAGMA table_info(conversation_summary)")
             summary_cols = {row[1] for row in await cursor.fetchall()}
@@ -524,6 +532,7 @@ class SqliteBackend:
         adapter_key: str = "",
         trigger_mind: bool = True,
         message_id: str = "",
+        media: MediaMessage | None = None,
     ) -> bool:
         """在同一写锁内判重并追加；重复投递不写窗口，返回 False。"""
         ts_ns = ts_ns or time.time_ns()
@@ -533,8 +542,9 @@ class SqliteBackend:
             ):
                 return False
             cursor = await db.execute(
-                "INSERT INTO conversation_messages(scope_type, scope_id, role, content, ts_ns, adapter_key, trigger_mind) VALUES(?,?,?,?,?,?,?)",
-                (scope_type, scope_id, role, content, int(ts_ns), adapter_key or "", 1 if trigger_mind else 0),
+                "INSERT INTO conversation_messages(scope_type, scope_id, role, content, ts_ns, adapter_key, trigger_mind, media_json) VALUES(?,?,?,?,?,?,?,?)",
+                (scope_type, scope_id, role, content, int(ts_ns), adapter_key or "", 1 if trigger_mind else 0,
+                 media.model_dump_json() if media else ""),
             )
             await db.commit()
             window = self._conversation_windows.get((scope_type, scope_id))
@@ -1373,23 +1383,25 @@ class SqliteBackend:
             where.append("id>?")
             params.append(int(after_id))
             cursor = await db.execute(
-                f"SELECT id, role, content, ts_ns FROM conversation_messages "
+                f"SELECT id, role, content, ts_ns, media_json FROM conversation_messages "
                 f"WHERE {' AND '.join(where)} ORDER BY id ASC LIMIT ?",
                 (*params, int(limit)),
             )
             rows = list(await cursor.fetchall())
-            return [{"id": r[0], "role": r[1], "content": r[2], "ts_ns": r[3]} for r in rows]
+            return [{"id": r[0], "role": r[1], "content": r[2], "ts_ns": r[3],
+                     **({"media": json.loads(r[4])} if r[4] else {})} for r in rows]
         if before_id is not None:
             where.append("id<?")
             params.append(int(before_id))
         cursor = await db.execute(
-            f"SELECT id, role, content, ts_ns FROM conversation_messages "
+            f"SELECT id, role, content, ts_ns, media_json FROM conversation_messages "
             f"WHERE {' AND '.join(where)} ORDER BY ts_ns DESC LIMIT ?",
             (*params, int(limit)),
         )
         rows = list(await cursor.fetchall())
         rows.reverse()
-        return [{"id": r[0], "role": r[1], "content": r[2], "ts_ns": r[3]} for r in rows]
+        return [{"id": r[0], "role": r[1], "content": r[2], "ts_ns": r[3],
+                 **({"media": json.loads(r[4])} if r[4] else {})} for r in rows]
 
     async def count_conversation(self, *, scope_type: str, scope_id: str) -> int:
         """统计该 scope 的对话消息总数（含窗口外历史，溢出提示感知用）。"""

@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from agent.messages.media import MediaMessage
 from core.log import log
 from core.path import ConfigPaths
 from core.tags import replace_tags, tag_label
@@ -62,6 +63,10 @@ def clean_message_for_display(msg: Dict[str, Any]) -> Dict[str, Any]:
         "role": msg.get("role", ""),
         "content": content,
     }
+    if msg.get("media"):
+        media = MediaMessage.model_validate(msg["media"])
+        result.update(media.model_dump())
+        result["content"] = media.caption
     if kind:
         result["kind"] = kind
     if kind == "tool_summary":

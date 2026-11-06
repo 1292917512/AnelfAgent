@@ -211,6 +211,7 @@ export interface SseReplyEvent extends SseEventBase {
 export type SseTurnEndEvent = SseEventBase;
 
 export interface SseMediaEvent extends SseEventBase {
+  cid?: string;
   media_type?: string;
   url?: string;
   caption?: string;
@@ -332,6 +333,9 @@ export interface ChatHistoryMessage {
   cid?: string;
   role: string;
   content: string;
+  media_type?: string;
+  url?: string;
+  caption?: string;
   timestamp?: string;
   /** epoch 秒（后端 ts_ns 换算），时间线合排用 */
   ts?: number;

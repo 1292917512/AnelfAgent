@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
-from channels.webui.adapter import WebUIChannel, _media_frame_url
+from channels.webui.adapter import WebUIChannel
+from channels.webui.media import publish_media
 from core import realtime_hub
+from core.path import ConfigPaths, parse_upload_url, upload_url_for
 
 
 @pytest.fixture(autouse=True)
@@ -36,30 +39,39 @@ def captured(channel, monkeypatch):
 
 class TestMediaFrameUrl:
     def test_http_url_passthrough(self):
-        assert _media_frame_url("https://x.com/a.png") == "https://x.com/a.png"
+        assert publish_media("https://x.com/a.png", "image") == "https://x.com/a.png"
 
-    def test_api_url_passthrough(self):
-        assert _media_frame_url("/api/chat/files/image/a.png") == "/api/chat/files/image/a.png"
+    @pytest.mark.parametrize("as_url", [False, True])
+    def test_uploaded_source_is_snapshotted(self, tmp_path, monkeypatch, as_url):
+        monkeypatch.setattr(ConfigPaths, "UPLOAD_DIR", str(tmp_path))
+        source = tmp_path / "image" / "截图 #50%.png"
+        source.parent.mkdir()
+        source.write_bytes(b"original")
+        url = publish_media(upload_url_for("image", source.name) if as_url else str(source), "image")
+        source.write_bytes(b"changed")
+        parts = parse_upload_url(url)
+        assert parts is not None
+        assert (tmp_path / parts[0] / parts[1]).read_bytes() == b"original"
 
-    def test_upload_path_rewritten_to_api_url(self):
-        """上传目录下的本地绝对路径改写为可服务 URL（不再原样出网）。"""
-        from core.path import ConfigPaths
-        local = f"{ConfigPaths.UPLOAD_DIR}/image/123_a.png"
-        assert _media_frame_url(local) == "/api/chat/files/image/123_a.png"
+    @pytest.mark.parametrize("problem", ["missing", "empty", "directory", "oversize", "api"])
+    async def test_unpublishable_media_fails_without_broadcast(self, channel, captured, tmp_path, monkeypatch, problem):
+        from core.config import ConfigManager
 
-    def test_voice_upload_path_rewritten(self):
-        from core.path import ConfigPaths
-        local = f"{ConfigPaths.UPLOAD_DIR}/voice/456.wav"
-        assert _media_frame_url(local) == "/api/chat/files/voice/456.wav"
-
-    def test_foreign_path_passthrough(self):
-        assert _media_frame_url("/etc/passwd") == "/etc/passwd"
-
-    async def test_send_photo_uses_rewritten_url(self, channel, captured):
-        from core.path import ConfigPaths
+        monkeypatch.setattr(ConfigPaths, "UPLOAD_DIR", str(tmp_path / "uploads"))
+        ConfigManager.set("upload_max_mb", 1)
+        source = tmp_path / "source.png"
+        if problem == "empty":
+            source.touch()
+        elif problem == "directory":
+            source.mkdir()
+        elif problem == "oversize":
+            source.write_bytes(b"x" * (1024 * 1024 + 1))
         realtime_hub.subscribe(client_kind="web")
-        await channel.send_photo("c1", f"{ConfigPaths.UPLOAD_DIR}/image/x.png")
-        assert captured[0]["url"] == "/api/chat/files/image/x.png"
+        result = json.loads(await channel.send_photo("c1", "/api/unknown" if problem == "api" else str(source)))
+        assert result["success"] is False
+        assert result["cause"] in {"param", "not_found"}
+        assert captured == []
+        assert not list(Path(ConfigPaths.UPLOAD_DIR).rglob("*.*"))
 
     async def test_media_sends_fail_without_clients(self, channel, captured):
         """媒体与文本同一语义：无在线客户端时如实失败（不虚报已送达）。"""

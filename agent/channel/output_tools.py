@@ -7,8 +7,8 @@
 频道能力工具由 ``tool_bridge`` 负责：适配器用 ``@channel_tool`` 标记方法，
 频道注册时自动扫描注册（通用能力跨频道共享路由，特有方法按频道 tag 注入）。
 
-模型可见：发送回执保留明确的目标子会话；显式地址与频道冲突时返回参数错误。
-Token 影响：仅回执中的目标信息，无额外模型调用。
+模型可见：发送回执保留目标子会话、频道返回的媒体引用及历史保存状态；地址冲突返回参数错误。
+Token 影响：回执增加少量目标与媒体字段，无额外模型调用。
 缓存影响：仅工具结果，不改变稳定前缀。
 """
 
@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional
 
+from agent.messages.media import MediaMessage
 from core.entity import EntityRegistry
 from core.latebind import LateBinding
 from core.log import log
@@ -94,7 +95,8 @@ async def _record_sent_reply(
     channel_type: str,
     session_id: str = "",
     adapter_key: str = "",
-) -> None:
+    media: MediaMessage | None = None,
+) -> bool:
     """将 AI 发送的回复记录到对话历史（assistant 角色）。
 
     主流做法：对话历史应同时包含用户消息与 AI 回复，
@@ -103,8 +105,8 @@ async def _record_sent_reply(
     诱发模型模仿标签格式并泄漏到出站文本。
     session_id 非空时写入对应子会话分桶；scope_id 含 adapter 前缀（与 entity_scope 规则一致）。
     """
-    if not conversation_data_port.bound or not content:
-        return
+    if not conversation_data_port.bound or (not content and media is None):
+        return False
     conversation_data = conversation_data_port.get()
     try:
         from agent.storage.storage_router import StorageDomain
@@ -116,9 +118,12 @@ async def _record_sent_reply(
             scope_type=scope_type, scope_id=scope_id,
             role="assistant", content=content,
             adapter_key=adapter_key,
+            **({"media": media} if media is not None else {}),
         )
+        return True
     except Exception as exc:
-        log(f"回复记录失败: {exc}", "DEBUG", tag="通道")
+        log(f"回复记录失败: {exc}", "WARNING", tag="通道")
+        return False
 
 
 def _get_channel(channel_id: str):
@@ -359,11 +364,17 @@ async def execute_send_action(
         if ok:
             record_delivery(target_scope, through_ts=seen_through)
             note_outbound(target_scope, thinker, outbound_preview or operation)
-            if record_content:
-                await _record_sent_reply(
-                    resolved_target_id, record_content, channel_type,
+            media = MediaMessage.model_validate(parsed["media"]) if parsed.get("media") else None
+            if record_content or media is not None:
+                saved = await _record_sent_reply(
+                    resolved_target_id, record_content or (media.caption or "[媒体]" if media else ""), channel_type,
                     session_id=session_id, adapter_key=channel_id,
+                    **({"media": media} if media is not None else {}),
                 )
+                if media is not None:
+                    parsed["history_saved"] = saved
+                    if not saved:
+                        parsed["warning"] = "媒体已推送，但聊天历史保存失败，刷新后无法恢复；不要重复发送。"
             log(f"{operation}已发送: [{channel_id}] -> {target_id}{success_suffix}", tag="通道")
         else:
             log(f"{operation}发送失败: [{channel_id}] -> {target_id}: {parsed.get('error', '?')}", "WARNING", tag="通道")

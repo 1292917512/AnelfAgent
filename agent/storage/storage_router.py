@@ -14,6 +14,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
+from agent.messages.media import MediaMessage
 from agent.storage.sqlite_backend import SqliteBackend
 
 
@@ -83,11 +84,12 @@ class StorageRouter:
     async def _append_conversation(
         self, *, scope_type: str, scope_id: str, role: str, content: str,
         ts_ns: Optional[int] = None, adapter_key: str = "", trigger_mind: bool = True,
-        message_id: str = "", **_kw: Any,
+        message_id: str = "", media: MediaMessage | None = None, **_kw: Any,
     ) -> bool:
         return await self.sqlite.append_conversation(
             scope_type=scope_type, scope_id=scope_id, role=role, content=content,
             ts_ns=ts_ns, adapter_key=adapter_key, trigger_mind=trigger_mind, message_id=message_id,
+            media=media,
         )
 
     async def _fetch_conversation(self, *, scope_type: str, scope_id: str, limit: int = 30, **_kw: Any) -> List[Dict[str, Any]]:

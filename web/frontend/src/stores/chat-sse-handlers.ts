@@ -175,10 +175,11 @@ export function attachChatSseHandlers(es: EventSource, ctx: ChatSseContext, isCu
       const chatId = routeChatId(data);
       const isBackground = chatId !== ctx.getActiveChatId();
       updateBucket(chatId, (b) => {
+        if (data.cid && b.messages.some((message) => message.cid === data.cid)) return {};
         const msg: ChatMessage = {
           role: "assistant",
           content: data.caption || "",
-          cid: nextCid(),
+          cid: data.cid || nextCid(),
           ts: Date.now() / 1000,
           media_type: data.media_type,
           url: data.url,

@@ -12,6 +12,30 @@ import { workspaceFileId } from "@/lib/workspace-file";
 beforeEach(() => { vi.useFakeTimers(); useActivityStore.setState({ epoch: "", snapshotRevision: 0, runs: [] }); });
 afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); });
 
+it("keeps media identity and ignores replayed frames, including history arriving first", () => {
+  const events = new EventTarget();
+  let bucket: ChatBucket = emptyBucket();
+  const detach = attachChatSseHandlers(events as EventSource, {
+    updateBucket: (_id, patch) => { bucket = { ...bucket, ...patch(bucket) }; },
+    getActiveChatId: () => "other", setContextUsage: vi.fn(),
+  }, () => true, vi.fn());
+  const emit = () => events.dispatchEvent(new MessageEvent("media", { data: JSON.stringify({
+    chat_id: "default", cid: "media-id", media_type: "image", url: "/api/chat/files/image/a.png", caption: "Photo",
+  }) }));
+  try {
+    emit();
+    emit();
+    expect(bucket.messages).toHaveLength(1);
+    expect(bucket.messages[0]?.cid).toBe("media-id");
+    expect(bucket.unread).toBe(1);
+    bucket.messages = [{ ...bucket.messages[0]!, id: 12 }];
+    emit();
+    expect(bucket.messages).toHaveLength(1);
+    expect(bucket.messages[0]?.id).toBe(12);
+    expect(bucket.unread).toBe(1);
+  } finally { detach(); }
+});
+
 it("bounds file signal history while preserving open editors and repeated edits within one millisecond", () => {
   const events = new EventTarget();
   const detach = attachChatSseHandlers(events as EventSource, { updateBucket: vi.fn(), getActiveChatId: () => "default", setContextUsage: vi.fn() }, () => true, vi.fn());

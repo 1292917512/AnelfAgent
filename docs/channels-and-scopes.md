@@ -174,10 +174,14 @@ exactly-once 或持久化 webhook 重试；完整接入步骤与交付边界见�
   send_* 失败不静默跳过——逐段记入失败清单，任一失败整体 success=False 且 error 列明原因；
   message_id 收集尽力而为（无平台 ID 的频道 success 即送达不误判）；qq 频道接入模板
   （`_SEGMENT_SENDERS` 声明 text/image/voice/file）
-- **media 帧 URL 契约**：URL 规则单点定义在 `core/path.py`（upload_url_for/upload_path_to_url/
-  parse_upload_url，web 上传端点建 URL / webui media 帧改写 / services 反解三方共用，禁止各处
-  手拼）；media 帧只传可服务 URL（上传目录本地路径改写 `/api/chat/files/{type}/{name}`，
-  http(s)、`/api/` 透传）
+- **媒体资源与历史**：URL 规则由 `core/path.py` 统一定义。WebUI 本地出站媒体经
+  `channels/webui/media.py` 复制到上传目录，大小受 `upload_max_mb` 约束，完成后才返回
+  `/api/chat/files/{type}/{name}`；上传附件 URL 也复制为独立快照，源文件覆盖或删除不影响已发附件。
+  语音资源使用 audio 目录，HTTP(S) 外链仍由来源方负责有效期；不透传任意本地路径或 API 地址。
+  实时帧与发送回执共用 `MediaMessage`；`execute_send_action` 把媒体元数据与说明文字一同保存到
+  会话记录，历史接口恢复同一 cid、类型、URL 和说明。前端按 cid 归并实时帧与历史，避免重复。
+  媒体元数据不进入模型历史正文；资源发布失败不广播、不报成功。已推送但历史保存失败时回执
+  明确返回 `history_saved=false`，不将已发生的投递伪装为未发送，也不建议重复发送。
 - **WebUI 聊天广播**：channels/webui 经事件总线推帧（EVENT_CHAT_BROADCAST），web 层订阅桥接
   SSE 订阅者——频道不反向依赖 web 层；健康探针查 `event_bus.has_listeners`
 

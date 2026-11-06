@@ -1,6 +1,32 @@
 import { test, expect, openWebChat, closeWebChatOverlay, installEventStream } from "./fixtures";
 import type { ActivityRun } from "../src/lib/types/activity";
 
+test("a delivered image stays visible after history catch-up and a full page reload", async ({ page }) => {
+  await installEventStream(page);
+  const media = { cid: "media-id", media_type: "image", url: "/api/chat/files/image/photo.png", caption: "Published image" };
+  let delivered = false;
+  const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a5XcAAAAASUVORK5CYII=", "base64");
+  await page.route("**/api/chat/files/image/photo.png", (route) => route.fulfill({ contentType: "image/png", body: png }));
+  await page.route("**/api/chat/history*", (route) => route.fulfill({ json: delivered ? [
+    { id: 12, role: "assistant", content: media.caption, ts: Date.now() / 1000, ...media },
+  ] : [] }));
+  await page.goto("/webui/");
+  await openWebChat(page);
+  await page.evaluate((data) => window.dispatchEvent(new CustomEvent("test-activity", { detail: { event: "media", data } })), media);
+  const image = page.locator(".message-list img");
+  await expect(image).toHaveCount(1);
+  await expect.poll(() => image.evaluate((element) => (element as HTMLImageElement).naturalWidth)).toBe(1);
+  delivered = true;
+  await page.evaluate(() => window.dispatchEvent(new CustomEvent("test-activity", { detail: { event: "turn_end", data: {} } })));
+  await expect(page.locator('[data-message-key="msg-12-assistant"]')).toHaveCount(1);
+  await expect(image).toHaveCount(1);
+  await page.reload();
+  await openWebChat(page);
+  await expect(image).toHaveCount(1);
+  await expect.poll(() => image.evaluate((element) => (element as HTMLImageElement).naturalWidth)).toBe(1);
+  await page.screenshot({ path: test.info().outputPath("persisted-media.png") });
+});
+
 test("long user and assistant messages stay fully readable with code highlighted on scroll", async ({ page, context }, info) => {
   await installEventStream(page);
   await context.grantPermissions(["clipboard-read", "clipboard-write"]);
