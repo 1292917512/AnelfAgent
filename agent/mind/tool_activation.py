@@ -2,11 +2,15 @@
 
 声明 ``allow_sleep=True`` + ``sleep_brief`` 的工具默认处于沉睡状态：
 不出现在 LLM 的完整 schema 中，仅在工具目录里展示简短描述（低 token）。
-AI 需要时调用 ``activate_tool_group`` 唤醒整个分组，唤醒后持续 N 轮对话，
-轮数耗尽自动回到沉睡状态。
+AI 需要时调用 ``activate_tool_group`` 唤醒整个分组。粘性模式下保持激活，
+非粘性模式按对话轮数到期；执行上下文退出时统一清理其 scope 状态。
 
 激活状态按对话 scope 隔离（不同用户/群聊互不影响），
 当前 scope 通过 contextvars 绑定，异步任务间互不串扰。
+
+模型看到：激活仅适用于目录标记[可沉睡]的分组；回执按实际模式说明常驻或到期。
+Token 影响：固定描述增量数十 token，激活结果沿用工具摘要。
+缓存影响：模式与轮数仅进工具结果，不注入稳定前缀；工具装配与顺序沿用原机制。
 """
 from __future__ import annotations
 
@@ -17,6 +21,7 @@ from core.config import get_config_int
 from core.conversation_scope import current_scope
 from core.entity import EntityRegistry, EntityType
 from core.log import log
+from core.tool_errors import ErrorCause, tool_error
 from core.tool_registry import deferred_tool
 
 _DEFAULT_ACTIVE_ROUNDS = 3
@@ -174,14 +179,14 @@ tool_activation = ToolActivationManager()
     name="activate_tool_group",
     group="thinking", tags=["always"], source="mind.core",
     description="激活一个沉睡的工具分组，唤醒后该分组的完整工具将在后续轮次可用。"
-    "当工具目录中某个分组标记为[沉睡]且你需要使用它时调用。",
+    "仅用于目录标记[可沉睡]的分组；其他分组用 list_entity_methods 发现。",
 )
 def _activate_tool_group_tool(group: str, rounds: int = 0) -> str:
     """激活沉睡的工具分组。
 
     Args:
-        group: 要激活的工具分组名（工具目录中标记[沉睡]的分组）
-        rounds: 持续轮数，不传使用默认值（激活期间每轮对话消耗一轮）
+        group: 要激活的工具分组名（工具目录中标记[可沉睡]的分组）
+        rounds: 非粘性模式下持续的对话轮数，不传使用默认值；粘性模式不会按轮数过期。
     """
     sleepable = EntityRegistry.get_sleepable_groups()
     if group not in sleepable:
@@ -191,18 +196,23 @@ def _activate_tool_group_tool(group: str, rounds: int = 0) -> str:
             for e in EntityRegistry.get_by_group(group)
         )
         if has_tools:
-            return json.dumps({
-                "error": f"分组 '{group}' 的工具不受沉睡管理，无法通过 activate_tool_group 唤醒。",
-                "hint": f"请改用 list_entity_methods(group=\"{group}\") 动态发现该分组的工具，"
-                        "发现后即可直接调用。",
-            }, ensure_ascii=False)
+            return tool_error(
+                f"分组 '{group}' 的工具不受沉睡管理，无法通过 activate_tool_group 唤醒。",
+                cause=ErrorCause.PARAM, retryable=False,
+                hint=f"请改用 list_entity_methods(group=\"{group}\") 动态发现该分组的工具，"
+                     "后续轮次按权限加入工具列表。",
+            )
         available = ", ".join(sorted(sleepable.keys())) or "（无）"
-        return json.dumps({
-            "error": f"分组 '{group}' 不是可沉睡分组或不存在。",
-            "available_sleeping_groups": available,
-        }, ensure_ascii=False)
+        return tool_error(
+            f"分组 '{group}' 不是可沉睡分组或不存在。",
+            cause=ErrorCause.NOT_FOUND, retryable=False, available_sleeping_groups=available,
+        )
+
+    from core.config import get_config_bool
 
     final_rounds = tool_activation.activate(group, rounds or None)
+    sticky = get_config_bool("tool_activation_sticky", True)
+    duration = "当前会话内保持激活，不按轮数过期" if sticky else f"持续 {final_rounds} 轮对话"
 
     # 返回该分组的工具摘要，让 AI 立即了解可用方法（无需再查 list_entity_methods）
     tools_summary = []
@@ -219,9 +229,10 @@ def _activate_tool_group_tool(group: str, rounds: int = 0) -> str:
     return json.dumps({
         "ok": True,
         "group": group,
-        "active_rounds": final_rounds,
-        "hint": f"分组已激活，持续 {final_rounds} 轮对话。以下是该分组的工具摘要，"
-                f"完整 schema 将从下一轮开始自动出现在工具列表中。",
+        "sticky": sticky,
+        **({} if sticky else {"active_rounds": final_rounds}),
+        "hint": f"分组已激活，{duration}。以下是该分组的工具摘要，"
+                "完整 schema 从后续轮次起按权限加入工具列表。",
         "tools": tools_summary,
     }, ensure_ascii=False)
 

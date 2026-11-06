@@ -365,6 +365,8 @@ class TestSleepableCatalogStatic:
         from types import SimpleNamespace as SN
 
         import agent.context.assembly as ca
+        from agent.mind.tool_activation import tool_activation
+        from core.conversation_scope import bind_scope, reset_scope
 
         monkeypatch.setattr(
             ca.EntityRegistry, "get_entity_catalog",
@@ -380,8 +382,19 @@ class TestSleepableCatalogStatic:
         text = "\n".join(str(m.get("content", "")) for m in msgs)
         assert "[可沉睡]" in text
         assert 'activate_tool_group(group="ssh")' in text
+        assert "其余分组用 list_entity_methods 发现" in text
         # 文案中不再出现依赖激活状态的分支标记
         assert "[沉睡]" not in text
+        for scope in ("catalog_a", "catalog_b"):
+            token = bind_scope(scope)
+            try:
+                tool_activation.activate("ssh", rounds=2)
+                assert asm.build_tool_system_prompt() == msgs
+                tool_activation.deactivate("ssh")
+                assert asm.build_tool_system_prompt() == msgs
+            finally:
+                reset_scope(token)
+                tool_activation.clear_scope(scope)
 
 
 class TestCacheKindBucketing:

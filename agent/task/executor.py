@@ -8,7 +8,9 @@ Model Experience:
   追加在任务指令（最后一条消息）尾部；历次执行的时长/状态/产出摘要经
   执行历史落盘，由 list_tasks（概况）与 task_history（明细）只读查询
 - 模型看到的终态区分完成、未完成和未知；未确认的工具效果只报告回执，不推断完成。
-- token 影响：任务指令增量数十 token；结果入库复用去重判断增加一道长期价值判断，无候选时也判断。
+- 模型以最终正文提交内部总结；心跳日志和 end_reply.reason 不替代任务产出。
+- token 影响：任务指令增量数十 token；缺少总结时在原预算内补交一次，不重做操作；
+  结果入库复用去重判断增加一道长期价值判断，无候选时也判断。
 - KV Cache 影响：均位于最后一条消息内——执行时间一次运行内字节冻结、
   extra_note 纯尾部追加，任务稳定前缀（人设+工具+永久记忆）不受影响
 """
@@ -206,7 +208,9 @@ class TaskExecutor:
             f"{rule_1}\n",
             "2. 要了解会话内容必须用 get_conversation 实际读取消息，而非只看 scope 列表\n",
             "3. 操作前先用 recall/list_goals 检查已有记忆和目标，避免重复记录和重复提问\n",
-            "4. 完成后调用 log_to_heartbeat 记录操作总结，然后 end_reply 结束\n",
+            "4. 收尾时先调用 log_to_heartbeat 记录进展，再以最终正文提交任务总结并调用 end_reply"
+            "（可在同一轮提交正文和 end_reply）。总结须区分已核验结果、未完成事项与阻塞；"
+            "无事可做也简要说明。正文供内部任务结算，不会对外投递；心跳日志和 end_reply.reason 不替代最终正文。\n",
             "5. 任务自检：结合头部元信息判断本任务是否仍然有效——目标已达成/被新事实推翻/"
             "指令需要修订时用 update_task 更新（可改 prompt 或用 expires_at 延期）；"
             "确认彻底废弃用 delete_task 删除；到期任务系统会自动停用，无需手动处理",
@@ -278,6 +282,7 @@ class TaskExecutor:
                 tool_tags=task.tool_tags or None,
                 allow_output_tools=task.allow_output_tools,
                 completion=completion,
+                require_output=True,
             )
         cleaned = _clean_llm_output(raw)
         if not task.handoff:

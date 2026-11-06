@@ -52,7 +52,10 @@ async def test_task_output_permission_reaches_reflect_without_auto_routing(permi
     await TaskExecutor(mind, mind)._execute_llm(task, None, 0.5)
     call = mind.reflect.await_args
     assert call.kwargs["allow_output_tools"] is (permission is not False)
+    assert call.kwargs["require_output"] is True
     prompt = call.args[0][-1]["content"]
+    assert "以最终正文提交任务总结" in prompt
+    assert "心跳日志和 end_reply.reason 不替代最终正文" in prompt
     assert ("普通正文不会投递" in prompt) is (permission is not False)
     if permission is False:
         assert "严禁向任何频道/用户发送消息" in prompt

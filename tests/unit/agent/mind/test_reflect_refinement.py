@@ -161,6 +161,72 @@ class TestEndReplyOutputPreservation:
 
 
 class TestRequiredOutput:
+    @pytest.mark.parametrize("ending, budget, status", [
+        ("summary", 8, "success"),
+        ("recover", 8, "success"),
+        ("empty", 8, "incomplete"),
+        ("budget", 4, "incomplete"),
+    ])
+    async def test_task_summary_contract_preserves_evidence_and_prefix(
+        self, monkeypatch, tmp_path, ending: str, budget: int, status: str,
+    ) -> None:
+        from copy import deepcopy
+        from unittest.mock import AsyncMock
+
+        from agent.task import history
+        from agent.task.executor import TaskExecutor
+        from agent.task.model import TaskDefinition
+
+        summary = "已用正确字段重新读取并核验记录，日志已保存。"
+        rounds = [
+            tool_result("", ["inspect_record"]),
+            tool_result("", ["read_record"]),
+            tool_result("", ["log_to_heartbeat"], arguments=json.dumps({"content": summary})),
+            tool_result(summary if ending == "summary" else "", ["end_reply"]),
+        ]
+        if ending in {"recover", "empty"}:
+            rounds.append(text_result(summary if ending == "recover" else ""))
+        mind = _reflect_mind(rounds)
+        mind.tool_results["inspect_record"] = '{"error":"字段不存在"}'
+        mind.tool_results["read_record"] = '{"ok":true,"record":{"id":7}}'
+        monkeypatch.setattr(history, "_history_path", lambda: tmp_path / "history.json")
+        base = [{"role": "system", "content": "固定系统指令", "_layer": "stable"}]
+        monkeypatch.setattr("agent.mind.recall.coordinator.prepare_recollection", AsyncMock(return_value=base))
+        requests: list = []
+        invoke = mind.model_invoker.invoke
+
+        async def capture(messages, tools, *args, **kwargs):
+            requests.append(deepcopy((messages, tools)))
+            return await invoke(messages, tools, *args, **kwargs)
+
+        async def reflect(messages, **kwargs):
+            collected: list[str] = []
+            await run_think_loop(
+                mind, mode=ThinkMode.REFLECT, base_messages=messages, safety_limit=budget,
+                completion=kwargs["completion"], require_output=kwargs["require_output"],
+                collected_text=collected,
+            )
+            return "\n".join(collected)
+
+        monkeypatch.setattr(mind.model_invoker, "invoke", capture)
+        monkeypatch.setattr(mind, "reflect", reflect, raising=False)
+        task = TaskDefinition(name="verify_record", prompt="核验记录并总结", save_result_to_memory=False)
+        result = await TaskExecutor(mind, mind).run(task)
+        assert result is not None and result.completion_ready is (status == "success")
+        assert history.get_history(task.name)[0]["status"] == status
+        if status == "success":
+            assert result.content == summary
+        assert mind.executed_tools == ["inspect_record", "read_record", "log_to_heartbeat", "end_reply"]
+        assert mind.llm_calls == (5 if ending in {"recover", "empty"} else 4)
+        for messages, tools in requests:
+            assert messages[:2] == requests[0][0][:2]
+            assert tools == requests[0][1]
+        for previous, current in zip(requests[:-1], requests[1:], strict=True):
+            prefix = previous[0][:-1]  # 最后一条为动态执行态势
+            assert current[0][:len(prefix)] == prefix
+        assert any(m.get("role") == "tool" and "字段不存在" in m.get("content", "")
+                   for m in requests[-1][0])
+
     async def test_empty_end_recovers_summary_from_existing_results(self) -> None:
         summary = '{"summary":"已核验木镐增加一把"}'
         mind = _reflect_mind([

@@ -33,16 +33,22 @@ class TestListEntityMethodsSleepState:
         finally:
             EntityRegistry.unregister("lq_sleepy")
 
-    def test_activated_group_reports_rounds_left(self) -> None:
+    @pytest.mark.parametrize("sticky", [True, False])
+    def test_activated_group_reports_actual_expiry_mode(self, monkeypatch, sticky: bool) -> None:
         from entities.entity_query.tools import list_entity_methods
 
+        monkeypatch.setattr("core.config.get_config_bool", lambda key, default=False: sticky)
         _register("lq_actg", "lq_awake", allow_sleep=True, sleep_brief="简介")
         token = bind_scope("lq_scope")
         try:
             tool_activation.activate("lq_actg", rounds=3, scope="lq_scope")
             result = json.loads(list_entity_methods(group="lq_actg"))
             assert result["sleeping"] is False
-            assert result["active_rounds_left"] == 3
+            assert result["sticky"] is sticky
+            if sticky:
+                assert "active_rounds_left" not in result
+            else:
+                assert result["active_rounds_left"] == 3
             assert "hint" not in result
         finally:
             reset_scope(token)

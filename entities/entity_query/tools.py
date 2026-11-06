@@ -1,7 +1,8 @@
 """实体系统自省工具 — 查询实体目录和方法详情。
 
-Model Experience：方法详情复用执行端 JSON Schema，模糊查询歧义返回候选，误用标签时列出实际分组。
-按需结果增加嵌套参数约束，减少参数试错；不修改稳定提示词与缓存前缀。
+Model Experience：方法详情复用执行端 JSON Schema；说明发现工具与激活分组的边界，返回当前沉睡状态。
+Token 影响：工具描述固定增加数十 token，按需结果携带参数约束与激活模式。
+缓存影响：描述只在发布时更新；会话状态只进工具结果，不改写稳定提示词或已发送的消息。
 """
 
 from __future__ import annotations
@@ -79,7 +80,9 @@ def query_entities(keyword: str = "", include_disabled: bool = False) -> str:
 
 @tool(name="list_entity_methods", concurrency_safe=True, group="entity", tags=["always"])
 def list_entity_methods(group: str) -> str:
-    """查看指定实体分组的所有可用方法及其参数详情。
+    """查看分组方法与参数，并发现该组工具；非沉睡工具在后续轮次按权限加入调用列表。
+
+    返回 sleeping=true 时仍须调用 activate_tool_group 激活，不会仅因查看方法而唤醒。
 
     Args:
         group: 实体分组名称（如 os、environment、memory、web 等，完整列表见 query_entities 返回的目录）
@@ -136,7 +139,11 @@ def _sleep_state(group: str) -> dict:
         return {}
     rounds_left = tool_group_rounds_left(group)
     if rounds_left > 0:
-        return {"sleeping": False, "active_rounds_left": rounds_left}
+        from core.config import get_config_bool
+
+        if get_config_bool("tool_activation_sticky", True):
+            return {"sleeping": False, "sticky": True}
+        return {"sleeping": False, "sticky": False, "active_rounds_left": rounds_left}
     return {
         "sleeping": True,
         "hint": f"该分组当前处于沉睡状态，以下方法未注入工具列表、无法直接调用。"

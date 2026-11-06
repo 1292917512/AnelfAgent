@@ -153,15 +153,18 @@ class TestActivateToolGroupTool:
         try:
             result = json.loads(_activate_tool_group_tool(group="act_awakeg"))
             assert "error" in result
+            assert result["cause"] == "param" and result["retryable"] is False
             assert "list_entity_methods" in result["hint"]
             assert not tool_activation.is_active("act_awakeg")
         finally:
             EntityRegistry.unregister("act_awake_t")
 
-    async def test_activate_sleepable_group(self) -> None:
+    @pytest.mark.parametrize("sticky", [True, False])
+    async def test_activate_sleepable_group(self, monkeypatch, sticky: bool) -> None:
         from agent.mind.tool_activation import _activate_tool_group_tool
         from core.entity import EntityRegistry
 
+        monkeypatch.setattr("core.config.get_config_bool", lambda key, default=False: sticky)
         EntityRegistry.register_tool(
             name="act_sleepy", func=lambda: "s", group="act_sleepg",
             allow_sleep=True, sleep_brief="简介",
@@ -170,7 +173,13 @@ class TestActivateToolGroupTool:
             token = bind_scope("scope_tool_test")
             result = json.loads(_activate_tool_group_tool(group="act_sleepg", rounds=2))
             assert result["ok"] is True
-            assert result["active_rounds"] == 2
+            assert result["sticky"] is sticky
+            if sticky:
+                assert "active_rounds" not in result
+                assert "不按轮数过期" in result["hint"]
+            else:
+                assert result["active_rounds"] == 2
+                assert "持续 2 轮对话" in result["hint"]
             assert any(t["name"] == "act_sleepy" for t in result["tools"])
             assert tool_activation.is_active("act_sleepg", "scope_tool_test")
             reset_scope(token)
