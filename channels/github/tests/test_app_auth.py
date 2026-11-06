@@ -1,149 +1,88 @@
-"""GitHub App 鉴权测试(内存 RSA 密钥 + MockTransport,不触网)。
-
-覆盖:JWT 载荷与 RS256 可验 / installation id 发现 / token 缓存与到期换新。
-"""
+"""GitHub App SDK 认证、安装隔离和权限范围测试。"""
 
 from __future__ import annotations
 
-import time
-from typing import Any, List
+import json
+from typing import Any
 
 import httpx
-import jwt as pyjwt
+import jwt
 import pytest
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 
 from channels.github.app_auth import GitHubAppAuth
-from core.config import ConfigManager
+from channels.github.client import GitHubClient
 
 
 def _gen_key() -> tuple[str, Any]:
     private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    pem = private.private_bytes(
-        serialization.Encoding.PEM,
-        serialization.PrivateFormat.PKCS8,
-        serialization.NoEncryption(),
-    ).decode()
+    pem = private.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                serialization.NoEncryption()).decode()
     return pem, private.public_key()
 
 
-def _auth(handler: Any, pem: str) -> GitHubAppAuth:
-    return GitHubAppAuth(
-        app_id="12345", private_key=pem,
-        transport=httpx.MockTransport(handler),
-    )
+async def test_sdk_app_and_installation_auth_are_cached_and_scoped() -> None:
+    pem, public = _gen_key()
+    calls: list[tuple[str, str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content) if request.content else None
+        calls.append((request.method, request.url.path, body))
+        if request.url.path.endswith("/installation"):
+            decoded = jwt.decode(request.headers["authorization"].split(" ")[1], public, algorithms=["RS256"])
+            assert decoded["iss"] == "123"
+            return httpx.Response(200, json={"id": 42})
+        if request.url.path.endswith("/access_tokens"):
+            return httpx.Response(201, json={"token": "installation-token", "expires_at": "2099-01-01T00:00:00Z"})
+        assert request.headers["authorization"].endswith("installation-token")
+        return httpx.Response(200, json={"ok": True})
+
+    auth = GitHubAppAuth(app_id="123", private_key=pem, transport=httpx.MockTransport(handler))
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        for _ in range(2):
+            flow = await auth.auth_for(repo="o/r", permissions={"contents": "read"}, repositories=["r"])
+            await client.get("https://api.github.com/repos/o/r", auth=flow)
+    assert sum(path.endswith("/installation") for _, path, _ in calls) == 1
+    tokens = [body for _, path, body in calls if path.endswith("/access_tokens")]
+    assert tokens == [{"repositories": ["r"], "permissions": {"contents": "read"}}]
+    await auth.close()
 
 
-class TestJwt:
-    def test_jwt_claims_and_rs256_signature(self) -> None:
-        pem, public_key = _gen_key()
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(200, json=[])
-
-        auth = _auth(handler, pem)
-        token = auth._jwt()
-        decoded = pyjwt.decode(token, public_key, algorithms=["RS256"])
-        assert decoded["iss"] == "12345"
-        assert 0 < decoded["exp"] - decoded["iat"] <= 600 + 60  # 9min 有效期 + 1min 漂移
-        # 缓存:8 分钟内不再签发(同一对象)
-        assert auth._jwt() == token
-
-    def test_empty_credentials_rejected(self) -> None:
-        with pytest.raises(ValueError):
-            GitHubAppAuth(app_id="", private_key="x")
-        with pytest.raises(ValueError):
-            GitHubAppAuth(app_id="1", private_key="")
+async def test_multiple_installations_require_repository_or_explicit_id() -> None:
+    pem, _ = _gen_key()
+    auth = GitHubAppAuth(app_id="1", private_key=pem,
+                        transport=httpx.MockTransport(lambda request: httpx.Response(200, json=[{"id": 1}, {"id": 2}])))
+    with pytest.raises(ValueError, match="多个安装"):
+        await auth.installation_for()
+    await auth.auth_for(installation_id=2)
+    await auth.close()
 
 
-class TestInstallationToken:
-    async def test_auth_uses_global_proxy_policy(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        pem, _ = _gen_key()
-        values: dict[str, Any] = {"proxy_enabled": True, "http_proxy": "http://proxy.test:7890", "proxy_rules": "DOMAIN,api.github.com,PROXY"}
-        monkeypatch.setattr(ConfigManager, "get", staticmethod(lambda key, default=None: values.get(key, default)))
-        routes: list[str | None] = []
+async def test_client_selects_repository_installation_without_first_installation_fallback() -> None:
+    pem, _ = _gen_key()
+    requested: list[str] = []
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(request.url.path)
+        if request.url.path.endswith("/installation"):
+            return httpx.Response(200, json={"id": 9 if "/one/" in request.url.path else 10})
+        if request.url.path.endswith("/access_tokens"):
+            return httpx.Response(201, json={"token": request.url.path.split("/")[-2], "expires_at": "2099-01-01T00:00:00Z"})
+        expected = "9" if "/one/" in request.url.path else "10"
+        assert request.headers["authorization"].endswith(expected)
+        return httpx.Response(200, json=[])
+    transport = httpx.MockTransport(handler)
+    auth = GitHubAppAuth(app_id="1", private_key=pem, transport=transport)
+    client = GitHubClient(auth_mode="app", app_auth=auth, transport=transport)
+    await client.get("/repos/one/repo/events")
+    await client.get("/repos/two/repo/events")
+    assert "/app/installations" not in requested
+    await client.close()
+    await auth.close()
 
-        def transport(*, proxy: str | None = None, **kwargs: Any) -> httpx.MockTransport:
-            def respond(request: httpx.Request) -> httpx.Response:
-                routes.append(proxy)
-                if request.method == "GET":
-                    return httpx.Response(200, json=[{"id": 777}])
-                return httpx.Response(201, json={"token": "test-token", "expires_at": "2099-01-01T00:00:00Z"})
-            return httpx.MockTransport(respond)
 
-        monkeypatch.setattr(httpx, "AsyncHTTPTransport", transport)
-        auth = GitHubAppAuth(app_id="12345", private_key=pem)
-        try:
-            assert await auth.installation_token() == "test-token"
-        finally:
-            await auth.close()
-        assert routes == [values["http_proxy"]] * 2
-
-    async def test_discovery_and_token_flow(self) -> None:
-        pem, _ = _gen_key()
-        calls: List[str] = []
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            calls.append(f"{request.method} {request.url.path}")
-            assert request.headers["authorization"].startswith("Bearer ")
-            if request.url.path == "/app/installations":
-                return httpx.Response(200, json=[{"id": 777}])
-            if request.url.path == "/app/installations/777/access_tokens":
-                return httpx.Response(201, json={
-                    "token": "inst-tok-1",
-                    "expires_at": time.strftime("%Y-%m-%dT%H:%M:%SZ",
-                                                time.gmtime(time.time() + 3600)),
-                })
-            return httpx.Response(404)
-
-        auth = _auth(handler, pem)
-        token = await auth.installation_token()
-        assert token == "inst-tok-1"
-        # 缓存命中:不再发请求
-        assert await auth.installation_token() == "inst-tok-1"
-        assert calls == ["GET /app/installations",
-                         "POST /app/installations/777/access_tokens"]
-        await auth.close()
-
-    async def test_token_refresh_after_expiry(self) -> None:
-        pem, _ = _gen_key()
-        token_seq = {"n": 0}
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            if request.url.path == "/app/installations":
-                return httpx.Response(200, json=[{"id": 1}])
-            token_seq["n"] += 1
-            return httpx.Response(201, json={
-                "token": f"tok-{token_seq['n']}",
-                "expires_at": time.strftime("%Y-%m-%dT%H:%M:%SZ",
-                                            time.gmtime(time.time() + 3600)),
-            })
-
-        auth = _auth(handler, pem)
-        assert await auth.installation_token() == "tok-1"
-        auth._token_expires_at = time.time() - 1  # 强制过期
-        assert await auth.installation_token() == "tok-2"
-        await auth.close()
-
-    async def test_no_installation_raises(self) -> None:
-        pem, _ = _gen_key()
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(200, json=[])
-
-        auth = _auth(handler, pem)
-        with pytest.raises(RuntimeError, match="尚未安装"):
-            await auth.installation_token()
-        await auth.close()
-
-    async def test_api_error_raises(self) -> None:
-        pem, _ = _gen_key()
-
-        def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(401, json={"message": "bad jwt"})
-
-        auth = _auth(handler, pem)
-        with pytest.raises(RuntimeError, match="401"):
-            await auth.installation_token()
-        await auth.close()
+def test_empty_credentials_rejected() -> None:
+    with pytest.raises(ValueError):
+        GitHubAppAuth(app_id="", private_key="x")
+    with pytest.raises(ValueError):
+        GitHubAppAuth(app_id="1", private_key="")

@@ -50,6 +50,7 @@ def _serialize_item(item: ConfigItem) -> Dict[str, Any]:
         "environment_variable": environment,
         "value_source": "environment" if environment else "configured" if ConfigManager.has(item.key) else "default",
         "options": item.enum_options,
+        "schema": item.schema,
         "advanced": item.advanced,
         "min": item.min_value,
         "max": item.max_value,

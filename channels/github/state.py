@@ -1,11 +1,4 @@
-"""GitHub 频道状态 — 数据目录 JSON 持久化(原子写,随 ANELF_DATA_DIR 搬迁)。
-
-文件布局(``<data_dir>/channels/github/``):
-- ``poll_state.json``   每仓轮询游标(etag/最近事件 ID/熔断/暂停)
-- ``deliveries.json``   webhook delivery id 去重环(FIFO 2000)
-- ``digest_buffer.json`` 待汇总的 DIGEST 级事件(每日 digest 任务消费)
-- ``stats.json``        每仓每日事件计数(30 天滚动)+ 最近事件环(200 条)
-"""
+"""GitHub 轮询快照、每日摘要和有界事件统计。"""
 
 from __future__ import annotations
 
@@ -19,7 +12,6 @@ from core.file_utils import atomic_write_text
 from core.log import log
 
 _LOG = "GitHub"
-_DELIVERY_RING_MAX = 2000
 _RECENT_EVENTS_MAX = 200
 _DIGEST_ROWS_MAX = 300
 _STATS_KEEP_DAYS = 30
@@ -53,50 +45,6 @@ def save_json(name: str, data: Any, *, directory: str = "") -> None:
         log(f"{_LOG}: 状态文件保存失败 ({name}): {exc}", "WARNING", tag="通道")
 
 
-# ----------------------------------------------------------------------
-# webhook delivery 去重环
-# ----------------------------------------------------------------------
-
-
-class DeliveryDedup:
-    """x-github-delivery 去重环:GitHub 超时重投同一 delivery 时幂等命中。"""
-
-    _FILE = "deliveries.json"
-
-    def __init__(self, *, directory: str = "") -> None:
-        self._dir = directory
-        self._ids: List[str] = []
-        self._set: set[str] = set()
-
-    def load(self) -> None:
-        data = load_json(self._FILE, {}, directory=self._dir)
-        ids = data.get("ids") if isinstance(data, dict) else None
-        if isinstance(ids, list):
-            self._ids = [str(x) for x in ids][-_DELIVERY_RING_MAX:]
-            self._set = set(self._ids)
-
-    def save(self) -> None:
-        save_json(self._FILE, {"ids": self._ids}, directory=self._dir)
-
-    def seen_or_add(self, delivery_id: str) -> bool:
-        """已见过返回 True(重复投递);否则登记并返回 False。"""
-        if not delivery_id:
-            return False
-        if delivery_id in self._set:
-            return True
-        self._ids.append(delivery_id)
-        self._set.add(delivery_id)
-        if len(self._ids) > _DELIVERY_RING_MAX:
-            old = self._ids[: len(self._ids) - _DELIVERY_RING_MAX]
-            del self._ids[: len(old)]
-            for x in old:
-                self._set.discard(x)
-        return False
-
-
-# ----------------------------------------------------------------------
-# DIGEST 缓冲与统计
-# ----------------------------------------------------------------------
 
 
 class DigestBuffer:
@@ -106,7 +54,6 @@ class DigestBuffer:
 
     def __init__(self, *, directory: str = "") -> None:
         self._dir = directory
-        # {date: {repo: [摘要行...]}}
         self._rows: Dict[str, Dict[str, List[str]]] = {}
         self._dirty = False
 
@@ -151,7 +98,6 @@ class EventStats:
 
     def __init__(self, *, directory: str = "") -> None:
         self._dir = directory
-        # counts: {date: {repo: {event_key: n}}};recent: [事件摘要...]
         self._counts: Dict[str, Dict[str, Dict[str, int]]] = {}
         self._recent: List[Dict[str, Any]] = []
         self._dirty = False

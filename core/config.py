@@ -169,6 +169,7 @@ class ConfigItem:
     validator: Optional[Callable[[Any], Any]] = None
     related_key: str = ""
     title: str = ""  # 可选短标题；description 保留完整说明
+    schema: Optional[Dict[str, Any]] = None
 
     def __post_init__(self) -> None:
         if self.value_type == ConfigValueType.AUTO or self.value_type == "auto":
@@ -796,6 +797,7 @@ def register_model_configs(
         注册的配置键列表
     """
     registered: List[str] = []
+    model_schema = model_cls.model_json_schema()
     for name, field in model_cls.model_fields.items():
         if only_fields is not None and name not in only_fields:
             continue
@@ -824,8 +826,35 @@ def register_model_configs(
             tag=str(extras.get("tag", "")),
             related_key=str(extras.get("related_key", "")),
             title=field.title or "",
+            schema=_config_field_schema(model_schema, name),
         ))
         if not ConfigManager.has(key):
             ConfigManager.set(key, default)
         registered.append(key)
     return registered
+
+
+def _config_field_schema(model_schema: Dict[str, Any], name: str) -> Dict[str, Any]:
+    """提取字段 schema 及其引用的定义，避免重复发送无关模型。"""
+    field_schema = dict(model_schema.get("properties", {}).get(name, {}))
+    definitions = model_schema.get("$defs", {})
+    selected: Dict[str, Any] = {}
+
+    def collect(value: Any) -> None:
+        if isinstance(value, dict):
+            reference = value.get("$ref", "")
+            if isinstance(reference, str) and reference.startswith("#/$defs/"):
+                key = reference.removeprefix("#/$defs/")
+                if key in definitions and key not in selected:
+                    selected[key] = definitions[key]
+                    collect(definitions[key])
+            for child in value.values():
+                collect(child)
+        elif isinstance(value, list):
+            for child in value:
+                collect(child)
+
+    collect(field_schema)
+    if selected:
+        field_schema["$defs"] = selected
+    return field_schema

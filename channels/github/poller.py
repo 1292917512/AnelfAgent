@@ -1,13 +1,4 @@
-"""GitHub 轮询器 — 每仓 Events API / releases 增量拉取(默认接收模式,零公网依赖)。
-
-可靠性设计:
-- **首次只播种不派发**(PollCursorStore 语义):启动/新增订阅不把历史事件重放给 AI;
-- **ETag 条件请求**:304 不占限流配额,长周期轮询的预算根基;
-- **游标续传**:已见事件 ID 落盘,重启不重放;
-- **失败分级**:401/404 暂停该仓并告警一次(不轰炸)、限流全局暂停至 reset、
-  其他异常指数退避,连续 5 次熔断 30 分钟;
-- **配额守卫**:剩余配额低于 rate_limit_reserve 时暂停轮询至 reset。
-"""
+"""按仓库增量轮询、分页、配额退避和游标恢复。"""
 
 from __future__ import annotations
 
@@ -20,6 +11,7 @@ from agent.channel.poll_cursor import PollCursorStore
 from core.log import log
 
 from .client import AuthError, GitHubClient, NotFoundError, RateLimitError
+from .config import RepoSubscription
 from .events import RawEvent, event_subscribed, from_poll_api
 from .pipeline import EventPipeline
 from .state import github_data_dir, load_json, save_json
@@ -44,15 +36,12 @@ class GitHubPoller:
         self._pipeline = pipeline
         self._task: Optional[asyncio.Task] = None
         self._sem = asyncio.Semaphore(4)
-        self._cursors = PollCursorStore(os.path.join(github_data_dir(), _CURSOR_FILE), channel=_LOG)
+        self._cursors = PollCursorStore(os.path.join(github_data_dir(), _CURSOR_FILE), channel=_LOG, max_per_kind=1000)
         self._repo_state: Dict[str, Dict[str, Any]] = {}
         self._global_paused_until: float = 0.0
         self._dirty = False
         self.last_tick_at: float = 0.0
 
-    # ------------------------------------------------------------------
-    # 生命周期
-    # ------------------------------------------------------------------
 
     @property
     def running(self) -> bool:
@@ -71,15 +60,14 @@ class GitHubPoller:
             self._task.cancel()
             try:
                 await self._task
-            except (asyncio.CancelledError, Exception):
-                pass
+            except asyncio.CancelledError:
+                log(f"{_LOG}: 轮询任务已取消", "DEBUG", tag="通道")
+            except Exception as exc:
+                log(f"{_LOG}: 轮询任务停止时异常: {exc}", "DEBUG", tag="通道")
             self._task = None
-        self._save_state()
         self._cursors.save()
+        self._save_state()
 
-    # ------------------------------------------------------------------
-    # 主循环
-    # ------------------------------------------------------------------
 
     async def _loop(self) -> None:
         while True:
@@ -96,19 +84,18 @@ class GitHubPoller:
         cfg = self._channel.config
         if time.time() < self._global_paused_until:
             return
-        # 配额守卫:剩余配额不足时暂停至 reset(不动用预留配额)
-        if 0 <= self._client.rate_remaining < int(cfg.rate_limit_reserve):
-            reset = self._client.rate_reset_at
-            self._global_paused_until = max(reset, time.time() + 60)
-            log(f"{_LOG}: 剩余配额 {self._client.rate_remaining} 低于预留线,暂停轮询至 reset",
-                "WARNING", tag="通道")
-            return
-
         due: List[Any] = []
         for sub in cfg.repos:
             state = self._repo_state.setdefault(sub.full_name, {})
             if time.time() < float(state.get("paused_until") or 0):
                 continue
+            path = f"/repos/{sub.full_name}/events"
+            limit, remaining, reset = self._client.quota_for(path)
+            reserve = min(cfg.rate_limit_reserve, max(1, limit // 10))
+            if 0 <= remaining < reserve and reset > time.time():
+                state["quota_paused_until"] = reset
+                continue
+            state.pop("quota_paused_until", None)
             interval = self._interval_for(sub)
             last = float(state.get("last_poll_at") or 0)
             if time.time() - last >= interval:
@@ -116,31 +103,32 @@ class GitHubPoller:
         if not due:
             return
         await asyncio.gather(*(self._poll_guarded(sub) for sub in due))
-        self._save_state()
         self._cursors.save()
+        self._save_state()
 
-    def _interval_for(self, sub: Any) -> float:
+    def _interval_for(self, sub: RepoSubscription) -> float:
         cfg = self._channel.config
         interval = sub.poll_interval_sec or int(cfg.default_poll_interval_sec)
-        floor = _ANON_MIN_INTERVAL if cfg.auth_mode == "none" else _MIN_INTERVAL
-        return max(float(interval), float(floor))
+        anonymous = self._client.auth.anonymous(f"/repos/{sub.full_name}/events") if self._client.auth else cfg.auth_mode == "none"
+        floor = _ANON_MIN_INTERVAL if anonymous else _MIN_INTERVAL
+        return max(float(interval), float(floor), float(self._repo_state.get(sub.full_name, {}).get("server_interval", 0)))
 
-    async def _poll_guarded(self, sub: Any) -> None:
+    async def _poll_guarded(self, sub: RepoSubscription) -> None:
         async with self._sem:
             try:
                 await self._poll_repo(sub)
             except asyncio.CancelledError:
                 raise
             except RateLimitError as exc:
-                self._global_paused_until = max(
+                state = self._repo_state.setdefault(sub.full_name, {})
+                state["paused_until"] = max(
                     time.time() + exc.retry_after, exc.reset_at, time.time() + 60,
                 )
-                log(f"{_LOG}: 限流,全局暂停 {int(self._global_paused_until - time.time())}s",
+                log(f"{_LOG}: 限流,仓库暂停 {int(state['paused_until'] - time.time())}s",
                     "WARNING", tag="通道")
             except (AuthError, NotFoundError) as exc:
-                # 凭据失效/仓不可见:暂停该仓直到用户介入(改配置即清),告警一次
                 state = self._repo_state.setdefault(sub.full_name, {})
-                state["paused_until"] = time.time() + 86400 * 365
+                state["paused_until"] = time.time() + _CIRCUIT_COOLDOWN
                 state["last_error"] = str(exc)
                 self._dirty = True
                 if not state.get("alert_sent"):
@@ -159,7 +147,6 @@ class GitHubPoller:
                     state["fail_count"] = 0
                     log(f"{_LOG}: {sub.full_name} 连续失败熔断 30 分钟: {exc}", "WARNING", tag="通道")
                 else:
-                    # 指数退避:interval * 2^fails(封顶 16 倍)
                     factor = min(2 ** fails, _MAX_BACKOFF_FACTOR)
                     state["last_poll_at"] = (
                         time.time() - self._interval_for(sub) + self._interval_for(sub) * factor
@@ -168,26 +155,35 @@ class GitHubPoller:
                         "WARNING", tag="通道")
                 self._dirty = True
 
-    # ------------------------------------------------------------------
-    # 单仓轮询
-    # ------------------------------------------------------------------
 
-    async def _poll_repo(self, sub: Any) -> None:
+    async def _poll_repo(self, sub: RepoSubscription) -> None:
         repo = sub.full_name
         state = self._repo_state.setdefault(repo, {})
         cfg = self._channel.config
 
-        # 1) Events API(综合事件流,ETag 条件请求)
         resp = await self._client.get(
             f"/repos/{repo}/events",
-            params={"per_page": 30},
+            params={"per_page": 100},
             etag=str(state.get("etag_events") or ""),
         )
         if not resp.not_modified:
+            items = resp.data if isinstance(resp.data, list) else []
+            page = 1
+            next_page = 'rel="next"' in resp.headers.get("link", "")
+            while (next_page and page < cfg.poll_max_pages and self._cursors.is_seeded(repo)
+                   and not any(self._cursors.is_seen(f"events:{repo.lower()}", str(item.get("id"))) for item in items)):
+                page += 1
+                response = await self._client.get(f"/repos/{repo}/events", params={"per_page": 100, "page": page})
+                items.extend(response.data if isinstance(response.data, list) else [])
+                next_page = 'rel="next"' in response.headers.get("link", "")
+            state["possible_gap"] = bool(next_page and page >= cfg.poll_max_pages and not any(
+                self._cursors.is_seen(f"events:{repo.lower()}", str(item.get("id"))) for item in items))
+            await self._dispatch_new_events(sub, items)
             if resp.etag:
                 state["etag_events"] = resp.etag
-            items = resp.data if isinstance(resp.data, list) else []
-            await self._dispatch_new_events(sub, items)
+        interval_header = resp.headers.get("x-poll-interval", "")
+        if interval_header.isdigit():
+            state["server_interval"] = int(interval_header)
         state["last_poll_at"] = time.time()
         state["fail_count"] = 0
         state["last_error"] = ""
@@ -195,37 +191,34 @@ class GitHubPoller:
             state["alert_sent"] = False  # 恢复后允许下次再告警
         self._dirty = True
 
-        # 2) releases/latest(低频高价值单独盯,仅订阅 release 族时)
         if event_subscribed(sub.events, cfg.default_events, "release", "published"):
             try:
                 await self._poll_release(repo, state)
             except NotFoundError:
-                pass  # 无 release 的仓常态 404,不影响主事件流
+                log(f"{_LOG}: {repo} 无可见 release", "DEBUG", tag="通道")
 
-    async def _dispatch_new_events(self, sub: Any, items: List[Dict[str, Any]]) -> None:
+    async def _dispatch_new_events(self, sub: RepoSubscription, items: List[Dict[str, Any]]) -> None:
         """游标过滤后逐条派发(最旧先发;首次播种不派发)。"""
         repo = sub.full_name
         by_id = {str(x.get("id")): x for x in items if x.get("id")}
         keys = list(by_id.keys())  # API 返回最新在前
-        pending = self._cursors.collect_pending("events", keys, seed_key=repo)
+        kind = f"events:{repo.lower()}"
+        for key in keys:
+            if self._cursors.is_seen("events", key):
+                self._cursors.mark(kind, key)
+        pending = self._cursors.collect_pending(kind, keys, seed_key=repo)
         if pending is None:
             log(f"{_LOG}: {repo} 首次轮询完成播种({len(keys)} 条历史不派发)", tag="通道")
             return
-        if len(pending) >= 30:
-            # events API 单页上限 30,一轮涌出更多说明有缺口
-            log(f"{_LOG}: {repo} 单轮新事件达单页上限,可能存在事件缺口", "WARNING", tag="通道")
         for key in pending:
             raw_item = by_id.get(key)
             if raw_item is None:
-                self._cursors.mark("events", key)
+                self._cursors.mark(kind, key)
                 continue
-            try:
-                await self._pipeline.submit_raw(from_poll_api(raw_item))
-            except Exception as exc:
-                # 派发失败不标已见,下一轮重试该条
-                log(f"{_LOG}: 事件派发失败({repo}#{key}): {exc}", "WARNING", tag="通道")
-                continue
-            self._cursors.mark("events", key)
+            raw = from_poll_api(raw_item)
+            raw.account = sub.account
+            await self._pipeline.submit_raw(raw)
+            self._cursors.mark(kind, key)
 
     async def _poll_release(self, repo: str, state: Dict[str, Any]) -> None:
         resp = await self._client.get(
@@ -234,16 +227,15 @@ class GitHubPoller:
         )
         if resp.not_modified:
             return
-        if resp.etag:
-            state["etag_release"] = resp.etag
         rel = resp.data if isinstance(resp.data, dict) else {}
         release_key = f"{rel.get('id')}:{rel.get('published_at')}"
         if not rel.get("id") or state.get("release_key") == release_key:
             return
         first_seen = not state.get("release_key")
-        state["release_key"] = release_key
-        self._dirty = True
         if first_seen:
+            state["release_key"] = release_key
+            state["etag_release"] = resp.etag
+            self._dirty = True
             return  # 首次只播种(与事件游标同纪律,不重放历史)
         raw = RawEvent(
             name="release", action="published", repo_full_name=repo,
@@ -253,9 +245,23 @@ class GitHubPoller:
             event_id=f"release:{release_key}",
             source="poll",
         )
+        sub = self._channel.config.subscription_for(repo)
+        raw.account = sub.account if sub else ""
         await self._pipeline.submit_raw(raw)
+        state["release_key"] = release_key
+        state["etag_release"] = resp.etag
+        self._dirty = True
 
-    # ------------------------------------------------------------------
+    def resume(self, repo: str = "") -> None:
+        """清除仓库暂停和失败状态，保留已确认游标。"""
+        for name, state in self._repo_state.items():
+            if not repo or repo.lower() == name.lower():
+                for key in ("paused_until", "quota_paused_until", "last_error", "fail_count", "alert_sent", "last_poll_at"):
+                    state.pop(key, None)
+        self._global_paused_until = 0
+        self._dirty = True
+        self._save_state()
+
 
     def _save_state(self) -> None:
         if self._dirty:

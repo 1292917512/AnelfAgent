@@ -5,6 +5,7 @@ import type { ConfigMetaItem } from "@/lib/types";
 import { Input, Select, Switch, Textarea } from "@/components/ui";
 import { ModelSelect } from "@/components/models/ModelSelect";
 import { ConfigSource } from "@/components/common/ConfigSource";
+import { ChoiceField, JsonField, SchemaField } from "@/components/common/SchemaField";
 
 export function ConfigField({ meta, prefix, value, onChange }: {
   meta: ConfigMetaItem; prefix?: string; value: unknown; onChange: (value: unknown) => void;
@@ -23,7 +24,10 @@ export function ConfigField({ meta, prefix, value, onChange }: {
     </div>
     <ConfigSource item={meta} />
     {meta.related_key && <ConfigLink target="_blank" rel="noreferrer" config={{ key: meta.related_key }}>{t("config:relatedSetting")}</ConfigLink>}
-    {meta.type === "boolean" ? <Switch label={label} checked={!!value} disabled={disabled} onChange={onChange} />
+    {meta.type === "json" ? meta.schema ? <SchemaField schema={meta.schema} value={value} label={label} disabled={disabled} onChange={onChange} />
+      : meta.options ? <ChoiceField options={meta.options} value={value} label={label} disabled={disabled} onChange={onChange} />
+        : <JsonField value={value} label={label} disabled={disabled} onChange={onChange} />
+      : meta.type === "boolean" ? <Switch label={label} checked={!!value} disabled={disabled} onChange={onChange} />
       : meta.type === "text" ? <Textarea {...field} value={text} rows={3} onChange={(event) => onChange(event.target.value)} />
       : meta.type === "model" ? <ModelSelect id={id} label={label} value={text} allowEmpty allowPin={false} disabled={disabled} onChange={onChange} />
       : meta.type === "enum" ? <Select {...field} value={text} onChange={(event) => onChange(event.target.value)}>

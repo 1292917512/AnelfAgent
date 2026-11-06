@@ -1,16 +1,8 @@
-"""GitHub 频道 — 监听仓库动态,推送给 AI。
+"""GitHub 频道的组件装配、生命周期和标准消息适配。
 
-接收双模:
-- **poll**(默认,零公网依赖):Events API + releases 条件请求轮询(见 poller.py);
-- **webhook**(可选,需公网/隧道):HMAC 验签 fail-closed + delivery 去重 +
-  有界队列单 worker(见 webhook.py),端点挂 ``/api/channels/github/webhook``。
-
-事件经 pipeline.py 分级路由(IMMEDIATE 立即唤醒 / NORMAL 防抖聚合 / DIGEST 每日汇总),
-统一走标准入站消息链(``on_message → dispatch_inbound → AgentApp → Mind``),
-每仓一个独立 GROUP 会话 scope(``group_github:{owner}/{repo}``)。
-
-出站语义:GitHub 没有"会话"可回复——AI 在 GitHub 会话中的回复经 ``reply_relay``
-配置转述到主人常用频道(默认 webui);回写 GitHub 用 ``github_*`` 工具(tools.py)。
+Model Experience: 事件送入仓库或议题会话，回复经统一出站转述。
+Token effect: 策略指引约百余 token，事件内容由订阅控制。
+Cache effect: 指引位于 channel_policy 层，事件不改写稳定前缀。
 """
 
 from __future__ import annotations
@@ -19,9 +11,7 @@ import json
 import time
 from typing import Any, Dict, List, Optional, Set
 
-from fastapi import APIRouter, Request
-
-from agent.channel import CredentialField, get_provider_key, register_provider_key
+from agent.channel import get_provider_key
 from agent.channel.base import BaseChannel, ChannelMetadata
 from agent.channel.channel_types import ChannelCapability, ChannelStatus
 from agent.channel.schemas import (
@@ -40,31 +30,20 @@ from agent.channel.schemas import (
 )
 from core.log import log
 
-from .app_auth import GitHubAppAuth
+from .auth import GitHubAuth
 from .client import GitHubClient
 from .config import GitHubConfig
+from .credentials import register_defaults
+from .journal import EventJournal
 from .pipeline import EventPipeline
+from .policy import github_reply_policy
 from .poller import GitHubPoller
-from .state import DeliveryDedup, DigestBuffer, EventStats
+from .router import build_router as build_router
+from .state import DigestBuffer, EventStats
 from .tools import GitHubToolsMixin
 from .webhook import WebhookIngress
 
-# 凭据中心登记(Web 面板/AI set_provider_key 工具同面可见;幂等)
-register_provider_key(
-    "github",
-    domain="channel",
-    title="GitHub",
-    fields=(CredentialField("api_key", "Personal access token"),), owner_title="GitHub", destination="/channels?channel=github",
-    description="GitHub 频道凭据:api_key 填 PAT(推荐 fine-grained,最小权限 "
-                "Contents:Read / Issues:R&W / Pull requests:R&W);auth_mode=app 时另登记 github_app(PEM)",
-)
-register_provider_key(
-    "github_app",
-    domain="channel",
-    title="GitHub App",
-    fields=(CredentialField("api_key", "Private key (PEM)", multiline=True),), owner_title="GitHub", destination="/channels?channel=github",
-    description="GitHub App 私钥(PEM 全文,含 BEGIN/END 行;api_key 字段填 PEM)",
-)
+register_defaults()
 
 _SELF_INFO_TTL = 300.0
 _HEALTH_PROBE_TTL = 60.0
@@ -95,11 +74,11 @@ class GitHubChannel(GitHubToolsMixin, BaseChannel[GitHubConfig]):
 
     def __init__(self) -> None:
         self._client: Optional[GitHubClient] = None
-        self._app_auth: Optional[GitHubAppAuth] = None
+        self._auth: Optional[GitHubAuth] = None
+        self._journal: Optional[EventJournal] = None
         self._poller: Optional[GitHubPoller] = None
         self._pipeline: Optional[EventPipeline] = None
         self._ingress: Optional[WebhookIngress] = None
-        self._dedup = DeliveryDedup()
         self._digest = DigestBuffer()
         self._stats = EventStats()
         self._self_info: Optional[ChannelUser] = None
@@ -108,9 +87,6 @@ class GitHubChannel(GitHubToolsMixin, BaseChannel[GitHubConfig]):
         self._last_probe: Optional[HealthStatus] = None
         super().__init__()
 
-    # ------------------------------------------------------------------
-    # 生命周期
-    # ------------------------------------------------------------------
 
     async def start(self) -> None:
         """启动:建客户端 → 事件管线 → 按模式起轮询/webhook 接收器。
@@ -119,7 +95,7 @@ class GitHubChannel(GitHubToolsMixin, BaseChannel[GitHubConfig]):
         公网端点是任人投毒的 AI 注入面)。
         """
         cfg = self.config
-        if cfg.webhook_enabled and not cfg.webhook_secret:
+        if cfg.webhook_enabled and not cfg.webhook_secret and not any(account.webhook_secret_ref and get_provider_key(account.webhook_secret_ref) for account in cfg.accounts):
             raise RuntimeError(
                 "GitHub 频道 webhook 模式必须配置 webhook_secret(验签 fail-closed);"
                 "或改用 mode=poll(零公网依赖)"
@@ -134,19 +110,23 @@ class GitHubChannel(GitHubToolsMixin, BaseChannel[GitHubConfig]):
 
         self._stats.load()
         self._digest.load()
-        self._dedup.load()
 
-        self._client = self._build_client(cfg)
-        self._pipeline = EventPipeline(self, digest=self._digest, stats=self._stats)
+        try:
+            self._client = self._build_client(cfg)
+            self._journal = EventJournal()
+            self._pipeline = EventPipeline(self, digest=self._digest, stats=self._stats, journal=self._journal)
+            await self._pipeline.start()
 
-        if cfg.poll_enabled:
-            self._poller = GitHubPoller(self, self._client, self._pipeline)
-            await self._poller.start()
-        if cfg.webhook_enabled:
-            self._ingress = WebhookIngress(
-                self, self._pipeline, self._dedup, queue_size=int(cfg.webhook_queue_size),
-            )
-            await self._ingress.start()
+            if cfg.poll_enabled:
+                self._poller = GitHubPoller(self, self._client, self._pipeline)
+                await self._poller.start()
+            if cfg.webhook_enabled:
+                self._ingress = WebhookIngress(self._pipeline)
+                await self._ingress.start()
+
+        except BaseException:
+            await self.stop()
+            raise
 
         log(
             f"GitHub: 频道已启动(mode={cfg.mode}, 订阅 {len(cfg.repos)} 仓, "
@@ -168,30 +148,29 @@ class GitHubChannel(GitHubToolsMixin, BaseChannel[GitHubConfig]):
         if self._client is not None:
             await self._client.close()
             self._client = None
-        if self._app_auth is not None:
-            await self._app_auth.close()
-            self._app_auth = None
+        if self._auth is not None:
+            await self._auth.close()
+            self._auth = None
+        self._journal = None
         log("GitHub: 频道已停止", tag="通道")
 
     def _build_client(self, cfg: GitHubConfig) -> GitHubClient:
-        app_auth = None
-        if cfg.auth_mode == "app":
-            self._app_auth = GitHubAppAuth(
-                app_id=cfg.app_id,
-                private_key=get_provider_key(cfg.app_private_key_ref),
-                base_url=cfg.api_base_url,
-            )
-            app_auth = self._app_auth
-        return GitHubClient(
-            base_url=cfg.api_base_url,
-            auth_mode=cfg.auth_mode,
-            token_provider=(lambda: get_provider_key(cfg.token_ref)) if cfg.auth_mode == "pat" else None,
-            app_auth=app_auth,
-        )
+        self._auth = GitHubAuth(lambda: self.config)
+        return GitHubClient(base_url=cfg.api_base_url, auth=self._auth)
 
-    # ------------------------------------------------------------------
-    # 入站(事件 → AI)
-    # ------------------------------------------------------------------
+    @property
+    def reply_policy(self) -> Any:
+        """声明 GitHub 回复规则和按需工具目录。"""
+        return github_reply_policy()
+
+    def _on_config_changed(self, key: str, value: Any) -> None:
+        """加载配置并解除可恢复的轮询暂停。"""
+        super()._on_config_changed(key, value)
+        if self._auth is not None:
+            self._auth.register_credentials()
+        if self._poller is not None:
+            self._poller.resume()
+
 
     def build_inbound(self, repo: str, text: str, *, trigger: bool = True) -> AdapterMessage:
         """构造 GitHub 事件消息:每仓一个 GROUP 会话 scope(group_github:{owner/repo})。"""
@@ -210,7 +189,16 @@ class GitHubChannel(GitHubToolsMixin, BaseChannel[GitHubConfig]):
 
     async def dispatch_events(self, repo: str, events: List[Any], *, text: str) -> None:
         """事件派发入口(pipeline 调用):走标准入站链。"""
-        await self.on_message(self.build_inbound(repo, text, trigger=True))
+        import hashlib
+
+        message = self.build_inbound(repo, text, trigger=True)
+        sub = self.config.subscription_for(repo)
+        if sub and sub.session_mode == "subject" and events:
+            message.session_id = str(events[0].extra.get("subject") or "")
+        keys = [str(event.extra.get("_journal_id") or event.event_id) for event in events]
+        if keys:
+            message.message_id = hashlib.sha256("|".join(keys).encode()).hexdigest()
+        await self.on_message(message)
 
     async def alert_repo(self, repo: str, message: str) -> None:
         """频道告警(凭据失效/仓不可见等):SYSTEM 消息注入该仓会话并唤醒 AI 转告主人。"""
@@ -226,9 +214,6 @@ class GitHubChannel(GitHubToolsMixin, BaseChannel[GitHubConfig]):
     def ingress(self) -> Optional[WebhookIngress]:
         return self._ingress
 
-    # ------------------------------------------------------------------
-    # 出站(AI → GitHub 会话的回复 → 转述主人频道)
-    # ------------------------------------------------------------------
 
     async def forward_message(self, request: SendRequest) -> SendResponse:
         """回复转述:GitHub 无会话可回,经 reply_relay 配置转述到主人频道。
@@ -248,7 +233,7 @@ class GitHubChannel(GitHubToolsMixin, BaseChannel[GitHubConfig]):
                       "或用 send_message 工具转述 / github_create_comment 回写",
             )
         adapter_key, sep, target = relay.partition(":")
-        if not sep or not adapter_key or not target:
+        if not sep or not adapter_key or not target or adapter_key == self.channel_id:
             return SendResponse(success=False, error=f"reply_relay 格式非法: {relay}(应为 'adapter:target')")
         try:
             from agent.channel import get_channel_manager
@@ -260,7 +245,9 @@ class GitHubChannel(GitHubToolsMixin, BaseChannel[GitHubConfig]):
         repo = request.channel.channel_id
         prefix = f"[GitHub {repo}] " if repo else "[GitHub] "
         try:
-            result_json = await relay_channel.send_text(target, prefix + text)
+            from agent.channel.output_tools import send_text_to_channel
+
+            result_json = await send_text_to_channel(adapter_key, target, prefix + text)
             result = json.loads(result_json)
         except Exception as exc:
             return SendResponse(success=False, error=f"转述发送异常: {exc}")
@@ -268,9 +255,6 @@ class GitHubChannel(GitHubToolsMixin, BaseChannel[GitHubConfig]):
             return SendResponse(success=False, error=f"转述失败: {result.get('error') or '未知'}")
         return SendResponse(success=True, message_id=str(result.get("message_id") or "relayed"))
 
-    # ------------------------------------------------------------------
-    # 信息查询 / 健康
-    # ------------------------------------------------------------------
 
     async def get_self_info(self) -> ChannelUser:
         """自身信息:PAT→认证用户(缓存 300s);App→App 标识;匿名→占位。"""
@@ -283,8 +267,8 @@ class GitHubChannel(GitHubToolsMixin, BaseChannel[GitHubConfig]):
                 data = (await self._client.get("/user")).data or {}
                 user_id = str(data.get("login") or user_id)
                 user_name = str(data.get("name") or data.get("login") or user_name)
-            except Exception:
-                pass
+            except Exception as exc:
+                log(f"GitHub: 读取当前用户失败: {exc}", "DEBUG", tag="通道")
         elif cfg.auth_mode == "app":
             user_id, user_name = f"github-app-{cfg.app_id}", f"GitHub App {cfg.app_id}"
         self._self_info = ChannelUser(
@@ -321,11 +305,20 @@ class GitHubChannel(GitHubToolsMixin, BaseChannel[GitHubConfig]):
         if cfg.auth_mode == "pat" and not get_provider_key(cfg.token_ref):
             problems.append("PAT 未配置(匿名形态,配额极低)")
 
+        if self._poller:
+            for repo, state in self._poller.repo_states().items():
+                if float(state.get("paused_until") or state.get("quota_paused_until") or 0) > time.time():
+                    problems.append(f"{repo}: {state.get('last_error') or '配额暂停'}")
+                if state.get("possible_gap"):
+                    problems.append(f"{repo}: 轮询窗口可能存在事件缺口")
+        if self._journal:
+            inbox = await self._journal.snapshot(limit=1)
+            if inbox["counts"].get("failed", 0):
+                problems.append(f"收件箱失败事件: {inbox['counts']['failed']}")
         detail_parts = [f"mode={cfg.mode}", f"repos={len(cfg.repos)}"]
         if self._client is not None and self._client.rate_remaining >= 0:
             detail_parts.append(f"rate_remaining={self._client.rate_remaining}")
 
-        # 轻量实测:GET /rate_limit(60s 缓存,匿名也可调,不计常规配额焦虑)
         if self._client is not None and time.time() - self._last_probe_at > _HEALTH_PROBE_TTL:
             self._last_probe_at = time.time()
             try:
@@ -352,119 +345,13 @@ class GitHubChannel(GitHubToolsMixin, BaseChannel[GitHubConfig]):
             "repos": [sub.full_name for sub in self.config.repos],
             "poller_running": bool(self._poller and self._poller.running),
             "webhook_running": bool(self._ingress and self._ingress.running),
-            "webhook_dropped": self._ingress.dropped_count if self._ingress else 0,
-            "webhook_backlog": self._ingress.backlog if self._ingress else 0,
+            "webhook_rejected": self._ingress.rejected_count if self._ingress else 0,
             "dispatched_events": self._pipeline.dispatched_count if self._pipeline else 0,
             "ignored_events": self._pipeline.ignored_count if self._pipeline else 0,
             "rate_remaining": self._client.rate_remaining if self._client else -1,
         }
         return info
 
-
-# ----------------------------------------------------------------------
-# HTTP 路由(web/server.py 扫描挂载到 /api/channels/github;不要求频道已启用)
-# ----------------------------------------------------------------------
-
-
-def _get_github_channel() -> Optional[GitHubChannel]:
-    """取已注册的 GitHub 频道实例(未注册返回 None)。"""
-    try:
-        from agent.channel import get_channel_manager
-
-        channel = get_channel_manager().get("github")
-        if isinstance(channel, GitHubChannel):
-            return channel
-    except Exception:
-        pass
-    return None
-
-
-def build_router() -> Any:
-    """GitHub 频道 HTTP 路由:webhook 入口 + 状态/事件/订阅管理 + 演练注入。
-
-    webhook 端点自带 HMAC 验签(@self_authenticated);
-    其余管理端点由 webui 密码体系默认保护。
-    """
-    # Request 须在模块级导入：postponed annotations 下局部导入无法被
-    # FastAPI 的 get_type_hints 解析，会连带 /openapi.json 生成失败
-    from fastapi.responses import JSONResponse
-
-    from core.http_endpoints import self_authenticated
-
-    from .webhook import handle_test_inject, handle_webhook
-
-    router = APIRouter()
-
-    @router.post("/webhook")
-    @self_authenticated
-    async def webhook(request: Request) -> Any:
-        channel = _get_github_channel()
-        if channel is None or channel.status != ChannelStatus.RUNNING:
-            return JSONResponse({"error": "GitHub 频道未运行"}, status_code=503)
-        return await handle_webhook(channel, request)
-
-    @router.get("/status")
-    async def status() -> Dict[str, Any]:
-        channel = _get_github_channel()
-        if channel is None:
-            return {"enabled": False, "hint": "GitHub 频道未注册(github_enabled=false)"}
-        info = channel.get_status_info()
-        gh = info.get("github", {})
-        gh["enabled"] = True
-        gh["status"] = info.get("status")
-        gh["repo_states"] = channel._poller.repo_states() if channel._poller else {}
-        gh["webhook_url_hint"] = "/api/channels/github/webhook"
-        return gh
-
-    @router.get("/events")
-    async def events(repo: str = "", limit: int = 50) -> Dict[str, Any]:
-        channel = _get_github_channel()
-        if channel is None:
-            return {"events": [], "hint": "GitHub 频道未注册"}
-        return {"events": channel._stats.recent_events(repo=repo, limit=min(max(limit, 1), 200))}
-
-    @router.get("/subscriptions")
-    async def list_subs() -> Dict[str, Any]:
-        channel = _get_github_channel()
-        if channel is None:
-            return {"repos": [], "hint": "GitHub 频道未注册"}
-        return {"repos": [sub.model_dump() for sub in channel.config.repos]}
-
-    @router.put("/subscriptions")
-    async def put_subs(request: Request) -> Any:
-        channel = _get_github_channel()
-        if channel is None:
-            return JSONResponse({"error": "GitHub 频道未注册"}, status_code=503)
-        try:
-            body = await request.json()
-        except ValueError:
-            return JSONResponse({"error": "body 必须是 JSON"}, status_code=400)
-        repos = body.get("repos")
-        if not isinstance(repos, list):
-            return JSONResponse({"error": "需要 repos 数组"}, status_code=400)
-        try:
-            from .config import RepoSubscription
-            validated = [RepoSubscription.model_validate(x).model_dump() for x in repos]
-        except Exception as exc:
-            return JSONResponse({"error": f"订阅配置非法: {exc}"}, status_code=400)
-        from agent.channel.config import set_channel_config
-        set_channel_config("github", repos=validated)
-        return {"success": True, "count": len(validated)}
-
-    @router.post("/test-inject")
-    async def test_inject(request: Request) -> Any:
-        channel = _get_github_channel()
-        if channel is None or channel.status != ChannelStatus.RUNNING:
-            return JSONResponse({"error": "GitHub 频道未运行"}, status_code=503)
-        if channel.pipeline is None:
-            return JSONResponse({"error": "事件管线未初始化"}, status_code=503)
-        try:
-            body = await request.json()
-        except ValueError:
-            return JSONResponse({"error": "body 必须是 JSON"}, status_code=400)
-        return await handle_test_inject(channel, body)
-
-    return router
 
 
 CHANNEL_CLASS = GitHubChannel

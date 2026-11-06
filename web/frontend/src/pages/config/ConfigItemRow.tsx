@@ -7,6 +7,7 @@ import { ConfigLink } from "@/components/common/ConfigLink";
 import { configItemId } from "@/lib/config-navigation";
 import { apiErrorMessage } from "@/lib/api/client";
 import { useConfigSave } from "./useConfigSave";
+import { ChoiceField, JsonField } from "@/components/common/SchemaField";
 import { NumberField, ModelField, PasswordField, RangeField, SelectField, SwitchField, TextField } from "./fields";
 
 interface ConfigItemRowProps {
@@ -27,6 +28,10 @@ export function ConfigItemRow({ item, highlight, onOpenDetail }: ConfigItemRowPr
   const label = item.title || item.description || item.key;
 
   const control = (() => {
+    if (item.type === "json") {
+      return item.options ? <ChoiceField value={value} options={item.options} label={label} disabled={disabled} onChange={save} />
+        : <JsonField value={value} label={label} disabled={disabled} onChange={save} />;
+    }
     if (item.type === "boolean") {
       return <SwitchField label={label} value={!!value} disabled={disabled} onCommit={save} />;
     }

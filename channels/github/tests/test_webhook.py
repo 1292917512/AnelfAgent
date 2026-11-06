@@ -13,9 +13,11 @@ import json
 import tempfile
 from typing import Any, Dict, List, Optional
 
+import pytest
+
 from channels.github.config import GitHubConfig
 from channels.github.events import from_webhook
-from channels.github.state import DeliveryDedup
+from channels.github.journal import EventJournal, InboxFull
 from channels.github.webhook import WebhookIngress, handle_webhook, verify_signature
 
 SECRET = "test-secret"
@@ -37,6 +39,13 @@ class _FakeRequest:
 class _FakePipeline:
     def __init__(self) -> None:
         self.received: List[Any] = []
+        self.journal = EventJournal(tempfile.mkdtemp(prefix="github-inbox-test-"))
+
+    async def accept_raw(self, raw: Any) -> str:
+        _, inserted = await self.journal.accept(raw, 10)
+        if inserted:
+            self.received.append(raw)
+        return "accepted" if inserted else "duplicate"
 
     async def submit_raw(self, raw: Any) -> None:
         self.received.append(raw)
@@ -80,29 +89,16 @@ class TestVerifySignature:
         assert not verify_signature("", b"{}", _sign(b"{}"))
 
 
-class TestDeliveryDedup:
-    def test_first_seen_then_duplicate(self) -> None:
-        dedup = DeliveryDedup(directory=tempfile.mkdtemp(prefix="github-dedup-test-"))
-        assert dedup.seen_or_add("d-1") is False
-        assert dedup.seen_or_add("d-1") is True
-        assert dedup.seen_or_add("d-2") is False
-
-    def test_empty_id_never_blocks(self) -> None:
-        dedup = DeliveryDedup(directory=tempfile.mkdtemp(prefix="github-dedup-test-"))
-        assert dedup.seen_or_add("") is False
-        assert dedup.seen_or_add("") is False
-
-
 class TestIngress:
     async def test_worker_consumes_in_order(self) -> None:
         pipeline = _FakePipeline()
-        ingress = WebhookIngress(None, pipeline, DeliveryDedup(directory=tempfile.mkdtemp(prefix="github-dedup-test-")), queue_size=100)
+        ingress = WebhookIngress(pipeline)
         await ingress.start()
         try:
             for i in range(3):
                 payload = {"action": "opened", "i": i, "repository": {"full_name": "o/r"},
                            "sender": {"login": "x"}}
-                assert ingress.enqueue(f"d-{i}", "issues", payload) == "accepted"
+                assert await ingress.enqueue(f"d-{i}", "issues", payload) == "accepted"
             await asyncio.sleep(0.2)
             assert [r.payload["i"] for r in pipeline.received] == [0, 1, 2]  # 保序
         finally:
@@ -110,31 +106,36 @@ class TestIngress:
 
     async def test_duplicate_delivery_not_consumed(self) -> None:
         pipeline = _FakePipeline()
-        ingress = WebhookIngress(None, pipeline, DeliveryDedup(directory=tempfile.mkdtemp(prefix="github-dedup-test-")), queue_size=100)
+        ingress = WebhookIngress(pipeline)
         await ingress.start()
         try:
             payload = {"repository": {"full_name": "o/r"}}
-            assert ingress.enqueue("d-1", "push", payload) == "accepted"
-            assert ingress.enqueue("d-1", "push", payload) == "duplicate"
+            assert await ingress.enqueue("d-1", "push", payload) == "accepted"
+            assert await ingress.enqueue("d-1", "push", payload) == "duplicate"
             await asyncio.sleep(0.2)
             assert len(pipeline.received) == 1
         finally:
             await ingress.stop()
 
-    async def test_queue_overflow_drops_oldest_and_counts(self) -> None:
+    async def test_full_inbox_rejects_without_dropping_or_deduplicating_rejected_event(self) -> None:
         pipeline = _FakePipeline()
-        ingress = WebhookIngress(None, pipeline, DeliveryDedup(directory=tempfile.mkdtemp(prefix="github-dedup-test-")), queue_size=10)
-        # 不启动 worker:队列只进不出
-        for i in range(12):
-            status = ingress.enqueue(f"d-{i}", "push", {"i": i})
-        assert ingress.dropped_count == 2
-        assert status == "overflow_accepted"
-        assert ingress.backlog == 10
+        ingress = WebhookIngress(pipeline)
+        await ingress.start()
+        for i in range(10):
+            assert await ingress.enqueue(f"d-{i}", "push", {"i": i}) == "accepted"
+        with pytest.raises(InboxFull):
+            await ingress.enqueue("d-overflow", "push", {"i": 10})
+        assert ingress.rejected_count == 1
+        records = await pipeline.journal.pending()
+        assert len(records) == 10
+        await pipeline.journal.complete([records[0][0]])
+        assert await ingress.enqueue("d-overflow", "push", {"i": 10}) == "accepted"
+        await ingress.stop()
 
 
 class TestHandleWebhook:
     async def test_missing_headers_400(self) -> None:
-        ingress = WebhookIngress(None, _FakePipeline(), DeliveryDedup(directory=tempfile.mkdtemp(prefix="github-dedup-test-")))
+        ingress = WebhookIngress(_FakePipeline())
         await ingress.start()
         channel = _FakeChannel(_webhook_config(), ingress)
         body = b"{}"
@@ -143,7 +144,7 @@ class TestHandleWebhook:
         await ingress.stop()
 
     async def test_bad_signature_401(self) -> None:
-        ingress = WebhookIngress(None, _FakePipeline(), DeliveryDedup(directory=tempfile.mkdtemp(prefix="github-dedup-test-")))
+        ingress = WebhookIngress(_FakePipeline())
         await ingress.start()
         channel = _FakeChannel(_webhook_config(), ingress)
         resp = await handle_webhook(channel, _request_for("push", {"x": 1}, secret="wrong"))
@@ -152,7 +153,7 @@ class TestHandleWebhook:
 
     async def test_ping_pong_without_pipeline(self) -> None:
         pipeline = _FakePipeline()
-        ingress = WebhookIngress(None, pipeline, DeliveryDedup(directory=tempfile.mkdtemp(prefix="github-dedup-test-")))
+        ingress = WebhookIngress(pipeline)
         await ingress.start()
         channel = _FakeChannel(_webhook_config(), ingress)
         resp = await handle_webhook(channel, _request_for("ping", {"zen": "x"}))
@@ -164,7 +165,7 @@ class TestHandleWebhook:
 
     async def test_valid_event_accepted_immediately(self) -> None:
         pipeline = _FakePipeline()
-        ingress = WebhookIngress(None, pipeline, DeliveryDedup(directory=tempfile.mkdtemp(prefix="github-dedup-test-")))
+        ingress = WebhookIngress(pipeline)
         await ingress.start()
         channel = _FakeChannel(_webhook_config(), ingress)
         resp = await handle_webhook(channel, _request_for(
@@ -178,7 +179,7 @@ class TestHandleWebhook:
         await ingress.stop()
 
     async def test_duplicate_delivery_200_duplicate(self) -> None:
-        ingress = WebhookIngress(None, _FakePipeline(), DeliveryDedup(directory=tempfile.mkdtemp(prefix="github-dedup-test-")))
+        ingress = WebhookIngress(_FakePipeline())
         await ingress.start()
         channel = _FakeChannel(_webhook_config(), ingress)
         payload = {"action": "opened", "repository": {"full_name": "o/r"}}
@@ -199,7 +200,7 @@ class TestHandleWebhook:
         assert resp.status_code == 503
 
     async def test_invalid_json_400(self) -> None:
-        ingress = WebhookIngress(None, _FakePipeline(), DeliveryDedup(directory=tempfile.mkdtemp(prefix="github-dedup-test-")))
+        ingress = WebhookIngress(_FakePipeline())
         await ingress.start()
         channel = _FakeChannel(_webhook_config(), ingress)
         body = b"not-json"

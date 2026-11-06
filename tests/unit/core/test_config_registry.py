@@ -23,6 +23,25 @@ from core.config import (
 )
 
 
+def test_structured_field_schema_keeps_only_referenced_definitions() -> None:
+    from pydantic import BaseModel
+
+    class Entry(BaseModel):
+        events: list[str] = Field(default_factory=list, json_schema_extra={"options": ["push", "issues"]})
+
+    class Settings(BaseModel):
+        mode: Literal["poll", "webhook"] = "poll"
+        repos: list[Entry] = Field(default_factory=list)
+
+    register_model_configs("schema-test", Settings, key_prefix="schema_test")
+    scalar = ConfigRegistry.get_item("schema_test_mode")
+    nested = ConfigRegistry.get_item("schema_test_repos")
+    assert scalar is not None and scalar.schema is not None
+    assert "$defs" not in scalar.schema
+    assert nested is not None and nested.schema is not None
+    assert nested.schema["$defs"]["Entry"]["properties"]["events"]["options"] == ["push", "issues"]
+
+
 class TestMaskSecret:
     def test_long_value_keeps_head_tail(self) -> None:
         assert mask_secret("abcdef1234567890") == "abcd****7890"

@@ -36,6 +36,8 @@ export async function mockApi(page: Page, { seedAppearance = true }: { seedAppea
       "/provider-keys": { providers: [] },
       "/models/providers": [],
       "/judgment/providers": { providers: {}, default_model: "", fallback_models: [], revision: "0", health: {} },
+      "/judgment/status": { enabled: false, channel: "disabled", api_key_configured: false, base_url: "", use_proxy: false,
+        model: "", timeout: 30, fallback_enabled: false, fallback_model: "", fallback_effort: "low" },
       "/memory/files": [{ path: "memory/ideas.md", lines: "2", size: "32 B" }],
       "/memory/notes": { content: "# Notes\nOriginal note", path: "memory/memory.md" },
       "/memory/files/content": { content: "Research notes" },

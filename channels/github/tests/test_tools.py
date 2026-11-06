@@ -52,11 +52,11 @@ def _result(raw: str) -> Dict[str, Any]:
 class TestSubscriptionTools:
     async def test_subscribe_appends_and_writes_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
         written: Dict[str, Any] = {}
-        monkeypatch.setattr("agent.channel.config.set_channel_config",
+        monkeypatch.setattr("channels.github.tool_config.set_channel_config",
                             lambda cid, **kw: written.update(kw))
         channel = _channel(GitHubConfig(repos=[]))
         result = _result(await channel.subscribe_repo(
-            "KroMiose/nekro-agent", events="push,issues", local_path="/tmp/nekro"))
+            "KroMiose/nekro-agent", events=["push", "issues"], local_path="/tmp/nekro"))
         assert result["success"] and not result["updated"]
         repos = written["repos"]
         assert len(repos) == 1
@@ -66,7 +66,7 @@ class TestSubscriptionTools:
 
     async def test_subscribe_existing_merges(self, monkeypatch: pytest.MonkeyPatch) -> None:
         written: Dict[str, Any] = {}
-        monkeypatch.setattr("agent.channel.config.set_channel_config",
+        monkeypatch.setattr("channels.github.tool_config.set_channel_config",
                             lambda cid, **kw: written.update(kw))
         channel = _channel(GitHubConfig(repos=[RepoSubscription(
             owner="o", repo="r", local_path="/old", priority_boost=False)]))
@@ -89,7 +89,7 @@ class TestSubscriptionTools:
             # 模拟真实热更:写配置后频道内存态经变更监听重新物化
             channel._config = GitHubConfig(**{**channel.config.model_dump(), **kw})
 
-        monkeypatch.setattr("agent.channel.config.set_channel_config", _fake_set)
+        monkeypatch.setattr("channels.github.tool_config.set_channel_config", _fake_set)
         assert _result(await channel.unsubscribe_repo("o/r"))["success"]
         assert channel.config.repos == []
         assert not _result(await channel.unsubscribe_repo("o/r"))["success"]  # 已不存在
@@ -122,7 +122,7 @@ class TestWriteGate:
         assert not _result(await channel.create_comment("o/r", 1, "  "))["success"]
 
     async def test_react_validation_and_paths(self) -> None:
-        channel = _channel(GitHubConfig())  # react 不受 allow_write 限制
+        channel = _channel(GitHubConfig(allow_write=True))
         bad = _result(await channel.react("o/r", 1, "illegal"))
         assert not bad["success"]
         channel._client.canned["/repos/o/r/issues/2/reactions"] = ApiResponse(

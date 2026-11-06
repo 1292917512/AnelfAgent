@@ -1,40 +1,32 @@
-"""GitHub 事件管线 — 过滤 / 分级 / 聚合防抖 / digest 缓冲 → 注入 AI。
+"""GitHub 事件过滤、持久接收、聚合和可恢复投递。
 
-职责链(轮询与 webhook 两模在此汇合,下游对来源无感):
-  RawEvent → 订阅匹配 → 分支过滤 → 渲染(render_event)→ 优先级调整
-  (priority_boost / @提及升级 / 安静时段降级)→ 统计落账 → 分档路由:
-    IMMEDIATE → 先冲刷该仓防抖缓冲(保时序)再立即派发
-    NORMAL    → 进 per-repo 防抖窗(窗到期或满额时聚合为一条派发)
-    DIGEST    → 只进 digest 缓冲与计数(不写历史,防噪音;每日 digest 任务读取)
-
-防打扰设计:同仓同窗多条事件合并为一条消息;push 事件同分支、同一已知发起者合并提交数;
-洪峰由 aggregate_max_events 拆条;安静时段整体降级。
-
-模型看到独立行为人的事件；不同来源不合并会保留更多事件行，无额外模型调用。
-仅影响新增事件正文，不重写历史或稳定前缀。
+Model Experience: 事件按仓库或议题送入会话，正文仅使用已选择的字段。
+Token effect: 聚合和摘要限制每批消息体积，无额外模型调用。
+Cache effect: 只增加会话事件，不修改稳定前缀。
 """
 
 from __future__ import annotations
 
 import asyncio
 import time
+from dataclasses import replace
 from typing import Any, Dict, List, Optional
 
 from core.log import log
 
-from .config import GitHubConfig, RepoSubscription
+from .config import GitHubConfig
 from .events import (
     EventPriority,
     GitHubEvent,
     RawEvent,
-    base_priority,
     branch_allowed,
     contains_mention,
-    digest_line,
     event_subscribed,
-    format_event_message,
+    mention_text,
     render_event,
 )
+from .formatting import digest_line, format_event_message
+from .journal import EventJournal
 from .state import DigestBuffer, EventStats
 
 _LOG = "GitHub"
@@ -67,15 +59,22 @@ def in_quiet_hours(parsed: tuple[int, int], ts: Optional[float] = None) -> bool:
     return cur >= start or cur < end
 
 
-class EventPipeline:
-    """事件管线(挂在频道实例上,随 start/stop 生命周期)。"""
 
-    def __init__(self, channel: Any, *, digest: DigestBuffer, stats: EventStats) -> None:
+class EventPipeline:
+    """串行处理事件，投递失败时保留持久记录供恢复。"""
+
+    def __init__(self, channel: Any, *, digest: DigestBuffer, stats: EventStats,
+                 journal: EventJournal | None = None) -> None:
         self._channel = channel
         self._digest = digest
         self._stats = stats
-        self._buffers: Dict[str, List[GitHubEvent]] = {}
-        self._flush_tasks: Dict[str, asyncio.Task] = {}
+        self.journal = journal or EventJournal(directory=stats._dir)
+        self._buffers: dict[str, list[GitHubEvent]] = {}
+        self._flush_tasks: dict[str, asyncio.Task[None]] = {}
+        self._active: set[str] = set()
+        self._lock = asyncio.Lock()
+        self._worker: asyncio.Task[None] | None = None
+        self._stopping = False
         self.ignored_count = 0
         self.dispatched_count = 0
 
@@ -83,128 +82,203 @@ class EventPipeline:
     def _config(self) -> GitHubConfig:
         return self._channel.config
 
-    # ------------------------------------------------------------------
-    # 主入口
-    # ------------------------------------------------------------------
+    @property
+    def running(self) -> bool:
+        return self._worker is not None and not self._worker.done()
 
-    async def submit_raw(self, raw: RawEvent) -> Optional[GitHubEvent]:
-        """提交一条原始事件(过滤→渲染→分级→路由);被丢弃返回 None。"""
-        cfg = self._config
-        if not raw.repo_full_name:
-            self.ignored_count += 1
+    async def start(self) -> None:
+        """启动持久收件箱的恢复处理。"""
+        if self.running:
+            return
+        self._stopping = False
+        await self.journal.prune()
+        await self.journal.restore_processing()
+        self._worker = asyncio.create_task(self._recover(), name="github-inbox")
+
+    async def accept_raw(self, raw: RawEvent) -> str:
+        """仅持久接收，由恢复任务异步处理。"""
+        if self._stopping:
+            raise RuntimeError("GitHub 频道正在停止")
+        sub = self._config.subscription_for(raw.repo_full_name)
+        if sub and raw.account and raw.account != sub.account:
+            return "ignored"
+        _, inserted = await self.journal.accept(raw, self._config.webhook_queue_size)
+        return "accepted" if inserted else "duplicate"
+
+    async def submit_raw(self, raw: RawEvent) -> GitHubEvent | None:
+        """持久接收并处理一条事件，重复事件不再次投递。"""
+        if self._stopping:
+            raise RuntimeError("GitHub 频道正在停止")
+        key, inserted = await self.journal.accept(raw, self._config.webhook_queue_size)
+        if not inserted:
             return None
+        return await self._process(key, raw)
+
+    async def _recover(self) -> None:
+        """重试未完成记录，保留失败记录和错误原因。"""
+        last_prune = time.time()
+        while True:
+            try:
+                if time.time() - last_prune > 3600:
+                    await self.journal.prune()
+                    last_prune = time.time()
+                for key, raw in await self.journal.pending(self._config.webhook_queue_size):
+                    if key not in self._active:
+                        try:
+                            await self._process(key, raw)
+                        except Exception as exc:
+                            log(f"GitHub: 事件待重试: {exc}", "WARNING", tag="通道")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log(f"GitHub: 收件箱处理失败: {exc}", "ERROR", tag="通道")
+            await asyncio.sleep(1)
+
+    async def _process(self, key: str, raw: RawEvent) -> GitHubEvent | None:
+        """过滤、渲染和路由持久事件。"""
+        async with self._lock:
+            if key in self._active or not await self.journal.claim(key):
+                return None
+            self._active.add(key)
+            try:
+                event = await self._prepare(raw)
+                if event is None:
+                    self.ignored_count += 1
+                    await self.journal.complete([key])
+                    self._active.discard(key)
+                    return None
+                event.extra["_journal_id"] = key
+                sub = self._config.subscription_for(event.repo_full_name)
+                if event.priority == EventPriority.DIGEST:
+                    self._record(event)
+                    if sub is None or sub.digest:
+                        self._digest.add(event.repo_full_name, digest_line(event), day=time.strftime("%Y-%m-%d", time.localtime(event.occurred_at)))
+                        self._digest.save()
+                    await self.journal.complete([key])
+                    self._active.discard(key)
+                    return event
+                bucket = event.repo_full_name
+                if sub and sub.session_mode == "subject" and event.extra.get("subject"):
+                    bucket += "#" + str(event.extra["subject"])
+                self._buffers.setdefault(bucket, []).append(event)
+                if event.priority == EventPriority.IMMEDIATE or len(self._buffers[bucket]) >= self._config.aggregate_max_events:
+                    await self._flush(bucket)
+                else:
+                    self._ensure_flush_timer(bucket)
+                return event
+            except BaseException as exc:
+                if key in self._active and not any(key == event.extra.get("_journal_id") for batch in self._buffers.values() for event in batch):
+                    self._active.discard(key)
+                    if not isinstance(exc, asyncio.CancelledError):
+                        await self.journal.failed(key, str(exc))
+                raise
+
+    async def _prepare(self, raw: RawEvent) -> GitHubEvent | None:
+        """匹配订阅、排除本频道评论并设置优先级。"""
+        cfg = self._config
         sub = cfg.subscription_for(raw.repo_full_name)
         if sub is None:
-            self.ignored_count += 1
-            return None
-        if not event_subscribed(sub.events, cfg.default_events, raw.name, raw.action):
-            self.ignored_count += 1
-            return None
-        if raw.name == "push":
-            ref = str(raw.payload.get("ref") or "")
-            if not branch_allowed(sub.branches, ref):
-                self.ignored_count += 1
+            if not raw.repo_full_name.startswith("@") or not event_subscribed(cfg.account_events, [], raw.name, raw.action):
                 return None
-
-        event = render_event(raw, body_limit=int(cfg.body_digest_chars))
-        if event is None:
-            self.ignored_count += 1
-            return None
-
-        event.local_path = sub.local_path
-        self._adjust_priority(event, sub)
-        if event.priority == EventPriority.IGNORE:
-            self.ignored_count += 1
-            return None
-
-        day = time.strftime("%Y-%m-%d", time.localtime(event.occurred_at))
-        self._stats.record(event.repo_full_name, event.event_key, {
-            "ts": event.occurred_at, "repo": event.repo_full_name,
-            "name": event.event_name, "action": event.action,
-            "title": event.title, "url": event.url, "priority": event.priority.value,
-        }, day=day)
-        self._stats.save()
-
-        if event.priority == EventPriority.DIGEST:
-            self._digest.add(event.repo_full_name, digest_line(event), day=day)
-            self._digest.save()
-            return event
-        if event.priority == EventPriority.IMMEDIATE:
-            pending = self._pop_buffer(event.repo_full_name)
-            events = pending + [event]
-            await self._dispatch(event.repo_full_name, events)
-            return event
-        # NORMAL:进防抖窗
-        self._buffers.setdefault(event.repo_full_name, []).append(event)
-        if len(self._buffers[event.repo_full_name]) >= int(cfg.aggregate_max_events):
-            await self.flush_repo(event.repo_full_name)
         else:
-            self._ensure_flush_timer(event.repo_full_name)
-        return event
-
-    # ------------------------------------------------------------------
-    # 优先级调整(boost / 提及 / 安静时段)
-    # ------------------------------------------------------------------
-
-    def _adjust_priority(self, event: GitHubEvent, sub: RepoSubscription) -> None:
-        cfg = self._config
-        # 数据相关:评论/帖子正文 @提及主人 → IMMEDIATE
-        watch_login = cfg.watch_mentions_of.strip()
-        if watch_login and event.priority in (EventPriority.NORMAL, EventPriority.DIGEST):
-            if contains_mention(event.body_digest, watch_login) or contains_mention(event.title, watch_login):
-                event.mention = True
+            if raw.account and raw.account != sub.account:
+                return None
+            if not event_subscribed(sub.events, cfg.default_events, raw.name, raw.action):
+                return None
+            if raw.name == "push" and not branch_allowed(sub.branches, str(raw.payload.get("ref") or "")):
+                return None
+        if await self.journal.is_outgoing(raw):
+            return None
+        event = render_event(raw, body_limit=cfg.body_digest_chars)
+        if event is None:
+            return None
+        if sub:
+            event.local_path = sub.local_path
+            if sub.delivery != "smart":
+                event.priority = EventPriority(sub.delivery)
+            elif sub.priority_boost and event.priority == EventPriority.NORMAL:
                 event.priority = EventPriority.IMMEDIATE
-        # 重点仓:NORMAL → IMMEDIATE
-        if sub.priority_boost and event.priority == EventPriority.NORMAL:
+        if cfg.watch_mentions_of and contains_mention(mention_text(raw), cfg.watch_mentions_of):
+            event.mention = True
             event.priority = EventPriority.IMMEDIATE
-        # 安静时段整体降级
         quiet = parse_quiet_hours(cfg.quiet_hours)
-        if quiet and in_quiet_hours(quiet, time.time()):
+        if quiet and in_quiet_hours(quiet):
             if event.priority == EventPriority.IMMEDIATE:
                 event.priority = EventPriority.NORMAL
             elif event.priority == EventPriority.NORMAL:
                 event.priority = EventPriority.DIGEST
-        event.priority = event.priority or base_priority(event.event_name, event.action)
+        return None if event.priority == EventPriority.IGNORE else event
 
-    # ------------------------------------------------------------------
-    # 防抖聚合
-    # ------------------------------------------------------------------
+    def _record(self, event: GitHubEvent) -> None:
+        """在事件处理成功后登记统计。"""
+        self._stats.record(event.repo_full_name, event.event_key, {
+            "id": event.event_id, "ts": event.occurred_at, "repo": event.repo_full_name,
+            "name": event.event_name, "action": event.action, "title": event.title,
+            "url": event.url, "priority": event.priority.value, "context": {
+                key: value for key, value in event.extra.items() if not key.startswith("_")
+            },
+        }, day=time.strftime("%Y-%m-%d", time.localtime(event.occurred_at)))
+        self._stats.save()
 
-    def _ensure_flush_timer(self, repo: str) -> None:
-        task = self._flush_tasks.get(repo)
+    def _ensure_flush_timer(self, bucket: str) -> None:
+        """从首条事件开始计算聚合窗口。"""
+        task = self._flush_tasks.get(bucket)
         if task is not None and not task.done():
-            return  # 窗口从首条事件起算,新事件不推迟(防滚动聚合永不发送)
+            return
 
-        async def _flush_later() -> None:
+        async def flush_later() -> None:
             try:
-                await asyncio.sleep(max(int(self._config.aggregate_window_sec), 1))
-                await self.flush_repo(repo)
+                await asyncio.sleep(max(self._config.aggregate_window_sec, 1))
+                await self.flush_repo(bucket)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                log(f"{_LOG}: 聚合冲刷异常 ({repo}): {exc}", "WARNING", tag="通道")
+                log(f"GitHub: 聚合投递待重试: {exc}", "WARNING", tag="通道")
 
-        self._flush_tasks[repo] = asyncio.create_task(
-            _flush_later(), name=f"github-flush-{repo}",
-        )
+        self._flush_tasks[bucket] = asyncio.create_task(flush_later(), name=f"github-flush-{bucket}")
 
-    def _pop_buffer(self, repo: str) -> List[GitHubEvent]:
-        task = self._flush_tasks.pop(repo, None)
-        if task is not None and not task.done():
+    async def _flush(self, bucket: str) -> None:
+        """逐批派发，失败批次恢复为待处理记录。"""
+        task = self._flush_tasks.pop(bucket, None)
+        if task and task is not asyncio.current_task() and not task.done():
             task.cancel()
-        return self._buffers.pop(repo, [])
-
-    async def flush_repo(self, repo: str) -> None:
-        """冲刷指定仓的防抖缓冲(push 同分支合并)。"""
-        events = self._pop_buffer(repo)
+        events = self._buffers.pop(bucket, [])
         if not events:
             return
-        await self._dispatch(repo, self._coalesce_push(events))
+        max_events = self._config.aggregate_max_events
+        for offset in range(0, len(events), max_events):
+            batch = events[offset:offset + max_events]
+            keys = [str(event.extra["_journal_id"]) for event in batch]
+            repo = batch[0].repo_full_name
+            sub = self._config.subscription_for(repo)
+            fields = sub.message_fields if sub and sub.message_fields is not None else self._config.message_fields
+            text = format_event_message(self._coalesce_push(batch), fields=fields)
+            try:
+                await self._channel.dispatch_events(repo, batch, text=text)
+                await self.journal.complete(keys)
+                for event in batch:
+                    self._record(event)
+                self.dispatched_count += len(batch)
+            except BaseException as exc:
+                remaining = events[offset:]
+                for event in remaining:
+                    key = str(event.extra["_journal_id"])
+                    self._active.discard(key)
+                    if not isinstance(exc, asyncio.CancelledError):
+                        await self.journal.failed(key, str(exc))
+                raise
+            finally:
+                self._active.difference_update(keys)
+
+    async def flush_repo(self, repo: str) -> None:
+        """冲刷一个聚合会话。"""
+        async with self._lock:
+            await self._flush(repo)
 
     async def flush_all(self) -> None:
-        """频道停止时冲刷全部缓冲(不丢已攒事件)。"""
-        for repo in list(self._buffers):
-            await self.flush_repo(repo)
+        """冲刷所有会话，失败事件保留在收件箱。"""
+        for bucket in list(self._buffers):
+            await self.flush_repo(bucket)
 
     @staticmethod
     def _coalesce_push(events: List[GitHubEvent]) -> List[GitHubEvent]:
@@ -219,8 +293,9 @@ class EventPipeline:
             key = (branch, ev.actor)
             slot = push_slots.get(key)
             if slot is None:
-                push_slots[key] = ev
-                result.append(ev)
+                copy = replace(ev, extra=dict(ev.extra))
+                push_slots[key] = copy
+                result.append(copy)
                 continue
             total = int(slot.extra.get("size", 1)) + int(ev.extra.get("size", 1))
             slot.extra["size"] = total
@@ -231,27 +306,21 @@ class EventPipeline:
                 slot.url = ev.url
         return result
 
-    # ------------------------------------------------------------------
-    # 派发
-    # ------------------------------------------------------------------
-
-    async def _dispatch(self, repo: str, events: List[GitHubEvent]) -> None:
-        """渲染消息文本并经频道入站链推送(聚合超上限拆条)。"""
-        max_events = max(int(self._config.aggregate_max_events), 1)
-        for i in range(0, len(events), max_events):
-            batch = events[i: i + max_events]
-            text = format_event_message(batch)
-            if not text:
-                continue
-            self.dispatched_count += len(batch)
-            await self._channel.dispatch_events(repo, batch, text=text)
 
     async def stop(self) -> None:
-        """停止:取消定时器并冲刷残余缓冲。"""
-        for task in self._flush_tasks.values():
-            if not task.done():
-                task.cancel()
+        """停止恢复任务和聚合计时器，尽力投递缓冲记录。"""
+        self._stopping = True
+        tasks = [task for task in [self._worker, *self._flush_tasks.values()] if task is not None]
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        self._worker = None
         self._flush_tasks.clear()
-        await self.flush_all()
+        for bucket in list(self._buffers):
+            try:
+                await self.flush_repo(bucket)
+            except Exception as exc:
+                log(f"GitHub: 停止时保留待投递事件: {exc}", "WARNING", tag="通道")
+        self._active.clear()
         self._digest.save()
         self._stats.save(force=True)

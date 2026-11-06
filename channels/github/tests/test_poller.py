@@ -9,6 +9,8 @@ from __future__ import annotations
 import time
 from typing import Any, Dict, List, Optional
 
+import pytest
+
 from channels.github.client import ApiResponse, AuthError, NotFoundError, RateLimitError
 from channels.github.config import GitHubConfig, RepoSubscription
 from channels.github.poller import GitHubPoller
@@ -21,8 +23,13 @@ class _FakeClient:
         self.responses: Dict[str, Any] = {}
         self.etags_seen: List[str] = []
         self.calls: List[str] = []
+        self.auth = None
+        self.rate_limit = 5000
         self.rate_remaining = -1
         self.rate_reset_at = 0.0
+
+    def quota_for(self, path: str) -> tuple[int, int, float]:
+        return self.rate_limit, self.rate_remaining, self.rate_reset_at
 
     async def get(self, path: str, *, params: Any = None, etag: str = "",
                   headers: Any = None) -> ApiResponse:
@@ -109,8 +116,14 @@ class TestSeedingAndIncrement:
 
         poller._pipeline = _FlakyPipeline()
         client.responses["/repos/o/r/events"] = _events_payload([1, 2])
+        old_etag = poller._repo_state["o/r"]["etag_events"]
+        with pytest.raises(RuntimeError, match="boom"):
+            await poller._poll_repo(_sub())
+        assert poller._repo_state["o/r"]["etag_events"] == old_etag
+        poller._pipeline = pipeline
         await poller._poll_repo(_sub())
-        assert not poller._cursors.is_seen("events", "2")  # 失败条目不标已见
+        assert [raw.event_id for raw in pipeline.received] == ["2"]
+        assert poller._cursors.is_seen("events:o/r", "2")  # 失败条目不标已见
 
     async def test_etag_304_short_circuits(self) -> None:
         poller, client, pipeline, _ = _make_poller()
@@ -158,16 +171,16 @@ class TestFailureModes:
         client.responses["/repos/o/r/events"] = AuthError("bad credentials", status=401)
         await poller._poll_guarded(_sub())
         state = poller._repo_state["o/r"]
-        assert state["paused_until"] > time.time() + 86400  # 长期暂停
+        assert state["paused_until"] > time.time() + 1500  # 长期暂停
         assert len(channel.alerts) == 1
         await poller._poll_guarded(_sub())  # 仍暂停中(直接跳过)
         assert len(channel.alerts) == 1  # 不重复告警
 
-    async def test_rate_limit_pauses_globally(self) -> None:
+    async def test_rate_limit_pauses_repository(self) -> None:
         poller, client, _, _ = _make_poller()
         client.responses["/repos/o/r/events"] = RateLimitError("限流", retry_after=300)
         await poller._poll_guarded(_sub())
-        assert poller._global_paused_until >= time.time() + 250
+        assert poller._repo_state["o/r"]["paused_until"] >= time.time() + 250
 
     async def test_circuit_breaker_after_five_failures(self) -> None:
         poller, client, _, _ = _make_poller()
@@ -186,7 +199,7 @@ class TestFailureModes:
         client.rate_reset_at = time.time() + 600
         await poller._tick()
         assert client.calls == []  # 配额不足,一轮都没发
-        assert poller._global_paused_until > time.time()
+        assert poller._repo_state["o/r"]["quota_paused_until"] > time.time()
 
 
 class GitHubApiErrorX(Exception):

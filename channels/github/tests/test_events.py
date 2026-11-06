@@ -195,7 +195,7 @@ class TestRenderers:
         assert ev.priority == EventPriority.IMMEDIATE
         assert "v2.1.0" in ev.title
 
-    def test_workflow_run_failure_immediate_success_dropped(self) -> None:
+    def test_workflow_run_failure_immediate_success_digest(self) -> None:
         def _run(conclusion: str) -> dict:
             return {
                 "action": "completed",
@@ -206,10 +206,12 @@ class TestRenderers:
         ev = render_event(from_webhook("workflow_run", _run("failure")))
         assert ev is not None and ev.priority == EventPriority.IMMEDIATE
         assert "CI failure" in ev.title
-        assert render_event(from_webhook("workflow_run", _run("success"))) is None
-        assert render_event(from_webhook("workflow_run", {
+        success = render_event(from_webhook("workflow_run", _run("success")))
+        assert success is not None and success.priority == EventPriority.DIGEST
+        requested = render_event(from_webhook("workflow_run", {
             "action": "requested", "workflow_run": {},
-            "repository": {"full_name": "o/r"}})) is None
+            "repository": {"full_name": "o/r"}}))
+        assert requested is not None and requested.priority == EventPriority.DIGEST
 
     def test_repository_renamed_immediate(self) -> None:
         ev = render_event(from_webhook("repository", {

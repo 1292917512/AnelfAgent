@@ -161,5 +161,18 @@
     "direct": "Always direct",
     "proxy": "Use global proxy",
     "hint": "Global proxy routing is off by default, so system mode connects directly. When enabled, site rules and the default policy apply; direct mode always bypasses them. This controls connections from Anelf, not the outbound proxy settings of local services."
+  },
+  "schema": {
+    "searchOptions": "Search {{name}} options",
+    "search": "Search options",
+    "selectVisible": "Select visible",
+    "clearVisible": "Clear visible",
+    "selected": "{{count}} selected",
+    "noOptions": "No matching options",
+    "removeEntry": "Remove {{name}} entry {{index}}",
+    "remove": "Remove",
+    "addEntry": "Add {{name}}",
+    "invalidJson": "Enter valid JSON",
+    "inherit": "Use inherited settings"
   }
 }

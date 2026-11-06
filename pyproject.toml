@@ -82,6 +82,8 @@ dependencies = [
     # Cognee 适配器的有限重试策略（复用库已有依赖，不另建重试循环）。
     "tenacity>=9.1.4,<10",
     "filelock>=3.32.7",
+    "githubkit[auth-app]==0.14.0",
+    "graphql-core>=3.2.6,<3.3",
 ]
 
 [tool.uv]

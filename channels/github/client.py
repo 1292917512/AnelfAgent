@@ -1,23 +1,17 @@
-"""GitHub REST 薄客户端 — httpx 封装:鉴权 / ETag 条件请求 / 限流退避 / 5xx 重试。
-
-设计(参照 nonebot-adapter-github 的 githubkit 委托思想,但不引入重依赖):
-- 只实现频道所需的端点面,schema 靠少量手写解析,不拖 pydantic 模型全家桶;
-- 鉴权三形态:PAT(Bearer)/ GitHub App(installation token,见 app_auth)/ 匿名;
-- ETag 条件请求:``If-None-Match`` 命中 304 **不计入限流配额**,是高频轮询的预算根基;
-- 限流:响应头 ``X-RateLimit-Remaining/Reset`` 全程跟踪;403/429 抛 RateLimitError
-  由调用方长退避;5xx 指数退避 (n+1)² 最多重试 3 次(githubkit RetryServerError 语义)。
-"""
+"""GitHub HTTP 请求、认证、配额跟踪与安全重试。"""
 
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Optional
 
 import httpx
 
 from core.log import log
 from core.network import AsyncNetworkTransport
+
+from .auth import GitHubAuth
 
 _DEFAULT_HEADERS = {
     "Accept": "application/vnd.github+json",
@@ -42,6 +36,10 @@ class NotFoundError(GitHubApiError):
     """404:仓库不存在或对 token 不可见。"""
 
 
+class OutcomeUnknownError(GitHubApiError):
+    """写请求结果未确认，必须查询状态后再决定是否重试。"""
+
+
 class RateLimitError(GitHubApiError):
     """403/429 限流:携带 retry_after 秒数(调用方据此长退避)。"""
 
@@ -61,6 +59,7 @@ class ApiResponse:
     not_modified: bool = False
     rate_remaining: int = -1
     rate_reset: float = 0.0
+    headers: dict[str, str] = field(default_factory=dict)
 
 
 class GitHubClient:
@@ -76,10 +75,12 @@ class GitHubClient:
         timeout: float = 15.0,
         max_retries: int = 3,
         transport: Any = None,
+        auth: GitHubAuth | None = None,
     ) -> None:
         self._auth_mode = auth_mode
         self._token_provider = token_provider
         self._app_auth = app_auth
+        self.auth = auth
         self._max_retries = max(1, max_retries)
         self._client = httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
@@ -91,26 +92,44 @@ class GitHubClient:
         )
         self.rate_remaining: int = -1
         self.rate_reset_at: float = 0.0
+        self.rate_limit: int = 5000
+        self._quotas: dict[str, tuple[int, int, float]] = {}
 
     async def close(self) -> None:
         await self._client.aclose()
 
-    # ------------------------------------------------------------------
-    # 鉴权
-    # ------------------------------------------------------------------
+    def quota_key(self, path: str) -> str:
+        """按认证账户和安装区分配额。"""
+        if self.auth is None:
+            return "default"
+        account, repo, installation = self.auth.selection(path)
+        return f"{account.name}:{installation or repo if account.auth_mode == 'app' else ''}"
+
+    def quota_for(self, path: str) -> tuple[int, int, float]:
+        """读取请求对应账户最近的核心配额。"""
+        return self._quotas.get(self.quota_key(path), (self.rate_limit, -1, 0.0))
+
+    @staticmethod
+    def validate_path(path: str) -> str:
+        """只接受 API 根地址下的相对路径。"""
+        from urllib.parse import unquote, urlsplit
+
+        parsed = urlsplit(path)
+        decoded = unquote(path)
+        if (not path.startswith("/") or path.startswith("//") or parsed.scheme or parsed.netloc
+                or parsed.query or parsed.fragment or "\\" in decoded
+                or any(part in (".", "..") for part in decoded.split("/"))
+                or any(ord(character) < 32 for character in decoded)):
+            raise ValueError("API path 必须是根地址下的路径；查询参数请放入 params")
+        return path
+
 
     async def _auth_header(self) -> Dict[str, str]:
         if self._auth_mode == "pat":
             token = self._token_provider() if self._token_provider else ""
             return {"Authorization": f"Bearer {token}"} if token else {}
-        if self._auth_mode == "app" and self._app_auth is not None:
-            token = await self._app_auth.installation_token()
-            return {"Authorization": f"Bearer {token}"} if token else {}
         return {}
 
-    # ------------------------------------------------------------------
-    # 请求
-    # ------------------------------------------------------------------
 
     async def request(
         self,
@@ -123,31 +142,57 @@ class GitHubClient:
         headers: Optional[Dict[str, str]] = None,
     ) -> ApiResponse:
         """统一请求出口:鉴权注入 → 重试 → 错误分类 → 限流跟踪。"""
-        req_headers = dict(await self._auth_header())
+        path = self.validate_path(path)
+        method = method.upper()
+        retry_safe = method in ("GET", "HEAD", "OPTIONS")
+        attempts = self._max_retries if retry_safe else 1
+        try:
+            auth = await self.auth.resolve(path) if self.auth else None
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            if status == 404:
+                raise NotFoundError("找不到仓库对应的 App 安装", status=status) from exc
+            if status in (401, 403):
+                raise AuthError("App 认证失败，请检查私钥和安装权限", status=status) from exc
+            raise GitHubApiError("App 安装查询失败", status=status) from exc
+        if self._app_auth is not None and auth is None:
+            parts = path.strip("/").split("/")
+            repo = "/".join(parts[1:3]) if len(parts) >= 3 and parts[0] == "repos" else ""
+            auth = await self._app_auth.auth_for(repo=repo, as_app=path.startswith("/app"))
+        req_headers = dict(await self._auth_header()) if self.auth is None else {}
         if etag:
             req_headers["If-None-Match"] = etag
         if headers:
+            if any(key.lower() in ("authorization", "host", "cookie") for key in headers):
+                raise ValueError("认证头由频道管理")
             req_headers.update(headers)
 
         last_exc: Optional[Exception] = None
-        for attempt in range(self._max_retries):
+        for attempt in range(attempts):
             try:
+                url: str | httpx.URL = path.lstrip("/")
+                if path == "/graphql" and self._client.base_url.path.rstrip("/").endswith("/api/v3"):
+                    url = self._client.base_url.copy_with(path=self._client.base_url.path.rstrip("/")[:-7] + "/api/graphql")
                 resp = await self._client.request(
-                    method, path, params=params, json=json_body, headers=req_headers,
+                    method, url, params=params, json=json_body, headers=req_headers, auth=auth,
                 )
             except (httpx.TimeoutException, httpx.TransportError) as exc:
                 last_exc = exc
-                if attempt + 1 < self._max_retries:
+                if not retry_safe:
+                    raise OutcomeUnknownError("写请求响应未确认，请先查询目标状态，勿直接重复写入") from exc
+                if attempt + 1 < attempts:
                     await asyncio.sleep((attempt + 1) ** 2)
                     continue
                 raise GitHubApiError(f"网络错误: {exc}") from exc
 
             self._track_rate_limit(resp.headers)
+            if resp.headers.get("x-ratelimit-resource", "core") == "core":
+                self._quotas[self.quota_key(path)] = (self.rate_limit, self.rate_remaining, self.rate_reset_at)
 
             if resp.status_code == 304:
                 return ApiResponse(status=304, data=None, not_modified=True,
                                    etag=etag, rate_remaining=self.rate_remaining,
-                                   rate_reset=self.rate_reset_at)
+                                   rate_reset=self.rate_reset_at, headers=dict(resp.headers))
             if resp.status_code in (403, 429) and self._is_rate_limited(resp):
                 raise self._make_rate_limit_error(resp)
             if resp.status_code == 401:
@@ -157,8 +202,10 @@ class GitHubClient:
             if resp.status_code == 404:
                 raise NotFoundError(f"资源不存在或不可见(404): {path}", status=404)
             if resp.status_code >= 500:
+                if not retry_safe:
+                    raise OutcomeUnknownError("写请求返回服务端错误，结果未确认，请先查询目标状态", status=resp.status_code)
                 last_exc = GitHubApiError(f"服务端错误 {resp.status_code}", status=resp.status_code)
-                if attempt + 1 < self._max_retries:
+                if attempt + 1 < attempts:
                     await asyncio.sleep((attempt + 1) ** 2)
                     continue
                 raise GitHubApiError(
@@ -180,6 +227,7 @@ class GitHubClient:
                 status=resp.status_code, data=data,
                 etag=resp.headers.get("etag", ""),
                 rate_remaining=self.rate_remaining, rate_reset=self.rate_reset_at,
+                headers=dict(resp.headers),
             )
 
         raise GitHubApiError(f"请求失败: {last_exc}")
@@ -193,11 +241,13 @@ class GitHubClient:
     async def patch(self, path: str, **kwargs: Any) -> ApiResponse:
         return await self.request("PATCH", path, **kwargs)
 
-    # ------------------------------------------------------------------
-    # 限流
-    # ------------------------------------------------------------------
 
     def _track_rate_limit(self, headers: httpx.Headers) -> None:
+        if headers.get("x-ratelimit-resource", "core") != "core":
+            return
+        limit = headers.get("x-ratelimit-limit", "")
+        if limit.isdigit():
+            self.rate_limit = int(limit)
         remaining = headers.get("x-ratelimit-remaining")
         if remaining is not None and remaining.isdigit():
             self.rate_remaining = int(remaining)

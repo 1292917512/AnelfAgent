@@ -161,5 +161,18 @@
     "direct": "始终直连",
     "proxy": "使用全局代理",
     "hint": "全局代理默认关闭，跟随全局时直连。启用后才按站点规则和默认策略选路；始终直连不受规则影响。只控制 Anelf 发起的连接，不自动配置本地服务的出站代理。"
+  },
+  "schema": {
+    "searchOptions": "搜索 {{name}} 选项",
+    "search": "搜索选项",
+    "selectVisible": "全选当前结果",
+    "clearVisible": "清空当前结果",
+    "selected": "已选 {{count}} 项",
+    "noOptions": "没有匹配选项",
+    "removeEntry": "删除 {{name}} 第 {{index}} 项",
+    "remove": "删除",
+    "addEntry": "添加{{name}}",
+    "invalidJson": "请输入有效的 JSON",
+    "inherit": "沿用默认设置"
   }
 }

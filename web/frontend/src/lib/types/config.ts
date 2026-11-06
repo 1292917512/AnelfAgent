@@ -97,6 +97,7 @@ export interface ConfigMetaItem {
   default: unknown;
   editable: boolean;
   options: string[] | null;
+  schema?: ConfigFieldSchema | null;
   /** 高级项（折叠到高级区，基础项直接展示） */
   advanced: boolean;
   /** RANGE 类型滑条边界与步进（未声明为 null） */
@@ -119,6 +120,27 @@ export interface ConfigMetaItem {
  */
 export interface ConfigValues {
   [key: string]: unknown;
+}
+
+export interface ConfigFieldSchema {
+  type?: string;
+  title?: string;
+  description?: string;
+  default?: unknown;
+  enum?: (string | number)[];
+  options?: string[];
+  minimum?: number;
+  maximum?: number;
+  minItems?: number;
+  maxItems?: number;
+  section?: string;
+  format?: string;
+  $ref?: string;
+  $defs?: Record<string, ConfigFieldSchema>;
+  items?: ConfigFieldSchema;
+  properties?: Record<string, ConfigFieldSchema>;
+  required?: string[];
+  anyOf?: ConfigFieldSchema[];
 }
 
 export interface ConfigMetaGroup {
