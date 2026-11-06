@@ -27,7 +27,7 @@ test("code-heavy history rendering metrics", async ({ page, context }, info) => 
   const readyMs = Date.now() - start;
   await expect(page.locator(".message-list .shiki").last()).toBeAttached({ timeout: 20000 });
   await page.waitForTimeout(5000);
-  await expect(page.locator(".message-list [data-message-key]").last().getByRole("button", { name: "Expand", exact: true })).toBeInViewport();
+  await expect(page.locator(".message-list .shiki").last()).toBeInViewport();
   await cdp.send("HeapProfiler.collectGarbage");
   const heap = await cdp.send("Runtime.getHeapUsage");
   const dom = await cdp.send("Memory.getDOMCounters");

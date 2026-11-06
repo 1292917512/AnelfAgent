@@ -189,7 +189,7 @@ HTTP 健康核对传入同进程的快照修订，仅返回变化轮次及存续
 正文与详情共用 Markdown 渲染器，渲染组件身份保持稳定。代码块先显示完整纯文本，复用
 `useInViewport` 在进入视野附近且输出稳定后执行语法高亮；屏外和折叠区域内的代码不提前
 生成高亮节点，展开后自动补齐，复制始终使用完整原文。
-纯文本与高亮代码保持相同行高；长消息从首帧限制高度，折叠态展开按钮叠放在渐变区，避免测量后增加消息高度、挤离最新消息。
+纯文本与高亮代码保持相同行高；Web 对话中用户消息和助手回复均完整展示，不按正文高度自动折叠或添加渐变遮罩。
 文件引用用图标和语义色区分技能与记忆，保留原有文件根和打开目标。
 工具正文、终端输出和大段 Markdown 仅在打开详情时挂载，关闭后卸载；沿用统一弹层、动效和 reduced-motion 规则。
 当前过程按步骤开始时间交织展示，各段标明会话和父任务；工具完成或补回回执不会改变已有步骤的位置。支持按会话树筛选和打开完整执行详情。
@@ -274,7 +274,7 @@ Web 与思维链共用 SSE 连接生命周期实现，终止连接退避重建�
 | 运行态 shimmer | `components/common/Shimmer.tsx` + ActivityBar | 300% 渐变 + background-clip:text 扫光；深浅主题各一组变量；reduced-motion 降级为静态 |
 | 紧凑耗时 / 数字压缩 | `lib/format.ts`（formatElapsedCompact / formatTokensCompact） | 0s→59s→1m 05s→1h 02m；1.2K/3.4M/5.6B（<10 留一位小数）；ContextChip 与 ToolBlock 统一走这两个 |
 | diff 美学 | `chat/DiffView.tsx` | 行号槽底色比行底色深半档、hunk 间 `⋮` 省略行、+/- 符号列与内容列定宽对齐、亮暗主题各一套语义色 |
-| 长用户消息折叠 | `render/CollapsibleUserMessage.tsx` | >120px 折叠 + 底部 mask 渐隐 + 悬浮展开钮；ResizeObserver+rAF 合并测量、aria-expanded |
+| 长消息展示 | `MessageRow.tsx` + `render/Markdown.tsx` | 用户消息与助手回复直接渲染完整正文，不因长度自动折叠；代码继续按视口延迟高亮 |
 | 时间戳 hover 浮现 | MessageList | 行级 hover 浮现 + focus-within 兜底（键盘可达） |
 | SSE 断线可见性与恢复 | `chat-store.ts`（streamStatus + refreshRealtime）+ MessageList 横幅 | 连接恢复补齐当前及等待会话的历史与活动快照；静默会话复用原有核对任务，不把缺少事件视作执行结束 |
 

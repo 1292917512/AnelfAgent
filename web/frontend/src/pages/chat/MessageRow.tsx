@@ -8,8 +8,7 @@ import { ConfirmDialog } from "@/components/ui/Modal";
 import { MediaBubble } from "./render/MediaBubble";
 import { MessageExtension } from "@/components/extensions/MessageExtension";
 import { SystemNotice } from "./render/SystemNotice";
-import { CollapsibleUserMessage } from "./render/CollapsibleUserMessage";
-import { CollapsibleMarkdown } from "./render/CollapsibleMarkdown";
+import { Markdown } from "./render/Markdown";
 import type { ChatMessage } from "@/lib/types";
 
 /** 单条消息气泡（memo：流式 delta 更新时历史消息行不重渲染） */
@@ -60,19 +59,7 @@ export const MessageRow = memo(function MessageRow({ msg, foldPivot }: { msg: Ch
                   : <><Volume2 size={10} />{t("voice.spoken")}</>}
               </div>
             )}
-            {isUser ? (
-              <CollapsibleUserMessage>
-                <CollapsibleMarkdown
-                  content={msg.content}
-                  fadeClass="from-elevated"
-                />
-              </CollapsibleUserMessage>
-            ) : (
-              <CollapsibleMarkdown
-                content={msg.content}
-                fadeClass="from-card"
-              />
-            )}
+            <Markdown content={msg.content} />
           </div>
         )}
         {(msg.timestamp || msg.ts) && (
