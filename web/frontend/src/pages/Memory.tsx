@@ -17,7 +17,7 @@ import { RulesPanel } from "@/pages/memory/RulesPanel";
 import { DailyNotesPanel } from "@/pages/memory/DailyNotesPanel";
 import { DocsPanel } from "@/pages/memory/DocsPanel";
 import { CogneePanel } from "@/pages/memory/cognee/CogneePanel";
-import { RecallPolicyPanel } from "@/pages/memory/RecallPolicyPanel";
+const RecallPolicyPanel = lazy(() => import("@/pages/memory/RecallPolicyPanel").then((module) => ({ default: module.RecallPolicyPanel })));
 const GraphPanel = lazy(() => import("@/pages/memory/graph/GraphPanel").then((module) => ({ default: module.GraphPanel })));
 
 type MemTab = "overview" | "recall" | "stm" | "goals" | "conv" | "notes" | "daily" | "docs" | "entity" | "ltm" | "graph" | "cognee" | "rules";
@@ -51,7 +51,7 @@ export default function Memory() {
       <TabBar tabs={TAB_KEYS} activeTab={tab} onChange={setTab} />
       <div className={cn(FULL_HEIGHT_TABS.has(tab) && "md:flex-1 md:min-h-0 md:flex md:flex-col")}>
         {tab === "overview" && <OverviewPanel />}
-        {tab === "recall" && <RecallPolicyPanel />}
+        {tab === "recall" && <Suspense fallback={<PageSkeleton />}><RecallPolicyPanel /></Suspense>}
         {tab === "stm" && <STMPanel />}
         {tab === "goals" && <GoalsPanel />}
         {tab === "conv" && <ConvPanel />}

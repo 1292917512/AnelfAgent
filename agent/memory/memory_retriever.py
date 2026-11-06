@@ -219,7 +219,7 @@ class MemoryRetriever:
             loop = asyncio.get_running_loop()
             t0 = loop.time()
             deadline = min(deadline, t0 + recall_timeout) if deadline is not None else t0 + recall_timeout
-            recall_timeout = max(0.0, deadline - t0)
+            recall_timeout = min(recall_timeout, max(0.0, deadline - t0))
             plan_budget = min(plan_budget, recall_timeout)
 
             plan = RetrievalPlan(queries=[query] if query else [])
@@ -232,7 +232,7 @@ class MemoryRetriever:
                 try:
                     await deep_probe_hub.collect(
                         scope=entity_scope, plan=plan, store=self._store, conversation=conversation,
-                        timeout=max(0.0, deadline - loop.time()),
+                        timeout=min(recall_timeout, max(0.0, deadline - loop.time())),
                     )
                 except Exception as exc:
                     log(f"首轮深探失败: {exc}", "DEBUG", tag="记忆")
