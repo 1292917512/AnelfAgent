@@ -51,6 +51,8 @@ async def _invoke_llm_round(
     """
     mind = ctx.mind
     on_tool_call_ready = early_runner.submit if early_runner is not None else None
+    from agent.skills.execution import observe_messages
+    observe_messages(llm_messages)
     try:
         return await mind.model_invoker.invoke(
             llm_messages, ctx.active_tools or None, ctx.anything,

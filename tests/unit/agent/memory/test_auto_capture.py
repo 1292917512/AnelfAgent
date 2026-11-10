@@ -80,24 +80,29 @@ async def test_relation_capture_cannot_rename_hubs_and_enqueue_their_entire_neig
         )
     store.set_cognee_projection_enabled(True)
     candidate = {"subject": "group:qq:100", "predicate": "包含成员", "object": "user:qq:1",
-                 "subject_label": "模型临时群称呼", "object_label": "模型临时用户称呼", "evidence": "既有成员关系"}
+                 "subject_label": "模型临时群称呼", "object_label": "模型临时用户称呼", "evidence": "既有成员关系", "source_index": 0}
     llm = AsyncMock(return_value=json.dumps([candidate], ensure_ascii=False))
     monkeypatch.setattr(ac, "light_llm", llm)
     pipeline = ac.AutoCapturePipeline(SimpleNamespace(memory_store=store), _FakeSqlite([]))
-    messages = [{"role": "user", "content": "这是足够长的已存在成员关系材料，自动捕获应保留正式实体名称，不能把其他历史邻居全部重新标脏。"}]
+    messages = [{"role": "user", "content": "既有成员关系；新增关系事实。这是足够长的材料，自动捕获应保留正式实体名称，不能把其他历史邻居全部重新标脏。"}]
+    # 首次补齐出处会更新两端投影；同一来源重复提取不放大写入。
+    assert await pipeline._extract_relations("group:qq:100", messages) == 1
+    await db.execute("DELETE FROM cognee_sync_queue")
+    await db.commit()
+    edge = await graph.get_relation(edge["id"])
     assert await pipeline._extract_relations("group:qq:100", messages) == 1
     assert (await store.get_cognee_sync_status())["pending"] == 0
     assert (await graph.get_node("user:qq:1"))["label"] == "正式用户名称"
     assert (await graph.get_node("group:qq:100"))["label"] == "正式群名称"
     unchanged = await graph.get_relation(edge["id"])
     assert unchanged["updated"] == edge["updated"] and unchanged["origin"] == "heartbeat_extract"
-    # 旧缺陷留下的手动来源仅修正这条关系，不再触发枢纽改名。
+    # 自动提取无权覆盖已有的显式记录。
     async with store._conn.tx(db):
         await db.execute("UPDATE graph_edges SET origin='manual_tool' WHERE id=?", (edge["id"],))
     assert await pipeline._extract_relations("group:qq:100", messages) == 1
     in_flight = await store.claim_cognee_sync_batch(2000)
-    assert {item["entry_id"] for item in in_flight} == {owner["id"], group["id"]}
-    assert len(in_flight) == 2
+    assert in_flight == []
+    assert (await graph.get_relation(edge["id"]))["origin"] == "manual_tool"
     llm.return_value = json.dumps([{**candidate, "predicate": "跟进", "evidence": "新增关系事实"}], ensure_ascii=False)
     assert await pipeline._extract_relations("group:qq:100", messages) == 1
     batch = await store.claim_cognee_sync_batch(2000)

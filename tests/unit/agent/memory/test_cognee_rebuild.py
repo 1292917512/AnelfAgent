@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, Mock
 from uuid import NAMESPACE_URL, uuid5
 
 import pytest
+from helpers.graph import add_verified_relation
 
 from agent.memory.cognee.config import CogneeConfig
 from agent.memory.cognee.coordinator import CogneeCoordinator
@@ -101,14 +102,14 @@ async def settle(coordinator: CogneeCoordinator) -> None:
 
 @pytest.mark.parametrize("side", ["subject", "object"])
 async def test_relation_rename_requeues_existing_neighbors_even_with_inflight_projection(coordinator, store, side):
-    await store.graph.add_relation("topic:hub", "连接", "topic:old", subject_label="旧名称")
+    await add_verified_relation(store.graph, "topic:hub", "连接", "topic:old", subject_label="旧名称")
     await coordinator._process_batch(await store.claim_cognee_sync_batch(20))
     old = await store.graph.get_node("topic:old")
     # 在途邻居仍持有旧名称快照；改名必须另外保留一条 pending，不能被旧批次 ACK 吃掉。
-    await store.graph.add_relation("topic:hub", "连接", "topic:old", evidence="新增的在途证据")
+    await add_verified_relation(store.graph, "topic:hub", "连接", "topic:old", evidence="新增的在途证据")
     inflight = await store.claim_cognee_sync_batch(20)
     args = ("topic:hub", "连接", "topic:new") if side == "subject" else ("topic:new", "连接", "topic:hub")
-    await store.graph.add_relation(*args, **{f"{side}_label": "新名称"})
+    await add_verified_relation(store.graph, *args, **{f"{side}_label": "新名称"})
     db = await store._conn.get_db()
     rows = await (await db.execute("SELECT status FROM cognee_sync_queue WHERE entry_kind='graph_node' AND entry_id=?",
                                    (old["id"],))).fetchall()
@@ -125,8 +126,8 @@ async def test_relation_rename_requeues_existing_neighbors_even_with_inflight_pr
 async def _coverage_failure(coordinator, store):
     mid = await store.add(MemoryEntry(content="不得重复抽取的原文", memory_type=MemoryType.SEMANTIC))
     legacy_document(coordinator, mid, legacy_memory_text(mid, "旧轮保留的正文"))
-    await store.graph.add_relation("topic:hub", "连接", "topic:a", subject_label="旧名称")
-    await store.graph.add_relation("topic:hub", "连接", "topic:b")
+    await add_verified_relation(store.graph, "topic:hub", "连接", "topic:a", subject_label="旧名称")
+    await add_verified_relation(store.graph, "topic:hub", "连接", "topic:b")
     await coordinator.rebuild.request(coordinator.config)
     await settle(coordinator)
     state = coordinator.rebuild.state
@@ -255,7 +256,7 @@ async def test_large_node_fragments_preserve_old_index_and_update_only_changed_r
     hub = "topic:中心"
     evidence = {i: f"完整证据-{i}：" + "关系内容不能截断。" * 15 for i in range(70)}
     for i in range(70):
-        await store.graph.add_relation(hub, "连接", f"topic:目标{i}", evidence=evidence[i])
+        await add_verified_relation(store.graph, hub, "连接", f"topic:目标{i}", evidence=evidence[i])
     node_id = (await store.graph.get_node(hub))["id"]
     # 在同一个真实 SQLite 上模拟已有单文档部署，不改变源内容。
     with monkeypatch.context() as patch:
@@ -268,7 +269,7 @@ async def test_large_node_fragments_preserve_old_index_and_update_only_changed_r
     assert coordinator.client.documents == before
     assert (await store.get_cognee_sync_status())["pending"] == 0
     # 仅强度变化也不会触发格式转换。
-    await store.graph.add_relation(hub, "连接", "topic:目标1", evidence=evidence[1], strength=0.9)
+    await add_verified_relation(store.graph, hub, "连接", "topic:目标1", evidence=evidence[1], strength=0.9)
     await coordinator._process_batch(await store.claim_cognee_sync_batch(100))
     assert coordinator.client.documents == before
 
@@ -286,7 +287,7 @@ async def test_large_node_fragments_preserve_old_index_and_update_only_changed_r
     monkeypatch.setattr(coordinator.client, "add", add)
     monkeypatch.setattr(coordinator.client, "delete_data", delete)
     evidence[1] += "补充证据。"
-    await store.graph.add_relation(hub, "连接", "topic:目标1", evidence=evidence[1])
+    await add_verified_relation(store.graph, hub, "连接", "topic:目标1", evidence=evidence[1])
     await coordinator._process_batch(await store.claim_cognee_sync_batch(100))
     after = await store.get_cognee_mapping(node_id, entry_kind="graph_node")
     parts = mapped_documents(after)
@@ -306,7 +307,7 @@ async def test_large_node_fragments_preserve_old_index_and_update_only_changed_r
     added.clear()
     deleted.clear()
     evidence[1] += "再次修订。"
-    await store.graph.add_relation(hub, "连接", "topic:目标1", evidence=evidence[1])
+    await add_verified_relation(store.graph, hub, "连接", "topic:目标1", evidence=evidence[1])
     await coordinator._process_batch(await store.claim_cognee_sync_batch(100))
     current = mapped_documents(await store.get_cognee_mapping(node_id, entry_kind="graph_node"))
     changed = {part.part_key for part in current if unchanged.get(part.part_key) != part.data_id}
@@ -329,7 +330,7 @@ async def test_fragment_replacement_failure_keeps_mapping_and_all_prior_document
     from agent.memory.graph import fragments
 
     monkeypatch.setattr(fragments, "MAX_DOCUMENT_CHARS", 400)
-    await store.graph.add_relation("topic:甲", "连接", "topic:乙", evidence="必须保留的长证据。" * 80)
+    await add_verified_relation(store.graph, "topic:甲", "连接", "topic:乙", evidence="必须保留的长证据。" * 80)
     await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
     before = copy.deepcopy(coordinator.client.documents)
     mappings = await store.projection_state.mappings()
@@ -362,7 +363,7 @@ async def test_fragment_replacement_failure_keeps_mapping_and_all_prior_document
             raise OSError("delete failed after mutation")
 
         monkeypatch.setattr(coordinator.client, "delete_data", delete_then_fail)
-    await store.graph.add_relation("topic:甲", "连接", "topic:乙", evidence="更新证据。" * 90)
+    await add_verified_relation(store.graph, "topic:甲", "连接", "topic:乙", evidence="更新证据。" * 90)
     batch = await store.claim_cognee_sync_batch(10)
     if failure == "cancel":
         with pytest.raises(asyncio.CancelledError):
@@ -547,7 +548,7 @@ async def test_full_build_preserves_sources_and_all_pages(coordinator, store, le
     assert await store.archive_memory(archived)
     await store.add(MemoryEntry(content="未激活原文", importance=0, memory_type=MemoryType.SEMANTIC))
     await store.add(MemoryEntry(content="计划原文", source="goal", memory_type=MemoryType.SEMANTIC))
-    await store.graph.add_relation("user:qq:1", "参与", "project:alpha", source_memory_id=ids[0], evidence="原始依据")
+    await add_verified_relation(store.graph, "user:qq:1", "参与", "project:alpha", source_memory_id=ids[0], evidence="原始依据")
     db = await store._get_db()
     tables = ("memories", "memories_archive", "graph_nodes", "graph_edges")
     before = {name: [tuple(row) for row in await (await db.execute(f"SELECT * FROM {name} ORDER BY id")).fetchall()]
@@ -844,7 +845,7 @@ async def test_unmapped_history_is_preserved_before_backup_and_retry_is_idempote
     mid = await store.add(MemoryEntry(content="当前事实", memory_type=MemoryType.SEMANTIC))
     archived = await store.add(MemoryEntry(content="已归档事实", memory_type=MemoryType.SEMANTIC))
     await store.archive_memory(archived)
-    await store.graph.add_relation("topic:alpha", "参与", "topic:beta", evidence="当前关系证据")
+    await add_verified_relation(store.graph, "topic:alpha", "参与", "topic:beta", evidence="当前关系证据")
     node = await store.graph.get_node("topic:alpha")
     texts = [legacy_memory_text(mid, "当前事实"), legacy_memory_text(mid, "更新前的独有正文", with_identity=True),
              legacy_memory_text(archived, "已归档事实"),
@@ -1207,7 +1208,7 @@ async def test_shutdown_cancels_extraction_and_retries_uncommitted_batch(coordin
 
 async def test_source_label_change_reprojects_relations_and_claim_is_atomic(coordinator, store):
     mid = await store.add(MemoryEntry(content="证据", memory_type=MemoryType.SEMANTIC, tags=["old:tag"]))
-    await store.graph.add_relation("user:qq:1", "参与", "project:alpha", source_memory_id=mid)
+    await add_verified_relation(store.graph, "user:qq:1", "参与", "project:alpha", source_memory_id=mid)
     await coordinator._process_batch(await store.claim_cognee_sync_batch(20))
     entry = await store.get(mid)
     entry.tags, entry.metadata = ["future:tag"], {"sensitivity": "secret"}
@@ -1333,7 +1334,7 @@ async def test_retry_groups_keep_all_fragments_of_each_source_together(coordinat
     monkeypatch.setattr(fragments, "MAX_DOCUMENT_CHARS", 400)
     coordinator.config.sync_max_documents_per_group = 1 if bounded else 64
     for i in range(3):
-        await store.graph.add_relation(f"topic:左{i}", "连接", f"topic:右{i}", evidence="完整关系证据。" * 100)
+        await add_verified_relation(store.graph, f"topic:左{i}", "连接", f"topic:右{i}", evidence="完整关系证据。" * 100)
     client = coordinator.client
     original_add = client.add
     groups: list[dict[int, int]] = []
@@ -1573,7 +1574,7 @@ async def test_fragmented_node_restore_replays_all_unconfirmed_retired_parts(coo
     monkeypatch.setattr(fragments, "MAX_DOCUMENT_CHARS", 400)
     edges: list[int] = []
     for i in range(2):
-        edge = await store.graph.add_relation("topic:recoverable", "连接", f"topic:peer{i}", evidence="必须完整保留的关系证据。" * 100)
+        edge = await add_verified_relation(store.graph, "topic:recoverable", "连接", f"topic:peer{i}", evidence="必须完整保留的关系证据。" * 100)
         edges.append(edge["id"])
     await coordinator._process_batch(await store.claim_cognee_sync_batch(20))
     node_id = (await store.graph.get_node("topic:recoverable"))["id"]
@@ -1692,7 +1693,7 @@ async def test_split_retry_cancellation_keeps_commits_and_concurrent_source_upda
 
 async def test_audit_does_not_block_writes_and_rejects_changed_revision(coordinator, store, monkeypatch):
     mid = await store.add(MemoryEntry(content="审计前原文", memory_type=MemoryType.SEMANTIC))
-    await store.graph.add_relation("user:test:1", "负责", "project:a", source_memory_id=mid)
+    await add_verified_relation(store.graph, "user:test:1", "负责", "project:a", source_memory_id=mid)
     await coordinator._process_batch(await store.claim_cognee_sync_batch(20))
     entered, release = asyncio.Event(), asyncio.Event()
     render = store.graph.render_node_projection

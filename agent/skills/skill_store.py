@@ -72,6 +72,7 @@ class Skill(BaseModel):
     # 消费全文时检查缺失并引导安装
     dependencies: List[Dict[str, Any]] = Field(default_factory=list)
     mcp_servers: List[str] = Field(default_factory=list)
+    required_tools: List[str] = Field(default_factory=list)
 
     def touch(self) -> None:
         """记录一次活动（真实使用/更新）。检索注入不调用本方法。"""
@@ -93,7 +94,7 @@ _DEFINITION_FIELDS = (
 #: 账本字段（.meta.json，运行时事实，计数更新只改写本文件）
 _LEDGER_FIELDS = (
     "use_count", "match_count", "patch_count", "state", "pinned",
-    "merged_into", "last_activity_at", "last_match_at", "mcp_servers",
+    "merged_into", "last_activity_at", "last_match_at", "mcp_servers", "required_tools",
 )
 
 _META_FILENAME = ".meta.json"
@@ -179,6 +180,7 @@ def render_skill_ledger(skill: Skill) -> Dict[str, Any]:
         "last_activity_at": skill.last_activity_at,
         "last_match_at": skill.last_match_at,
         "mcp_servers": skill.mcp_servers,
+        "required_tools": skill.required_tools,
     }
 
 
@@ -229,6 +231,7 @@ class SkillStore:
         # 解析失败登记：严格契约下脏文件不静默消失——错误作为健康事实呈现，
         # 由 AI 评审/治理时自主决策修复（create 同名重建即为修复通道）
         self._parse_errors: Dict[str, str] = {}
+        self._requirements_cache: tuple[int, dict[str, list[str]]] | None = None
 
     @property
     def parse_errors(self) -> Dict[str, str]:
@@ -285,6 +288,22 @@ class SkillStore:
     def exists(self, name: str) -> bool:
         return self._skill_path(name).is_file()
 
+    def required_skills(self, tool_name: str) -> list[str]:
+        """从本地账本读取显式关联；技能正文缺失或损坏不能解除执行约束。"""
+        with self._lock:
+            version = self.version
+            if self._requirements_cache is None or self._requirements_cache[0] != version:
+                mapping: dict[str, list[str]] = {}
+                for path in sorted(self.skills_dir.glob(f"*/{_META_FILENAME}")):
+                    ledger = json.loads(path.read_text(encoding="utf-8"))
+                    names = ledger.get("required_tools", [])
+                    if not isinstance(names, list) or any(not isinstance(n, str) for n in names):
+                        raise ValueError(f"技能 {path.parent.name} 的工具关联格式无效")
+                    for name in names:
+                        mapping.setdefault(name, []).append(path.parent.name)
+                self._requirements_cache = version, mapping
+            return list(self._requirements_cache[1].get(tool_name, []))
+
     def get(self, name: str) -> Optional[Skill]:
         path = self._skill_path(name)
         fallback_name = self.normalize_name(name)
@@ -312,7 +331,7 @@ class SkillStore:
         meta_path = path.parent / _META_FILENAME
         legacy = not meta_path.is_file()
         if legacy:
-            ledger = {k: v for k, v in fm.items() if k in _LEDGER_FIELDS and k != "mcp_servers"}
+            ledger = {k: v for k, v in fm.items() if k in _LEDGER_FIELDS and k not in {"mcp_servers", "required_tools"}}
         else:
             ledger = json.loads(meta_path.read_text(encoding="utf-8")) or {}
 
@@ -473,6 +492,21 @@ class SkillStore:
             skill.use_count += 1
             skill.touch()
             self._write_ledger(skill)
+
+    def set_required_tools(self, name: str, tool_names: List[str]) -> Skill:
+        """保存本地确切工具前置关联；不随技能正文导出或从外部 frontmatter 导入。"""
+        names = list(dict.fromkeys(item.strip() for item in tool_names))
+        if len(names) > 32 or any(not item or len(item) > 256 for item in names):
+            raise ValueError("最多关联 32 个工具，工具名不能为空或超过 256 字符")
+        if {"get_skill", "set_skill_tool_requirements"}.intersection(names):
+            raise ValueError("不能为技能读取或前置关联管理工具设置自身前置要求")
+        with self._lock:
+            skill = self.get(name)
+            if skill is None:
+                raise ValueError(f"技能 '{name}' 不存在")
+            skill.required_tools = names
+            self._write_ledger(skill, bump=True)
+            return skill
 
     def set_mcp_servers(self, name: str, servers: List[str]) -> Skill:
         """更新本地 MCP 关联账本，不改写技能定义、向量表征或活动计数。"""

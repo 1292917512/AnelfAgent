@@ -42,6 +42,7 @@ def _skill_summary(skill: Any, index: Optional[SkillIndex]) -> Dict[str, Any]:
         "patch_count": skill.patch_count,
         "pinned": skill.pinned,
         "mcp_servers": skill.mcp_servers,
+        "required_tools": skill.required_tools,
         "created_by": skill.created_by,
         "rationale": skill.rationale,
         "merged_into": skill.merged_into,

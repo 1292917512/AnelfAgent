@@ -13,6 +13,50 @@ from agent.workflow import journal as wf_journal
 from agent.workflow.spec import WorkflowSpecError
 
 
+@pytest.mark.parametrize("read_first,notice", [(False, ""), (True, ""), (True, "permission notice")])
+async def test_skill_prerequisite_is_enforced_in_workflow(engine, tmp_path, monkeypatch, read_first, notice):
+    from functools import partial
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from agent.skills.execution import check_required_skills
+    from agent.skills.skill_matcher import SkillMatcher
+    from agent.skills.skill_store import SkillStore
+    from agent.skills.tools import SkillToolDeps, get_skill, skill_tools_port
+    from core.entity import EntityRegistry
+    from core.tool_preconditions import tool_precondition_port
+
+    store = SkillStore(str(tmp_path / "skills"))
+    store.create("publishing", "发布检查", "先检查目标与素材，再执行发布")
+    store.set_required_tools("publishing", ["test_workflow_publish"])
+    calls = []
+
+    async def publish() -> str:
+        calls.append(True)
+        return "ok"
+
+    skill_tools_port.set(SkillToolDeps(store, SkillMatcher(store)))
+    tool_precondition_port.set(partial(check_required_skills, store))
+    EntityRegistry.register_tool(name="test_workflow_publish", func=publish, group="tests")
+    EntityRegistry.register_tool(name="test_workflow_read", func=lambda: get_skill("publishing"), group="tests")
+    monkeypatch.setattr(engine, "_request_approval", AsyncMock(return_value=SimpleNamespace(allowed=True, notice=notice)))
+    steps = ([{"key": "read", "kind": "tool", "tool": "test_workflow_read", "args": {}}]
+             if read_first else [])
+    steps.append({"key": "publish", "kind": "tool", "tool": "test_workflow_publish", "args": {},
+                  "depends_on": ["read"] if read_first else [], "retries": 2})
+    try:
+        summary = await engine.start({"name": "skill gate", "steps": steps})
+        run = await wait_run_terminal(engine.journal, summary["run_id"])
+        nodes = await engine.journal.nodes_of_run(summary["run_id"])
+        assert run["status"] == (wf_journal.COMPLETED if read_first else wf_journal.FAILED), [n["error_text"] for n in nodes]
+        assert len(calls) == int(read_first)
+    finally:
+        EntityRegistry.unregister("test_workflow_publish")
+        EntityRegistry.unregister("test_workflow_read")
+        skill_tools_port.unbind()
+        tool_precondition_port.unbind()
+
+
 async def test_saved_definition_is_durable_and_runs_use_independent_snapshots(engine, fake_manager):
     from agent.workflow.journal import WorkflowJournal
 

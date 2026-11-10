@@ -20,7 +20,7 @@
 Model Experience: update_goal 永驻，计划步骤须依据结果显式更新；调用次数不代表进度。
 Token effect: 未召回规划工具的会话增加一个工具 schema，约数百 token。
 Cache effect: 常驻 schema 在会话内冻结，不向稳定消息前缀注入实时进度。
-Model Experience: 显式查询可查看归档目标状态；终态清理回执可在记忆审计中追溯。
+Model Experience: 显式查询可查看归档与终态结果；更新必须携带版本，步骤按稳定 ID 或完整名称校验。
 Token effect: 归档目标按需增加时间与原因字段，不新增模型调用。
 Cache effect: 归档仅进入工具结果，清理留痕不写稳定前缀或新增记忆。
 """
@@ -28,30 +28,20 @@ Cache effect: 归档仅进入工具结果，清理留痕不写稳定前缀或新
 from __future__ import annotations
 
 import json
-import time
-import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from agent.memory.memory_store import MemoryStore
-from agent.memory.memory_types import GOAL_SOURCE, MemoryEntry, MemoryType
+from agent.memory.memory_types import MemoryEntry
+from agent.planning import goals as goal_ops
 from agent.planning import situation, tracker
-from agent.planning.tracker import GOAL_KIND, planning_store_port
+from agent.planning.tracker import planning_store_port
 from core.entity import EntityRegistry
-from core.log import log
-from core.tool_errors import ErrorCause, tool_error
+from core.tool_errors import ErrorCause, error_from_exception, tool_error
 from core.tool_registry import deferred_tool
 
 EntityRegistry.register_group_order("planning", 20)
 
 _GROUP = "planning"
-
-# update_goal 允许的步骤终态（与 tracker 状态机一致）
-_STEP_STATUSES = frozenset({"pending", "in_progress", "completed", "skipped"})
-# update_goal 允许的目标整体状态
-_GOAL_STATUSES = frozenset({"active", "completed", "cancelled"})
-# 可清空字段的占位值（description 传 clear/none 置空）
-_CLEAR_TOKENS = frozenset({"clear", "none"})
-
 
 def _bound_store() -> Optional[MemoryStore]:
     """取 MemoryStore（端口未施绑时返回 None，工具降级为未就绪错误）。"""
@@ -92,6 +82,11 @@ async def _goal_not_found(goal_id: str) -> str:
             hint=f"先 get_goal 查看，再 restore_memory(memory_id={archived.id}) 恢复后操作",
             memory_id=archived.id, archive_reason=archived.archive_reason,
         )
+    store = _bound_store()
+    receipt = await goal_ops.terminal_receipt(store, goal_id) if store is not None else None
+    if receipt is not None:
+        return tool_error(f"目标 '{goal_id}' 已结束", cause=ErrorCause.STATE, retryable=False,
+                          hint="可用 get_goal 查看终态结果，不能继续更新已结束目标", receipt=receipt)
     briefs = await situation.active_goal_briefs()
     hint = (
         "目标可能已被删除或收敛；请改用活跃目标列表中的 goal_id，或 list_goals 确认全貌"
@@ -103,28 +98,6 @@ async def _goal_not_found(goal_id: str) -> str:
         cause=ErrorCause.NOT_FOUND, retryable=False,
         hint=hint, active_goals=briefs or None,
     )
-
-
-def _make_goal(
-    title: str,
-    description: str = "",
-    steps: Optional[List[str]] = None,
-    recurring: bool = False,
-) -> Dict[str, Any]:
-    """构造目标数据结构。"""
-    return {
-        "goal_id": uuid.uuid4().hex[:8],
-        "title": title,
-        "description": description,
-        "status": "active",
-        "recurring": recurring,
-        "steps": [
-            {"index": i, "content": s, "status": "pending", "note": ""}
-            for i, s in enumerate(steps or [])
-        ],
-        "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-    }
 
 
 # ------------------------------------------------------------------
@@ -152,34 +125,26 @@ async def create_goal(title: str, description: str = "", steps: str = "", recurr
     if store is None:
         return _store_not_ready()
 
-    step_list = [s.strip() for s in steps.split("|") if s.strip()] if steps else []
-    goal = _make_goal(title, description, step_list, recurring)
-
-    entry = MemoryEntry(
-        memory_type=MemoryType.SEMANTIC,
-        content=json.dumps(goal, ensure_ascii=False),
-        source=GOAL_SOURCE,
-        importance=0.8,
-        # goal:{id} 标签：记忆联想网络沿该标签把相关记忆与目标互链
-        tags=[f"goal:{goal['goal_id']}"],
-        # kind 声明生命周期归属：持久目标只由 AI 手动推进，plan 状态机
-        # （自动推进/会话收敛）不触碰；无 scope——目标是跨会话的全局对象
-        metadata={"goal_id": goal["goal_id"], "status": "active", "kind": GOAL_KIND},
-    )
-    entry_id = await store.add(entry, actor="planning")
-    situation.invalidate()
-    goal["memory_id"] = entry_id
-    return json.dumps({"success": True, "goal": goal}, ensure_ascii=False)
+    try:
+        goal = await goal_ops.create_goal(
+            store, title, description, [s.strip() for s in steps.split("|") if s.strip()], recurring=recurring,
+        )
+        return json.dumps({"success": True, "goal": goal}, ensure_ascii=False)
+    except ValueError as exc:
+        return tool_error(str(exc), cause=ErrorCause.PARAM, retryable=False)
+    except Exception as exc:
+        return error_from_exception(exc, action="创建目标")
 
 
 @deferred_tool(
     group=_GROUP, tags=["planning", "heartbeat"],
     description="列出目标计划。检查 active 状态的目标，废弃的用 delete_goal 删除。",
 )
-async def list_goals(status: str = "active", include_archived: bool = False) -> str:
+async def list_goals(status: str = "active", include_archived: bool = False, offset: int = 0) -> str:
     """列出目标计划。
 
     Args:
+        offset: 匹配目标的分页偏移，每页最多 50 条
         status: 筛选状态，active（默认）/ all
         include_archived: 显式包含已归档目标并标注归档时间与原因，默认仅活跃库
     """
@@ -187,31 +152,20 @@ async def list_goals(status: str = "active", include_archived: bool = False) -> 
     if store is None:
         return _store_not_ready()
 
-    entries = await store.list_by_source(
-        GOAL_SOURCE, limit=50, memory_type=MemoryType.SEMANTIC, include_archived=include_archived,
-    )
-
-    goals: List[Dict[str, Any]] = []
-    for entry in entries:
-        try:
-            goal = json.loads(entry.content)
-            if not isinstance(goal, dict):
-                continue
-            goal["memory_id"] = entry.id
-            if include_archived:
-                goal["archived"] = bool(entry.archived_at)
-                if entry.archived_at:
-                    goal.update(archived_at=entry.archived_at, archive_reason=entry.archive_reason)
-            if status == "all" or goal.get("status") == status:
-                goals.append(goal)
-        except (json.JSONDecodeError, AttributeError):
+    if offset < 0:
+        return tool_error("offset 不能为负数", cause=ErrorCause.PARAM, retryable=False)
+    goals: list[dict[str, Any]] = []
+    matched = 0
+    async for entry, goal in goal_ops.iter_goals(store, status=status, include_archived=include_archived):
+        matched += 1
+        if matched <= offset:
             continue
-
-    result: Dict[str, Any] = {"goals": goals, "total": len(goals), "filter": status}
-    if len(entries) >= 50:
-        # 达到查询上限：目标可能未全部列出，提示清理而非静默截断
-        result["hint"] = "目标数量已达查询上限，可能有更早的目标未列出，建议删除已完成的目标"
-    return json.dumps(result, ensure_ascii=False)
+        goals.append(goal_ops.goal_view(entry, goal))
+        if len(goals) > 50:
+            break
+    return json.dumps({"goals": goals[:50], "total": min(len(goals), 50), "filter": status,
+                       "has_more": len(goals) > 50,
+                       "next_offset": offset + 50 if len(goals) > 50 else None}, ensure_ascii=False)
 
 
 @deferred_tool(
@@ -223,175 +177,53 @@ async def list_goals(status: str = "active", include_archived: bool = False) -> 
     ),
 )
 async def update_goal(
-    goal_id: str,
-    step_index: int = -1,
-    step_status: str = "",
-    note: str = "",
-    goal_status: str = "",
-    title: str = "",
-    description: str = "",
+    goal_id: str, step_index: int = -1, step_status: str = "", note: str = "",
+    goal_status: str = "", title: str = "", description: str = "",
+    step_id: str = "", step_name: str = "", expected_version: int = 0, note_mode: str = "replace",
 ) -> str:
-    """更新目标计划的步骤状态、整体状态或文本。
+    """依据读取快照更新目标；终态结果保存到审计后清理活动条目。
 
     Args:
         goal_id: 目标 ID
-        step_index: 要更新的步骤索引（-1 表示不更新步骤）
-        step_status: 步骤状态（pending / in_progress / completed / skipped）
+        step_index: 可选索引（从 0 开始），须同时提供 step_id 或 step_name 校验
+        step_status: pending / in_progress / completed / skipped
         note: 步骤备注
-        goal_status: 整体目标状态（active / completed / cancelled），留空不更新；
-            终态写入即自动删除该目标
-        title: 新标题（空串不变）
-        description: 新描述（空串不变；clear/none 置空）
+        goal_status: active / completed / cancelled，空串不变
+        title: 新标题，空串不变
+        description: 新描述，空串不变，clear/none 清空
+        step_id: get_goal 返回的稳定步骤 ID，优先使用
+        step_name: 步骤完整名称，必须唯一；同时传索引时校验二者一致
+        expected_version: 必须传入最近 get_goal/create_goal/update_goal 返回的 version
+        note_mode: replace 替换备注，append 追加备注
     """
     store = _bound_store()
     if store is None:
         return _store_not_ready()
-
     target_entry, target_goal = await _find_goal(goal_id)
     if target_entry is None or target_goal is None:
         return await _goal_not_found(goal_id)
-
     if not (step_status or note or goal_status or title.strip() or description.strip()):
-        return tool_error(
-            "没有任何字段需要更新",
-            cause=ErrorCause.PARAM, retryable=False,
-            hint="可更新 step_status/note/goal_status/title/description 之一",
-        )
-
-    steps: List[Dict[str, Any]] = target_goal.get("steps", [])
-    # 参数诚实校验：越界索引/非法状态此前被静默忽略（返回 success 但未生效），
-    # AI 误以为已标记——错误 + 步骤概览让它一次修正
-    if (step_status or note) and not 0 <= step_index < len(steps):
-        if not steps:
-            return tool_error(
-                f"目标 '{goal_id}' 没有步骤，无法更新步骤状态",
-                cause=ErrorCause.PARAM, retryable=False,
-                hint="仅当创建目标时提供了 steps 才有步骤；如需记录进度可先补建带步骤的目标",
-            )
-        return tool_error(
-            f"步骤索引 {step_index} 超出范围（有效 0~{len(steps) - 1}）",
-            cause=ErrorCause.PARAM, retryable=False,
-            hint="步骤索引从 0 起；目标步骤如下",
-            steps=[f"{i}: {s.get('content', '')}" for i, s in enumerate(steps)],
-        )
-    if step_status and step_status not in _STEP_STATUSES:
-        return tool_error(
-            f"非法步骤状态 '{step_status}'",
-            cause=ErrorCause.PARAM, retryable=False,
-            hint=f"有效值: {' / '.join(sorted(_STEP_STATUSES))}",
-        )
-    if goal_status and goal_status not in _GOAL_STATUSES:
-        return tool_error(
-            f"非法目标状态 '{goal_status}'",
-            cause=ErrorCause.PARAM, retryable=False,
-            hint="有效值: active / completed / cancelled",
-        )
-
-    if title.strip():
-        target_goal["title"] = title.strip()
-    if description.strip():
-        target_goal["description"] = (
-            "" if description.strip().lower() in _CLEAR_TOKENS else description.strip()
-        )
-
-    if 0 <= step_index < len(steps):
-        if step_status:
-            steps[step_index]["status"] = step_status
-        if note:
-            steps[step_index]["note"] = note
-
-    if goal_status == "completed" and target_goal.get("recurring"):
-        # 循环目标完成即重置：步骤归零、恢复 active，跨周期存续
-        for s in target_goal.get("steps", []):
-            s["status"] = "pending"
-            s["note"] = ""
-        target_goal["status"] = "active"
-    elif goal_status in ("completed", "cancelled"):
-        # 终态即清：不保留终态条目（删除 + 前端卡片移除 + 态势同步）
-        if not await tracker.remove_goal(target_entry, goal=target_goal, status=goal_status):
-            return _goal_cleanup_conflict()
-        return json.dumps({
-            "success": True,
-            "message": f"目标 '{goal_id}' 已标记为 {goal_status} 并自动清理",
-            "goal_id": goal_id,
-            "memory_id": target_entry.id,
-            "title": target_goal.get("title", ""),
-        }, ensure_ascii=False)
-    elif goal_status:
-        target_goal["status"] = goal_status
-
-    # 全步骤完成自动收口：本轮推进步骤后计划内步骤全部 done（completed/
-    # skipped）且无显式整体状态指令时关闭目标——完成事实驱动的唯一自动
-    # 关闭路径，不因停滞时间等其他原因关闭
-    if (
-        step_status
-        and not goal_status
-        and steps
-        and not target_goal.get("recurring")
-        and target_goal.get("status") == "active"
-        and all(s.get("status") in ("completed", "skipped") for s in steps)
-    ):
-        if not await tracker.remove_goal(target_entry, goal=target_goal, status="completed"):
-            return _goal_cleanup_conflict()
-        try:
-            if 0 <= step_index < len(steps):
-                await tracker._emit_step(
-                    tracker.current_scope(), goal_id, step_index,
-                    steps[step_index].get("status", "completed"), note=note,
-                )
-        except Exception as exc:
-            log(f"update_goal 事件发射失败（不影响结果）: {exc}", "DEBUG", tag="规划")
-        return json.dumps({
-            "success": True,
-            "message": f"目标 '{goal_id}' 全部步骤已完成，自动收口清理",
-            "goal_id": goal_id,
-            "memory_id": target_entry.id,
-            "title": target_goal.get("title", ""),
-        }, ensure_ascii=False)
-
-    next_idx = step_index + 1
-    advance_next = (step_status == "completed" and 0 <= next_idx < len(steps)
-                    and steps[next_idx].get("status") == "pending")
-    if advance_next:
-        steps[next_idx]["status"] = "in_progress"
-    target_goal["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-
-    # 原地更新（保留 id 与时间戳），内容变更后清空旧向量待后台 worker 重建
-    target_entry.content = json.dumps(target_goal, ensure_ascii=False)
-    target_entry.importance = 0.8 if target_goal["status"] == "active" else 0.3
-    # 合并更新 metadata：保留 kind/scope 等既有键（present_plan 的 scope 隔离依赖它们），
-    # 整体覆盖会导致计划跨 scope 泄漏
-    target_entry.metadata = {
-        **(target_entry.metadata or {}),
-        "goal_id": goal_id,
-        "status": target_goal["status"],
-    }
-    if not await store.update(target_entry, clear_embedding=True, expected_version=target_entry.version):
-        return tool_error("目标已发生变更，本次更新未写入", cause=ErrorCause.STATE, retryable=False,
-                          hint="先用 get_goal 读取当前目标，再按实际结果更新")
-    target_goal["memory_id"] = target_entry.id
-
-    # 发射步骤进度事件（前端 计划卡片据此打勾）；
-    # 程序级联动：当前步骤 completed 后自动推进下一步为 in_progress
+        return tool_error("没有任何字段需要更新", cause=ErrorCause.PARAM, retryable=False,
+                          hint="可更新 step_status/note/goal_status/title/description 之一")
     try:
-        scope = tracker.current_scope()
-        if 0 <= step_index < len(target_goal.get("steps", [])):
-            await tracker._emit_step(
-                scope, goal_id, step_index,
-                step_status or target_goal["steps"][step_index].get("status", "pending"),
-                note=note,
-            )
-            if advance_next:
-                await tracker._emit_step(scope, goal_id, next_idx, "in_progress", note="自动推进")
-
-        if goal_status:
-            await tracker._emit_status(scope, goal_id, target_goal["status"])
+        result = await goal_ops.update_goal(
+            store, target_entry, target_goal, expected_version=expected_version,
+            step_index=step_index, step_id=step_id, step_name=step_name, step_status=step_status,
+            note=note, note_mode=note_mode, status=goal_status or None, title=title.strip() or None,
+            description=("" if description.strip().lower() in ("clear", "none") else description.strip())
+                        if description.strip() else None,
+        )
+        return json.dumps({"success": True, "goal": result, "goal_id": goal_id,
+                           "memory_id": result["memory_id"], "title": result["title"],
+                           **({"message": f"目标 '{goal_id}' 已标记为 {result['status']}，自动收口并自动清理"}
+                              if result.get("deleted") else {})}, ensure_ascii=False)
+    except goal_ops.GoalConflict as exc:
+        return tool_error(str(exc), cause=ErrorCause.STATE, retryable=False, hint="先 get_goal 重读后再决策")
+    except ValueError as exc:
+        return tool_error(str(exc), cause=ErrorCause.PARAM, retryable=False, hint=str(exc),
+                          steps=[f"{i}: {s.get('content', '')}" for i, s in enumerate(target_goal.get("steps", []))])
     except Exception as exc:
-        log(f"update_goal 事件发射失败（不影响结果）: {exc}", "DEBUG", tag="规划")
-    situation.invalidate()
-
-    result: Dict[str, Any] = {"success": True, "goal": target_goal}
-    return json.dumps(result, ensure_ascii=False)
+        return error_from_exception(exc, action="更新目标")
 
 
 @deferred_tool(
@@ -438,7 +270,7 @@ async def get_goal(goal_id: str) -> str:
 
     target_entry, target_goal = await tracker.find_goal_by_id(goal_id, include_archived=True)
     if target_entry is not None and target_goal is not None:
-        target_goal["memory_id"] = target_entry.id
+        target_goal = goal_ops.goal_view(target_entry, target_goal)
         if target_entry.archived_at:
             return json.dumps({
                 "success": True, "goal": target_goal, "archived": True,
@@ -454,6 +286,9 @@ async def get_goal(goal_id: str) -> str:
             "related_memory_count": related_count,
         }, ensure_ascii=False)
 
+    receipt = await goal_ops.terminal_receipt(store, goal_id)
+    if receipt is not None:
+        return json.dumps({"success": True, "goal": receipt, "deleted": True}, ensure_ascii=False)
     return await _goal_not_found(goal_id)
 
 
@@ -510,6 +345,7 @@ async def present_plan(goal: str, steps: str, files: str = "", risks: str = "") 
             "plan_id": plan_id,
             "status": "executing",
             "reused": True,
+            "goal": existing,
             "message": (
                 f"已有进行中的计划 (plan_id={plan_id})，进度 {done}/{len(steps_list)}，"
                 f"请继续执行剩余步骤，不要重新规划：\n{lines}"
@@ -518,11 +354,13 @@ async def present_plan(goal: str, steps: str, files: str = "", risks: str = "") 
 
     step_objs = tracker.parse_steps(steps)
     plan_id = await tracker.submit_plan(scope, goal, step_objs, files=files, risks=risks)
+    entry, stored_goal = await _find_goal(plan_id)
 
     return json.dumps({
         "ok": True,
         "plan_id": plan_id,
         "status": "executing",
+        "goal": goal_ops.goal_view(entry, stored_goal) if entry is not None and stored_goal is not None else None,
         "message": (
             f"计划已公告 (plan_id={plan_id})，立即开始执行即可。"
             "步骤完成后用 update_goal 标记并记录结果证据；"

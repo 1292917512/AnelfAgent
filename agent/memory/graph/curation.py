@@ -27,6 +27,8 @@ from core.config import get_config_float, get_config_int, register_configs_safe
 from core.log import log
 
 from .store import format_triple
+from .verification import revision
+from .verification import status as verification_status
 
 if TYPE_CHECKING:
     from .store import GraphStore
@@ -78,6 +80,7 @@ async def build_agenda(graph: "GraphStore") -> Dict[str, Any]:
         return {**item, "exempt_signature": graph.exemption_signature(kind, item)}
 
     agenda = {
+        "pending_edges": [{**_edge_item(edge), "exempt_signature": str(edge["id"])} for edge in facts["pending_edges"]],
         "weak_edges": [
             _with_signature("weak_edge", _edge_item(edge))
             for edge in facts["weak_edges"]
@@ -119,6 +122,8 @@ async def build_agenda(graph: "GraphStore") -> Dict[str, Any]:
 def agenda_summary(agenda: Dict[str, Any]) -> str:
     """议程摘要一行（心跳日志用）；全部为空返回空串。"""
     parts: List[str] = []
+    if agenda.get("pending_edges"):
+        parts.append(f"待核验 {len(agenda['pending_edges'])}")
     if agenda.get("weak_edges"):
         parts.append(f"弱边 {len(agenda['weak_edges'])}")
     if agenda.get("stale_edges"):
@@ -135,7 +140,8 @@ def agenda_summary(agenda: Dict[str, Any]) -> str:
 def _edge_item(edge: Dict[str, Any]) -> Dict[str, Any]:
     """治理议程的边条目（紧凑三元组 + 判断所需字段）。"""
     return {
-        "id": edge["id"],
+        "id": edge["id"], "verification": verification_status(edge), "revision": revision(edge),
+        "evidence_sources": edge["metadata"].get("evidence_sources", []),
         "triple": format_triple(edge),
         "strength": round(edge["strength"], 2),
         "evidence": str(edge.get("evidence") or "")[:120],

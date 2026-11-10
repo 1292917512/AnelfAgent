@@ -99,7 +99,7 @@ class GraphService:
         )
 
     async def update_edge(self, edge_id: int, **changes: Any) -> Optional[Dict[str, Any]]:
-        return await _graph().update_relation(edge_id, **changes)
+        return await _graph().update_relation(edge_id, actor="web_ui", **changes)
 
     async def delete_edge(self, edge_id: int) -> bool:
         return await _graph().set_relation_archived(edge_id, True)

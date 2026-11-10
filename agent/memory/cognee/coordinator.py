@@ -106,6 +106,7 @@ class CogneeCoordinator:
         if not self.config.enabled:
             return
         try:
+            await self.store.graph.reconcile_verification_projections()
             await self.rebuild.initialize(self.config)
             availability = await self.client.initialize()
             if availability.ready:

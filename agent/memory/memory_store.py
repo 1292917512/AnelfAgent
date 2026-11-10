@@ -541,13 +541,14 @@ class MemoryStore(BaseEntity):
         )
         return {str(r["action"]): int(r["c"]) for r in await cursor.fetchall()}
 
-    async def list_audit(self, memory_id: int = 0, limit: int = 50, *, before_id: int = 0) -> list[Dict[str, Any]]:
+    async def list_audit(self, memory_id: int = 0, limit: int = 50, *, before_id: int = 0, goal_id: str = "") -> list[Dict[str, Any]]:
         """查询审计事件（memory_id=0 时返回全局最近事件）。"""
         db = await self._get_db()
         cursor = await db.execute(
             "SELECT id, memory_id, action, detail, actor, ts_ns, data_json FROM memory_audit "
-            "WHERE (?=0 OR memory_id=?) AND (?=0 OR id<?) ORDER BY id DESC LIMIT ?",
-            (memory_id, memory_id, before_id, before_id, limit),
+            "WHERE (?=0 OR memory_id=?) AND (?=0 OR id<?) "
+            "AND (?='' OR (action='delete' AND json_extract(data_json, '$.goal_id')=?)) ORDER BY id DESC LIMIT ?",
+            (memory_id, memory_id, before_id, before_id, goal_id, goal_id, limit),
         )
         return [
             {
@@ -1619,7 +1620,26 @@ class MemoryStore(BaseEntity):
 
     async def resolve_memory_references(self, results: list[MemorySearchResult]) -> list[MemorySearchResult]:
         """将派生索引中可追溯的记忆引用解析为当前原文，剔除已删除或已归档项。"""
-        return await self._search.resolve_memory_references(results)
+        from .memory_types import excerpt
+        from .projection import is_relation_dataset
+
+        resolved = await self._search.resolve_memory_references(results)
+        snapshots: dict[int, tuple[str, str, dict[str, Any]] | None] = {}
+        output: list[MemorySearchResult] = []
+        for result in resolved:
+            raw_id = str(result.provenance.get("graph_node_id") or result.provenance.get("anelf_graph_node_id") or "")
+            if raw_id.isdecimal() and int(raw_id) > 0:
+                node_id = int(raw_id)
+                if node_id not in snapshots:
+                    snapshots[node_id] = await self.graph.projection_snapshot(node_id)
+                snapshot = snapshots[node_id]
+                if snapshot is not None:
+                    text, _fingerprint, attribution = snapshot
+                    output.append(result.model_copy(update={"snippet": excerpt(text, 700), "tags": attribution["tags"],
+                        "sensitivity": attribution["sensitivity"], "provenance": attribution["provenance"]}))
+            elif not is_relation_dataset(result.dataset_name):
+                output.append(result)
+        return output
 
     async def has_duplicate_content(
         self, content: str, *, tags: list[str]

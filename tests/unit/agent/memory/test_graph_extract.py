@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from agent.memory.graph.extract import (
@@ -68,7 +70,8 @@ def test_render_material_keeps_uid_tags() -> None:
     ]
     material = render_material(conv)
     assert "[uid:123]" in material
-    assert material.count("\n") == 1
+    assert "[source_index:0]" in material
+    assert "好的" not in material
 
 
 @pytest.mark.asyncio
@@ -94,7 +97,7 @@ async def test_extract_and_store_end_to_end(tmp_path) -> None:
         async def reflect(self, messages, options=None):
             return (
                 '[{"subject": "user:qq:123", "predicate": "朋友", "object": "person:小明",'
-                ' "symmetric": true, "strength": 0.9, "evidence": "周末一起打球"}]'
+                ' "symmetric": true, "strength": 0.9, "source_index": 0, "evidence": "周末和小明打球"}]'
             )
 
     try:
@@ -107,5 +110,23 @@ async def test_extract_and_store_end_to_end(tmp_path) -> None:
         assert result["found"] is True
         assert result["edges"][0]["origin"] == "heartbeat_extract"
         assert result["edges"][0]["symmetric"] is True
+        assert result["edges"][0]["verification"] == "pending"
+        assert result["edges"][0]["metadata"]["evidence_sources"][0]["role"] == "user"
+        assert await store.graph.edges_for_scopes(["user:qq:123"]) == []
     finally:
         await store.close()
+
+
+@pytest.mark.parametrize("source_index,evidence", [(1, "模型编造的结论"), (0, "未出现的概括"), (None, "用户原话"), (True, "用户原话")])
+async def test_candidate_without_user_quote_cannot_be_persisted(store, source_index, evidence) -> None:
+    from agent.memory.graph.extract import store_relation_candidates
+
+    candidates = parse_relation_candidates(json.dumps([{
+        "subject": "topic:甲", "predicate": "更名为", "object": "topic:乙",
+        "source_index": source_index, "evidence": evidence, "strength": 0.99,
+    }]))
+    count = await store_relation_candidates(store.graph, candidates, [
+        {"role": "user", "content": "用户原话"}, {"role": "assistant", "content": "模型编造的结论"},
+    ], "user:qq:1")
+    assert count == 0
+    assert (await store.graph.stats())["edges"] == 0

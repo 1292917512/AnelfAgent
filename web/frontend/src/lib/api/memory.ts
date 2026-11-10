@@ -7,8 +7,7 @@ import type {
   CogneeCoverageRepairResult,
   CogneeDatasetCatalog,
   CogneeStatus,
-  GoalData,
-  GoalStep,
+  GoalData, GoalUpdate,
   GraphData,
   GraphEdge,
   GraphNode,
@@ -158,7 +157,7 @@ export const memoryApi = {
     get: (goalId: string) => api.get(`/memory/goals/${encodeURIComponent(goalId)}`),
     create: (title: string, description = "", steps?: string[], due_time?: string, recurring?: boolean) =>
       api.post("/memory/goals", { title, description, steps, ...(due_time ? { due_time } : {}), ...(recurring ? { recurring } : {}) }),
-    update: (goalId: string, data: { title?: string; description?: string; status?: string; steps?: GoalStep[]; due_time?: string | null; recurring?: boolean }) =>
+    update: (goalId: string, data: GoalUpdate) =>
       api.put(`/memory/goals/${encodeURIComponent(goalId)}`, data),
     delete: (goalId: string) => api.delete(`/memory/goals/${encodeURIComponent(goalId)}`),
   },
@@ -195,6 +194,7 @@ export const graphApi = {
   }) => api.post<{ ok: boolean; edge: GraphEdge }>("/memory/graph/edges", data),
   updateEdge: (edgeId: number, data: {
     predicate?: string; strength?: number; evidence?: string; symmetric?: boolean;
+    verification?: string; verification_reason?: string; expected_revision?: string;
   }) => api.put<{ ok: boolean; edge: GraphEdge }>(`/memory/graph/edges/${edgeId}`, data),
   deleteEdge: (edgeId: number) =>
     api.post<{ ok: boolean }>(`/memory/graph/edges/${edgeId}/delete`),

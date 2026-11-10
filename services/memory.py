@@ -10,13 +10,14 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.memory.profiles import ProfileWriter
 from agent.memory.provenance import visible_provenance
+from agent.planning import goals as goal_ops
+from agent.planning.goals import GoalConflict as GoalConflict
 from agent.storage.profile_store import ProfileConflict as ProfileConflict
 from core.log import log
 from services._runtime import require_runtime
 
 if TYPE_CHECKING:
-    from agent.memory.memory_store import MemoryStore
-    from agent.memory.memory_types import MemoryEntry
+    pass
 
 _DOC_PREFIX = "uploads/docs/"
 _DOC_MAX_SIZE = 20 * 1024 * 1024
@@ -891,198 +892,54 @@ class MemoryService:
             return result.model_dump(mode="json")
         return result
 
-    async def _goal_entries(
-        self, store: MemoryStore, *, include_archived: bool = False,
-    ) -> List[tuple[MemoryEntry, Dict[str, Any]]]:
-        """查询并解析全部目标条目，返回 [(MemoryEntry, goal_dict)]（单次操作内复用）。"""
-        import json
-
-        from agent.memory.memory_types import GOAL_SOURCE, MemoryType
-        parsed: List[tuple[MemoryEntry, Dict[str, Any]]] = []
-        offset = 0
-        while True:
-            entries = await store.list_by_source(
-                GOAL_SOURCE, limit=100, offset=offset, memory_type=MemoryType.SEMANTIC,
-                include_archived=include_archived,
-            )
-            for entry in entries:
-                try:
-                    goal = json.loads(entry.content)
-                except (json.JSONDecodeError, AttributeError):
-                    continue
-                if isinstance(goal, dict):
-                    parsed.append((entry, goal))
-            if len(entries) < 100:
-                break
-            offset += 100
-        return parsed
-
     async def list_goals(self, status: str = "all", include_archived: bool = False) -> List[Dict[str, Any]]:
-        """列出所有目标计划。"""
-        rt = require_runtime()
-        store = rt.memory_store
-        if not store:
+        """按统一规划契约列出目标。"""
+        store = require_runtime().memory_store
+        if store is None:
             return []
-        goals: List[Dict[str, Any]] = []
-        for entry, goal in await self._goal_entries(store, include_archived=include_archived):
-            goal["memory_id"] = entry.id
-            goal["created_ts"] = entry.timestamp
-            if include_archived:
-                goal["archived"] = bool(entry.archived_at)
-                if entry.archived_at:
-                    goal.update(archived_at=entry.archived_at, archive_reason=entry.archive_reason)
-            if status == "all" or goal.get("status") == status:
-                goals.append(goal)
-        return goals
+        return [goal_ops.goal_view(entry, goal) async for entry, goal in goal_ops.iter_goals(
+            store, status=status, include_archived=include_archived,
+        )]
 
     async def get_goal(self, goal_id: str) -> Optional[Dict[str, Any]]:
-        """获取单个目标详情。"""
-        rt = require_runtime()
-        store = rt.memory_store
-        if not store:
+        store = require_runtime().memory_store
+        if store is None:
             return None
-        for entry, goal in await self._goal_entries(store, include_archived=True):
-            if goal.get("goal_id") == goal_id:
-                goal["memory_id"] = entry.id
-                if entry.archived_at:
-                    goal.update(archived=True, archived_at=entry.archived_at, archive_reason=entry.archive_reason)
-                return goal
-        return None
+        entry, goal = await goal_ops.find_goal(store, goal_id, include_archived=True)
+        if entry is not None and goal is not None:
+            return goal_ops.goal_view(entry, goal)
+        return await goal_ops.terminal_receipt(store, goal_id)
 
     async def create_goal(
         self, title: str, description: str = "", steps: Optional[List[str]] = None,
         due_time: Optional[str] = None, recurring: bool = False,
     ) -> Dict[str, Any]:
-        """创建新目标。"""
-        import json
-        import time
-        import uuid
-        rt = require_runtime()
-        store = rt.memory_store
-        if not store:
-            return {"error": "记忆系统未初始化"}
-        from agent.memory.memory_types import GOAL_SOURCE, MemoryEntry, MemoryType
-        from agent.planning.tracker import GOAL_KIND
-        goal: Dict[str, Any] = {
-            "goal_id": uuid.uuid4().hex[:16],
-            "title": title,
-            "description": description,
-            "status": "active",
-            "recurring": recurring,
-            "steps": [
-                {"index": i, "content": s, "status": "pending", "note": ""}
-                for i, s in enumerate(steps or [])
-            ],
-            "created_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-            "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-        }
-        if due_time:
-            goal["due_time"] = due_time
-        entry = MemoryEntry(
-            memory_type=MemoryType.SEMANTIC,
-            content=json.dumps(goal, ensure_ascii=False),
-            source=GOAL_SOURCE,
-            importance=0.8,
-            tags=[f"goal:{goal['goal_id']}"],
-            metadata={"goal_id": goal["goal_id"], "status": "active", "kind": GOAL_KIND},
-        )
-        entry_id = await store.add(entry, actor="web")
-        goal["memory_id"] = entry_id
-        return goal
+        store = require_runtime().memory_store
+        if store is None:
+            raise RuntimeError("记忆系统未初始化")
+        return await goal_ops.create_goal(store, title, description, steps,
+                                          recurring=recurring, due_time=due_time, actor="web")
 
     async def update_goal(
-        self,
-        goal_id: str,
-        title: Optional[str] = None,
-        description: Optional[str] = None,
-        status: Optional[str] = None,
-        steps: Optional[List[Dict[str, Any]]] = None,
-        due_time: Optional[str] = None,
-        recurring: Optional[bool] = None,
+        self, goal_id: str, title: Optional[str] = None, description: Optional[str] = None,
+        status: Optional[str] = None, steps: Optional[List[Dict[str, Any]]] = None,
+        due_time: Optional[str] = None, recurring: Optional[bool] = None, *, expected_version: int = 0,
     ) -> Optional[Dict[str, Any]]:
-        """更新目标。循环计划完成时自动重置步骤。"""
-        import json
-        import time
-        rt = require_runtime()
-        store = rt.memory_store
-        if not store:
+        store = require_runtime().memory_store
+        if store is None:
             return None
-        target_entry = None
-        target_goal = None
-        for entry, goal in await self._goal_entries(store):
-            if goal.get("goal_id") == goal_id:
-                target_entry = entry
-                target_goal = goal
-                break
-        if target_entry is None or target_goal is None:
+        entry, goal = await goal_ops.find_goal(store, goal_id)
+        if entry is None or goal is None:
             return None
-        if title is not None:
-            target_goal["title"] = title
-        if description is not None:
-            target_goal["description"] = description
-        if recurring is not None:
-            target_goal["recurring"] = recurring
-        if due_time is not None:
-            target_goal["due_time"] = due_time if due_time else None
-        if status is not None:
-            if status == "completed" and target_goal.get("recurring"):
-                for s in target_goal.get("steps", []):
-                    s["status"] = "pending"
-                    s["note"] = ""
-                target_goal["status"] = "active"
-            elif status in ("completed", "cancelled"):
-                from agent.planning.tracker import remove_goal
-                if not await remove_goal(target_entry, store=store, goal=target_goal, status=status, actor="web"):
-                    return None
-                target_goal["status"] = status
-                target_goal["memory_id"] = target_entry.id
-                return target_goal
-            else:
-                target_goal["status"] = status
-        if steps is not None:
-            target_goal["steps"] = steps
-            # 全步骤完成自动收口（与 AI 工具面同步语义）：完成事实驱动的
-            # 唯一自动关闭，不因停滞时间等其他原因关闭
-            if (
-                status is None
-                and steps
-                and not target_goal.get("recurring")
-                and target_goal.get("status") == "active"
-                and all(s.get("status") in ("completed", "skipped") for s in steps)
-            ):
-                from agent.planning.tracker import remove_goal
-                if not await remove_goal(
-                    target_entry, store=store, goal=target_goal, status="completed", actor="web",
-                ):
-                    return None
-                target_goal["status"] = "completed"
-                target_goal["memory_id"] = target_entry.id
-                return target_goal
-        target_goal["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-        target_entry.content = json.dumps(target_goal, ensure_ascii=False)
-        target_entry.importance = 0.8 if target_goal["status"] == "active" else 0.3
-        # 合并保留既有键（kind 等生命周期声明），整覆会丢失归属
-        target_entry.metadata = {
-            **(target_entry.metadata or {}),
-            "goal_id": goal_id,
-            "status": target_goal["status"],
-        }
-        updated = await store.update(
-            target_entry, actor="web", expected_version=target_entry.version,
-        )
-        if not updated:
-            return None
-        target_goal["memory_id"] = target_entry.id
-        return target_goal
+        return await goal_ops.update_goal(store, entry, goal, expected_version=expected_version,
+                                          title=title, description=description, status=status, steps=steps,
+                                          due_time=due_time, recurring=recurring, actor="web")
 
     async def delete_goal(self, goal_id: str) -> bool:
-        """删除目标。"""
-        rt = require_runtime()
-        store = rt.memory_store
-        if not store:
+        from agent.planning.tracker import remove_goal
+
+        store = require_runtime().memory_store
+        if store is None:
             return False
-        for entry, goal in await self._goal_entries(store):
-            if goal.get("goal_id") == goal_id and entry.id:
-                from agent.planning.tracker import remove_goal
-                return await remove_goal(entry, store=store, goal=goal, actor="web")
-        return False
+        entry, goal = await goal_ops.find_goal(store, goal_id)
+        return (await remove_goal(entry, store=store, goal=goal, actor="web")) if entry is not None else False

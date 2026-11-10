@@ -6,6 +6,7 @@ import asyncio
 import json
 
 import pytest
+from helpers.graph import add_verified_relation
 
 from agent.memory.memory_store import MemoryStore
 from agent.memory.memory_types import MemoryEntry, MemoryType
@@ -169,7 +170,7 @@ async def _seed(store: MemoryStore) -> None:
             memory_type=MemoryType.SEMANTIC, content=f"日常{i}",
             tags=["user:qq:hot", "topic:火锅"], importance=0.6,
         ))
-    await store.graph.add_relation(
+    await add_verified_relation(store.graph,
         "user:qq:1292917512", "恋人", "user:qq:2997913632",
         subject_label="主人", object_label="苗苗姐姐", symmetric=True,
     )

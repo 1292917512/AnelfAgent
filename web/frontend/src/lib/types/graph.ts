@@ -14,6 +14,8 @@ export interface GraphNode extends GraphNodeBrief {
   archived: boolean;
 }
 
+export type GraphVerification = "pending" | "verified" | "disputed" | "rejected";
+
 export interface GraphEdge {
   id: number;
   subject: GraphNodeBrief;
@@ -22,6 +24,8 @@ export interface GraphEdge {
   symmetric: boolean;
   strength: number;
   evidence: string;
+  verification: GraphVerification;
+  revision: string;
   source_memory_id: number | null;
   origin: string;
   metadata: Record<string, unknown>;

@@ -29,6 +29,7 @@ from agent.mind.execution.tool_execution import _EarlyToolRunner
 from agent.mind.execution.tool_round import _handle_tool_round
 from agent.mind.execution.usage import _emit_context_usage
 from agent.mind.recall.refresh import DialogueRecollection
+from agent.skills.execution import skill_execution
 from core.activity import ActivityHandle, activity_scope
 from core.event_bus import (
     EVENT_THINKING_REPLY_ROUND,
@@ -100,7 +101,7 @@ async def think_loop(
             driver = getattr(mind, "driver", None)
             attention = (driver.conversation_attention(ctx.current_scope)
                          if mode == ThinkMode.REFLECT and driver is not None else nullcontext(False))
-            with curation_window(), capture_deliveries(
+            with skill_execution(), curation_window(), capture_deliveries(
                 ctx.current_scope, acknowledge=lambda scope, ts: mind.pfc.consume_scope_task(scope, through_ts=ts),
             ), attention as ctx.attend_conversations:
                 await _run_think_rounds(ctx, state, safety_limit, start_time, recollection)

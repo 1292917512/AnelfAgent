@@ -12,6 +12,7 @@ import json
 import time
 
 import pytest
+from helpers.planning import update_goal
 
 from core.event_bus import EVENT_PLAN_DELETED, event_bus
 
@@ -63,7 +64,7 @@ class TestTerminalCleanup:
             created = json.loads(await tools.create_goal("临时目标"))
             goal_id = created["goal"]["goal_id"]
 
-            result = json.loads(await tools.update_goal(goal_id, goal_status="completed"))
+            result = json.loads(await update_goal(goal_id, goal_status="completed"))
             assert result["success"] is True
             assert "自动清理" in result["message"]
 
@@ -73,7 +74,7 @@ class TestTerminalCleanup:
             deletes = [row for row in audit if row["action"] == "delete"]
             assert len(deletes) == 1
             assert deletes[0]["actor"] == "planning"
-            assert deletes[0]["data"] == {
+            assert {k: v for k, v in deletes[0]["data"].items() if k != "goal"} == {
                 "goal_id": goal_id, "title": "临时目标", "status": "completed", "destination": "deleted",
             }
             assert goal_id in deletes[0]["detail"]
@@ -91,7 +92,7 @@ class TestTerminalCleanup:
         try:
             created = json.loads(await tools.create_goal("废弃目标"))
             goal_id = created["goal"]["goal_id"]
-            await tools.update_goal(goal_id, goal_status="cancelled")
+            await update_goal(goal_id, goal_status="cancelled")
             assert await tracker.find_goal_by_id(goal_id) == (None, None)
         finally:
             await _teardown(store)
@@ -104,8 +105,8 @@ class TestTerminalCleanup:
         try:
             created = json.loads(await tools.create_goal("循环", steps="a|b", recurring=True))
             goal_id = created["goal"]["goal_id"]
-            await tools.update_goal(goal_id, step_index=0, step_status="completed")
-            await tools.update_goal(goal_id, goal_status="completed")
+            await update_goal(goal_id, step_index=0, step_status="completed")
+            await update_goal(goal_id, goal_status="completed")
             _, goal = await tracker.find_goal_by_id(goal_id)
             assert goal is not None
             assert goal["status"] == "active"
@@ -122,7 +123,7 @@ class TestTerminalCleanup:
         try:
             created = json.loads(await tools.create_goal("目标"))
             goal_id = created["goal"]["goal_id"]
-            result = json.loads(await tools.update_goal(goal_id, goal_status="finished"))
+            result = json.loads(await update_goal(goal_id, goal_status="finished"))
             assert result.get("cause") == "param"
             _, goal = await tracker.find_goal_by_id(goal_id)
             assert goal is not None and goal["status"] == "active"
@@ -138,11 +139,11 @@ class TestAllStepsAutoClose:
         store, tracker = await _setup(tmp_path)
         try:
             goal_id = json.loads(await tools.create_goal("三步目标", steps="a|b|c"))["goal"]["goal_id"]
-            await tools.update_goal(goal_id, step_index=0, step_status="completed")
-            await tools.update_goal(goal_id, step_index=1, step_status="completed")
+            await update_goal(goal_id, step_index=0, step_status="completed")
+            await update_goal(goal_id, step_index=1, step_status="completed")
 
             result = json.loads(
-                await tools.update_goal(goal_id, step_index=2, step_status="completed")
+                await update_goal(goal_id, step_index=2, step_status="completed")
             )
             assert result["success"] is True
             assert "自动收口" in result["message"]
@@ -159,7 +160,7 @@ class TestAllStepsAutoClose:
         store, tracker = await _setup(tmp_path)
         try:
             goal_id = json.loads(await tools.create_goal("目标", steps="a|b"))["goal"]["goal_id"]
-            await tools.update_goal(goal_id, step_index=0, step_status="completed")
+            await update_goal(goal_id, step_index=0, step_status="completed")
             _, goal = await tracker.find_goal_by_id(goal_id)
             assert goal is not None and goal["status"] == "active"
         finally:
@@ -172,9 +173,9 @@ class TestAllStepsAutoClose:
         store, tracker = await _setup(tmp_path)
         try:
             goal_id = json.loads(await tools.create_goal("目标", steps="a|b"))["goal"]["goal_id"]
-            await tools.update_goal(goal_id, step_index=0, step_status="completed")
+            await update_goal(goal_id, step_index=0, step_status="completed")
             result = json.loads(
-                await tools.update_goal(goal_id, step_index=1, step_status="skipped")
+                await update_goal(goal_id, step_index=1, step_status="skipped")
             )
             assert "自动收口" in result["message"]
             assert await tracker.find_goal_by_id(goal_id) == (None, None)
@@ -194,7 +195,7 @@ class TestAllStepsAutoClose:
             entry.content = json.dumps(goal, ensure_ascii=False)
             await store.update(entry)
 
-            result = json.loads(await tools.update_goal(goal_id, title="新标题"))
+            result = json.loads(await update_goal(goal_id, title="新标题"))
             assert result["success"] is True
             _, goal = await tracker.find_goal_by_id(goal_id)
             assert goal is not None and goal["title"] == "新标题"
@@ -210,7 +211,7 @@ class TestAllStepsAutoClose:
             goal_id = json.loads(
                 await tools.create_goal("循环", steps="a", recurring=True)
             )["goal"]["goal_id"]
-            await tools.update_goal(goal_id, step_index=0, step_status="completed")
+            await update_goal(goal_id, step_index=0, step_status="completed")
             _, goal = await tracker.find_goal_by_id(goal_id)
             assert goal is not None and goal["status"] == "active"
         finally:
@@ -240,7 +241,7 @@ class TestGoalIntegrity:
             assert json.loads(await tools.list_goals())["total"] == 0
             assert json.loads(await tools.list_goals(include_archived=True))["goals"][0]["archived"]
             assert (await situation.active_goal_briefs()) == []
-            rejected = json.loads(await tools.update_goal("legacy", goal_status="completed"))
+            rejected = json.loads(await update_goal("legacy", goal_status="completed"))
             assert rejected["cause"] == "state" and rejected["memory_id"] == mid
             assert json.loads(await tools.delete_goal("legacy"))["cause"] == "state"
             linked_id = await store.add(MemoryEntry(
@@ -248,7 +249,7 @@ class TestGoalIntegrity:
             ))
             assert not await store.archive_memory(linked_id)
             assert await store.restore_memory(mid)
-            assert json.loads(await tools.update_goal("legacy", goal_status="completed"))["success"]
+            assert json.loads(await update_goal("legacy", goal_status="completed"))["success"]
             assert await store.archive_memory(linked_id)
         finally:
             await _teardown(store)
@@ -276,7 +277,7 @@ class TestGoalIntegrity:
                 return entry, goal
 
             monkeypatch.setattr(tools, "_find_goal", concurrent_find)
-            result = json.loads(await tools.update_goal(
+            result = json.loads(await update_goal(
                 created["goal_id"], **({"step_index": 0, "step_status": "completed"} if by_steps else {"goal_status": "completed"}),
             ))
             assert result["cause"] == "state"

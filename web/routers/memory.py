@@ -548,6 +548,9 @@ async def add_graph_edge(req: GraphEdgeRequest) -> Dict[str, Any]:
 
 
 class GraphEdgeUpdateRequest(BaseModel):
+    verification: str = ""
+    verification_reason: str = ""
+    expected_revision: str = ""
     predicate: Optional[str] = None
     strength: Optional[float] = None
     evidence: Optional[str] = None
@@ -560,7 +563,8 @@ async def update_graph_edge(edge_id: int, req: GraphEdgeUpdateRequest) -> Dict[s
         edge = await _graph_svc.update_edge(
             edge_id,
             predicate=req.predicate, strength=req.strength,
-            evidence=req.evidence, symmetric=req.symmetric,
+            evidence=req.evidence, symmetric=req.symmetric, verification=req.verification,
+            verification_reason=req.verification_reason, expected_revision=req.expected_revision,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -697,9 +701,12 @@ async def create_goal(req: CreateGoalRequest) -> Dict[str, Any]:
         )
     except RuntimeError:
         raise HTTPException(503, "运行时未初始化") from None
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 class UpdateGoalRequest(BaseModel):
+    expected_version: int
     title: Optional[str] = None
     description: Optional[str] = None
     status: Optional[str] = None
@@ -710,15 +717,16 @@ class UpdateGoalRequest(BaseModel):
 
 @router.put("/goals/{goal_id}")
 async def update_goal(goal_id: str, req: UpdateGoalRequest) -> Dict[str, Any]:
-    result = await _mem_svc.update_goal(
-        goal_id,
-        title=req.title,
-        description=req.description,
-        status=req.status,
-        steps=req.steps,
-        due_time=req.due_time,
-        recurring=req.recurring,
-    )
+    from services.memory import GoalConflict
+    try:
+        changes = req.model_dump(exclude_unset=True)
+        if "due_time" in changes and changes["due_time"] is None:
+            changes["due_time"] = ""
+        result = await _mem_svc.update_goal(goal_id, **changes)
+    except GoalConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
     if result is None:
         raise HTTPException(404, "目标不存在")
     return result

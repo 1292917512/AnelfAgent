@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button, Input, Modal, Switch, Textarea } from "@/components/ui";
+import { QueryError } from "@/components/common/AsyncState";
 import type { GraphEdge } from "@/lib/types";
 
 interface Props {
@@ -15,6 +16,7 @@ interface Props {
   onSubmit: (form: {
     subject: string; predicate: string; object: string;
     symmetric: boolean; strength: number; evidence: string;
+    verification?: string; verification_reason?: string; expected_revision?: string;
   }) => Promise<void>;
 }
 
@@ -28,6 +30,9 @@ export function RelationFormModal({ open, onClose, edge, presetSubject, onSubmit
   const [strength, setStrength] = useState(0.7);
   const [evidence, setEvidence] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [verification, setVerification] = useState("");
+  const [reason, setReason] = useState("");
+  const [error, setError] = useState<unknown>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -37,19 +42,27 @@ export function RelationFormModal({ open, onClose, edge, presetSubject, onSubmit
     setSymmetric(edge?.symmetric ?? false);
     setStrength(edge?.strength ?? 0.7);
     setEvidence(edge?.evidence ?? "");
+    setVerification("");
+    setReason("");
+    setError(null);
   }, [open, edge, presetSubject]);
 
-  const valid = predicate.trim() && (editing || (subject.trim() && object.trim()));
+  const valid = predicate.trim() && (editing || (subject.trim() && object.trim()))
+    && (!verification || (reason.trim() && (verification !== "verified" || evidence.trim() || edge?.source_memory_id)));
 
   const handleSubmit = async () => {
     if (!valid || submitting) return;
     setSubmitting(true);
+    setError(null);
     try {
       await onSubmit({
         subject: subject.trim(), predicate: predicate.trim(), object: object.trim(),
         symmetric, strength, evidence: evidence.trim(),
+        ...(verification ? { verification, verification_reason: reason.trim(), expected_revision: edge?.revision } : {}),
       });
       onClose();
+    } catch (err) {
+      setError(err);
     } finally {
       setSubmitting(false);
     }
@@ -71,6 +84,7 @@ export function RelationFormModal({ open, onClose, edge, presetSubject, onSubmit
       }
     >
       <div className="space-y-3">
+        <QueryError error={error} />
         <div className="grid grid-cols-2 gap-3">
           <label className="block">
             <span className="mb-1 block text-xs text-muted">{t("form.subject")}</span>
@@ -102,6 +116,24 @@ export function RelationFormModal({ open, onClose, edge, presetSubject, onSubmit
           <Switch checked={symmetric} onChange={setSymmetric} />
           {t("form.symmetric")}
         </label>
+        {editing && (
+          <>
+            <label className="block text-xs text-muted">
+              {t("form.verification")} · {t(`verification.${edge?.verification}`)}
+              <select className="mt-1 block w-full rounded border border-border bg-surface p-2"
+                value={verification} onChange={(e) => setVerification(e.target.value)}>
+                <option value="">{t("form.noReview")}</option>
+                {["pending", "verified", "disputed", "rejected"].map((value) => (
+                  <option key={value} value={value}>{t(`verification.${value}`)}</option>
+                ))}
+              </select>
+            </label>
+            {verification && <label className="block text-xs text-muted">
+              {t("form.reviewReason")}
+              <Textarea rows={2} value={reason} onChange={(e) => setReason(e.target.value)} />
+            </label>}
+          </>
+        )}
         <label className="block">
           <span className="mb-1 block text-xs text-muted">{t("form.evidence")}</span>
           <Textarea rows={2} value={evidence} placeholder={t("form.evidenceHint")}

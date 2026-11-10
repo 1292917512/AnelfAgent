@@ -72,7 +72,7 @@ export function GraphCanvas({ data, selectedNodeId, onNodeClick, onEdgeClick }: 
       style: {
         stroke: "var(--muted)",
         strokeWidth: 0.8 + edge.strength * 2.2,
-        ...(edge.origin === "heartbeat_extract" ? { strokeDasharray: "6 4" } : {}),
+        ...(edge.verification !== "verified" ? { strokeDasharray: "6 4" } : {}),
       },
       labelStyle: { fill: "var(--text)", fontSize: 11 },
       labelBgStyle: { fill: "var(--card)", fillOpacity: 0.9 },

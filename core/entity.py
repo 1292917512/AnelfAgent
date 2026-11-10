@@ -1347,6 +1347,11 @@ class EntityRegistry:
 
         deadline = asyncio.timeout(tool_timeout)
         try:
+            from core.tool_preconditions import tool_precondition_port
+            if tool_precondition_port.bound:
+                blocked = tool_precondition_port.get()(name)
+                if blocked is not None:
+                    return blocked
             signal = get_execution_signal()
             if signal is not None:
                 signal.checkpoint()

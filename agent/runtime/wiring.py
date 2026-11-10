@@ -45,6 +45,8 @@ def wire_runtime(
     由 bootstrap 的 assemble_runtime 尾部调用一次；端口清单与
     core.latebind 注册表对齐，遗漏由 check_health 的 assert_wired 暴露。
     """
+    from functools import partial
+
     from agent.channel.output_tools import conversation_data_port
     from agent.delegation.delegate_tool import delegation_manager_port
     from agent.memory.auto_capture import auto_capture_port
@@ -57,9 +59,12 @@ def wire_runtime(
     from agent.planning.tracker import planning_store_port
     from agent.runtime.skill_dependencies import skill_mcp_snapshot
     from agent.skills.dependencies import mcp_status_port
+    from agent.skills.execution import check_required_skills
     from agent.skills.tools import SkillToolDeps, skill_tools_port
     from agent.storage.conversation_fold import fold_data_port
+    from core.tool_preconditions import tool_precondition_port
     from entities.sticker.worker import image_index_worker_port
+    tool_precondition_port.set(partial(check_required_skills, skills.store))
     mcp_status_port.set(skill_mcp_snapshot)
 
     # 思维工具组（scheduler / session_tools / short_term_tools 共用）

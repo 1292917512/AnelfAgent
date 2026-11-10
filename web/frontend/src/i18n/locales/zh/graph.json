@@ -11,7 +11,7 @@
     "refresh": "刷新",
     "addRelation": "添加关系"
   },
-  "hint": "实线=人工确认的关系，虚线=系统自动抽取；线越粗关系越强。点击节点查看详情。",
+  "hint": "实线=已核验；虚线=待核验、有争议或已否定。强度不代表事实可信度。点击节点查看证据。",
   "origins": {
     "manual_tool": "AI 记录",
     "heartbeat_extract": "自动抽取",
@@ -61,6 +61,15 @@
     "evidenceHint": "从哪段对话/哪条记忆得出的（可选，建议填写）",
     "cancel": "取消",
     "confirm": "确定",
-    "submitting": "提交中…"
+    "submitting": "提交中…",
+    "verification": "核验状态",
+    "noReview": "仅编辑，不作核验结论",
+    "reviewReason": "核验依据（原始来源或对话确认）"
+  },
+  "verification": {
+    "pending": "待核验",
+    "verified": "已核验",
+    "disputed": "有争议",
+    "rejected": "已否定"
   }
 }

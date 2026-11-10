@@ -37,6 +37,76 @@ def _isolate_vector_db(tmp_path, monkeypatch) -> None:
     )
 
 
+async def test_required_skill_gates_registry_until_actual_full_delivery(store):
+    from functools import partial
+
+    from agent.skills.execution import check_required_skills, skill_execution, skill_result
+    from core.entity import EntityRegistry
+    from core.tool_preconditions import tool_precondition_port
+
+    body = "先检查素材与目标，再执行发布。"
+    store.create("publishing", "发布流程", body)
+    store.set_required_tools("publishing", ["test_publish"])
+    calls = []
+
+    async def publish() -> str:
+        calls.append(True)
+        return "ok"
+
+    def deliver(text: str = body, *, truncated: bool = False) -> None:
+        payload = json.dumps({"name": "publishing", "content": text})
+        result = skill_result(payload, "publishing", text)
+        result.acknowledge(payload[:10] if truncated else payload)
+
+    EntityRegistry.register_tool(name="test_publish", func=publish, group="tests")
+    previous = tool_precondition_port.get() if tool_precondition_port.bound else None
+    tool_precondition_port.set(partial(check_required_skills, store))
+    try:
+        with skill_execution():
+            assert json.loads(await EntityRegistry.execute_tool("test_publish"))["outcome"] == "not_started"
+            deliver(truncated=True)
+            assert json.loads(await EntityRegistry.execute_tool("test_publish"))["required_skills"] == ["publishing"]
+            assert calls == []
+            deliver()
+            assert await EntityRegistry.execute_tool("test_publish") == "ok"
+            with skill_execution():
+                assert "error" in json.loads(await EntityRegistry.execute_tool("test_publish"))
+            assert await EntityRegistry.execute_tool("test_publish") == "ok"
+            store.patch("publishing", content="新流程需要重新阅读")
+            assert "error" in json.loads(await EntityRegistry.execute_tool("test_publish"))
+        with skill_execution():
+            assert check_required_skills(store, "test_publish") is not None
+        assert len(calls) == 2
+    finally:
+        EntityRegistry.unregister("test_publish")
+        if previous is None:
+            tool_precondition_port.unbind()
+        else:
+            tool_precondition_port.set(previous)
+
+
+async def test_required_skill_tag_delivery_and_corrupt_body(store, monkeypatch):
+    from agent.skills.execution import check_required_skills, observe_messages, skill_execution
+    from agent.skills.tag_context import SkillTagContext
+
+    store.create("publishing", "发布流程", "完整的发布前检查")
+    store.set_required_tools("publishing", ["test_publish"])
+    with skill_execution():
+        messages = await SkillTagContext(store).build("[skill:publishing]", [], scope="reflect:test")
+        observe_messages([{**messages[0], "content": messages[0]["content"][:3]}])
+        assert check_required_skills(store, "test_publish") is not None
+        observe_messages(messages)
+        assert check_required_skills(store, "test_publish") is None
+    # 关联属于本地账本，外部技能内容不能自行声明工具约束。
+    assert "required_tools" not in render_skill_md(store.get("publishing"))
+    path = store.skills_dir / "publishing" / "SKILL.md"
+    path.write_text("---\nname: [invalid\n---\n", encoding="utf-8")
+    assert check_required_skills(store, "test_publish") is not None
+    assert SkillStore(str(store.skills_dir)).required_skills("test_publish") == ["publishing"]
+    path.unlink()
+    assert check_required_skills(store, "test_publish") is not None
+
+
 class FakeEmbedder:
     """确定性词袋嵌入：英文词 → crc32 维度计数，共享词越多余弦越高。"""
 

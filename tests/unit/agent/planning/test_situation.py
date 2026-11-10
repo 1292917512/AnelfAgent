@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 
 import pytest
+from helpers.planning import update_goal
 
 from agent.memory.memory_store import MemoryStore
 from agent.memory.memory_types import MemoryType
@@ -54,7 +55,7 @@ class TestRender:
         raw = await planning_tools.create_goal("目标", steps="a|b")
         goal_id = json.loads(raw)["goal"]["goal_id"]
 
-        update_result = await planning_tools.update_goal(
+        update_result = await update_goal(
             goal_id, step_index=0, step_status="completed",
         )
         assert json.loads(update_result)["success"] is True
@@ -144,7 +145,7 @@ class TestErrorSelfCorrection:
         raw = await planning_tools.create_goal("存在 的目标", steps="a")
         goal_id = json.loads(raw)["goal"]["goal_id"]
 
-        result = json.loads(await planning_tools.update_goal("ebafea16", goal_status="active"))
+        result = json.loads(await update_goal("ebafea16", goal_status="active"))
         assert result["cause"] == "not_found"
         assert result["active_goals"] == [
             {"goal_id": goal_id, "title": "存在 的目标", "progress": "0/1 步"},
@@ -172,7 +173,7 @@ class TestUpdateGoalValidation:
         raw = await planning_tools.create_goal("目标", steps="a|b|c")
         goal_id = json.loads(raw)["goal"]["goal_id"]
 
-        result = json.loads(await planning_tools.update_goal(
+        result = json.loads(await update_goal(
             goal_id, step_index=3, step_status="completed",
         ))
         assert result["cause"] == "param"
@@ -183,7 +184,7 @@ class TestUpdateGoalValidation:
         raw = await planning_tools.create_goal("无步骤目标")
         goal_id = json.loads(raw)["goal"]["goal_id"]
 
-        result = json.loads(await planning_tools.update_goal(
+        result = json.loads(await update_goal(
             goal_id, step_index=0, step_status="completed",
         ))
         assert result["cause"] == "param"
@@ -193,7 +194,7 @@ class TestUpdateGoalValidation:
         raw = await planning_tools.create_goal("目标", steps="a")
         goal_id = json.loads(raw)["goal"]["goal_id"]
 
-        result = json.loads(await planning_tools.update_goal(
+        result = json.loads(await update_goal(
             goal_id, step_index=0, step_status="done",
         ))
         assert result["cause"] == "param"
@@ -206,7 +207,7 @@ class TestUpdateGoalValidation:
         raw = await planning_tools.create_goal("目标", steps="a")
         goal_id = json.loads(raw)["goal"]["goal_id"]
 
-        result = json.loads(await planning_tools.update_goal(goal_id, goal_status="completed"))
+        result = json.loads(await update_goal(goal_id, goal_status="completed"))
         assert result["success"] is True
         assert await _tracker.find_goal_by_id(goal_id) == (None, None)
 
@@ -227,7 +228,7 @@ class TestSituationLines:
 async def test_description_and_pending_step_note_refresh_together(store):
     goal = json.loads(await planning_tools.create_goal("消息验证", description="先实证登录态", steps="登录|收发验证"))["goal"]
     assert "先实证登录态" in await _render()
-    await planning_tools.update_goal(goal["goal_id"], step_index=0, note="等待本人扫码", description="已调整验证方式")
+    await update_goal(goal["goal_id"], step_index=0, note="等待本人扫码", description="已调整验证方式")
     text = await _render()
     assert "等待本人扫码" in text and "已调整验证方式" in text
     assert "先实证登录态" not in text
@@ -237,7 +238,7 @@ async def test_goal_write_conflict_does_not_report_success_or_advance(store, mon
     from unittest.mock import AsyncMock
     goal = json.loads(await planning_tools.create_goal("目标", steps="第一步|第二步"))["goal"]
     monkeypatch.setattr(store, "update", AsyncMock(return_value=False))
-    result = json.loads(await planning_tools.update_goal(goal["goal_id"], step_index=0, step_status="completed"))
+    result = json.loads(await update_goal(goal["goal_id"], step_index=0, step_status="completed"))
     assert not result.get("success") and result.get("error")
     stored = json.loads((await tracker.find_goal_by_id(goal["goal_id"]))[0].content)
     assert [step["status"] for step in stored["steps"]] == ["pending", "pending"]

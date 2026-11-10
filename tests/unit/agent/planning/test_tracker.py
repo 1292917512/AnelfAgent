@@ -16,6 +16,8 @@ from __future__ import annotations
 import asyncio
 import json
 
+from helpers.planning import update_goal
+
 from core.event_bus import (
     EVENT_PLAN_STATUS_CHANGED,
     EVENT_PLAN_STEP_UPDATED,
@@ -42,6 +44,22 @@ async def _teardown(store) -> None:
 
 
 class TestFinalizePlan:
+    async def test_failed_commit_does_not_publish_step_events(self, tmp_path, monkeypatch):
+        from unittest.mock import AsyncMock
+
+        store, tracker = await _setup(tmp_path)
+        try:
+            await tracker.submit_plan(SCOPE, "目标", tracker.parse_steps("执行"))
+            emit = AsyncMock()
+            monkeypatch.setattr(tracker, "_emit_step", emit)
+            monkeypatch.setattr(store, "update", AsyncMock(return_value=False))
+            await tracker.finalize_plan(SCOPE)
+            emit.assert_not_awaited()
+            current = await tracker.get_active_plan(SCOPE)
+            assert current["steps"][0]["status"] == "in_progress"
+        finally:
+            await _teardown(store)
+
     async def test_explicitly_completed_steps_remain_completed(self, tmp_path):
         store, tracker = await _setup(tmp_path)
         try:
@@ -156,7 +174,7 @@ class TestLifecycleIsolation:
             from agent.planning import tools as planning_tools
             raw = await planning_tools.create_goal("夜间目标", steps="a|b|c")
             goal_id = json.loads(raw)["goal"]["goal_id"]
-            await planning_tools.update_goal(
+            await update_goal(
                 goal_id, step_index=0, step_status="completed",
             )
 
@@ -252,12 +270,11 @@ class TestUpdateGoalMetadata:
         """update_goal 合并 metadata：kind/scope 不被覆盖（防计划跨 scope 泄漏）。"""
         store, tracker = await _setup(tmp_path)
         try:
-            from agent.planning import tools as planning_tools
             tracker.planning_store_port.set(store)
             plan_id = await tracker.submit_plan(
                 SCOPE, "目标", tracker.parse_steps("a|b"),
             )
-            await planning_tools.update_goal(plan_id, step_index=0, step_status="completed")
+            await update_goal(plan_id, step_index=0, step_status="completed")
             entry, goal = await tracker.find_goal_by_id(plan_id)
             assert entry is not None
             assert entry.metadata.get("kind") == "present_plan"

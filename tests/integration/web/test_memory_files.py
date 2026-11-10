@@ -65,7 +65,16 @@ def test_goal_terminal_cleanup_exposes_auditable_destination(
         created = client.post("/api/memory/goals", json={"title": "API 目标", "steps": ["执行"]})
         assert created.status_code == 200
         goal = created.json()
-        response = client.put(f"/api/memory/goals/{goal['goal_id']}", json={"status": "completed"})
+        path = f"/api/memory/goals/{goal['goal_id']}"
+        assert client.put(path, json={"title": "缺版本"}).status_code == 422
+        edited_steps = [{**goal["steps"][0], "status": "in_progress", "note": "已准备"}]
+        edited = client.put(path, json={"steps": edited_steps, "expected_version": goal["version"]})
+        assert edited.status_code == 200
+        assert edited.json()["steps"][0]["content"] == "执行"
+        assert edited.json()["steps"][0]["step_id"] == goal["steps"][0]["step_id"]
+        assert client.put(path, json={"title": "过期编辑", "expected_version": goal["version"]}).status_code == 409
+        goal = edited.json()
+        response = client.put(f"/api/memory/goals/{goal['goal_id']}", json={"status": "completed", "expected_version": goal["version"]})
         assert response.status_code == 200 and response.json()["status"] == "completed"
         assert client.get("/api/memory/goals", params={"include_archived": True}).json()["total"] == 0
         timeline = client.get("/api/memory/timeline", params={"memory_id": goal["memory_id"]})
@@ -75,5 +84,8 @@ def test_goal_terminal_cleanup_exposes_auditable_destination(
         assert deletion["data"]["goal_id"] == goal["goal_id"]
         assert deletion["data"]["destination"] == "deleted"
         assert deletion["data"]["status"] == "completed"
+        receipt = client.get(path)
+        assert receipt.status_code == 200 and receipt.json()["deleted"]
+        assert receipt.json()["steps"][0]["note"] == "已准备"
     finally:
         client.portal.call(store.close)

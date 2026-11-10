@@ -22,6 +22,8 @@ from core.tool_registry import deferred_tool
 
 from ..memory_store import MemoryStore
 from .store import NODE_TYPES, format_triple, parse_node_key
+from .verification import revision
+from .verification import status as verification_status
 
 EntityRegistry.register_group_order("graph", 11)
 
@@ -98,6 +100,9 @@ def _edge_json(edge: Dict[str, Any]) -> Dict[str, Any]:
         "evidence": edge["evidence"],
         **({"source_memory_id": edge["source_memory_id"]}
            if edge.get("source_memory_id") else {}),
+        "verification": verification_status(edge), "revision": revision(edge),
+        "verification_detail": edge["metadata"].get("verification", {}),
+        "evidence_sources": edge["metadata"].get("evidence_sources", []),
         "origin": edge["origin"],
         "archived": edge["archived"],
     }
@@ -108,7 +113,7 @@ def _edge_json(edge: Dict[str, Any]) -> Dict[str, Any]:
     description=(
         "记录一条关系：主语 ─[关系类型]→ 宾语。节点不存在会自动建档。"
         "用于沉淀人物关系（A 是 B 的姐姐）、偏好（A 喜欢 火锅）、归属（A 属于 某组织）等结构化事实。"
-        "同一 (主语, 关系, 宾语) 重复写入会更新强度与证据，不会产生重复边。"
+        "新关系为待核验候选；用 graph_update_relation 附核验依据确认后才进入自动事实召回。"
     ),
 )
 async def graph_add_relation(
@@ -163,6 +168,7 @@ async def graph_update_relation(
     strength: float = -1.0,
     evidence: str = "",
     symmetric: str = "",
+    verification: str = "", verification_reason: str = "", expected_revision: str = "",
 ) -> str:
     """更新关系边。
 
@@ -172,6 +178,9 @@ async def graph_update_relation(
         strength: 新强度 0-1（负数不变）
         evidence: 新证据（空串不变）
         symmetric: "true"/"false"（空串不变）
+        verification: pending / verified / disputed / rejected，空串不变；仅有明确核验依据才确认
+        verification_reason: 核验依据及来源；同一材料的重复出现或模型评分不构成独立核验
+        expected_revision: 核验时必须传最近 graph_query/graph_add_relation 返回的 revision
     """
     graph = _graph()
     if graph is None:
@@ -185,7 +194,8 @@ async def graph_update_relation(
             predicate=predicate or None,
             strength=strength if strength >= 0 else None,
             evidence=evidence or None,
-            symmetric=sym,
+            symmetric=sym, verification=verification, verification_reason=verification_reason,
+            expected_revision=expected_revision,
         )
         if edge is None:
             return tool_error(f"关系边不存在: {edge_id}", cause=ErrorCause.NOT_FOUND, retryable=False)

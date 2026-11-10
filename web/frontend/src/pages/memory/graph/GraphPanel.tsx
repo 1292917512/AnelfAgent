@@ -197,6 +197,8 @@ export function GraphPanel() {
               id: editingEdge.id,
               predicate: form.predicate, strength: form.strength,
               evidence: form.evidence, symmetric: form.symmetric,
+              verification: form.verification, verification_reason: form.verification_reason,
+              expected_revision: form.expected_revision,
             });
           } else {
             await addEdgeMutation.mutateAsync(form);

@@ -372,6 +372,7 @@ export interface LTMItem {
 }
 
 export interface GoalStep {
+  step_id?: string;
   index?: number;
   content?: string;
   step?: string;
@@ -380,6 +381,7 @@ export interface GoalStep {
 }
 
 export interface GoalData {
+  version: number;
   goal_id: string;
   title: string;
   description?: string;
@@ -496,4 +498,14 @@ export interface OperationPage<T> {
   items: T[];
   next_cursor: number | null;
   retention_days?: number;
+}
+
+export interface GoalUpdate {
+  expected_version: number;
+  title?: string;
+  description?: string;
+  status?: string;
+  steps?: GoalStep[];
+  due_time?: string | null;
+  recurring?: boolean;
 }

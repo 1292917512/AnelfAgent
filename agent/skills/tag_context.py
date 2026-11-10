@@ -13,6 +13,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from agent.skills.dependencies import dependency_notice, mcp_binding_notice, mcp_binding_status
+from agent.skills.execution import content_hash
 from agent.skills.skill_store import Skill, SkillState, SkillStore
 from core.activity import ACTIVITY_TEXT_LIMIT, EVENT_ACTIVITY_CONTEXT
 from core.event_bus import event_bus
@@ -83,10 +84,11 @@ class SkillTagContext:
             content = heading + skill.content[:available - len(suffix)] + suffix + ("\n" + notices if notices else "")
             fact = {"name": skill.name, "description": skill.description, "state": skill.state.value,
                     "mode": "read", "score": 1.0, "heading_end": len(heading), "end": len(content),
-                    "truncated": truncated, "mcp_status": states}
+                    "truncated": truncated, "mcp_status": states, "body_start": len(heading),
+                    "body_end": len(heading) + len(skill.content), "content_hash": content_hash(skill.content)}
             messages.append({"role": "system", "content": content, "_layer": "provider",
                              "_source": {"origin": "skill_tag", "skills": [fact]}})
-            if name not in self._consumed and self._store is not None:
+            if not truncated and name not in self._consumed and self._store is not None:
                 try:
                     await asyncio.to_thread(self._store.record_use, name)
                 except Exception as exc:

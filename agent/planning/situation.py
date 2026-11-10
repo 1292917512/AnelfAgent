@@ -25,7 +25,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
-from agent.memory.memory_types import GOAL_SOURCE, MemoryType
+from agent.planning.goals import iter_goals
 from agent.planning.tracker import PLAN_KIND, planning_store_port
 from core.config import register_configs_safe
 from core.context_provider import ContextProviderRegistry, ProviderMeta
@@ -35,8 +35,6 @@ from core.sanitizer import sanitize_for_context
 # 快照再同步窗口（秒）：失效钩子已覆盖全部规划写路径，窗口仅兜底绕过钩子的
 # 越轨写入（如记忆工具直接编辑 goal 条目），代价是每窗口至多一次有界重查
 _RESYNC_SECONDS = 60.0
-# 查询上限（与 list_goals 同口径：活跃目标长期堆积时提示清理而非静默截断）
-_QUERY_LIMIT = 50
 # 渲染上限：注入目标数 / 每目标步骤数 / 单字段截断 / 总文本截断
 _MAX_GOALS = 5
 _MAX_STEPS = 8
@@ -111,10 +109,10 @@ def _needs_rebuild() -> bool:
     )
 
 
-def _parse_goal(entry: Any) -> Optional[_GoalView]:
+def _parse_goal(entry: Any, data: dict[str, Any] | None = None) -> Optional[_GoalView]:
     """解析 goal 记忆条目为视图（非 active / 解析失败返回 None）。"""
     try:
-        data = json.loads(entry.content)
+        data = json.loads(entry.content) if data is None else data
     except (json.JSONDecodeError, AttributeError, TypeError):
         return None
     if not isinstance(data, dict) or data.get("status") != "active":
@@ -160,11 +158,8 @@ async def _rebuild() -> _Snapshot:
     store = planning_store_port.get() if planning_store_port.bound else None
     goals: List[_GoalView] = []
     if store is not None:
-        entries = await store.list_by_source(
-            GOAL_SOURCE, memory_type=MemoryType.SEMANTIC, limit=_QUERY_LIMIT,
-        )
-        for entry in entries:
-            view = _parse_goal(entry)
+        async for entry, goal in iter_goals(store, status="active"):
+            view = _parse_goal(entry, goal)
             if view is not None:
                 goals.append(view)
     return _Snapshot(version=_version, built_at=time.monotonic(), goals=goals)

@@ -15,6 +15,7 @@ from typing import Any
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from helpers.graph import add_verified_relation
 
 from agent.memory.cognee.config import (
     CogneeChatModelConfig,
@@ -967,7 +968,7 @@ async def test_unchanged_source_does_not_enqueue_neighbors_and_forced_repair_sti
     client = _FakeCogneeClient()
     coordinator = CogneeCoordinator(store, client, CogneeConfig(data_root=str(tmp_path)))
     await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
-    await store.graph.add_relation("person:阿辰", "喜欢", "topic:茶", source_memory_id=mid)
+    await add_verified_relation(store.graph, "person:阿辰", "喜欢", "topic:茶", source_memory_id=mid)
     db = await store._conn.get_db()
     await db.execute("DELETE FROM cognee_sync_queue")
     await db.commit()
@@ -1020,7 +1021,7 @@ async def test_coordinator_projects_graph_nodes(tmp_path) -> None:
         CogneeConfig(enabled=True, sync_enabled=True),
     )
     try:
-        edge = await store.graph.add_relation(
+        edge = await add_verified_relation(store.graph,
             "user:qq:1", "朋友", "user:qq:2",
             subject_label="阿辰", object_label="老王", evidence="常一起吃饭",
         )
@@ -1180,7 +1181,7 @@ async def test_graph_unchanged_document_skips_reprojection(tmp_path) -> None:
         store, client, CogneeConfig(enabled=True, sync_enabled=True),
     )
     try:
-        await store.graph.add_relation(
+        await add_verified_relation(store.graph,
             "user:qq:1", "朋友", "user:qq:2",
             subject_label="阿辰", object_label="老王", evidence="常一起吃饭",
         )
@@ -1190,7 +1191,7 @@ async def test_graph_unchanged_document_skips_reprojection(tmp_path) -> None:
 
         # 同一条边以相同参数重复写入（ON CONFLICT 仅刷强度/证据，值不变）：
         # 两端节点邻域文档指纹未变 → 消费侧跳过，不重跑 add/cognify
-        await store.graph.add_relation(
+        await add_verified_relation(store.graph,
             "user:qq:1", "朋友", "user:qq:2", evidence="常一起吃饭",
         )
         await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
@@ -1211,19 +1212,19 @@ async def test_graph_strength_drift_skips_reprojection(tmp_path) -> None:
         store, client, CogneeConfig(enabled=True, sync_enabled=True),
     )
     try:
-        await store.graph.add_relation("user:qq:1", "朋友", "user:qq:2", strength=0.5)
+        await add_verified_relation(store.graph, "user:qq:1", "朋友", "user:qq:2", strength=0.5, evidence="稳定来源")
         await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
         assert len(client.items) == 2
 
         # 仅强度变化不重投影
-        await store.graph.add_relation(
-            "user:qq:1", "朋友", "user:qq:2", strength=0.9,
+        await add_verified_relation(store.graph,
+            "user:qq:1", "朋友", "user:qq:2", strength=0.9, evidence="稳定来源",
         )
         await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
         assert len(client.items) == 2
 
         # 邻域结构真实变化（新增边）：仍正常重投影
-        await store.graph.add_relation("user:qq:1", "同事", "user:qq:3")
+        await add_verified_relation(store.graph, "user:qq:1", "同事", "user:qq:3")
         await coordinator._process_batch(await store.claim_cognee_sync_batch(10))
         assert len(client.items) == 4
     finally:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from helpers.graph import add_verified_relation, verify_relation
 
 from agent.memory.memory_retriever import MemoryRetriever
 
@@ -18,8 +19,8 @@ class _NullEmbedder:
 async def test_relation_snippets_byte_stable_across_rounds(store) -> None:
     """图谱与参与人不变时，多轮注入内容字节一致（不伤前缀缓存命中）。"""
     retriever = MemoryRetriever(store, _NullEmbedder())
-    await store.graph.add_relation("user:qq:1", "朋友", "user:qq:2")
-    await store.graph.add_relation("user:qq:1", "喜欢", "topic:火锅", strength=0.9)
+    await add_verified_relation(store.graph, "user:qq:1", "朋友", "user:qq:2")
+    await add_verified_relation(store.graph, "user:qq:1", "喜欢", "topic:火锅", strength=0.9)
 
     scopes = ["user_qq:1"]
     first = await retriever.load_relation_snippets(scopes)
@@ -34,10 +35,10 @@ async def test_relation_snippets_byte_stable_across_rounds(store) -> None:
 async def test_relation_snippets_reflect_changes_immediately(store) -> None:
     """无缓存机制：图谱变更下一轮即反映。"""
     retriever = MemoryRetriever(store, _NullEmbedder())
-    await store.graph.add_relation("user:qq:1", "朋友", "user:qq:2")
+    await add_verified_relation(store.graph, "user:qq:1", "朋友", "user:qq:2")
     scopes = ["user_qq:1"]
     assert "同事" not in (await retriever.load_relation_snippets(scopes))[0]["content"]
-    await store.graph.add_relation("user:qq:1", "同事", "user:qq:3")
+    await add_verified_relation(store.graph, "user:qq:1", "同事", "user:qq:3")
     assert "同事" in (await retriever.load_relation_snippets(scopes))[0]["content"]
 
 
@@ -52,12 +53,13 @@ async def test_relation_snippets_empty_when_no_graph(store) -> None:
 async def test_relation_snippets_order_immune_to_edge_updates(store) -> None:
     """同强度边被更新（updated_ns 变化）不影响注入字节序——多实体群聊常态下的缓存稳定性。"""
     retriever = MemoryRetriever(store, _NullEmbedder())
-    e1 = await store.graph.add_relation("user:qq:1", "同事", "user:qq:2", strength=0.7)
-    await store.graph.add_relation("user:qq:1", "朋友", "user:qq:3", strength=0.7)
+    e1 = await add_verified_relation(store.graph, "user:qq:1", "同事", "user:qq:2", strength=0.7)
+    await add_verified_relation(store.graph, "user:qq:1", "朋友", "user:qq:3", strength=0.7)
     scopes = ["user_qq:1"]
     before = (await retriever.load_relation_snippets(scopes))[0]["content"]
     # 更新第一条边的证据（updated_ns 改变，内容集未变）
     await store.graph.update_relation(e1["id"], evidence="补充证据")
+    await verify_relation(store.graph, e1)
     after = (await retriever.load_relation_snippets(scopes))[0]["content"]
     # 字节仅差异在证据文本，顺序不变
     assert before.index("同事") < after.index("朋友")

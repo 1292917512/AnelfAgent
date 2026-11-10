@@ -524,6 +524,7 @@ class AutoCapturePipeline:
             build_extract_prompt,
             parse_relation_candidates,
             render_material,
+            store_relation_candidates,
         )
 
         store = self._memory.memory_store
@@ -540,24 +541,7 @@ class AutoCapturePipeline:
             log(f"关系抽取调用失败 [{scope_key}]: {exc}", "DEBUG", tag="记忆")
             return 0
         candidates = parse_relation_candidates(raw or "")
-        stored = 0
-        for cand in candidates:
-            try:
-                await store.graph.add_relation(
-                    cand["subject"],
-                    cand["predicate"],
-                    cand["object"],
-                    subject_label=cand["subject_label"],
-                    object_label=cand["object_label"],
-                    symmetric=cand["symmetric"],
-                    strength=cand["strength"],
-                    evidence=cand["evidence"],
-                    origin="heartbeat_extract",
-                )
-                stored += 1
-            except ValueError as exc:
-                log(f"关系候选落库跳过: {cand.get('predicate')} -> {exc}", "DEBUG", tag="记忆")
-        return stored
+        return await store_relation_candidates(store.graph, candidates, messages, scope_key)
 
 
 auto_capture_port: LateBinding["AutoCapturePipeline"] = LateBinding("memory.auto_capture")

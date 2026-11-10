@@ -32,6 +32,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from agent.memory.memory_store import MemoryStore
 from agent.memory.memory_types import GOAL_SOURCE, MemoryEntry, MemoryType
+from agent.planning.goals import find_goal, goal_view, iter_goals, normalize_steps
 from core.event_bus import (
     EVENT_PLAN_CANCELLED,
     EVENT_PLAN_DELETED,
@@ -111,26 +112,9 @@ async def _find_active_plan(
     store = _bound_store()
     if store is None:
         return None, None
-    try:
-        entries = await store.list_recent(
-            limit=20, memory_type=MemoryType.SEMANTIC, source=GOAL_SOURCE,
-        )
-    except Exception as exc:
-        log(f"active plan 查询失败: {exc}", "DEBUG", tag="规划")
-        return None, None
-    for entry in entries:
-        metadata = entry.metadata or {}
-        if metadata.get("kind") != PLAN_KIND:
-            continue
-        try:
-            goal = json.loads(entry.content)
-        except (json.JSONDecodeError, AttributeError):
-            continue
-        if goal.get("status") != "active":
-            continue
-        if metadata.get("scope") != scope:
-            continue
-        return entry, goal
+    async for entry, goal in iter_goals(store, status="active"):
+        if entry.metadata.get("kind") == PLAN_KIND and entry.metadata.get("scope") == scope:
+            return entry, goal
     return None, None
 
 
@@ -139,8 +123,8 @@ async def get_active_plan(scope: str) -> Optional[Dict[str, Any]]:
 
     present_plan 工具据此复用已有计划（防止 AI 重复规划）。
     """
-    _, goal = await _find_active_plan(scope)
-    return goal
+    entry, goal = await _find_active_plan(scope)
+    return goal_view(entry, goal) if entry is not None and goal is not None else None
 
 
 async def _persist(entry: MemoryEntry, goal: Dict[str, Any]) -> None:
@@ -163,7 +147,10 @@ async def _persist(entry: MemoryEntry, goal: Dict[str, Any]) -> None:
             return
     goal["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
     entry.content = json.dumps(goal, ensure_ascii=False)
-    await store.update(entry, clear_embedding=True)
+    entry.metadata = {**entry.metadata, "status": goal["status"]}
+    if not await store.update(entry, clear_embedding=True, expected_version=entry.version):
+        from agent.planning.goals import GoalConflict
+        raise GoalConflict("计划已变化，本次收束未提交")
     # 状态机全部推进路径（finalize/cancel/update_goal）的实际落库点：
     # 去抖短路（语义未变）不失效，快照与存储严格同步
     from agent.planning import situation
@@ -243,6 +230,7 @@ async def submit_plan(
         plan_id
     """
     plan_id = uuid.uuid4().hex[:8]
+    steps = normalize_steps(plan_id, steps)
     _, chat_id = parse_scope_chat_id(scope)
 
     store = _bound_store()
@@ -293,24 +281,22 @@ async def submit_plan(
     return plan_id
 
 
-async def _converge_steps(
-    scope: str, plan_id: str, steps: List[Dict[str, Any]], outcome: str,
-) -> bool:
-    """把未完成步骤按 outcome 收敛到终态并逐步发射事件。
+def _converge_steps(steps: List[Dict[str, Any]], outcome: str) -> List[Dict[str, Any]]:
+    """收敛未完成步骤，返回待提交成功后发布的变更。
 
     未确认完成的 in_progress / pending 统一 → skipped，已明确标记的步骤保留。
 
     Returns:
-        是否有步骤变更。
+        已变更步骤。
     """
     note = "会话结束，步骤未确认完成" if outcome == "completed" else "会话中断，步骤未确认完成"
-    changed = False
+    changed = []
     for s in steps:
         st = s.get("status")
         if st in ("in_progress", "pending"):
             s["status"] = "skipped"
-            changed = True
-            await _emit_step(scope, plan_id, s.get("index", 0), "skipped", note=note)
+            s["note"] = "\n".join(filter(None, [s.get("note", ""), note]))
+            changed.append(s)
     return changed
 
 
@@ -333,12 +319,14 @@ async def finalize_plan(scope: str, outcome: str = "completed") -> None:
         steps = goal.get("steps", [])
         if outcome == "completed" and (not steps or any(s.get("status") != "completed" for s in steps)):
             outcome = "cancelled"
-        changed = await _converge_steps(scope, plan_id, steps, outcome)
+        changed = _converge_steps(steps, outcome)
         if changed or goal.get("status") != outcome:
             goal["status"] = outcome
             # 终态 plan 重要性下调（与 update_goal 收敛路径一致），不再污染语义召回
             entry.importance = 0.3
             await _persist(entry, goal)
+            for step in changed:
+                await _emit_step(scope, plan_id, step["index"], step["status"], note=step["note"])
             await _emit_status(scope, plan_id, outcome)
     except Exception as exc:
         log(f"plan 收敛失败（不影响主流程）: {exc}", "DEBUG", tag="规划")
@@ -357,10 +345,12 @@ async def cancel_plan(scope: str, plan_id: str, reason: str = "用户取消") ->
         if entry is None or goal is None or goal.get("goal_id") != plan_id:
             return False
         # 步骤同步收敛到 skipped，避免前端残留 in_progress 转圈
-        await _converge_steps(scope, plan_id, goal.get("steps", []), "cancelled")
+        changed = _converge_steps(goal.get("steps", []), "cancelled")
         goal["status"] = "cancelled"
         entry.importance = 0.3  # 与 finalize/update_goal 的终态重要性口径一致
         await _persist(entry, goal)
+        for step in changed:
+            await _emit_step(scope, plan_id, step["index"], step["status"], note=step["note"])
         _, chat_id = parse_scope_chat_id(scope)
         try:
             await event_bus.emit(EVENT_PLAN_CANCELLED, {
@@ -391,27 +381,7 @@ async def find_goal_by_id(
     store = _bound_store()
     if store is None:
         return None, None
-    page_size = 100
-    offset = 0
-    while True:
-        entries = await store.list_by_source(
-            GOAL_SOURCE, memory_type=MemoryType.SEMANTIC,
-            limit=page_size, offset=offset,
-            include_archived=include_archived,
-        )
-        if not entries:
-            break
-        for entry in entries:
-            try:
-                goal = json.loads(entry.content)
-            except (json.JSONDecodeError, AttributeError):
-                continue
-            if isinstance(goal, dict) and goal.get("goal_id") == goal_id:
-                return entry, goal
-        if len(entries) < page_size:
-            break
-        offset += page_size
-    return None, None
+    return await find_goal(store, goal_id, include_archived=include_archived)
 
 
 # ------------------------------------------------------------------
@@ -441,13 +411,14 @@ async def remove_goal(
     deleted = await store.delete(
         entry.id, actor=actor, expected_version=entry.version,
         detail=f"goal:{goal_id} → {status}: {title}",
-        audit_data={"goal_id": goal_id, "title": title, "status": status, "destination": "deleted"},
+        audit_data={"goal_id": goal_id, "title": title, "status": status, "destination": "deleted",
+                    "goal": {**goal, "status": status}},
     )
     if not deleted:
         return False
     from agent.planning import situation
     situation.invalidate()
-    scope = current_scope()
+    scope = str(entry.metadata.get("scope") or current_scope())
     _, chat_id = parse_scope_chat_id(scope)
     try:
         await event_bus.emit(EVENT_PLAN_DELETED, {

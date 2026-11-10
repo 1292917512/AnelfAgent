@@ -139,6 +139,7 @@ export function GraphNodeDrawer({
                   </div>
                   <div className="mt-1 flex items-center gap-2 text-xs text-muted">
                     <span>{t("drawer.strength")} {edge.strength.toFixed(2)}</span>
+                    <span>{t(`verification.${edge.verification}`)}</span>
                     <span>{t(`origins.${edge.origin}`, { defaultValue: edge.origin })}</span>
                     <span className="ml-auto flex gap-2">
                       <button className="text-accent hover:underline" onClick={() => onEditEdge(edge)}>

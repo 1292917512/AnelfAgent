@@ -24,6 +24,8 @@ from ..projection import canonical_tags, graph_document
 from ..provenance import merge_metadata, recall_provenance
 from ..store.cognee_queue import ENTRY_KIND_GRAPH_NODE, CogneeSyncQueue
 from ..store.connection import MemoryConnectionManager
+from .verification import STATUSES, revision
+from .verification import status as verification_status
 
 # 内置节点类型（key 前缀）；未知前缀归为 custom
 NODE_TYPES = ("user", "group", "agent", "person", "topic", "project", "org", "thing", "concept")
@@ -68,7 +70,7 @@ def format_triple(edge: Dict[str, Any]) -> str:
     s, o = edge["subject"], edge["object"]
     s_name = f"{s['label']}({s['node_key']})" if s["label"] else s["node_key"]
     o_name = f"{o['label']}({o['node_key']})" if o["label"] else o["node_key"]
-    mid = f"{edge['predicate']}│{edge['strength']:.2f}"
+    mid = f"{edge['predicate']}│{edge['strength']:.2f}│{verification_status(edge)}"
     if edge["symmetric"]:
         return f"{s_name} ─[{mid}]─ {o_name}"
     return f"{s_name} ─[{mid}]→ {o_name}"
@@ -171,7 +173,7 @@ class GraphStore:
         except (json.JSONDecodeError, TypeError):
             metadata = {}
         keys = row.keys()
-        return {
+        edge = {
             "id": int(row["id"]),
             "subject": {
                 "id": int(row["subject_id"]),
@@ -198,6 +200,7 @@ class GraphStore:
             "access_count": int(row["access_count"]) if "access_count" in keys else 0,
             "last_accessed": (row["last_accessed_ns"] / 1e9) if "last_accessed_ns" in keys else 0.0,
         }
+        return {**edge, "verification": verification_status(edge), "revision": revision(edge)}
 
     _EDGE_SELECT = (
         "SELECT e.*, s.node_key AS s_key, s.node_type AS s_type, s.label AS s_label, "
@@ -233,7 +236,7 @@ class GraphStore:
                 )
                 node["label"] = label
                 changed = True
-            if node["archived"]:
+            if node["archived"] and rename:
                 await db.execute(
                     "UPDATE graph_nodes SET archived=0, updated_ns=? WHERE id=?",
                     (time.time_ns(), node["id"]),
@@ -308,6 +311,7 @@ class GraphStore:
         *,
         include_archived: bool = False,
         predicate: str = "",
+        verified_only: bool = False,
     ) -> list[Dict[str, Any]]:
         if not node_ids:
             return []
@@ -318,7 +322,9 @@ class GraphStore:
         )
         params: list[Any] = [*node_ids, *node_ids]
         if not include_archived:
-            sql += " AND e.archived=0"
+            sql += " AND e.archived=0 AND s.archived=0 AND o.archived=0"
+        if verified_only:
+            sql += " AND json_extract(e.metadata_json, '$.verification.status')='verified'"
         if predicate:
             sql += " AND e.predicate=?"
             params.append(predicate)
@@ -454,6 +460,8 @@ class GraphStore:
             raise ValueError("关系类型（predicate）不能为空")
         if len(pred) > _MAX_PREDICATE_LEN:
             raise ValueError(f"关系类型过长（>{_MAX_PREDICATE_LEN} 字符）")
+        if not math.isfinite(strength):
+            raise ValueError("关系强度必须是有限数值")
         return pred, max(0.0, min(1.0, float(strength))), (evidence or "").strip()[:_MAX_EVIDENCE_LEN]
 
     async def add_relation(
@@ -469,6 +477,7 @@ class GraphStore:
         evidence: str = "",
         source_memory_id: Optional[int] = None,
         origin: str = "manual_tool",
+        evidence_sources: list[dict[str, Any]] | None = None,
     ) -> Dict[str, Any]:
         """新增关系：节点不存在自动建档；(s,p,o) 已存在则更新强度/证据（upsert）。"""
         pred, strength, evidence = self._validate_relation(predicate, strength, evidence)
@@ -480,6 +489,8 @@ class GraphStore:
             rename = origin != "heartbeat_extract"
             subject = await self._ensure_node(db, subject_key, subject_label, rename=rename)
             obj = await self._ensure_node(db, object_key, object_label, rename=rename)
+            if origin == "heartbeat_extract" and (subject["archived"] or obj["archived"]):
+                raise ValueError("自动提取不能恢复已归档节点")
             if subject["id"] == obj["id"]:
                 raise ValueError("不允许建立自指向关系（subject 与 object 相同）")
             previous_row = await (await db.execute(
@@ -487,7 +498,21 @@ class GraphStore:
                 (subject["id"], pred, obj["id"]),
             )).fetchone()
             previous = self._row_to_edge(previous_row) if previous_row else None
-            values = {"symmetric": symmetric, "strength": strength, "evidence": evidence,
+            if previous and origin == "heartbeat_extract" and (
+                previous["archived"] or previous["origin"] != "heartbeat_extract"
+                or previous["metadata"].get("maintained") or verification_status(previous) != "pending"
+            ):
+                return previous
+            metadata = dict(previous["metadata"]) if previous else {}
+            if evidence_sources is not None:
+                metadata["evidence_sources"] = evidence_sources
+            semantic_changed = previous and any(previous[key] != value for key, value in
+                (("evidence", evidence), ("symmetric", symmetric), ("source_memory_id", source_memory_id)))
+            if semantic_changed:
+                metadata["verification"] = {"status": "pending", "reason": "关系证据发生变更，须重新核验"}
+            if origin != "heartbeat_extract":
+                metadata["maintained"] = True
+            values = {"metadata": metadata, "symmetric": symmetric, "strength": strength, "evidence": evidence,
                       "source_memory_id": source_memory_id, "origin": origin, "archived": False}
             if previous and all(previous[key] == value for key, value in values.items()):
                 return previous
@@ -495,13 +520,13 @@ class GraphStore:
             await db.execute(
                 "INSERT INTO graph_edges(subject_id, predicate, object_id, symmetric, "
                 "strength, evidence, source_memory_id, origin, metadata_json, "
-                "created_ns, updated_ns, archived) VALUES(?,?,?,?,?,?,?,?,'{}',?,?,0) "
+                "created_ns, updated_ns, archived) VALUES(?,?,?,?,?,?,?,?,?,?,?,0) "
                 "ON CONFLICT(subject_id, predicate, object_id) DO UPDATE SET "
                 "symmetric=excluded.symmetric, strength=excluded.strength, "
                 "evidence=excluded.evidence, source_memory_id=excluded.source_memory_id, "
-                "origin=excluded.origin, updated_ns=excluded.updated_ns, archived=0",
+                "origin=excluded.origin, metadata_json=excluded.metadata_json, updated_ns=excluded.updated_ns, archived=0",
                 (subject["id"], pred, obj["id"], 1 if symmetric else 0, strength,
-                 evidence, source_memory_id, origin, now_ns, now_ns),
+                 evidence, source_memory_id, origin, json.dumps(metadata, ensure_ascii=False), now_ns, now_ns),
             )
             if not previous or any(previous[key] != value for key, value in values.items() if key != "strength"):
                 await self._enqueue_projection(db, [subject["id"], obj["id"]])
@@ -534,6 +559,8 @@ class GraphStore:
         strength: Optional[float] = None,
         evidence: Optional[str] = None,
         symmetric: Optional[bool] = None,
+        verification: str = "", verification_reason: str = "", expected_revision: str = "",
+        actor: str = "manual_tool",
     ) -> Optional[Dict[str, Any]]:
         """原地更新边（None 表示不变）。目标三元组冲突时抛 ValueError。"""
         changes: dict[str, Any] = {}
@@ -541,12 +568,13 @@ class GraphStore:
             pred, _, _ = self._validate_relation(predicate, 0.0, "")
             changes["predicate"] = pred
         if strength is not None:
-            changes["strength"] = max(0.0, min(1.0, float(strength)))
+            _, value, _ = self._validate_relation("strength", strength, "")
+            changes["strength"] = value
         if evidence is not None:
             changes["evidence"] = evidence.strip()[:_MAX_EVIDENCE_LEN]
         if symmetric is not None:
             changes["symmetric"] = bool(symmetric)
-        if not changes:
+        if not changes and not verification:
             return await self.get_relation(edge_id)
         db = await self._conn.get_db()
         async with self._conn.tx(db):
@@ -554,6 +582,22 @@ class GraphStore:
             if not existing:
                 return None
             changes = {key: value for key, value in changes.items() if value != existing[key]}
+            metadata = dict(existing["metadata"])
+            if verification:
+                if verification not in STATUSES or not verification_reason.strip():
+                    raise ValueError("核验状态须为 pending/verified/disputed/rejected，并提供核验依据")
+                if expected_revision != revision(existing):
+                    raise ValueError("关系已变化或缺少 expected_revision，请重新查询后核验")
+                if verification == "verified" and not (changes.get("evidence", existing["evidence"]) or existing["source_memory_id"]):
+                    raise ValueError("确认关系须提供证据或溯源记忆")
+                metadata["verification"] = {"status": verification, "reason": verification_reason.strip()[:500],
+                                             "actor": actor, "reviewed_at": time.time()}
+            elif changes.keys() - {"strength"}:
+                metadata["verification"] = {"status": "pending", "reason": "关系内容发生变更，须重新核验"}
+            if changes or verification:
+                metadata["maintained"] = True
+            if metadata != existing["metadata"]:
+                changes["metadata_json"] = json.dumps(metadata, ensure_ascii=False)
             if not changes:
                 return existing
             sets = [f"{key}=?" for key in changes]
@@ -645,7 +689,7 @@ class GraphStore:
             async with self._conn.tx(db):
                 await db.execute(
                     f"UPDATE graph_edges SET access_count=access_count+1, last_accessed_ns=? "
-                    f"WHERE id IN ({placeholders}) AND archived=0",
+                    f"WHERE id IN ({placeholders}) AND archived=0 AND json_extract(metadata_json, '$.verification.status')='verified'",
                     (time.time_ns(), *edge_ids),
                 )
         except Exception:
@@ -688,7 +732,7 @@ class GraphStore:
             node = await self._get_node_row(db, await self._normalize_entity_key(key))
             if node and not node["archived"]:
                 ids.append(node["id"])
-        edges = await self._edges_for_node_ids(db, ids)
+        edges = await self._edges_for_node_ids(db, ids, verified_only=True)
         edges.sort(key=lambda e: (-e["strength"], e["id"]))  # id 决胜保证字节稳定
         edges = edges[:limit]
         await self._record_edge_access(db, [e["id"] for e in edges])
@@ -781,7 +825,8 @@ class GraphStore:
                     continue
                 try:
                     await db.execute(
-                        "UPDATE graph_edges SET subject_id=?, object_id=?, updated_ns=? WHERE id=?",
+                        "UPDATE graph_edges SET subject_id=?, object_id=?, updated_ns=?, "
+                        "metadata_json=json_set(metadata_json, '$.verification.status', 'pending', '$.maintained', json('true')) WHERE id=?",
                         (new_subject, new_object, now_ns, edge_id),
                     )
                     moved += 1
@@ -790,7 +835,8 @@ class GraphStore:
                     await db.execute(
                         "UPDATE graph_edges SET strength=MAX(strength, ?), "
                         "evidence=CASE WHEN ? != '' AND evidence NOT LIKE '%' || ? || '%' "
-                        "THEN evidence || '；' || ? ELSE evidence END, updated_ns=? "
+                        "THEN evidence || '；' || ? ELSE evidence END, updated_ns=?, "
+                        "metadata_json=json_set(metadata_json, '$.verification.status', 'pending', '$.maintained', json('true')) "
                         "WHERE subject_id=? AND predicate=? AND object_id=?",
                         (row["strength"], row["evidence"], row["evidence"],
                          row["evidence"], now_ns, new_subject, row["predicate"], new_object),
@@ -1006,7 +1052,14 @@ class GraphStore:
             )
             return [self._row_to_edge(row) for row in await cursor.fetchall()]
 
+        pending_filter = "e.archived=0 AND COALESCE(json_extract(e.metadata_json, '$.verification.status'), 'pending')='pending'"
+        pending_args: list[Any] = []
+        if selection is not None:
+            ids = sorted(selection.get("pending_edges", set()))
+            pending_filter += f" AND CAST(e.id AS TEXT) IN ({','.join('?' for _ in ids)})" if ids else " AND 0"
+            pending_args.extend(ids)
         facts: Dict[str, list] = {
+            "pending_edges": await _edges(pending_filter, pending_args, "e.updated_ns ASC", 10),
             "weak_edges": await _edges(
                 f"e.archived=0 AND e.strength < ? AND {weak_filter}", [weak_strength, *weak_args],
                 "e.strength ASC", 10,
@@ -1160,6 +1213,21 @@ class GraphStore:
     # cognee 投影
     # ------------------------------------------------------------------
 
+    async def reconcile_verification_projections(self) -> None:
+        """核验契约首次启用时重新投影已有映射，不删除权威边或伪造历史裁决。"""
+        if self._cognee is None or not self._cognee.enabled:
+            return
+        db = await self._conn.get_db()
+        async with self._conn.tx(db):
+            if await (await db.execute("SELECT 1 FROM schema_meta WHERE key='graph_verification_projection_v1'")).fetchone():
+                return
+            rows = await (await db.execute(
+                "SELECT entry_id FROM cognee_entry_map WHERE entry_kind='graph_node' "
+                "UNION SELECT entry_id FROM cognee_projection_attempts WHERE entry_kind='graph_node'",
+            )).fetchall()
+            await self._enqueue_projection(db, [int(row[0]) for row in rows])
+            await db.execute("INSERT INTO schema_meta(key,value) VALUES('graph_verification_projection_v1','1')")
+
     async def render_node_projection(self, node_id: int) -> Optional[Tuple[str, str]]:
         projection = await self._projection_document(node_id)
         return (projection[0], projection[1]) if projection else None
@@ -1170,7 +1238,9 @@ class GraphStore:
         if not node or node["archived"]:
             return None
         db = await self._conn.get_db()
-        edges = await self._edges_for_node_ids(db, [node_id])
+        edges = await self._edges_for_node_ids(db, [node_id], verified_only=True)
+        if not edges:
+            return None
         attribution = await self.projection_attribution(node_id, edges=edges)
         return graph_document(node, edges, attribution)
 
@@ -1181,7 +1251,7 @@ class GraphStore:
         db = await self._conn.get_db()
         node = await self.get_node_by_id(node_id)
         if edges is None:
-            edges = await self._edges_for_node_ids(db, [node_id])
+            edges = await self._edges_for_node_ids(db, [node_id], verified_only=True)
         tags = [node["node_key"]] if node else []
         sources: list[dict[str, Any]] = []
         ids = sorted({int(e["source_memory_id"]) for e in edges if e.get("source_memory_id")})
@@ -1232,7 +1302,9 @@ class GraphStore:
             node = await self.get_node_by_id(node_id)
             if not node or node["archived"]:
                 return None
-            edges = await self._edges_for_node_ids(db, [node_id])
+            edges = await self._edges_for_node_ids(db, [node_id], verified_only=True)
+            if not edges:
+                return None
             attribution = await self.projection_attribution(node_id, edges=edges)
             text, fingerprint, _ = graph_document(node, edges, attribution)
             if not fragmented and len(text) <= MAX_DOCUMENT_CHARS:

@@ -6,6 +6,7 @@ import asyncio
 import json
 
 import pytest
+from helpers.graph import add_verified_relation
 
 from agent.memory.memory_types import RetrievalPlan, normalized_content_key
 from agent.memory.probe import DeepProbeHub, RecallLedger, deep_probe_hub
@@ -184,7 +185,7 @@ async def test_current_render_is_durable() -> None:
 
 @pytest.mark.asyncio
 async def test_probe_renders_relation_delta_with_ledger_dedup(store) -> None:
-    await store.graph.add_relation(
+    await add_verified_relation(store.graph,
         "user:qq:1", "朋友", "user:qq:2", subject_label="阿辰", object_label="老王",
         evidence="常一起吃饭",
     )
@@ -239,7 +240,7 @@ async def test_recall_split_fires_probe_and_drains_delta(store, monkeypatch) -> 
     from agent.memory.memory_retriever import MemoryRetriever
     from agent.memory.memory_types import RetrievalPlan
 
-    await store.graph.add_relation(
+    await add_verified_relation(store.graph,
         "user:qq:1", "朋友", "user:qq:2", subject_label="阿辰", object_label="老王",
         evidence="常一起吃饭",
     )
@@ -470,7 +471,7 @@ async def test_probe_staged_fast_section_publishes_before_slow(store, monkeypatc
     """本地与远端同时读取，远端未结束时本地事实已可消费。"""
     from agent.memory.memory_types import RetrievalPlan
 
-    await store.graph.add_relation(
+    await add_verified_relation(store.graph,
         "user:qq:1", "朋友", "user:qq:2", subject_label="阿辰", object_label="老王",
     )
     hub = DeepProbeHub()
@@ -567,7 +568,7 @@ async def test_cross_channel_no_duplication(store, monkeypatch) -> None:
     from agent.memory.memory_retriever import MemoryRetriever
     from agent.memory.memory_types import RetrievalPlan
 
-    await store.graph.add_relation(
+    await add_verified_relation(store.graph,
         "user:qq:1", "朋友", "user:qq:2", subject_label="阿辰", object_label="老王",
         evidence="常一起吃饭",
     )
@@ -613,7 +614,7 @@ async def test_tool_edges_alone_block_probe_duplication(store, monkeypatch) -> N
     import agent.memory.tools as mem_tools
     from agent.memory.memory_types import RetrievalPlan
 
-    await store.graph.add_relation(
+    await add_verified_relation(store.graph,
         "user:qq:1", "朋友", "user:qq:2", subject_label="阿辰", object_label="老王",
     )
     hub = DeepProbeHub()

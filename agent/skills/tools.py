@@ -17,6 +17,7 @@ import json
 from typing import Any, Dict, List, NamedTuple, Optional, Tuple
 
 from agent.skills import sources as skill_sources
+from agent.skills.execution import skill_result
 from agent.skills.skill_matcher import SkillMatcher
 from agent.skills.skill_store import SkillState, SkillStore
 from core.entity import EntityRegistry
@@ -512,7 +513,7 @@ def get_skill(name: str) -> str:
     deep_probe_hub.record(current_scope(), identifiers=[f"skill:{skill.name}"])
     from agent.skills.dependencies import dependency_notice, mcp_binding_status, missing_mcp_dependencies
     missing = missing_mcp_dependencies(skill)
-    return json.dumps({
+    output = json.dumps({
         "ok": True,
         "name": skill.name,
         "description": skill.description,
@@ -525,10 +526,12 @@ def get_skill(name: str) -> str:
         "rationale": skill.rationale,
         "merged_into": skill.merged_into,
         "mcp_servers": skill.mcp_servers,
+        "required_tools": skill.required_tools,
         "mcp_status": mcp_binding_status(skill, current_scope()),
         "missing_dependencies": missing,
         "dependency_notice": dependency_notice(skill) if missing else "",
     }, ensure_ascii=False)
+    return skill_result(output, skill.name, skill.content)
 
 
 @deferred_tool(
@@ -557,3 +560,26 @@ def set_skill_mcp_servers(name: str, server_names: List[str]) -> str:
         return tool_error(str(exc), cause=ErrorCause.PARAM, retryable=False)
     except Exception as exc:
         return error_from_exception(exc)
+
+
+@deferred_tool(group="skills", tags=["core"], source="mind.skills")
+def set_skill_tool_requirements(name: str, tool_names: List[str]) -> str:
+    """配置确切工具的执行前置技能；空数组清除，不根据相关性自动设置。
+
+    Args:
+        name: 技能名称
+        tool_names: 必须先完整读取此技能的工具名列表，通过实体目录查询确切名称
+    """
+    deps = _deps()
+    if deps is None:
+        return _not_ready()
+    try:
+        unknown = [tool for tool in tool_names if EntityRegistry.get(tool) is None]
+        if unknown:
+            raise ValueError(f"工具不存在，请先查询实体目录: {', '.join(unknown)}")
+        skill = deps.store.set_required_tools(name, tool_names)
+        return json.dumps({"ok": True, "name": skill.name, "required_tools": skill.required_tools}, ensure_ascii=False)
+    except ValueError as exc:
+        return tool_error(str(exc), cause=ErrorCause.PARAM, retryable=False)
+    except Exception as exc:
+        return error_from_exception(exc, action="配置技能前置条件")

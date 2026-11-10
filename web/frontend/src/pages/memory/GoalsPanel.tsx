@@ -6,7 +6,8 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { memoryApi } from "@/lib/api";
-import type { GoalData, GoalStep } from "@/lib/types";
+import type { GoalData, GoalStep, GoalUpdate } from "@/lib/types";
+import { QueryError } from "@/components/common/AsyncState";
 import { Card } from "@/components/common/Card";
 import { cn } from "@/lib/utils";
 import { Trash2, RefreshCw, Plus, Pencil, X, Target, CheckCircle2, Circle, Clock, XCircle, Info } from "lucide-react";
@@ -25,6 +26,7 @@ export function GoalsPanel() {
   const [newDueTime, setNewDueTime] = useState("");
   const [newRecurring, setNewRecurring] = useState(false);
   const [newSteps, setNewSteps] = useState<string[]>([]);
+  const [editVersion, setEditVersion] = useState(0);
   const [editTitle, setEditTitle] = useState("");
   const [editDesc, setEditDesc] = useState("");
   const [editDueTime, setEditDueTime] = useState("");
@@ -39,6 +41,7 @@ export function GoalsPanel() {
   const selectedGoal = goals.find((g) => g.goal_id === selectedGoalId) || null;
 
   const enterEdit = (goal: GoalData) => {
+    setEditVersion(goal.version);
     setEditTitle(goal.title);
     setEditDesc(goal.description ?? "");
     setEditDueTime(goal.due_time || "");
@@ -59,15 +62,15 @@ export function GoalsPanel() {
     onSuccess: (_data, goalId) => { queryClient.invalidateQueries({ queryKey: ["goals"] }); if (selectedGoalId === goalId) setSelectedGoalId(null); },
   });
   const updateMutation = useMutation({
-    mutationFn: (data: { goalId: string } & Record<string, unknown>) => {
+    mutationFn: (data: { goalId: string } & GoalUpdate) => {
       const { goalId, ...rest } = data;
-      return memoryApi.goals.update(goalId, rest as Parameters<typeof memoryApi.goals.update>[1]);
+      return memoryApi.goals.update(goalId, rest);
     },
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ["goals"] }); setEditing(false); },
   });
   const updateStepMutation = useMutation({
-    mutationFn: ({ goalId, steps }: { goalId: string; steps: GoalData["steps"] }) =>
-      memoryApi.goals.update(goalId, { steps: steps.map((s) => ({ step: s.step, status: s.status as "pending" | "in_progress" | "completed" | "skipped", ...(s.note ? { note: s.note } : {}) })) }),
+    mutationFn: ({ goalId, steps, version }: { goalId: string; steps: GoalData["steps"]; version: number }) =>
+      memoryApi.goals.update(goalId, { steps, expected_version: version }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["goals"] }),
   });
 
@@ -85,7 +88,7 @@ export function GoalsPanel() {
     const step = goal.steps[stepIdx];
     if (!step) return;
     const nextStatus = (order[(order.indexOf(step.status) + 1) % order.length] ?? "pending") as GoalStep["status"];
-    updateStepMutation.mutate({ goalId: goal.goal_id, steps: goal.steps.map((s, i) => i === stepIdx ? { ...s, status: nextStatus } : s) });
+    updateStepMutation.mutate({ goalId: goal.goal_id, version: goal.version, steps: goal.steps.map((s, i) => i === stepIdx ? { ...s, status: nextStatus } : s) });
   };
 
   const isDue = (goal: GoalData) => goal.due_time && new Date(goal.due_time) <= new Date();
@@ -141,6 +144,7 @@ export function GoalsPanel() {
 
       {/* Right: detail / edit / create */}
       <div className="flex-1 min-w-0">
+        {(updateMutation.error || updateStepMutation.error) && <QueryError error={updateMutation.error || updateStepMutation.error} compact />}
         {showCreate ? (
           <Card title={t("createGoal")}>
             <div className="space-y-3">
@@ -184,11 +188,11 @@ export function GoalsPanel() {
                   className="p-1.5 text-muted hover:text-accent transition-colors"><Pencil size={16} /></button>
               )}
               {selectedGoal.status === "active" && !editing && (
-                <button onClick={() => updateMutation.mutate({ goalId: selectedGoal.goal_id, status: "completed" })} title={t("markComplete")}
+                <button onClick={() => updateMutation.mutate({ goalId: selectedGoal.goal_id, expected_version: selectedGoal.version, status: "completed" })} title={t("markComplete")}
                   className="p-1.5 text-muted hover:text-ok transition-colors"><CheckCircle2 size={16} /></button>
               )}
               {selectedGoal.status === "completed" && !editing && (
-                <button onClick={() => updateMutation.mutate({ goalId: selectedGoal.goal_id, status: "active" })} title={t("markActive")}
+                <button onClick={() => updateMutation.mutate({ goalId: selectedGoal.goal_id, expected_version: selectedGoal.version, status: "active" })} title={t("markActive")}
                   className="p-1.5 text-muted hover:text-accent transition-colors"><RefreshCw size={16} /></button>
               )}
               {!editing && (
@@ -217,7 +221,7 @@ export function GoalsPanel() {
                 <div className="flex flex-wrap justify-end gap-2 pt-2">
                   <Button onClick={() => setEditing(false)} disabled={updateMutation.isPending}>{t("common:cancel")}</Button>
                   <Button variant="primary" loading={updateMutation.isPending} onClick={() => updateMutation.mutate({
-                    goalId: selectedGoal.goal_id, title: editTitle, description: editDesc,
+                    goalId: selectedGoal.goal_id, expected_version: editVersion, title: editTitle, description: editDesc,
                     due_time: editDueTime || null, recurring: editRecurring,
                   })}>{t("common:save")}</Button>
                 </div>

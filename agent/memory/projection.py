@@ -29,6 +29,11 @@ def projection_dataset(prefix: str, *, graph: bool = False) -> str:
     return f"{prefix}_{'relations' if graph else 'global'}"
 
 
+def is_relation_dataset(name: str) -> bool:
+    """识别当前和历史按 scope 拆分的关系分区。"""
+    return bool(re.search(r"(?:^|_)relations(?:_|$)", name))
+
+
 def projection_hash(value: Any) -> str:
     """指纹覆盖索引契约，不包含库版本、召回参数或访问热度。"""
     canonical = json.dumps(

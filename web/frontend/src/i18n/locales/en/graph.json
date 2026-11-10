@@ -11,7 +11,7 @@
     "refresh": "Refresh",
     "addRelation": "Add relation"
   },
-  "hint": "Solid lines = confirmed relations, dashed = auto-extracted; thicker = stronger. Click a node for details.",
+  "hint": "Solid lines are verified; dashed lines are pending, disputed or rejected. Strength is not factual confidence. Click a node for evidence.",
   "origins": {
     "manual_tool": "AI recorded",
     "heartbeat_extract": "Auto extracted",
@@ -61,6 +61,15 @@
     "evidenceHint": "Which conversation/memory this comes from (optional, recommended)",
     "cancel": "Cancel",
     "confirm": "Confirm",
-    "submitting": "Submitting…"
+    "submitting": "Submitting…",
+    "verification": "Verification",
+    "noReview": "Edit without a review decision",
+    "reviewReason": "Review basis (original source or conversation confirmation)"
+  },
+  "verification": {
+    "pending": "Pending",
+    "verified": "Verified",
+    "disputed": "Disputed",
+    "rejected": "Rejected"
   }
 }

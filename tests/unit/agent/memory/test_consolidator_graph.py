@@ -6,6 +6,7 @@ import math
 import time
 
 import pytest
+from helpers.graph import add_verified_relation
 
 
 async def _backdate_edge(store, edge_id: int, days: float) -> None:
@@ -31,7 +32,7 @@ async def _backdate_node(store, node_id: int, days: float) -> None:
 @pytest.mark.asyncio
 async def test_edges_for_scopes_records_access(store) -> None:
     """检索命中即计数：access_count 递增 + last_accessed 刷新。"""
-    await store.graph.add_relation("user:qq:1", "朋友", "user:qq:2")
+    await add_verified_relation(store.graph, "user:qq:1", "朋友", "user:qq:2")
     edges = await store.graph.edges_for_scopes(["user:qq:1"])
     assert len(edges) == 1
     assert edges[0]["access_count"] == 0  # 返回的是查询前快照

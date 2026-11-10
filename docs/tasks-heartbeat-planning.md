@@ -131,14 +131,22 @@ idle 模式及其空闲计数原样保留，仍可显式手动触发。任务定
 
 ## 规划系统（agent/planning/）
 
+- **统一写入契约**：工具与 Web 共用 `goals.py`，返回目标 `version` 与步骤 `step_id`。
+  更新必须携带读取版本 `expected_version`，过期写入不落库（Web 409）。步骤使用稳定 ID
+  或唯一完整 `step_name` 定位；数字索引只能作附加校验，不能单独写入。历史 `step` 正文只读
+  归一为 `content`，旧步骤 ID 稳定派生，首次变更时保存；前端提交完整步骤保留 ID、正文和备注。
+  `note_mode=append` 可追加证据。状态和步骤事件只在提交成功后发布。
+  活动列表及态势先筛选状态再限制展示，工具分页通过 `next_offset` 继续，不受历史条目数量遮挡。
+
 - **归档可见性与清理留痕**：`get_goal` 可直接查看历史归档目标；`list_goals` 和 Web
   `GET /memory/goals` 通过 `include_archived=true` 显式纳入归档并标注时间与原因。
   归档目标不进入活动态势，更新/删除须先恢复，不因查询自动激活。记忆侧保护活动规划载体及其
   goal 标签关联材料，详见[记忆分册](memory-system.md)。
   AI 与 Web 的终态收口和显式删除共用 tracker：按读取版本删除，原子写一行既有
-  `memory_audit`（goal_id、标题、completed/cancelled/deleted 状态、deleted 去向及 actor）；
+  `memory_audit`（goal_id、标题、completed/cancelled/deleted 状态、deleted 去向、actor 及最终目标快照）；
   留痕失败回滚删除，版本冲突不报成功、不发移除事件。终态工具回执附 memory_id，可经
-  `memory_timeline` 或 Web timeline 查询；沿用审计的 30 天保留策略，不新建可召回记忆。
+  `memory_timeline` 或 Web timeline 查询；`get_goal` 及 Web 按 ID 查询也返回终态审计回执，保留最后
+  一次提交的步骤和备注。沿用审计的 30 天保留策略，不新建可召回记忆。
   循环目标完成仍重置为 active，不产生删除记录。
 - 目标 CRUD（create_goal/update_goal/delete_goal）：**终态即清**——update_goal 终态即删、全部
   步骤完成后自动收口、delete_goal 显式删除；目标关闭只由完成事实驱动，系统不做基于时间的自动

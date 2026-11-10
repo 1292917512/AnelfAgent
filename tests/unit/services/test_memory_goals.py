@@ -45,7 +45,7 @@ class TestListGoals:
         assert len(archived) == 1 and archived[0]["archived"]
         assert archived[0]["archive_reason"] == "legacy"
         assert (await svc.get_goal("g1"))["archived"]
-        assert await svc.update_goal("g1", status="completed") is None
+        assert await svc.update_goal("g1", expected_version=1, status="completed") is None
         assert not await svc.delete_goal("g1")
         assert (await store.resolve(mid))["status"] == "archived"
 
@@ -79,7 +79,7 @@ class TestUpdateGoal:
             content=json.dumps(_make_goal(), ensure_ascii=False),
             source="goal", importance=0.8,
         ))
-        updated = await svc.update_goal("g1", status=status)
+        updated = await svc.update_goal("g1", expected_version=1, status=status)
         assert updated is not None
         assert updated["status"] == status
 
@@ -97,7 +97,7 @@ class TestUpdateGoal:
             content=json.dumps(_make_goal(), ensure_ascii=False),
             source="goal", importance=0.8,
         ))
-        updated = await svc.update_goal("g1", steps=[
+        updated = await svc.update_goal("g1", expected_version=1, steps=[
             {"step": "a", "status": "completed"},
             {"step": "b", "status": "completed"},
         ])
@@ -114,7 +114,7 @@ class TestUpdateGoal:
             content=json.dumps(_make_goal(), ensure_ascii=False),
             source="goal", importance=0.8,
         ))
-        updated = await svc.update_goal("g1", steps=[
+        updated = await svc.update_goal("g1", expected_version=1, steps=[
             {"step": "a", "status": "completed"},
             {"step": "b", "status": "pending"},
         ])

@@ -282,6 +282,11 @@ class WorkflowEngine:
     # ------------------------------------------------------------------
 
     async def _execute_run(self, run_id: str) -> None:
+        from agent.skills.execution import skill_execution
+        with skill_execution():
+            await self._execute_run_body(run_id)
+
+    async def _execute_run_body(self, run_id: str) -> None:
         state = self._runs.get(run_id)
         run = await self._journal.get_run(run_id)
         if state is None or run is None:
@@ -757,7 +762,7 @@ class WorkflowEngine:
                 def acknowledge(visible: str) -> None:
                     delivered = parse_tool_result_json(visible)
                     text = delivered.get("result", "") if isinstance(delivered, dict) else ""
-                    source_result.acknowledge(text if isinstance(text, str) else "")
+                    source_result.acknowledge(visible if isinstance(parsed, dict) else text if isinstance(text, str) else "")
                 result_str = PresentedToolResult(result_str, acknowledge)
         return _StepOutcome(status=NODE_COMPLETED, result=result_str)
 

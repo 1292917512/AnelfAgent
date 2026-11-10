@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from helpers.graph import verify_relation
 
 from agent.memory.graph import format_triple, parse_node_key
 
@@ -77,6 +78,11 @@ async def test_extraction_preserves_names_and_only_real_changes_enqueue(store) -
     # 强度是原生召回信号，不属于投影正文；真实变化仍写权威库。
     await graph.update_relation(edge["id"], strength=0.9)
     assert (await graph.get_relation(edge["id"]))["strength"] == 0.9
+    # 首次显式维护同时登记所有权，后续自动提取不能覆盖。
+    assert len(await store.claim_cognee_sync_batch(20)) == 2
+    await db.execute("DELETE FROM cognee_sync_queue")
+    await db.commit()
+    await graph.update_relation(edge["id"], strength=0.8)
     assert not await store.claim_cognee_sync_batch(20)
     await graph.update_relation(edge["id"], evidence="改喝红茶")
     assert len(await store.claim_cognee_sync_batch(20)) == 2
@@ -87,13 +93,15 @@ async def test_extraction_preserves_names_and_only_real_changes_enqueue(store) -
     assert len(await store.claim_cognee_sync_batch(20)) == 3
 
 
-async def test_extraction_can_fill_placeholder_name_and_restore_archived_node(store) -> None:
+async def test_extraction_fills_placeholder_but_cannot_restore_archived_node(store) -> None:
     await store.graph.upsert_node("user:qq:1")
-    await store.graph.set_node_archived("user:qq:1", True)
     edge = await store.graph.add_relation("user:qq:1", "喜欢", "topic:茶", subject_label="阿辰",
                                           origin="heartbeat_extract")
     assert edge["subject"]["label"] == "阿辰"
-    assert not (await store.graph.get_node("user:qq:1"))["archived"]
+    await store.graph.set_node_archived("user:qq:1", True)
+    with pytest.raises(ValueError, match="归档"):
+        await store.graph.add_relation("user:qq:1", "喜欢", "topic:茶", origin="heartbeat_extract")
+    assert (await store.graph.get_node("user:qq:1"))["archived"]
 
 
 @pytest.mark.parametrize("origin", ["auto_capture", "unknown"])
@@ -223,6 +231,69 @@ async def test_merge_nodes_rewires_and_merges_conflicts(store) -> None:
 # ==================================================================
 
 
+async def test_verification_controls_recall_and_stale_projection(store) -> None:
+    from agent.memory.memory_types import MemorySearchResult
+
+    graph = store.graph
+    edge = await graph.add_relation("user:qq:1", "更名为", "topic:其他游戏", strength=0.99,
+                                    evidence="群友的通告梗", origin="heartbeat_extract")
+    recalled = MemorySearchResult(id="remote:1", snippet="旧索引中的不实结论", score=0.9,
+        source="cognee_chunk", dataset_name="anelf_relations",
+        provenance={"anelf_graph_node_id": edge["subject"]["id"]})
+    assert edge["verification"] == "pending"
+    assert await graph.edges_for_scopes(["user:qq:1"]) == []
+    assert await store.resolve_memory_references([recalled]) == []
+    verified = await verify_relation(graph, edge)
+    assert len(await graph.edges_for_scopes(["user:qq:1"])) == 1
+    current = await store.resolve_memory_references([recalled])
+    assert len(current) == 1 and "旧索引中的不实结论" not in current[0].snippet
+    rejected = await graph.update_relation(edge["id"], verification="rejected",
+        verification_reason="对照原始来源确认是玩梗", expected_revision=verified["revision"])
+    assert rejected["verification"] == "rejected"
+    assert await graph.edges_for_scopes(["user:qq:1"]) == []
+    assert await store.resolve_memory_references([recalled]) == []
+    repeated = await graph.add_relation("user:qq:1", "更名为", "topic:其他游戏", strength=1,
+                                         evidence="重复通告", origin="heartbeat_extract")
+    assert repeated["revision"] == rejected["revision"]
+    assert repeated["evidence"] == edge["evidence"]
+    with pytest.raises(ValueError, match="变化"):
+        await graph.update_relation(edge["id"], verification="verified", verification_reason="过期决策",
+                                    expected_revision=verified["revision"])
+    await graph.set_relation_archived(edge["id"], True)
+    repeated = await graph.add_relation("user:qq:1", "更名为", "topic:其他游戏", origin="heartbeat_extract")
+    assert repeated["archived"] is True
+
+
+async def test_edits_and_merge_invalidate_verification(store) -> None:
+    graph = store.graph
+    edge = await graph.add_relation("person:别名", "喜欢", "topic:茶", evidence="原文")
+    verified = await verify_relation(graph, edge)
+    changed = await graph.update_relation(edge["id"], evidence="改动后的来源")
+    assert changed["verification"] == "pending"
+    assert changed["revision"] != verified["revision"]
+    await verify_relation(graph, changed)
+    await graph.upsert_node("person:主名")
+    await graph.merge_nodes("person:别名", "person:主名")
+    assert (await graph.get_relation(edge["id"]))["verification"] == "pending"
+
+
+async def test_legacy_projection_reconciliation_is_idempotent_and_preserves_sources(store) -> None:
+    graph = store.graph
+    edge = await graph.add_relation("topic:legacy", "属于", "topic:rumor", evidence="旧记录")
+    store.set_cognee_projection_enabled(True)
+    db = await store._get_db()
+    await db.execute("INSERT INTO cognee_entry_map(entry_kind,entry_id,dataset_name,dataset_id,data_id,synced_ns,content_hash) "
+                     "VALUES('graph_node',?,'anelf_relations','dataset','legacy',1,'old')", (edge["subject"]["id"],))
+    await db.commit()
+    await graph.reconcile_verification_projections()
+    batch = await store.claim_cognee_sync_batch(10)
+    assert len(batch) == 1 and batch[0]["entry_id"] == edge["subject"]["id"]
+    await graph.reconcile_verification_projections()
+    assert await store.claim_cognee_sync_batch(10) == []
+    assert (await graph.get_relation(edge["id"]))["revision"] == edge["revision"]
+    assert await graph.projection_snapshot(edge["subject"]["id"]) is None
+
+
 @pytest.mark.asyncio
 async def test_relation_change_enqueues_graph_node_projection(store) -> None:
     store.set_cognee_projection_enabled(True)
@@ -241,6 +312,9 @@ async def test_render_node_document(store) -> None:
         subject_label="阿辰", strength=0.8, evidence="每周必吃",
     )
     doc = await store.graph.render_node_document(edge["subject"]["id"])
+    assert doc is None
+    await verify_relation(store.graph, edge)
+    doc = await store.graph.render_node_document(edge["subject"]["id"])
     assert doc is not None
     assert "[关系节点] 阿辰（user:qq:1" in doc
     assert "喜欢 → 火锅（topic:火锅）" in doc
@@ -256,6 +330,7 @@ async def test_render_node_projection_fingerprint_includes_evidence(store) -> No
         "user:qq:1", "喜欢", "topic:火锅", strength=0.5, evidence="初识",
     )
     node_id = edge["subject"]["id"]
+    await verify_relation(store.graph, edge)
     first = await store.graph.render_node_projection(node_id)
     assert first is not None
     doc_a, fp_a = first
@@ -263,6 +338,8 @@ async def test_render_node_projection_fingerprint_includes_evidence(store) -> No
     await store.graph.add_relation(
         "user:qq:1", "喜欢", "topic:火锅", strength=0.9, evidence="每周必吃",
     )
+    assert await store.graph.render_node_projection(node_id) is None
+    await verify_relation(store.graph, edge)
     second = await store.graph.render_node_projection(node_id)
     assert second is not None
     doc_b, fp_b = second

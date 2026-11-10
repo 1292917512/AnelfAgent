@@ -20,7 +20,7 @@ from core.config import get_config_float
 from core.log import log
 
 from ..memory_types import MemorySearchResult, excerpt
-from ..projection import canonical_tags, projection_dataset
+from ..projection import canonical_tags, is_relation_dataset, projection_dataset
 from ..tag_query import TagQuery
 from .config import CogneeConfig
 from .ports import RecallBackend
@@ -250,6 +250,9 @@ async def search_cognee(
         except (AttributeError, RuntimeError):
             continue
         for dataset_name in datasets:
+            # 关系分区必须回查权威节点；无原生出处的综合回答不能通过核验准入。
+            if is_relation_dataset(dataset_name) and search_type_name not in {"CHUNKS", "CHUNKS_LEXICAL"}:
+                continue
             use_summary = overview and search_type_name == "GRAPH_COMPLETION" and client.global_context_ready(dataset_name)
             if use_summary:
                 summary_lanes.add(f"{search_type_name}/{dataset_name}")
@@ -283,6 +286,8 @@ async def search_cognee(
             )))
     if not lanes:
         for dataset_name in datasets:
+            if is_relation_dataset(dataset_name):
+                continue
             lanes.append((f"AUTO/{dataset_name}", partial(recall_shared, client,
                 query,
                 datasets=[dataset_name],
