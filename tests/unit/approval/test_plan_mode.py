@@ -93,7 +93,8 @@ class TestUpdateGoal:
         store = MemoryStore(db_path=str(tmp_path / "mem.db"))
         planning_store_port.set(store)
 
-        from agent.planning.tools import create_goal, update_goal
+        from agent.planning.tools import create_goal
+        from tests.helpers.planning import update_goal
 
         # 创建一个 goal（复用 create_goal 路径）
         create_out = json.loads(await create_goal(title="测试", steps="1.a|2.b"))
@@ -133,7 +134,8 @@ class TestUpdateGoal:
         store = MemoryStore(db_path=str(tmp_path / "mem.db"))
         planning_store_port.set(store)
 
-        from agent.planning.tools import create_goal, update_goal
+        from agent.planning.tools import create_goal
+        from tests.helpers.planning import update_goal
 
         create_out = json.loads(await create_goal(title="x", steps="a"))
         goal_id = create_out["goal"]["goal_id"]
@@ -145,7 +147,8 @@ class TestUpdateGoal:
 
         event_bus.on(EVENT_PLAN_DELETED, _capture, owner="test.plan")
         try:
-            await update_goal(goal_id=goal_id, goal_status="completed")
+            out = json.loads(await update_goal(goal_id=goal_id, goal_status="completed"))
+            assert out["success"] is True
             await asyncio.sleep(0.05)
             assert len(captured) == 1
             assert captured[0]["plan_id"] == goal_id

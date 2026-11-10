@@ -9,6 +9,7 @@ import pytest
 import agent.task.tools as task_tools
 from agent.memory.memory_store import MemoryStore
 from agent.planning import tools as planning_tools
+from tests.helpers.planning import update_goal
 
 
 @pytest.fixture
@@ -176,7 +177,8 @@ async def test_goals_situation_render(store) -> None:
     assert "○收集" in content
 
     # 完成态目标不再注入
-    await planning_tools.update_goal(goal["goal_id"], goal_status="completed")
+    result = json.loads(await update_goal(goal["goal_id"], goal_status="completed"))
+    assert result["success"] is True
     await situation.ensure_snapshot()
     assert situation.render("user_qq:1") == ""
     situation.reset()
