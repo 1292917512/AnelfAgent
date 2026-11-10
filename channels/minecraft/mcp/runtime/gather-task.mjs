@@ -1015,7 +1015,22 @@ export class GatherTask {
     const navigation = new GatherNavigation(this.bot, this.entry, handle.signal, this.world, bounds)
     try {
       await yieldFrame(); this.check(handle.signal)
-      if (!navigation.safe(this.entry)) throw new Error('GATHER_UNSAFE_ENTRY: Start on known level solid ground.')
+      if (!navigation.safe(this.entry)) {
+        // Snow blankets, carved edges and slabs under the feet are not fatal:
+        // a neighbouring standable cell is the entry, exactly like the mine
+        // entrance stepping aside. Refusing outright turned routine terrain
+        // into a relocation loop.
+        let shifted = null
+        for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, -1], [1, -1], [-1, 1], [2, 0], [-2, 0], [0, 2], [0, -2]]) {
+          const candidate = this.entry.offset(dx, 0, dz)
+          if (!navigation.safe(candidate)) continue
+          try { await navigation.walk(candidate, 'leaf'); shifted = candidate } catch { /* next */ }
+          if (shifted) break
+        }
+        if (!shifted) throw new Error('GATHER_UNSAFE_ENTRY: Start on known level solid ground.')
+        this.entry = shifted.clone()
+        this.stage = 'planned'
+      }
       await navigation.restoreScaffolds()
       if (navigation.scaffolds.size) {
         this.stage = 'cleaning_scaffolds'

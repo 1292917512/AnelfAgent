@@ -201,7 +201,11 @@ class MinecraftChannel(BaseChannel[MinecraftConfig]):
         return await asyncio.to_thread(_discovery.listen_lan_announcements, 3.0)
 
     async def _announce_join(self, text: str) -> None:
-        """自动进服成功后的到场播报（世界频道）；失败静默，由日志兜底。"""
+        """自动进服成功：新世界作废全部配额与持有状态，再播报到场。"""
+        try:
+            self._worker.world_changed()
+        except Exception as exc:
+            log(f"Minecraft 进服重置自主作业失败: {exc}", "WARNING", tag="Minecraft")
         await self._announce_reflex(text)
 
     async def _call(self, tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:

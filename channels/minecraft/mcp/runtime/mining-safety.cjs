@@ -64,6 +64,20 @@ async function equipHarvestTool (bot, block) {
   }
 }
 
+/** The block face pointing back at the bot's eye — the face it sees.
+ * @param {Bot} bot @param {Block} block */
+function faceTowardEye (bot, block) {
+  const { Vec3 } = require('vec3')
+  const center = block.position.offset(0.5, 0.5, 0.5)
+  const eye = bot.entity.position.offset(0, bot.entity.eyeHeight ?? 1.62, 0)
+  const delta = eye.minus(center)
+  const axis = Math.abs(delta.x) >= Math.abs(delta.y) && Math.abs(delta.x) >= Math.abs(delta.z)
+    ? 'x' : Math.abs(delta.y) >= Math.abs(delta.z) ? 'y' : 'z'
+  const face = new Vec3(0, 0, 0)
+  face[axis] = delta[axis] >= 0 ? 1 : -1
+  return face
+}
+
 /** Total count of one inventory item across slots. @param {Bot} bot @param {string} item */
 function itemCount (bot, item) {
   return bot.inventory.items().filter(i => i.name === item).reduce((total, i) => total + i.count, 0)
@@ -73,10 +87,19 @@ function itemCount (bot, item) {
  * the shared receipt both executors previously duplicated. Rejects a worn
  * tool below the durability reserve.
  * @param {Bot & {tool: import('mineflayer-tool').Tool}} bot @param {Block} block
- * @param {{watchdogMs?: number, dig?: (block: Block) => Promise<void>, beforeDig?: () => void}} [options]
+ * @param {{watchdogMs?: number, dig?: (block: Block) => Promise<void>, beforeDig?: () => void,
+ *   harvest?: boolean}} [options] harvest:false digs for passage — bare hands
+ *   break stone-family blocks fine, they just drop nothing.
  */
 async function digVerified (bot, block, options = {}) {
-  await equipHarvestTool(bot, block)
+  if (options.harvest === false) {
+    await bot.tool.equipForBlock(block, { requireHarvest: false, getFromChest: false })
+    // Passage digging bypasses the strict raycast sight check (freshly
+    // exposed cells often fail it) by naming the face toward the eye.
+    options.digFace = faceTowardEye(bot, block)
+  } else {
+    await equipHarvestTool(bot, block)
+  }
   const held = bot.heldItem
   if (held) {
     const maximum = bot.registry.itemsByName[held.name]?.maxDurability
@@ -95,7 +118,7 @@ async function digVerified (bot, block, options = {}) {
     bail(new MiningError('MINING_DIG_TIMEOUT', 'Dig did not confirm in time; aborting.'))
   }, options.watchdogMs ?? 15000)
   try {
-    await Promise.race([options.dig ? options.dig(block) : bot.dig(block, true, 'raycast'), watchdog])
+    await Promise.race([options.dig ? options.dig(block) : bot.dig(block, true, options.digFace ?? 'raycast'), watchdog])
   } finally { clearTimeout(timer) }
   const after = bot.blockAt(block.position)
   if (after != null && after.boundingBox !== 'empty' && after.name === block.name) {
@@ -250,10 +273,13 @@ function installSafety (bot) {
     if (movements.anelfEscape === true) {
       // Escape may carve through natural terrain only: every solid block
       // outside the natural list becomes unbreakable (buildings, containers,
-      // fixtures), matching the mine corridor's own protection.
+      // fixtures), matching the mine corridor's own protection. Sand and
+      // sandstone are natural desert terrain — without them a desert spawn
+      // is an unbreakable prison.
       movements.blocksCantBreak = new Set([...solidIds].filter(id => {
         const entry = Object.values(bot.registry.blocksByName).find(block => block.id === id)
-        return entry != null && !naturalTerrain.has(entry.name)
+        return entry != null && !naturalTerrain.has(entry.name) &&
+          !/^(?:red_)?sand(?:(?:stone|stone_stairs)?)$|^cut_sandstone$|^chiseled_sandstone$/.test(entry.name)
       }))
     } else if (movements.anelfGatherMode == null) {
       movements.anelfTravelDig = true
@@ -265,9 +291,9 @@ function installSafety (bot) {
   // collectblock installs its own movement profile on each collection.
   // setMovements above also constrains profiles supplied later by tools/plugins.
   const dig = bot.dig.bind(bot)
-  bot.dig = async (block, forceLook) => {
+  bot.dig = async (block, forceLook, digFace) => {
     assertFloorSafe(bot, block)
-    await dig(block, forceLook === 'ignore' ? false : (forceLook ?? true), 'raycast')
+    await dig(block, forceLook === 'ignore' ? false : (forceLook ?? true), digFace ?? 'raycast')
   }
 }
 

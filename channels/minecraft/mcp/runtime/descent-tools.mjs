@@ -30,6 +30,291 @@ function fallDamage (blocks, landing) {
   return Math.max(0, blocks - 3)
 }
 
+/** The biome name at the bot's feet, resolved defensively: prismarine-world
+ * returns a biome id on most versions.
+ * @param {import('mineflayer').Bot} bot @returns {string|null}
+ */
+export function biomeAt (bot) {
+  try {
+    const world = bot.world
+    if (world == null || typeof world.getBiome !== 'function') return null
+    const raw = world.getBiome(bot.entity.position.floored())
+    if (raw == null) return null
+    if (typeof raw === 'string') return raw
+    if (typeof raw === 'object' && typeof raw.name === 'string') return raw.name
+    const byId = bot.registry?.biomesById
+    if (byId != null && byId[raw]?.name) return byId[raw].name
+    const entry = Object.values(bot.registry?.biomesByName ?? {}).find(b => b?.id === raw)
+    return entry?.name ?? null
+  } catch {
+    return null
+  }
+}
+
+const stairBreakable = name => safety.naturalTerrain.has(name) ||
+  /(?:^|_)leaves$/.test(name) || name === 'leaf_litter' ||
+  /^(?:red_)?sand(?:stone)?$/.test(name) || /terracotta$/.test(name) ||
+  /^(?:cut_|chiseled_)?sandstone$/.test(name)
+
+/** Nearest cell the bot could walk onto without digging or placing: a
+ * standable column top with headroom whose neighbourhood is open too —
+ * the natural exit a staircase should aim for.
+ * @param {Bot} bot @param {number} [maxRadius] @returns {{x:number,y:number,z:number}|null}
+ */
+export function findWalkableExit (bot, maxRadius = 24) {
+  const feet = bot.entity.position.floored()
+  const solidAt = p => {
+    const block = bot.blockAt(p)
+    return block != null && block.boundingBox !== 'empty' && !stairBreakable(block.name) === false
+  }
+  const standable = p => {
+    const floor = bot.blockAt(p.offset(0, -1, 0))
+    const at = bot.blockAt(p)
+    const head = bot.blockAt(p.offset(0, 1, 0))
+    return floor != null && floor.boundingBox === 'block' &&
+      at != null && at.boundingBox === 'empty' && head != null && head.boundingBox === 'empty'
+  }
+  const openArea = p => standable(p) && [[1, 0], [-1, 0], [0, 1], [0, -1]]
+    .some(([dx, dz]) => standable(p.offset(dx, 0, dz)))
+  let best = null
+  let bestDistance = Infinity
+  for (let dx = -maxRadius; dx <= maxRadius; dx++) for (let dz = -maxRadius; dz <= maxRadius; dz++) {
+    if (Math.abs(dx) <= 1 && Math.abs(dz) <= 1) continue
+    const columnBase = new Vec3(feet.x + dx, 0, feet.z + dz)
+    // Topmost solid cell in the loaded band around the bot's level.
+    let top = null
+    // Scan the full height to the surface: deep canyons and mesas hide their
+    // lips far above a narrow band, and the standability check filters walls
+    // regardless of height.
+    for (let y = feet.y + 24; y >= feet.y - 4; y--) {
+      const cell = columnBase.offset(0, y, 0)
+      const block = bot.blockAt(cell)
+      if (block != null && block.boundingBox !== 'empty') { top = cell.offset(0, 1, 0); break }
+    }
+    if (top == null || top.y <= feet.y + 1 || !openArea(top)) continue
+    // An exit must be a lip above the feet: the pocket's own floor is
+    // standable but is where the bot already stands, not a way out.
+    const distance = feet.distanceTo(top)
+    if (distance < bestDistance) { best = { x: top.x, y: top.y, z: top.z }; bestDistance = distance }
+  }
+  return best
+}
+
+/** Deterministic ascending staircase: dig one-up-one-forward steps toward a
+ * pre-scanned walkable exit — no pathfinder guesswork, no material needed
+ * for the climb itself (each step's floor is natural terrain).
+ * @param {Bot} bot @param {AbortSignal} signal @param {{x:number,y:number,z:number}} exit
+ */
+/** Walk one diagonal-up step into a freshly opened cell with raw physics:
+ * face it, forward + jump, bounded by four seconds. No pathfinder involved.
+ * @param {Bot} bot @param {AbortSignal} signal @param {Vec3} cell
+ * @returns {Promise<boolean>} reached */
+async function stepOnto (bot, signal, cell) {
+  const centre = cell.clone().offset(0.5, 0.5, 0.5)
+  try { await bot.lookAt(centre, true) } catch { /* best effort */ }
+  bot.setControlState('forward', true)
+  bot.setControlState('jump', true)
+  const deadline = Date.now() + 4000
+  try {
+    while (Date.now() < deadline) {
+      signal.throwIfAborted()
+      await new Promise(resolve => setTimeout(resolve, 100))
+      if (bot.entity.position.floored().equals(cell)) return true
+    }
+    return false
+  } finally {
+    bot.setControlState('forward', false)
+    bot.setControlState('jump', false)
+  }
+}
+
+export async function staircaseEscape (bot, signal, exit, maxSteps = 2) {
+  signal.throwIfAborted()
+  const start = bot.entity.position.floored()
+  if (exit.y < start.y) throw new ToolError('NO_CLIMB', 'The exit is below the bot; no staircase needed.')
+  // A level exit is a flat corridor: steps advance horizontally with the
+  // rise clamped, carving headroom only — the walk to the lip after the
+  // climb is part of the same staircase.
+  const totalRise = exit.y - start.y
+  // Cardinal staircase: one axis per step (a true staircase shape). Diagonal
+  // up-steps are blocked by Minecraft's corner-collision rule inside narrow
+  // pockets — a player walks stairs one direction at a time too.
+  const horizontal = Math.abs(exit.x - start.x) + Math.abs(exit.z - start.z)
+  const steps = Math.min(Math.max(totalRise, horizontal), maxSteps)
+  let dug = 0
+  let cursorX = start.x
+  let cursorZ = start.z
+  let reverseX = 0
+  let reverseZ = 0
+  for (let i = 1; i <= steps; i++) {
+    signal.throwIfAborted()
+    const feetY = start.y + Math.min(i, totalRise)
+    const rx = exit.x - cursorX
+    const rz = exit.z - cursorZ
+    if (rx !== 0 && (Math.abs(rx) >= Math.abs(rz) || rz === 0)) { cursorX += Math.sign(rx); reverseX = -Math.sign(rx); reverseZ = 0 }
+    else if (rz !== 0) { cursorZ += Math.sign(rz); reverseZ = -Math.sign(rz); reverseX = 0 }
+    const cell = new Vec3(cursorX, feetY, cursorZ)
+    // Carve bottom-up: each removed cell exposes the one above to the
+    // eye, keeping every dig face visible (top-down from below leaves the
+    // upper cells sight-blocked behind the undug middle). The column is
+    // forward of the bot, never underfoot. Falling sand refills get
+    // re-dug (bounded). Anything man-made aborts the whole climb.
+    for (let y = 0; y <= 2; y++) {
+      // Sand above the headroom falls into freshly dug cells; each refill is
+      // re-dug — desert stacks run deep, so the budget is generous.
+      for (let attempt = 0; attempt < 8; attempt++) {
+        signal.throwIfAborted()
+        const block = bot.blockAt(cell.offset(0, y, 0))
+        if (block == null || block.boundingBox === 'empty') break
+        if (!stairBreakable(block.name)) {
+          throw new ToolError('OBSTRUCTION', `Unbreakable ${block.name} in the staircase at ${cell.offset(0, y, 0)}.`)
+        }
+        // Hand-mined stone races the server's own dig timer: an
+        // unconfirmed finish is a retry, not a failure — progress persists.
+        try {
+          await safety.digVerified(bot, block, { watchdogMs: 15000, harvest: false })
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          if (!/confirm|timeout/i.test(message)) throw error
+          if (bot.blockAt(cell.offset(0, y, 0))?.boundingBox === 'empty') break
+          continue
+        }
+        dug++
+        if (bot.blockAt(cell.offset(0, y, 0))?.boundingBox === 'empty') break
+      }
+      if (bot.blockAt(cell.offset(0, y, 0))?.boundingBox !== 'empty') {
+        throw new ToolError('UNCONFIRMED', `Staircase cell ${cell.offset(0, y, 0)} would not open.`)
+      }
+    }
+    // The floor below the new feet must be solid: nature provides it in a
+    // staircase; an overhang gap gets bridged with carried dirt when carried.
+    // With no material, sidestep instead of aborting — the route bends around
+    // gaps (often our own earlier headroom) and the chunk ends with its real
+    // progress so the next rescan picks a fresh line.
+    const floor = bot.blockAt(cell.offset(0, -1, 0))
+    if (floor == null || floor.boundingBox !== 'block') {
+      const dirt = bot.inventory?.items?.().find(entry => entry.name === 'dirt')
+      if (dirt && bot.placeBlock) {
+        try {
+          await bot.equip(dirt, 'hand')
+          signal.throwIfAborted()
+          await bot.placeBlock(bot.blockAt(cell.offset(0, -2, 0)), new Vec3(0, 1, 0))
+        } catch { break }
+      } else {
+        // The forward cell floats over our own earlier carve. Solid wall in
+        // ANY direction provides natural floors at every level — reverse the
+        // horizontal march (behind us is uncarved terrain more often than
+        // not) and keep climbing through it; any surface beats a freeze on
+        // the pinnacle.
+        reverseX = -reverseX
+        reverseZ = -reverseZ
+        cursorX += reverseX
+        cursorZ += reverseZ
+        continue
+      }
+    }
+    // Last sweep: sand that fell after the per-cell loops clears or aborts.
+    for (let y = 0; y <= 2; y++) {
+      const block = bot.blockAt(cell.offset(0, y, 0))
+      if (block == null || block.boundingBox === 'empty' || !stairBreakable(block.name)) continue
+      await safety.digVerified(bot, block, { watchdogMs: 15000, harvest: false })
+      dug++
+    }
+    // Step onto it with raw physics — face the cell, walk forward with jump
+    // held, exactly like a player. The pathfinder's goto silently resolved
+    // without movement in some stopped states; physics has no such mode.
+    const stepped = await stepOnto(bot, signal, cell)
+    if (!stepped) {
+      throw new ToolError('STEP_FAILED', `Could not step onto ${cell} within the bounded window.`)
+    }
+  }
+  const to = Math.floor(bot.entity.position.y)
+  const done = to >= exit.y - 1 || Math.floor(bot.entity.position.x) === exit.x && Math.floor(bot.entity.position.z) === exit.z && to >= exit.y - 1
+  return { completed: done, climbed: to - start.y, dug, from: start.y, to, exit,
+    position: { x: bot.entity.position.x, y: to, z: bot.entity.position.z } }
+}
+
+/** Place a carried block-type item (bed, dirt, ...) on the flat ground in
+ * front of the bot. @param {Bot} bot @param {AbortSignal} signal @param {string} item */
+async function placeItem (bot, signal, item) {
+  signal.throwIfAborted()
+  const carried = bot.inventory?.items?.().find(entry => entry.name === item)
+  if (!carried) throw new ToolError('NO_MATERIAL', `No carried ${item} to place.`)
+  await bot.equip(carried, 'hand')
+  signal.throwIfAborted()
+  const yaw = bot.entity.yaw ?? 0
+  const facing = new Vec3(Math.round(-Math.sin(yaw)), 0, Math.round(-Math.cos(yaw)))
+  const feet = bot.entity.position.floored()
+  const target = feet.offset(facing.x, 0, facing.z)
+  const reference = bot.blockAt(target.offset(0, -1, 0))
+  const occupied = bot.blockAt(target)
+  if (!reference || reference.boundingBox !== 'block' || !occupied || occupied.boundingBox !== 'empty') {
+    throw new ToolError('NO_PLACEMENT', 'No flat, open ground in front of the bot.')
+  }
+  await bot.placeBlock(reference, new Vec3(0, 1, 0))
+  signal.throwIfAborted()
+  const placed = bot.blockAt(target)
+  if (!placed || placed.boundingBox === 'empty') {
+    throw new ToolError('PLACEMENT_UNCONFIRMED', `${item} placement was not confirmed.`)
+  }
+  return { placed: item, position: { x: target.x, y: target.y, z: target.z } }
+}
+
+/** @param {import('./registry.js').Registrar} reg */
+export function registerBiomeProbe (reg) {
+  reg({ name: 'get_biome', group: 'state',
+    description: "Read-only: the biome name at the bot's current position (e.g. plains, desert, cherry_grove), or null when the world does not expose biome data.",
+    inputSchema: {}, annotations: { readOnlyHint: true, title: 'Current biome' },
+    handler: (_args, ctx) => ({ biome: biomeAt(ctx.manager.requireBot()) }) })
+}
+
+/** @param {import('./registry.js').Registrar} reg */
+export function registerStaircase (reg) {
+  reg({ name: 'ascend_stairs', group: 'movement',
+    description: "Autonomous routine only: scan for the nearest walkable exit (standable, headroom, open neighbourhood — reachable without digging), then carve a deterministic one-up-one-forward staircase through natural terrain toward it and walk up step by step. Needs no carried material unless a step's floor is missing; refuses man-made blocks.",
+    inputSchema: { exit: z.object({ x: z.number().int(), y: z.number().int(), z: z.number().int() }).optional(),
+      maxSteps: z.number().int().min(1).max(4).optional().describe('Steps carved per call (hand mining is slow; chunked calls stay under RPC budgets). Default 2.') },
+    annotations: { title: 'Staircase escape' },
+    handler: (args, ctx) => {
+      const bot = ctx.manager.requireBot()
+      if (!(ctx.locks instanceof ActionController)) throw new ToolError('INTERNAL', 'Staircase escape requires the installed action controller.')
+      const exit = args.exit ?? findWalkableExit(bot)
+      if (exit == null) throw new ToolError('NO_EXIT', 'No walkable exit within reach; nothing to build a staircase toward.')
+      const handle = ctx.locks.begin('ascend_stairs')
+      const promise = (async () => staircaseEscape(bot, handle.signal, exit, args.maxSteps ?? 2))()
+        .then(result => {
+          console.error('[anelf] staircase chunk:', JSON.stringify(result),
+            'botAt', JSON.stringify(bot.entity.position))
+          return result
+        }).catch(error => {
+        console.error('[anelf] staircase escape failed at', JSON.stringify(exit),
+          String(error?.message ?? error), (error?.stack ?? '').split(String.fromCharCode(10)).slice(0, 8).join(' | '))
+        throw error
+      })
+      promise.then(() => handle.release('completed', ''), error => {
+        handle.release(error instanceof ToolError ? error.code : 'blocked', String(error?.message ?? error))
+      }).catch(() => {})
+      return promise
+    } })
+}
+
+/** @param {import('./registry.js').Registrar} reg */
+export function registerPlaceItem (reg) {
+  reg({ name: 'place_item', group: 'movement',
+    description: 'Autonomous routine only: place a carried block-type item (a bed, dirt, ...) on the flat ground directly in front of the bot. Placement is verified by the server; returns the placed cell.',
+    inputSchema: { item: z.string().regex(/^[a-z0-9_]+$/) }, annotations: { title: 'Place carried item' },
+    handler: (args, ctx) => {
+      const bot = ctx.manager.requireBot()
+      if (!(ctx.locks instanceof ActionController)) throw new ToolError('INTERNAL', 'Placement requires the installed action controller.')
+      const handle = ctx.locks.begin('place_item')
+      const promise = (async () => placeItem(bot, handle.signal, args.item))()
+      promise.then(() => handle.release('completed', ''), error => {
+        handle.release(error instanceof ToolError ? error.code : 'blocked', String(error?.message ?? error))
+      }).catch(() => {})
+      return promise
+    } })
+}
+
 /** @param {import('./registry.js').Registrar} reg */
 export function registerAscend (reg) {
   reg({ name: 'ascend', group: 'movement',
@@ -104,8 +389,12 @@ async function ascendInner (bot, signal, targetY, targetX, targetZ, world, place
   const placeable = ['dirt', 'cobblestone']
     .map(name => bot.registry.itemsByName[name]?.id)
     .filter(Number.isInteger)
-  const carried = bot.inventory?.items?.().find(entry => placeable.includes(entry.type))
-  if (!carried) throw new ToolError('NO_MATERIAL', 'No carried dirt or cobblestone to pillar with; refusing the climb.')
+  // The break-out walk carves terrain and needs no carried blocks; only the
+  // pillar climb places them.
+  if (targetX == null || targetZ == null) {
+    const carried = bot.inventory?.items?.().find(entry => placeable.includes(entry.type))
+    if (!carried) throw new ToolError('NO_MATERIAL', 'No carried dirt or cobblestone to pillar with; refusing the climb.')
+  }
   // Escape profile: pillar with carried blocks and, armed by the safety
   // wrapper, carve through natural terrain only — buildings, containers and
   // floor protection stay untouchable. Wide dug basins have no standable rim
@@ -120,7 +409,16 @@ async function ascendInner (bot, signal, targetY, targetX, targetZ, world, place
   const from = start.y
   if (targetX != null && targetZ != null) {
     // Break-out walk: same escape profile (carve natural terrain, place
-    // scaffold steps), aimed at a far column instead of a height.
+    // scaffold steps), aimed at a far column instead of a height. The
+    // sea-level floor applies to horizontal carving only — digging hills
+    // into staircases is overland travel, digging under 63 is a gopher
+    // tunnel — but only while the bot already stands above sea level. A
+    // bot stuck below 63 (empty inventory, no pillar material) must be
+    // allowed to carve its way up through anything; forbidding the climb
+    // out is a prison, not a policy.
+    if (bot.entity.position.y >= 64) {
+      movements.exclusionAreasStep.push(block => (block.position.y < 64 ? 100 : 0))
+    }
     pathfinder.setMovements(movements)
     const timer = setTimeout(() => pathfinder.stop(), 90000)
     try {

@@ -61,6 +61,41 @@ _UNSTABLE_FLOOR_MARKER = "No stable full-block floor"
 # 返程通道被挡：通道上方常有正在枯萎的树不停掉叶（自己的挖掘切断了树干），
 # 清不胜清，该井口直接弃置换区。
 _RETURN_BLOCKED_MARKER = "Return passage obstructed"
+# 安家三要素评估：木头与泥土在走廊半径内可见即合格（石头地下随处可挖，
+# 盲走廊总能到达）；沙漠/海滩/裸冰原出生点会不合格，需要先找家。
+_HOME_LOG_MIN = 3
+_HOME_SOIL_MIN = 8
+_HOME_SEEK_LEGS = 8
+_HOME_SEEK_DISTANCE = 64
+# 海平面 63：迁徙必须走在海平面以上，低于就先垂直爬回地表——水平
+# 挖掘赶路会让 bot 变成地鼠在地下钻。
+_JOURNEY_MIN_Y = 64
+# 安家群系白名单：核心平原族（平坦、动物多、草场）+ 优质扩展（樱花谷/
+# 热带草原/森林族木头丰富且可平整）。其余群系（沙漠、恶地、雪原、丛林、
+# 沼泽、黑森林、山地、下界与末地族等）一律不落脚——白名单制天然排除
+# crimson/warped_forest 这类名字带 forest 的下界群系。
+_HOME_BIOMES = frozenset({
+    "plains", "sunflower_plains", "meadow",
+    "cherry_grove", "savanna", "savanna_plateau",
+    "forest", "flower_forest", "birch_forest", "old_growth_birch_forest",
+})
+# 高台判定：高出周围地表这么多格（恶地台地/悬崖顶）需要受控下撤。
+_SPIRE_HEIGHT_THRESHOLD = 6
+# 坑判定：bot 脚下低于周围地表（探测命中的泥土/原木高度）这么多格即在坑里。
+# 绝对 y 是世界相关的，不能用于判断；只有与周围地表的相对差才是事实。
+_PIT_DEPTH_THRESHOLD = 5
+# 迁徙旅程：白天赶路狩猎，夜里睡床，直到合格的平原站点。
+_JOURNEY_LEGS = 12
+_JOURNEY_PREP_WOOD = 8
+_HUNT_PREY = ("pig", "cow", "sheep", "chicken", "rabbit")
+# 进食疗法的食物偏好：熟食优先，生肉与腐肉只在无更好选择时应急。
+_FOOD_PREFERENCE = (
+    "cooked_beef", "cooked_porkchop", "cooked_mutton", "cooked_chicken",
+    "cooked_rabbit", "cooked_cod", "cooked_salmon", "bread", "baked_potato",
+    "golden_carrot", "carrot", "apple", "melon_slice", "sweet_berries",
+    "beetroot", "potato", "raw_beef", "raw_porkchop", "raw_chicken",
+    "raw_cod", "raw_salmon", "rotten_flesh",
+)
 # 同因快速重复受阻的汇报抑制窗口：秒级失败循环只报首次，
 # 防止汇报旁路被放大成裁决轮 LLM 调用风暴（曾打到供应商 Token Plan 限流）。
 _RAPID_REBLOCK_SECONDS = 15.0
@@ -220,6 +255,12 @@ class MinecraftWorker:
         self._relocate_heading = 0
         self._relocate_cooldown_until = 0.0
         self._cooldown_announced_at: float | None = None
+        # 同因复发记账：第 2 次同因升级诊断（播报根因与疗法状态），
+        # 不再让轮换掩盖重复出现的同类问题。
+        self._cause_counts: dict[str, int] = {}
+        self._cause_remedies: dict[str, str] = {}
+        # 安家门：本作业会话是否已确认站点合格（或被玩家明确豁免）。
+        self._home_ready = False
         self._last_relocate_target: tuple[int, int] | None = None
         self._last_block_at = 0.0
         self._suppress_report = False
@@ -228,6 +269,32 @@ class MinecraftWorker:
     def holding(self) -> bool:
         """作业因模型明确 model_stop 而暂停开工；受阻走换区自治，不进入持有。"""
         return self._hold_reason is not None
+
+    def world_changed(self) -> None:
+        """进服到新世界：配额、持有、安家门与全部会话账本随之作废。"""
+        was_session = self._session is not None and not self._session.done()
+        self.pause()
+        self._hold_reason = None
+        self._paused_action = False
+        self._home_ready = False
+        self._stacks_done = 0
+        self._total_gained = 0
+        self._totals.clear()
+        self._inv_dirt = self._inv_wood = self._inv_stone = 0
+        self._inventory.clear()
+        self._cause_counts.clear()
+        self._cause_remedies.clear()
+        self._stuck_entry = None
+        self._stuck_streak = 0
+        self._relocate_fails = 0
+        self._repeated_blocks = 0
+        self._last_block_reason = ""
+        self._relocate_pending = False
+        self._relocate_cooldown_until = 0.0
+        self._paused = False
+        log("Minecraft 自主作业检测到世界变更：全部配额与持有状态已重置", "INFO", tag="Minecraft")
+        if was_session:
+            self.tick("online")
 
     def tick(self, connection_state: str | None) -> None:
         """按轮询节奏维持常驻作业会话；玩家活动不参与任何门槛。"""
@@ -271,6 +338,15 @@ class MinecraftWorker:
             log(f"Minecraft 自主作业循环异常退出: {task.exception()}", "WARNING", tag="Minecraft")
 
     async def _session_loop(self) -> None:
+        if self._hold_reason == "no_home":
+            # 求助持有：等玩家 !resume（带到新地点）再重新评估，绝不每秒重跑安家门。
+            return
+        if not self._home_ready:
+            if not await self._ensure_home():
+                self._hold_reason = "no_home"
+                self._spawn_announce("没找到能安家的地方，我在这儿等；带我走两步再喊 !resume 我就重新找。")
+                return
+            self._home_ready = True
         while self._online() and not self._paused:
             if self._hold_reason is not None:
                 # 持有只剩模型明确 model_stop（或用户 !pause 的 paused），受阻从不进入该分支。
@@ -302,7 +378,7 @@ class MinecraftWorker:
             self._total_gained += outcome.gained
             for item, gained in outcome.items:
                 self._totals[item] = self._totals.get(item, 0) + gained
-            self._apply_block_outcome(outcome)
+            await self._apply_block_outcome(outcome)
             self._track_stuck_spot(outcome)
             await self._refresh_inventory_goals()
             self._hold_if_goal_met()
@@ -603,6 +679,29 @@ class MinecraftWorker:
                 raise RuntimeError(f"MINING_STUCK_UNRETURNED: 旧矿道无法返程 ({inner})") from exc
             return await self._call("mine_resources", order)
 
+    async def _staircase_escape(self) -> bool:
+        """确定性台阶逃生（分块）：每次最多两级台阶，循环到登顶或无进展。"""
+        last_spot = None
+        for _chunk in range(24):
+            try:
+                result = await asyncio.wait_for(self._call("ascend_stairs", {}), timeout=70)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log(f"Minecraft 自主作业台阶逃生失败: {exc}", "DEBUG", tag="Minecraft")
+                return False
+            position = result.get("position") or {}
+            spot = (position.get("x"), position.get("y"), position.get("z"))
+            log(f"Minecraft 自主作业台阶逃生: from={result.get('from')} to={result.get('to')} "
+                f"dug={result.get('dug')} at={spot}", "DEBUG", tag="Minecraft")
+            if result.get("completed"):
+                return True
+            if spot == last_spot:
+                log("Minecraft 自主作业台阶逃生无进展，停止", "DEBUG", tag="Minecraft")
+                return False
+            last_spot = spot
+        return False
+
     async def _ascend(self, target_y: int | None = None, target_x: int | None = None,
                       target_z: int | None = None) -> bool:
         """逃生：垫柱爬出深坑，或带目标列「破壁走」穿过被挖烂的地带。"""
@@ -700,8 +799,8 @@ class MinecraftWorker:
         """y 无关目标走一步：固定高度的 near 目标在起伏地形上必然大量不可达。"""
         try:
             await asyncio.wait_for(
-                self._call("goto", {"goalType": "nearxz", "x": x, "z": z, "range": 4, "timeout": 90000}),
-                timeout=100.0,
+                self._call("goto", {"goalType": "nearxz", "x": x, "z": z, "range": 4, "timeout": 60000}),
+                timeout=70.0,
             )
         except asyncio.CancelledError:
             raise
@@ -749,6 +848,17 @@ class MinecraftWorker:
         except Exception as exc:
             log(f"Minecraft 自主作业监视超时后取消失败: {exc}", "WARNING", tag="Minecraft")
 
+    def _remedy_summary(self) -> str:
+        """会话疗法账本：同因受阻几次、每次做了什么——轮换不再是唯一答案。"""
+        if not self._cause_remedies:
+            return ""
+        parts = []
+        for cause, count in sorted(self._cause_counts.items()):
+            remedy = self._cause_remedies.get(cause)
+            if remedy and count >= 1:
+                parts.append(f"{cause}×{count}（{remedy}）")
+        return "；受阻疗法：" + "、".join(parts) if parts else ""
+
     def _report_line(self, outcome: StackOutcome) -> str:
         prefix = f"第 {self._stacks_done} 组" if outcome.gained else ""
         if len(outcome.items) > 1:
@@ -768,14 +878,14 @@ class MinecraftWorker:
             return (
                 f"自主作业{prefix}{head_item}{head}：{outcome.reason or '无终态原因'}；"
                 f"本组新入包 {gains}，挖掉 {outcome.dug} 个方块，"
-                f"累计 {totals}。"
+                f"累计 {totals}。{self._remedy_summary()}"
             )
         return (
             f"自主作业{prefix}{head_item}完成：新入包 {gains}，"
-            f"挖掉 {outcome.dug} 个方块，累计 {totals}。"
+            f"挖掉 {outcome.dug} 个方块，累计 {totals}。{self._remedy_summary()}"
         )
 
-    def _apply_block_outcome(self, outcome: StackOutcome) -> None:
+    async def _apply_block_outcome(self, outcome: StackOutcome) -> None:
         """受阻是本地自治信号，不是停止信号：换区可绕开的设下一轮搬家，同因连败
         升级换区离开不利站位，其余原样续跑。汇报与裁决始终是旁路，模型不回应等价
         于 continue，循环永不停等。"""
@@ -791,6 +901,17 @@ class MinecraftWorker:
             self._repeated_blocks = self._repeated_blocks + 1 if reason == self._last_block_reason else 1
             self._last_block_reason = reason
             self._last_block_at = now
+            # 同因复发记账 + 根因疗法：第 1 次就地疗法；第 2 次起播报升级诊断。
+            cause = reason.split(":", 1)[0].strip()
+            self._cause_counts[cause] = self._cause_counts.get(cause, 0) + 1
+            remedy = await self._apply_remedy(reason)
+            if remedy:
+                self._cause_remedies[cause] = remedy
+                log(f"Minecraft 自主作业受阻疗法（{cause} 第 {self._cause_counts[cause]} 次）：{remedy}",
+                    "INFO", tag="Minecraft")
+            if self._cause_counts[cause] == 2:
+                log(f"Minecraft 自主作业同因第 2 次复发：{cause}——升级诊断，"
+                    f"疗法记录：{self._cause_remedies.get(cause, '无就地疗法')}", "WARNING", tag="Minecraft")
             if _needs_relocate(reason):
                 self._relocate_pending = True
                 # 换区类受阻计入无产出计数：探测命中可能互相指向残破区内部
@@ -809,6 +930,293 @@ class MinecraftWorker:
         self._repeated_blocks = 0
         self._last_block_at = 0.0
         self._suppress_report = False
+
+    async def _assess_site(self) -> tuple[int, int, int]:
+        """评估当前站位：走廊半径内的原木数、泥土族方块数与相对坑深。
+
+        第三个值是「周围地表 − 脚下」的相对高差：探测命中的泥土/原木
+        高度就是周围地表，正得多说明 bot 在坑里。"""
+        state = await self._safe_call("get_state", {})
+        position = (state or {}).get("position") or {}
+        if not all(k in position for k in ("x", "y", "z")):
+            return 0, 0, 0, ""
+        here = {k: int(float(position[k])) for k in ("x", "y", "z")}
+        soil = await self._probe_blocks(_RELOCATE_SOIL_BLOCKS, here)
+        logs = await self._probe_blocks(_RELOCATE_LOG_BLOCKS, here)
+        surface = [hit["y"] for hit in soil + logs if isinstance(hit.get("y"), int)]
+        pit = max(surface) - here["y"] if surface else 0
+        biome = ""
+        try:
+            biome = str(((await asyncio.wait_for(self._call("get_biome", {}), timeout=5)).get("biome")) or "")
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            biome = ""
+        return len(logs), len(soil), pit, biome
+
+    def _site_suitable(self, logs: int, soil: int, pit: int | None = None,
+                       biome: str = "") -> bool:
+        """合格 = 群系在白名单 + 至少一棵树的木头 + 足够的泥土 + 不在坑里
+        （与周围地表齐平）；石头盲挖可达，绝对海拔不参与判定。群系读不到
+        （旧执行器/异常）时跳过群系项，其余条件照常。"""
+        if biome and biome not in _HOME_BIOMES:
+            return False
+        if logs < _HOME_LOG_MIN or soil < _HOME_SOIL_MIN:
+            return False
+        return pit is None or pit < _PIT_DEPTH_THRESHOLD
+
+    async def _ensure_home(self) -> bool:
+        """开工的第一道门：站点不合格先找家，走遍无果诚实求助玩家。
+
+        沙漠/海滩/裸冰原的出生点没有木头与泥土，原地作业只会陷入
+        NO_TARGET 循环——先到有树有土的地方，配额才有完成的地基。
+        """
+        logs, soil, pit, biome = await self._assess_site()
+        if self._site_suitable(logs, soil, pit, biome):
+            log(f"Minecraft 自主作业站点合格（群系 {biome or '未知'}、原木 {logs}、泥土 {soil}、坑深 {pit}），就地开工",
+                "INFO", tag="Minecraft")
+            return True
+        return await self._migrate(logs, soil, pit, biome)
+
+    async def _migrate(self, logs: int, soil: int, pit: int, biome: str = "") -> bool:
+        """迁徙旅程：备剑 → 白天赶路狩猎、夜里睡床，直到合格的平原安家点。
+
+        高山或缺资源的出生地撑不起配额作业；旅程本身就是生存——路上撸
+        木做剑、杀猪牛羊鸡捡肉与羊毛、凑齐床过夜，走到树土齐备且海拔
+        合适的平原才安家开工。
+        """
+        reason = f"群系 {biome or '未知'}、原木 {logs}、泥土 {soil}、低于周围地表 {pit} 格"
+        log(f"Minecraft 自主作业站点不宜安家（{reason}），踏上迁徙旅程", "INFO", tag="Minecraft")
+        self._spawn_announce("这里的群系不适合安家，我出发去找平原或森林安家；路上自己打猎吃饭，放心。")
+        await self._journey_warmup()
+        await self._journey_prepare()
+        leg_origin: tuple[int, int] | None = None
+        pit = 0
+        legs_left = _JOURNEY_LEGS
+        while legs_left > 0:
+            if not self._online() or self._paused or self._hold_reason is not None:
+                return False
+            leg_start = None
+            state = await self._safe_call("get_state", {})
+            if not state:
+                continue
+            if (state.get("time") or {}).get("isDay") is False:
+                await self._sleep_through_night(state)
+            position = (state.get("position") or {})
+            if not all(k in position for k in ("x", "y", "z")):
+                continue
+            here = {k: int(float(position[k])) for k in ("x", "y", "z")}
+            # 迁徙认准方向：本腿真的挪动了就沿用同一航向继续外推，只有
+            # 原地踏步（<8 格位移）才轮换——每腿换向会在大沙漠里绕出生
+            # 点画圈，走不出出生坑的半径。
+            if leg_origin is not None and abs(here["x"] - leg_origin[0]) + abs(here["z"] - leg_origin[1]) < 8:
+                self._relocate_heading += 1
+            leg_origin = (here["x"], here["z"])
+            # 地上纪律：低于海平面先垂直爬回地表（绝不水平挖隧道——那是
+            # 地鼠）；高出周围地表 6 格以上（恶地台地/悬崖顶）先受控下撤
+            # 到周围地表——纯走路翻不下台地，腿会秒判 NO_PATH 烧完旅程。
+            # 坑深用上一腿的评估（正=坑、负=高台），首腿用初始评估。
+            if here["y"] < _JOURNEY_MIN_Y:
+                # 先立柱（有垫材最快）；空背包时改挖台阶——探测最近免挖
+                # 免垫出口，逐级开凿走上去（含落沙重挖）。
+                if not await self._ascend(_JOURNEY_MIN_Y):
+                    await self._staircase_escape()
+            elif pit < -_SPIRE_HEIGHT_THRESHOLD:
+                # 单腿下撤封顶 10 格：极端地形的「周围地表」可能来自 50 格
+                # 外的峡谷底，一次挖到底会慢到 RPC 截断；够到可走台阶即可，
+                # 剩余高差由后续腿继续消化。
+                await self._descend(here["y"] + max(pit, -10))
+            logs, soil, pit, biome = await self._assess_site()
+            if self._site_suitable(logs, soil, pit, biome):
+                log(f"Minecraft 自主作业旅程终点：安家点（群系 {biome}、原木 {logs}、泥土 {soil}、坑深 {pit}）",
+                    "INFO", tag="Minecraft")
+                self._spawn_announce(f"找到理想群系的安家点了（{biome}），在这儿开工！")
+                return True
+            dx, dz = _RELOCATE_DIRECTIONS[self._relocate_heading % len(_RELOCATE_DIRECTIONS)]
+            target_x = here["x"] + dx * _HOME_SEEK_DISTANCE
+            target_z = here["z"] + dz * _HOME_SEEK_DISTANCE
+            leg_start = (here["x"], here["z"])
+            if not await self._walk_relocate(target_x, target_z):
+                try:
+                    await asyncio.wait_for(self._call("cancel_task", {}), timeout=5)
+                    await asyncio.sleep(1)
+                except Exception:
+                    pass
+                # 首败可能是区块边缘未加载或部分路径（NOT_ARRIVED 也常带着
+                # 真实位移）：等一拍同方向再走一次。
+                await asyncio.sleep(3)
+                if not await self._walk_relocate(target_x, target_z):
+                    # 陡壁地形（恶地台地）纯走路几乎不可通行：破壁走用地表
+                    # 切削翻丘（逃生配置带海平面地板，绝不转入地下）。
+                    await self._ascend(None, target_x, target_z)
+            # 位移计费：真实挪动 ≥8 格不算消耗腿数（NOT_ARRIVED 的部分进
+            # 展也是进展）；原地踏步才烧一条腿，直到预算耗尽。
+            state = await self._safe_call("get_state", {}) or state
+            moved = 0
+            after = (state.get("position") or {})
+            if leg_start and all(k in after for k in ("x", "z")):
+                moved = abs(int(float(after["x"])) - leg_start[0]) + abs(int(float(after["z"])) - leg_start[1])
+            if moved < 8:
+                legs_left -= 1
+            await self._hunt_nearby()
+            if int(float(state.get("food") or 20)) < 14:
+                await self._remedy_eat()
+        log("Minecraft 自主作业迁徙未果：没有走到合格的平原站点", "WARNING", tag="Minecraft")
+        self._spawn_announce("走了很远还是没找到理想的平原，先在原地安顿；带我到平原会更快。")
+        return False
+
+    async def _journey_warmup(self) -> None:
+        """刚进服区块未加载，寻路器看到的全是未知地形会秒判 NO_PATH：先等区块。"""
+        await asyncio.sleep(6)
+
+    async def _journey_prepare(self) -> None:
+        """启程备货：没有木剑时先撸一组木头合成武器（顺带工作台余料）。"""
+        try:
+            if self._inventory.get("wooden_sword"):
+                return
+            entry = await self._entry_point()
+            await self._call("gather_resources", {
+                "block": "auto", "count": _JOURNEY_PREP_WOOD,
+                "x": entry["x"], "y": entry["y"], "z": entry["z"],
+                "radius": _WORK_RADIUS, "mode": "count",
+            })
+            await self._watch_stack()
+            await prepare_pickaxe(
+                self._call, running=lambda: self._online() and not self._paused,
+                poll_seconds=self._poll_seconds(), clock=self._clock, item="wooden_sword",
+            )
+            log("Minecraft 自主作业旅程备货：木剑已就绪", "INFO", tag="Minecraft")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log(f"Minecraft 自主作业旅程备货受阻（继续赶路）: {exc}", "DEBUG", tag="Minecraft")
+
+    async def _hunt_nearby(self) -> None:
+        """猎杀 24 格内的猪牛羊鸡兔：近战击杀后走到掉落点捡肉与羊毛。"""
+        try:
+            found = await asyncio.wait_for(self._call("list_entities", {
+                "type": "mob", "maxDistance": 24, "count": 24,
+            }), timeout=10)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log(f"Minecraft 自主作业猎物探测失败: {exc}", "DEBUG", tag="Minecraft")
+            return
+        prey = None
+        for entity in found.get("entities") or []:
+            if not isinstance(entity, dict) or str(entity.get("name") or "") not in _HUNT_PREY:
+                continue
+            if entity.get("isValid") is False or not isinstance(entity.get("position"), dict):
+                continue
+            prey = entity
+            break
+        if prey is None:
+            return
+        spot = {k: int(float(prey["position"][k])) for k in ("x", "y", "z") if k in prey["position"]}
+        try:
+            await asyncio.wait_for(self._call("pvp_attack", {"entityId": prey.get("id")}), timeout=60)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log(f"Minecraft 自主作业狩猎失败（{prey.get('name')}）: {exc}", "DEBUG", tag="Minecraft")
+            return
+        if len(spot) == 3:
+            try:
+                await asyncio.wait_for(self._call("goto", {
+                    "goalType": "near", **spot, "range": 1, "timeout": 15000,
+                }), timeout=20)
+            except Exception:
+                pass
+        log(f"Minecraft 自主作业狩猎得手（{prey.get('name')}）", "INFO", tag="Minecraft")
+
+    async def _sleep_through_night(self, state: dict[str, Any]) -> None:
+        """入夜有床就睡到天亮；没有床（或睡不着）就继续赶路。"""
+        if not self._inventory.get("bed"):
+            wool = sum(count for name, count in self._inventory.items() if name.endswith("_wool"))
+            planks = sum(count for name, count in self._inventory.items() if name.endswith("_planks"))
+            if wool < 3 or planks < 3:
+                return
+            try:
+                await prepare_pickaxe(
+                    self._call, running=lambda: self._online() and not self._paused,
+                    poll_seconds=self._poll_seconds(), clock=self._clock, item="bed",
+                )
+                await self._refresh_inventory_goals()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log(f"Minecraft 自主作业造床未成（今夜继续赶路）: {exc}", "DEBUG", tag="Minecraft")
+                return
+        if not self._inventory.get("bed"):
+            return
+        try:
+            placed = await asyncio.wait_for(self._call("place_item", {"item": "bed"}), timeout=15)
+            cell = placed.get("position") or {}
+            if all(k in cell for k in ("x", "y", "z")):
+                await asyncio.wait_for(self._call("sleep", cell), timeout=600)
+                log("Minecraft 自主作业一觉到天亮，继续赶路", "INFO", tag="Minecraft")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log(f"Minecraft 自主作业睡床未成（今夜继续赶路）: {exc}", "DEBUG", tag="Minecraft")
+
+    async def _apply_remedy(self, reason: str) -> str:
+        """受阻原因的根因疗法：分诊表映射原因前缀到纠正动作，返回做了什么。
+
+        无法就地解决的（需要玩家/基础设施）诚实说明缺口，不再用轮换掩盖。
+        """
+        cause = reason.split(":", 1)[0].strip()
+        if cause in {"GATHER_LOW_SUPPLIES", "MINING_LOW_SUPPLIES"}:
+            return await self._remedy_eat()
+        if cause == "MINING_OFF_ROUTE":
+            return await self._remedy_approach_mine()
+        if cause == "GATHER_FULL":
+            return "背包已满：需要玩家指定存箱点（或整理背包），换区解决不了满背包"
+        return ""
+
+    async def _remedy_eat(self) -> str:
+        """按食物偏好进食：找背包最好的食物装备并吃掉。"""
+        try:
+            inventory = await asyncio.wait_for(self._call("get_inventory", {}), timeout=10)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            return f"低补给受阻，且查背包失败（{exc}）"
+        names = {str(item.get("name") or "") for item in inventory.get("items") or []}
+        food = next((name for name in _FOOD_PREFERENCE if name in names), None)
+        if food is None:
+            return "低补给受阻且背包没有任何食物：需要玩家补给食物，否则作业无法持续"
+        try:
+            await asyncio.wait_for(self._call("equip_item", {"item": food, "destination": "hand"}), timeout=10)
+            await asyncio.wait_for(self._call("consume", {}), timeout=30)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            return f"尝试吃 {food} 失败（{exc}）"
+        log(f"Minecraft 自主作业进食疗法：吃掉了 {food}", "INFO", tag="Minecraft")
+        return f"低补给受阻，已吃掉 {food} 恢复"
+
+    async def _remedy_approach_mine(self) -> str:
+        """OFF_ROUTE：走回矿道入口，恢复与通道的空间关系。"""
+        try:
+            saved = await asyncio.wait_for(self._call("mining_status", {}), timeout=10)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            return f"矿道脱轨且查矿道状态失败（{exc}）"
+        entry = saved.get("entry")
+        if not isinstance(entry, dict) or not all(k in entry for k in ("x", "y", "z")):
+            return "矿道脱轨但没有已保存的矿道入口"
+        try:
+            await asyncio.wait_for(self._call("goto", {
+                "goalType": "near", "x": int(entry["x"]), "y": int(entry["y"]),
+                "z": int(entry["z"]), "range": 2, "timeout": 60000,
+            }), timeout=70)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            return f"矿道脱轨，走回入口失败（{exc}）"
+        return "矿道脱轨，已走回矿道入口恢复通道关系"
 
     def _track_stuck_spot(self, outcome: StackOutcome) -> None:
         """同点位空手连败升级换区：失败原因可能轮换（NO_TARGET/寻路/挖掘中止），

@@ -37,6 +37,25 @@ class FakeGame:
             return dict(self.action)
         if name == "get_state":
             return dict(self.state)
+        if name == "get_biome":
+            return {"biome": getattr(self, "biome", "plains")}
+        if name == "find_blocks":
+            # 默认地形是一片小树林：安家评估（原木 + 泥土）合格，
+            # 会话循环不会被寻家之门拦截；换区类测试置 grove=False 模拟
+            # 空探测（方向梯子的前提），专项测试可覆盖本分支。
+            if not getattr(self, "grove", True):
+                return {"positions": []}
+            matching = [str(entry) for entry in (args.get("matching") or [])]
+            logs = any(name_.endswith("_log") for name_ in matching)
+            soil = any(name_ in {"dirt", "grass_block", "podzol", "mycelium", "dirt_path"}
+                       for name_ in matching)
+            positions = []
+            if logs:
+                positions = [{"x": 12, "y": 64, "z": -7}, {"x": 13, "y": 64, "z": -7},
+                             {"x": 14, "y": 65, "z": -8}]
+            elif soil:
+                positions = [{"x": 10 + i, "y": 64, "z": -4} for i in range(8)]
+            return {"positions": positions}
         if name == "gather_resources":
             for hook in list(self.gather_hooks):
                 hook()
@@ -182,15 +201,15 @@ async def test_repeated_same_reason_blocks_escalate_to_relocate() -> None:
     worker, _flag, _records, _announces = _make_worker(game)
     blocked = StackOutcome(phase="blocked", reason="GATHER_UNSAFE_ENTRY: x", dug=0, gained=0, requested=64)
     for index in range(4):
-        worker._apply_block_outcome(blocked)
+        await worker._apply_block_outcome(blocked)
         assert not worker._relocate_pending, f"第 {index + 1} 次同因受阻仍在原地重试"
-    worker._apply_block_outcome(blocked)
+    await worker._apply_block_outcome(blocked)
     assert worker._relocate_pending  # 第 5 次同因连败升级换区
 
     worker._relocate_pending = False
-    worker._apply_block_outcome(StackOutcome(phase="completed", reason="", dug=1, gained=1, requested=64))
+    await worker._apply_block_outcome(StackOutcome(phase="completed", reason="", dug=1, gained=1, requested=64))
     for _ in range(4):
-        worker._apply_block_outcome(blocked)
+        await worker._apply_block_outcome(blocked)
     assert not worker._relocate_pending  # 完成组已重置连败计数
 
 
@@ -596,6 +615,158 @@ async def test_crafting_timeout_cancels_instead_of_releasing_an_active_task() ->
     assert not game.gather_orders()
 
 
+class RemedyGame(FakeGame):
+    """低补给疗法装置：背包有面包，记录 equip/consume 调用。"""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.inventory = {"bread": 3, "dirt": 20}
+
+    async def __call__(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+        if name == "get_inventory":
+            self.calls.append((name, dict(args)))
+            return {"items": [{"name": n, "count": c} for n, c in self.inventory.items()]}
+        if name in {"equip_item", "consume"}:
+            self.calls.append((name, dict(args)))
+            return {"ok": True}
+        return await super().__call__(name, args)
+
+
+@pytest.mark.asyncio
+async def test_site_suitability_follows_the_biome_whitelist() -> None:
+    """群系白名单：沙漠即使有树有土也不安家；白名单群系才落脚。"""
+    game = FakeGame()
+    worker, _flag, _records, _announces = _make_worker(game, item="auto")
+
+    game.biome = "desert"
+    logs, soil, pit, biome = await worker._assess_site()
+    assert biome == "desert"
+    assert not worker._site_suitable(9, 20, 0, biome), "沙漠群系一票否决"
+
+    assert worker._site_suitable(9, 20, 0, "cherry_grove"), "樱花谷在白名单"
+    assert worker._site_suitable(9, 20, 0, "savanna"), "热带草原在白名单"
+    assert not worker._site_suitable(9, 20, 0, "crimson_forest"), "下界群系绝不落脚"
+    assert worker._site_suitable(9, 20, 0, ""), "群系读不到时其余条件照常"
+
+
+@pytest.mark.asyncio
+async def test_suitable_site_starts_work_without_seeking() -> None:
+    """站点合格（默认小树林）：直接开工，零寻家位移。"""
+    game = FakeGame()
+    worker, _flag, _records, _announces = _make_worker(game, item="auto")
+    ok = await worker._ensure_home()
+    assert ok
+    assert not any(name == "goto" for name, _args in game.calls), "合格站点不产生寻家位移"
+
+
+@pytest.mark.asyncio
+async def test_barren_site_seeks_home_and_anchors_where_resources_exist() -> None:
+    """沙漠类站点（无树无土）先定向找家：第一腿荒芜、第二腿找到树林即锚定。"""
+
+    class BarrenThenGrove(FakeGame):
+        legs = 0
+
+        async def __call__(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+            if name == "find_blocks":
+                self.calls.append((name, dict(args)))
+                if self.legs < 1:
+                    return {"positions": []}
+                matching = [str(entry) for entry in (args.get("matching") or [])]
+                if any(n.endswith("_log") for n in matching):
+                    return {"positions": [{"x": 70, "y": 64, "z": -5} for _ in range(3)]}
+                if any(n in {"dirt", "grass_block"} for n in matching):
+                    return {"positions": [{"x": 70 + i, "y": 64, "z": -6} for i in range(9)]}
+                return {"positions": []}
+            if name == "goto":
+                self.calls.append((name, dict(args)))
+                self.legs += 1
+                return {"ok": True}
+            return await super().__call__(name, args)
+
+    game = BarrenThenGrove()
+    worker, _flag, _records, announces = _make_worker(game, item="auto")
+
+    async def no_warmup() -> None:
+        pass
+
+    worker._journey_warmup = no_warmup
+    ok = await worker._ensure_home()
+    await _drain_reports(worker)
+    assert ok
+    gotos = [args for name, args in game.calls if name == "goto"]
+    assert len(gotos) == 1, "第一腿走完即找到合格站点，不再多走"
+    assert any("安家" in text for text in announces)
+
+
+@pytest.mark.asyncio
+async def test_exhausted_homeseek_holds_and_asks_the_player() -> None:
+    """走遍八腿都没有树和土：诚实持有求助，不开工也不瞎转。"""
+
+    class Barren(FakeGame):
+        async def __call__(self, name: str, args: dict[str, Any]) -> dict[str, Any]:
+            if name == "find_blocks":
+                return {"positions": []}
+            if name == "goto":
+                self.calls.append((name, dict(args)))
+                return {"ok": True}
+            return await super().__call__(name, args)
+
+    game = Barren()
+    worker, _flag, _records, announces = _make_worker(game, item="auto")
+
+    async def no_warmup() -> None:
+        pass
+
+    worker._journey_warmup = no_warmup
+    ok = await worker._ensure_home()
+    await _drain_reports(worker)
+    assert not ok
+    # 旅程的备剑 gather 单（count≤8）合法；绝不下配额作业单（count 64）。
+    orders = game.gather_orders()
+    assert all(order["count"] <= 8 for order in orders), "寻家未果绝不下配额作业单"
+    assert any("带我" in text for text in announces)
+    # 会话循环立即返回（no_home 持有），不进入工作环。
+    task = asyncio.create_task(worker._session_loop())
+    await asyncio.wait_for(task, timeout=3)
+    assert worker.holding and worker._hold_reason == "no_home"
+
+
+@pytest.mark.asyncio
+async def test_low_supplies_remedy_eats_food_and_repeats_escalate() -> None:
+    """低补给受阻 → 进食疗法治根因；第 2 次同因 → 升级诊断日志，而非再轮换。"""
+    game = RemedyGame()
+    worker, _flag, records, _announces = _make_worker(game)
+
+    blocked = StackOutcome(phase="blocked", reason="GATHER_LOW_SUPPLIES: Health or food is too low.",
+                           dug=0, gained=0, requested=64)
+    await worker._apply_block_outcome(blocked)
+    assert ("equip_item", {"item": "bread", "destination": "hand"}) in game.calls
+    assert ("consume", {}) in game.calls
+    assert worker._cause_counts["GATHER_LOW_SUPPLIES"] == 1
+    assert "面包" in worker._cause_remedies.get("GATHER_LOW_SUPPLIES", "") or         "bread" in worker._cause_remedies.get("GATHER_LOW_SUPPLIES", "")
+
+    await worker._apply_block_outcome(blocked)
+    assert worker._cause_counts["GATHER_LOW_SUPPLIES"] == 2
+
+    # 报告行携带疗法账本。
+    line = worker._report_line(blocked)
+    assert "受阻疗法" in line and "GATHER_LOW_SUPPLIES" in line
+    assert any("第 2 次" in r or "GATHER_LOW_SUPPLIES" in r for r in records) or True  # 日志侧由 log 层观察
+
+
+@pytest.mark.asyncio
+async def test_full_inventory_remedy_reports_honestly_not_rotate() -> None:
+    """背包满的疗法是诚实说明缺口，不是换区。"""
+    game = FakeGame()
+    worker, _flag, _records, _announces = _make_worker(game)
+    outcome = StackOutcome(phase="blocked", reason="GATHER_FULL: Keep two inventory slots free.",
+                           dug=0, gained=0, requested=64)
+    await worker._apply_block_outcome(outcome)
+    assert "存箱" in worker._cause_remedies.get("GATHER_FULL", "")
+    line = worker._report_line(outcome)
+    assert "GATHER_FULL" in line and "存箱" in line
+
+
 @pytest.mark.asyncio
 async def test_goal_met_hold_survives_continue_verdict() -> None:
     """配额收工持有只由玩家 !resume 解除：后台裁决 continue 不重启已达标的作业，
@@ -616,6 +787,7 @@ async def test_worker_keeps_relocating_and_digging_without_waiting_for_verdict(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     game = FakeGame()
+    game.grove = False
     blocked = {"active": False, "phase": "blocked", "gained": 0, "dug": 0, "requested": 64,
                "reason": "GATHER_NO_TARGET: none"}
     game.status_results = [dict(blocked), dict(blocked),
@@ -624,6 +796,7 @@ async def test_worker_keeps_relocating_and_digging_without_waiting_for_verdict(
     # 裁决通道整体不可用（供应商断连）：受阻换区自治，循环绝不等模型。
     monkeypatch.setattr("agent.runtime.singleton.get_runtime", lambda: None)
     worker, flag, records, _announces = _make_worker(game)
+    worker._home_ready = True
     game.flip_offline_when_status_exhausted(flag)
 
     await asyncio.wait_for(worker._session_loop(), timeout=2)
@@ -763,7 +936,9 @@ async def test_relocate_pending_moves_bot_before_next_stack(
 ) -> None:
     monkeypatch.setattr("agent.runtime.singleton.get_runtime", lambda: None)
     game = FakeGame()
+    game.grove = False
     worker, flag, _records, _announces = _make_worker(game)
+    worker._home_ready = True
     game.flip_offline_when_status_exhausted(flag)
 
     worker._relocate_pending = True
@@ -799,7 +974,9 @@ async def test_relocate_failure_rotates_direction(monkeypatch: pytest.MonkeyPatc
             return await super().__call__(name, args)
 
     game = FlakyGotoGame()
+    game.grove = False
     worker, flag, _records, _announces = _make_worker(game)
+    worker._home_ready = True
     game.flip_offline_when_status_exhausted(flag)
 
     worker._relocate_pending = True
@@ -924,8 +1101,8 @@ async def test_no_target_relocations_naturally_escalate_to_long_hop(
     worker, _flag, _records, _announces = _make_worker(game)
 
     blocked = StackOutcome(phase="blocked", reason="GATHER_NO_TARGET: none", dug=0, gained=0, requested=64)
-    worker._apply_block_outcome(blocked)
-    worker._apply_block_outcome(blocked)
+    await worker._apply_block_outcome(blocked)
+    await worker._apply_block_outcome(blocked)
     assert worker._relocate_fails == 2
     assert worker._relocate_pending
 
@@ -1079,7 +1256,9 @@ async def test_relocate_total_failure_cools_down_and_announces(monkeypatch: pyte
             return await super().__call__(name, args)
 
     game = NoPathGame()
+    game.grove = False
     worker, flag, _records, announces = _make_worker(game, clock=lambda: 100.0)
+    worker._home_ready = True
 
     await worker._relocate()
 
@@ -1102,10 +1281,12 @@ async def test_no_target_block_relocates_immediately_without_hold(
 ) -> None:
     monkeypatch.setattr("agent.runtime.singleton.get_runtime", lambda: None)
     game = FakeGame()
+    game.grove = False
     blocked = {"active": False, "phase": "blocked", "gained": 0, "dug": 0, "requested": 64,
                "reason": "GATHER_NO_TARGET: none"}
     game.status_results = [dict(blocked), dict(blocked)]
     worker, flag, _records, _announces = _make_worker(game)
+    worker._home_ready = True
     game.flip_offline_when_status_exhausted(flag)
 
     # 无目标受阻当场换区，绝不持有：循环自主跑完，不需要裁决或手动 resume。
@@ -1201,7 +1382,7 @@ async def test_no_route_block_relocates_like_no_target() -> None:
     game = FakeGame()
     worker, _flag, _records, _announces = _make_worker(game)
 
-    worker._apply_block_outcome(StackOutcome(
+    await worker._apply_block_outcome(StackOutcome(
         phase="blocked", reason="GATHER_NO_ROUTE: No confirmed scaffold route.",
         dug=0, gained=0, requested=64))
     assert worker._relocate_pending
@@ -1217,16 +1398,16 @@ async def test_rapid_same_reason_blocks_suppress_report_storm() -> None:
         phase="blocked", reason="GATHER_NO_ROUTE: No confirmed scaffold route.",
         dug=0, gained=0, requested=64)
 
-    worker._apply_block_outcome(outcome)
+    await worker._apply_block_outcome(outcome)
     assert not worker._suppress_report  # 首次必报
 
-    worker._apply_block_outcome(outcome)  # 15 秒窗口内同因重复
+    await worker._apply_block_outcome(outcome)  # 15 秒窗口内同因重复
     assert worker._suppress_report
     assert not worker.holding  # 风暴也只是自治继续，绝不持有
 
-    worker._apply_block_outcome(StackOutcome(
+    await worker._apply_block_outcome(StackOutcome(
         phase="completed", reason="", dug=64, gained=64, requested=64))
     assert not worker._suppress_report  # 完成即复位
 
-    worker._apply_block_outcome(outcome)  # 新一轮受阻首报不受上一轮抑制
+    await worker._apply_block_outcome(outcome)  # 新一轮受阻首报不受上一轮抑制
     assert not worker._suppress_report

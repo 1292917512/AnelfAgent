@@ -124,6 +124,73 @@ test('an edge stand finds its real support in a neighbouring cell', async () => 
   assert.equal(Math.floor(bot.entity.position.y), 65)
 })
 
+test('staircase escape digs through sand toward the nearest walkable exit', async t => {
+  const { findWalkableExit, staircaseEscape } = await load('tools/anelf-descent-tools.mjs')
+  // A 3D pocket: the bot sits at y55 in a one-wide slot; a walkable shelf
+  // opens three blocks east at y58; sand hangs over the carve path.
+  const solid = new Map()
+  const put = (x, y, z, name) => solid.set(`${x},${y},${z}`, name)
+  const remove = (x, y, z) => solid.delete(`${x},${y},${z}`)
+  // Floor under the whole path and the shelf.
+  for (let x = -2; x <= 6; x++) for (let z = -2; z <= 2; z++) put(x, 54, z, 'terracotta')
+  // Walls around the slot except east.
+  for (let y = 55; y <= 61; y++) { put(-1, y, 0, 'terracotta'); put(0, y, -1, 'terracotta'); put(0, y, 1, 'terracotta') }
+  // Solid plug on the climb path (steps east) with sand above the headroom.
+  for (let x = 1; x <= 3; x++) for (let y = 55; y <= 57; y++) put(x, y, 0, 'terracotta')
+  put(2, 60, 0, 'sand'); put(3, 60, 0, 'sand')
+  // The open shelf at x>=4, y58: standable with headroom and open neighbours.
+  for (let x = 4; x <= 6; x++) put(x, 57, 0, 'terracotta')
+
+  const bot = new EventEmitter()
+  bot.entity = { position: new Vec3(0.5, 55, 0.5), onGround: true, velocity: new Vec3(0, 0, 0) }
+  bot.health = 20
+  bot.registry = deps('prismarine-registry')('26.1')
+  bot.inventory = { items: () => [] }
+  bot.blockAt = p => {
+    const name = solid.get(`${Math.floor(p.x)},${Math.floor(p.y)},${Math.floor(p.z)}`) ?? 'air'
+    return { name, boundingBox: name === 'air' ? 'empty' : 'block',
+      position: new Vec3(Math.floor(p.x), Math.floor(p.y), Math.floor(p.z)), type: 1 }
+  }
+  const digs = []
+  let sandFell = 0
+  bot.dig = async block => {
+    const key = `${block.position.x},${block.position.y},${block.position.z}`
+    if (block.name === 'sand') sandFell++
+    remove(block.position.x, block.position.y, block.position.z)
+    digs.push(key)
+    // Falling sand: the first dig under a sand cell drops it one level.
+    const above = solid.get(`${block.position.x},${block.position.y + 1},${block.position.z}`)
+    if (above === 'sand') {
+      remove(block.position.x, block.position.y + 1, block.position.z)
+      solid.set(`${block.position.x},${block.position.y},${block.position.z}`, 'sand')
+    }
+  }
+  bot.stopDigging = () => {}
+  bot.tool = { equipForBlock: async () => {} }
+  bot.placeBlock = async () => {}
+  bot.setControlState = (state, on) => {
+    if (state === 'forward' && on) {
+      // Physics: one forward-jump beat moves onto the faced cell.
+      const yaw = bot.entity.yaw ?? 0
+      const facing = new Vec3(Math.round(-Math.sin(yaw)), 0, Math.round(-Math.cos(yaw)))
+      const ahead = bot.entity.position.floored().offset(facing.x, 1, facing.z)
+      bot.entity.position = ahead.offset(0.5, 0, 0.5)
+    }
+  }
+  bot.lookAt = async (v) => {
+    const delta = v.minus(bot.entity.position.offset(0, 1.62, 0))
+    bot.entity.yaw = Math.atan2(-delta.x, -delta.z)
+  }
+
+  const exit = findWalkableExit(bot)
+  assert.ok(exit, 'A walkable exit is found')
+  assert.ok(exit.y > 55, 'The exit stands above the pocket floor')
+  const result = await staircaseEscape(bot, new AbortController().signal, exit)
+  assert.equal(result.completed, true)
+  assert.ok(Math.floor(bot.entity.position.y) >= exit.y - 1, 'The bot walked up to the exit level')
+  assert.ok(sandFell > 0 || digs.length > 0, 'The carve actually dug')
+})
+
 test('escape and descent placements join the scaffold cleanup ledger', async t => {
   const home = await fs.mkdtemp(path.join(os.tmpdir(), 'anelf-escape-ledger-'))
   const previous = process.env.AWESOME_MINEFLAYER_MCP_HOME

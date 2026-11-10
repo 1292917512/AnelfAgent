@@ -13,10 +13,10 @@ async def prepare_pickaxe(
     running: Callable[[], bool],
     poll_seconds: float,
     clock: Callable[[], float],
-    item: Literal["wooden_pickaxe", "stone_pickaxe"] = "wooden_pickaxe",
+    item: str = "wooden_pickaxe",
     mode: Literal["ensure", "craft"] = "ensure",
 ) -> dict[str, Any]:
-    """复用 prepare_item 的工作台与配方计划，只接受指定镐任务的清洁终态。"""
+    """复用 prepare_item 的工作台与配方计划，只接受指定物品任务的清洁终态。"""
     status = await asyncio.wait_for(
         call("prepare_item", {"item": item, "count": 1, "mode": mode}), timeout=15,
     )

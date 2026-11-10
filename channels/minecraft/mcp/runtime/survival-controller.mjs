@@ -144,7 +144,11 @@ export class SurvivalController {
     const o = this.observation
     if (!this.enabled || !this.ready || this.dead || !o.known || o.health === null || o.health <= 0 || bot.isAlive === false) return
     const moving = bot.pathfinder?.isMoving() && !bot.pathfinder.isMining() && !bot.pathfinder.isBuilding()
-    if (!moving || !previous?.position || !o.position || previous.position.distanceTo(o.position) > 0.15) this.frozenSince = now
+    // Pillar climbs and tower placement stand still horizontally by design:
+    // vertical progress is progress, not frozen. Only a bot stuck in every
+    // axis counts as frozen.
+    if (!moving || !previous?.position || !o.position ||
+        previous.position.distanceTo(o.position) > 0.15 && Math.abs(previous.position.y - o.position.y) < 0.05) this.frozenSince = now
     else if (!this.frozenSince) this.frozenSince = now
     const approaching = o.threat && (o.threatDistance < 2.5 ||
       (previous?.threat?.id === o.threat.id && o.threatDistance < previous.threatDistance - 0.1))
