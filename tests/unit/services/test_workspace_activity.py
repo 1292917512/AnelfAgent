@@ -475,12 +475,15 @@ async def test_fallback_reset_only_replaces_current_generation(activity):
         await event_bus.emit("thinking_llm_start", {"model": "fast"})
         await event_bus.emit("assistant_delta", {"delta": "Partial output"})
         await event_bus.emit("assistant_delta", {"reset": True})
-        await event_bus.emit("thinking_llm_end", {"content": "Complete fallback", "reasoning_content": "Final thought", "duration_ms": 5})
+        await event_bus.emit("thinking_llm_end", {"model": "backup", "content": "Complete fallback", "reasoning_content": "Final thought", "duration_ms": 5,
+            "usage": {"total_input_tokens": 200, "cache_read_input_tokens": 150, "cache_observable": True}})
     entries = service.snapshot()["runs"][0]["entries"]
     assert [entry["content"] for entry in entries if "content" in entry] == ["Earlier thought", "Final thought", "Complete fallback"]
     models = [entry for entry in entries if entry["kind"] == "model"]
     assert models[0]["ttft_ms"] == 1 and models[1]["ttft_ms"] is None
     assert models[0]["usage"]["cache_read_input_tokens"] == 90
+    assert [model["name"] for model in models] == ["fast", "backup"]
+    assert models[1]["usage"]["cache_read_input_tokens"] == 150
 
 
 async def test_model_calls_pair_by_identity_without_rendering_compression_as_reply(activity):
@@ -488,11 +491,12 @@ async def test_model_calls_pair_by_identity_without_rendering_compression_as_rep
     async with activity_scope("run", "reflect:one", can_stop=True):
         await event_bus.emit("thinking_llm_start", {"model": "same", "call_id": "compress", "purpose": "compress"})
         await event_bus.emit("thinking_llm_start", {"model": "same", "call_id": "reply", "purpose": "reflect"})
-        await event_bus.emit("thinking_llm_end", {"call_id": "compress", "purpose": "compress", "content": "Private summary", "duration_ms": 10})
+        await event_bus.emit("thinking_llm_end", {"model": "summary-backup", "call_id": "compress", "purpose": "compress", "content": "Private summary", "duration_ms": 10})
         await event_bus.emit("thinking_llm_end", {"call_id": "reply", "purpose": "reflect", "content": "Reflection", "duration_ms": 20})
     run = service.get_run("run")
     assert run["can_stop"] is False
     assert [(entry["call_id"], entry["duration_ms"]) for entry in run["entries"] if entry["kind"] == "model"] == [("compress", 10), ("reply", 20)]
+    assert [entry["name"] for entry in run["entries"] if entry["kind"] == "model"] == ["summary-backup", "same"]
     assert [entry["content"] for entry in run["entries"] if entry["kind"] == "text"] == ["Reflection"]
 
 

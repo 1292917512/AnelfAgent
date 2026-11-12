@@ -5,10 +5,13 @@ from __future__ import annotations
 import asyncio
 from types import SimpleNamespace
 from typing import List
+from unittest.mock import AsyncMock
 
+import litellm
 import pytest
 
-from agent.llm.llm_client import LLMClient
+from agent.llm.llm_client import LLMClient, LLMClientConfig
+from agent.llm.llm_manager import LLMManager
 from agent.llm.types import ChatResult, ChatStreamDelta, ToolCall, UsageInfo
 from agent.mind.llm_invoker import ModelInvoker
 
@@ -154,8 +157,10 @@ class TestStreamFallback:
         mind.config = SimpleNamespace(llm_timeout=30, log_ai_output=False)
         mind.llm_manager = None
 
-        async def fake_retry(messages, tools, *, tool_choice=None, options=None):
+        async def fake_retry(messages, tools, *, tool_choice=None, options=None, previous_failure=None):
             captured["called"] = True
+            assert previous_failure[0] is client
+            assert isinstance(previous_failure[1], RuntimeError)
             return fallback_result
 
         mind.model_invoker.chat_with_retry = fake_retry
@@ -168,6 +173,53 @@ class TestStreamFallback:
         )
         assert captured.get("called")
         assert result.content == "完整结果"
+
+    @pytest.mark.parametrize("manager_mode", ["enabled", "disabled", "absent"])
+    @pytest.mark.parametrize("error_type,message", [
+        (litellm.BadRequestError, "Input text data may contain inappropriate content."),
+        (litellm.BadRequestError, "invalid parameter"),
+        (litellm.AuthenticationError, "invalid api key"),
+    ])
+    async def test_nonretryable_stream_failure_is_not_resent(
+        self, tmp_path, monkeypatch, manager_mode, error_type, message,
+    ):
+        """同次失败不重发；每个新调用仍先选主模型，禁用回退时保留原异常。"""
+        primary = LLMClient(LLMClientConfig(name="selected", model="selected-model"))
+        fallback = LLMClient(LLMClientConfig(name="backup", model="backup-model"))
+        failure = error_type(message, model=primary.config.model, llm_provider="openai")
+        stream_requests = []
+
+        async def rejected_stream(messages, **kwargs):
+            stream_requests.append(messages)
+            raise failure
+            yield  # pragma: no cover - async generator protocol
+
+        primary.chat_stream = rejected_stream
+        primary.chat = AsyncMock(side_effect=AssertionError("不可重试的主请求被重复发送"))
+        fallback.chat = AsyncMock(return_value=ChatResult(content="done", model=fallback.config.model))
+        manager = LLMManager(str(tmp_path / "llm.json"))
+        manager._clients = {"selected": primary, "backup": fallback}
+        manager._type_priorities = {"chat": ["selected", "backup"]}
+        monkeypatch.setattr("agent.llm.llm_manager.fallback_enabled", lambda _: manager_mode == "enabled")
+        mind = _mind_stub(primary)
+        mind.config = SimpleNamespace(llm_timeout=30, llm_max_retries=2, log_ai_output=False)
+        mind.llm_manager = manager if manager_mode != "absent" else None
+        messages = [{"role": "user", "content": "unchanged task"}]
+
+        for _ in range(2):
+            if manager_mode == "enabled":
+                result = await mind.model_invoker.invoke(messages, None, stream=True)
+                assert result.model == fallback.config.model
+            else:
+                with pytest.raises(error_type) as caught:
+                    await mind.model_invoker.invoke(messages, None, stream=True)
+                assert caught.value is failure
+            assert mind.llm is primary
+
+        assert len(stream_requests) == 2
+        primary.chat.assert_not_awaited()
+        assert fallback.chat.await_count == (2 if manager_mode == "enabled" else 0)
+        assert messages == [{"role": "user", "content": "unchanged task"}]
 
 
 class TestTTFT:

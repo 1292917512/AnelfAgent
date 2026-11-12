@@ -766,6 +766,7 @@ class LLMManager(BaseEntity):
         record_usage: bool = True,
         model_type: ModelType = ModelType.CHAT,
         allow_fallback: bool = True,
+        previous_failure: tuple[LLMClient, Exception] | None = None,
     ) -> ChatResult:
         """带重试和模型回退的统一聊天调用。
 
@@ -785,11 +786,17 @@ class LLMManager(BaseEntity):
         超时，思考/输出期间不设墙钟——深度思考模型的内部调用不再被整段掐断。
         deadline 仅在尝试开始前/重试决策时检查，不限制单次流的总时长。
 
+        previous_failure 接续调用方已发生的失败：不可重试的客户端不重复请求，
+        直接沿用本层候选回退与原始异常传播；瞬态失败仍可恢复。仅作用于本次调用，
+        不修改默认模型或下一次调用的优先级。
+
         Model Experience:
         - 模型看到什么：无 prompt 层变化，仅调用通道（流式）差异。
         - token 影响：流式不改变 token 用量，usage 同口径回传。
         - 缓存影响：内部调用为独立请求，不触碰主对话前缀层。
         """
+        from agent.llm.resilience import classify_llm_error
+
         primary = client or self.get_default()
         candidates = [primary]
         if allow_fallback and fallback_enabled(model_type):
@@ -819,6 +826,9 @@ class LLMManager(BaseEntity):
                     tag="模型",
                 )
             try:
+                if (previous_failure is not None and candidate is previous_failure[0]
+                        and not classify_llm_error(previous_failure[1]).retryable):
+                    raise previous_failure[1]
                 result = await self._chat_candidate(
                     candidate,
                     candidate_messages,

@@ -1,4 +1,8 @@
-"""思维模型调用：统一重试、回退、流式聚合、选项合并与摘要。"""
+"""思维模型调用：统一重试、回退、流式聚合、选项合并与摘要。
+
+模型输入与输出契约不变；流式失败交由统一恢复链分类，减少不可重试请求的重复调用。
+不增加提示 token，不修改上下文或稳定缓存前缀。
+"""
 
 from __future__ import annotations
 
@@ -137,7 +141,7 @@ class ModelInvoker:
         """统一 LLM 调用（带重试、模型回退和事件追踪）。
 
         stream=True 时优先走主客户端流式（增量经 on_delta 上报），
-        流式失败自动回退非流式重试路径（行为与非流式完全一致）。
+        流式失败交给非流式统一恢复路径；不可重试的失败不重复请求同一客户端。
         cache_tail_anchor=False 声明本调用是一次性的（前缀+尾部不会再被
         原样重发），缓存装饰省略链尾增量锚点以免写入永不命中的条目。
         """
@@ -237,6 +241,7 @@ class ModelInvoker:
         t0 = time.monotonic()
         try:
             if stream:
+                stream_client = runtime.llm
                 try:
                     result = await self.chat_stream_once(
                         messages, tools,
@@ -247,7 +252,7 @@ class ModelInvoker:
                     # 中断不是故障：不回退非流式（重试会让用户刹车失效并重复计费）
                     raise
                 except Exception as stream_exc:
-                    log(f"流式调用失败，回退非流式: {stream_exc}", "DEBUG", tag="思维")
+                    log(f"流式调用失败，进入统一恢复: {stream_exc}", "DEBUG", tag="思维")
                     # 已下发的增量文本在重试全量文本到达后会重复显示，先通知通道重置
                     reset_fn = getattr(on_delta, "reset", None) if on_delta is not None else None
                     if reset_fn is not None:
@@ -258,6 +263,8 @@ class ModelInvoker:
                     result = await _race_abort(
                         self.chat_with_retry(
                             messages, tools, tool_choice=tool_choice, options=options,
+                            previous_failure=(stream_client, stream_exc)
+                            if isinstance(stream_client, LLMClient) else None,
                         ),
                         abort_event,
                     )
@@ -377,6 +384,7 @@ class ModelInvoker:
             *,
             tool_choice: Optional[str] = None,
             options: Optional[dict] = None,
+            previous_failure: tuple[LLMClient, Exception] | None = None,
     ) -> ChatResult:
         runtime = self._runtime
         mc = runtime.config
@@ -408,8 +416,14 @@ class ModelInvoker:
                 # 主对话路径的记账权威在 ModelInvoker.invoke（scope 解析链覆盖
                 # 消息实体维度），此处关闭管理器侧记账防双写
                 record_usage=False,
+                previous_failure=previous_failure,
             )
         else:
+            if previous_failure is not None:
+                from agent.llm.resilience import classify_llm_error
+
+                if not classify_llm_error(previous_failure[1]).retryable:
+                    raise previous_failure[1]
             result = await asyncio.wait_for(
                 runtime.llm.chat(messages, options=final_options, tools=tools, tool_choice=tool_choice),
                 timeout=mc.llm_timeout,

@@ -1,4 +1,7 @@
-"""工作区实时过程投影：按轮次归并思考、工具与文件变更，限量保留近期记录。"""
+"""工作区实时过程投影：按轮次归并思考、工具与文件变更，限量保留近期记录。
+
+模型不可见；展示实际完成调用的模型与用量，不增加 token 或改变缓存前缀。
+"""
 
 from __future__ import annotations
 
@@ -397,6 +400,8 @@ class WorkspaceActivityService:
         generation = model["generation"] if model else run["generation"]
         entries = [entry for entry in run["entries"] if entry.get("generation") == generation]
         if model:
+            if payload.get("model"):
+                model["name"] = str(payload["model"])
             model.update(status="interrupted" if payload.get("cancelled") else "error" if payload.get("error") else "done",
                          error=sanitize_text(str(payload.get("error", "")))[:MAX_TEXT],
                          duration_ms=payload.get("duration_ms", 0), ttft_ms=payload.get("ttft_ms"))

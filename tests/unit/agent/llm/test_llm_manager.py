@@ -4,6 +4,7 @@ import asyncio
 import json
 from unittest.mock import AsyncMock
 
+import litellm
 import pytest
 
 from agent.llm.config import API_TYPE_ANTHROPIC
@@ -160,6 +161,43 @@ async def test_fallback_preserves_tools_and_options(tmp_path) -> None:
     kwargs = fallback.chat.await_args.kwargs
     assert kwargs["options"] == {"temperature": 0.2}
     assert kwargs["tool_choice"] == "auto"
+
+
+@pytest.mark.parametrize("prior_kind", ["transient", "other_client", "overflow", "all_failed"])
+async def test_previous_failure_uses_existing_candidate_recovery(tmp_path, monkeypatch, prior_kind):
+    manager = LLMManager(str(tmp_path / "llm.json"))
+    primary, smaller, backup = (_client(name) for name in ("primary", "smaller", "backup"))
+    primary.config.context_window = 1000
+    smaller.config.context_window = 500
+    backup.config.context_window = 2000
+    monkeypatch.setattr(LLMClient, "get_model_info", staticmethod(lambda _: {}))
+    manager._clients = {c.config.name: c for c in (primary, smaller, backup)}
+    manager._type_priorities = {"chat": ["primary", "smaller", "backup"]}
+    for client in (primary, smaller, backup):
+        client.chat = AsyncMock(return_value=ChatResult(content=client.config.name))
+    error = (TimeoutError("temporary") if prior_kind == "transient" else
+             litellm.ContextWindowExceededError("context window exceeded", model="primary", llm_provider="openai"))
+    previous_client = _client("other") if prior_kind == "other_client" else primary
+    if prior_kind == "all_failed":
+        backup.chat.side_effect = RuntimeError("backup unavailable")
+    messages = [{"role": "user", "content": "original input"}]
+    tools = [{"type": "function", "function": {"name": "lookup"}}]
+    kwargs = dict(client=primary, previous_failure=(previous_client, error), tools=tools,
+                  options={"temperature": 0.2}, tool_choice="auto", max_retries=0)
+    if prior_kind == "all_failed":
+        with pytest.raises(type(error)) as caught:
+            await manager.chat_with_fallback(messages, **kwargs)
+        assert caught.value is error
+    else:
+        result = await manager.chat_with_fallback(messages, **kwargs)
+        assert result.content == ("backup" if prior_kind == "overflow" else "primary")
+    selected = backup if prior_kind in {"overflow", "all_failed"} else primary
+    selected.chat.assert_awaited_once_with(messages, options={"temperature": 0.2}, tools=tools, tool_choice="auto")
+    smaller.chat.assert_not_awaited()
+    if selected is backup:
+        primary.chat.assert_not_awaited()
+    else:
+        backup.chat.assert_not_awaited()
 
 
 @pytest.mark.asyncio
