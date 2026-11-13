@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import subprocess
 import sys
@@ -13,6 +14,39 @@ import pytest
 from core.host_control import HostControl, register_host_control
 from core.host_protocol import HostLock, write_json
 from core.lifecycle import Lifecycle
+
+
+@pytest.mark.parametrize("failure", ["transient", "permission", "other"])
+def test_host_record_replacement_preserves_atomicity_on_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str,
+) -> None:
+    path = tmp_path / "installation.json"
+    write_json(path, {"ready": False})
+    replace = os.replace
+    attempts = 0
+
+    def occupied(source: str, destination: Path) -> None:
+        nonlocal attempts
+        attempts += 1
+        assert json.loads(path.read_text("utf-8")) == {"ready": False}
+        if failure == "other":
+            raise OSError("replacement failed")
+        if failure == "permission" or attempts == 1:
+            raise PermissionError("replacement denied")
+        replace(source, destination)
+
+    monkeypatch.setattr("core.host_protocol.os.replace", occupied)
+    monkeypatch.setattr("core.host_protocol.time.sleep", lambda _: None)
+    if failure == "transient":
+        write_json(path, {"ready": True})
+        assert attempts == 2
+        assert json.loads(path.read_text("utf-8")) == {"ready": True}
+    else:
+        with pytest.raises(PermissionError if failure == "permission" else OSError):
+            write_json(path, {"ready": True})
+        assert json.loads(path.read_text("utf-8")) == {"ready": False}
+        assert 1 < attempts < 20 if failure == "permission" else attempts == 1
+    assert list(tmp_path.iterdir()) == [path]
 
 
 def test_host_lock_is_exclusive_across_processes(tmp_path: Path) -> None:

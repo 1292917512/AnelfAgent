@@ -6,6 +6,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import IO, Any
 
@@ -46,7 +47,7 @@ class HostLock:
 
 
 def write_json(path: Path, value: Any) -> None:
-    """同目录原子替换，防止读到写入一半的控制指令。"""
+    """同目录原子替换；有界等待短暂读句柄占用，失败仍保留完整旧值。"""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=".host-", suffix=".tmp")
     try:
@@ -54,6 +55,13 @@ def write_json(path: Path, value: Any) -> None:
             json.dump(value, file, ensure_ascii=False)
             file.flush()
             os.fsync(file.fileno())
-        os.replace(temporary, path)
+        for delay in (0.01, 0.02, 0.04, 0.08, 0.16, None):
+            try:
+                os.replace(temporary, path)
+                break
+            except PermissionError:
+                if delay is None:
+                    raise
+                time.sleep(delay)
     finally:
         Path(temporary).unlink(missing_ok=True)
