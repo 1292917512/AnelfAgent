@@ -116,14 +116,14 @@ async def save_images(image_results: List[str], prefix: str = "gen") -> List[str
         if src.startswith("data:image/"):
             header, b64 = src.split(",", 1)
             img_bytes = base64.b64decode(b64)
-            ext = ".png" if "png" in header else ".jpg"
+            ext = ".webp" if "webp" in header else ".png" if "png" in header else ".jpg"
         else:
             async with async_network_client(timeout=60.0) as client:
                 resp = await client.get(src, follow_redirects=True)
                 resp.raise_for_status()
                 img_bytes = resp.content
                 ct = resp.headers.get("content-type", "image/png")
-                ext = ".png" if "png" in ct else ".jpg"
+                ext = ".webp" if "webp" in ct else ".png" if "png" in ct else ".jpg"
         fname = f"{prefix}_{int(time.time() * 1000)}_{i}{ext}"
         fpath = os.path.join(_upload_dir("image"), fname)
         with open(fpath, "wb") as f:

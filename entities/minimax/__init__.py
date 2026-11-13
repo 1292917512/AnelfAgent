@@ -7,13 +7,14 @@
 - 流式 TTS 组件（HTTP / WebSocket 双传输）→ 核心 TTS 注册表
 
 凭据经组件凭据中心（provider_keys.json，Web/AI/文件三面可配）；
-非凭据参数自管于本目录 config.json（默认音色/模型/代理），
+图片直连参数在配置中心 entity/minimax；旧默认音色/模型沿用本目录 config.json，
 删除本目录即整体拔出（各核心路由的注册随之消失）。
 """
 
 from entities._sdk import (
     entity,
     entity_manifest,
+    register_image_adapter,
     register_retrieval_provider,
     register_sound_provider,
     register_tts_provider,
@@ -31,6 +32,9 @@ entity_manifest(
     group="minimax",
 )
 
+from core.config import register_configs_safe  # noqa: E402
+
+from .image_adapter import MiniMaxImagesAdapter  # noqa: E402
 from .providers import (  # noqa: E402
     MiniMaxSearchProvider,
     MiniMaxSoundProvider,
@@ -39,9 +43,17 @@ from .providers import (  # noqa: E402
 )
 from .ws_tts import MiniMaxWsTtsProvider  # noqa: E402
 
+register_configs_safe({"entity/minimax": {
+    "minimax_image_model": {"default": "", "description": "组件直连图片模型；留空沿用 config.json 的 default_image_model"},
+    "minimax_image_base_url": {"default": "", "description": "组件直连图片端点；留空按模型使用官方端点"},
+    "minimax_image_timeout": {"default": 600.0, "description": "组件直连图片请求超时（秒）；模型管理调用使用模型自身 timeout",
+                              "min": 1, "max": 3600},
+}})
+
 
 def register_components() -> None:
     """向各核心路由注册 MiniMax 组件（实体导入时调用；同名覆盖幂等）。"""
+    register_image_adapter(MiniMaxImagesAdapter(), host_keywords=("minimaxi.com", "minimax.io", "minimax.cn"))
     register_visual_provider(MiniMaxVisualProvider())
     register_sound_provider(MiniMaxSoundProvider())
     register_retrieval_provider(MiniMaxSearchProvider())

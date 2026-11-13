@@ -143,3 +143,19 @@ async def test_stopped_execution_cannot_start_another_tool(execution: AsyncMock)
     with execution_signal(signal), pytest.raises(asyncio.CancelledError):
         await EntityRegistry.execute_tool("execution_probe")
     probe.assert_not_awaited()
+
+
+async def test_internally_bounded_tool_keeps_explicit_timeout_and_cancellation(execution: AsyncMock) -> None:
+    async def probe() -> str:
+        async with asyncio.timeout(1):
+            await asyncio.sleep(0.02)
+            return "ok"
+
+    EntityRegistry.register_tool(name="execution_probe", func=probe, meta={"timeout": 0})
+    assert await EntityRegistry.execute_tool("execution_probe", timeout=0.001) == "ok"
+    out = json.loads(await EntityRegistry.execute_tool("execution_probe", '{"_timeout":0.001}'))
+    assert out["cause"] == "timeout"
+    signal = ExecutionSignal("scope", "run")
+    signal.request("stop")
+    with execution_signal(signal), pytest.raises(asyncio.CancelledError):
+        await EntityRegistry.execute_tool("execution_probe")

@@ -23,12 +23,13 @@ VISUAL_CAPABILITY_GUIDE: Dict[str, Dict[str, Any]] = {
     },
     "image_gen": {
         "tools": ["generate_image"],
-        "summary": "文生图；reference_image 非空=人物参考图生图（仅支持的组件提供者）",
+        "summary": "文生图或有序参考图生成；具体图片协议由所选模型/组件决定",
         "key_params": {
             "prompt": "图片描述（必填）",
             "image_size": "像素 1024x1024 或比例 1:1/16:9/9:16（留空用默认配置）",
-            "n": "数量 1~9（仅支持的组件提供者生效）",
-            "reference_image": "人物参考照片路径或 URL",
+            "n": "生成数量，由所选图片协议校验上限",
+            "reference_image/reference_images": "单图或有序多图引用，单图参数排在列表前面",
+            "options": "图片协议扩展参数；不能覆盖标准输入字段",
             "style": "风格预设名（vision_style_presets 配置）或自定义描述",
         },
         "example": 'generate_image(prompt="猫耳女仆", style="nekomimi_maid", image_size="1024x1024")',
@@ -37,7 +38,8 @@ VISUAL_CAPABILITY_GUIDE: Dict[str, Dict[str, Any]] = {
     "image_edit": {
         "tools": ["edit_image"],
         "summary": "按文字指令编辑已有图片",
-        "key_params": {"image_path": "待编辑图片路径或 URL（必填）", "prompt": "编辑指令（必填）"},
+        "key_params": {"image_path/image_paths": "单图或有序多图引用（至少一张）", "prompt": "编辑指令（必填）",
+                       "image_size/n/options": "输出尺寸、数量和协议扩展参数"},
         "example": 'edit_image(image_path="workspace/uploads/image/xxx.png", prompt="把背景换成海边")',
         "notes": "按视觉能力链路由到 image_edit 类型模型",
     },

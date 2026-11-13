@@ -8,10 +8,14 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
 from entities.model_control import tools as mc_tools
+
+if TYPE_CHECKING:
+    from agent.llm.llm_manager import LLMManager
 
 
 @pytest.fixture()
@@ -29,6 +33,56 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):  # type: ignore[no-unt
 
 def _disk(cfg: Path) -> dict:  # type: ignore[type-arg]
     return json.loads(cfg.read_text(encoding="utf-8"))
+
+
+def test_image_config_can_be_created_updated_and_reloaded(env: tuple[LLMManager, Path]) -> None:
+    from agent.llm.llm_manager import LLMManager
+
+    manager, path = env
+    assert json.loads(mc_tools.add_provider(
+        "images", "https://images.example/v1", api_key="test-fixture-secret", media_protocol="openai",
+    ))["ok"]
+    mid = "image"
+    assert json.loads(mc_tools.add_model(
+        "images", mid, model="remote-image", model_types="image_gen,image_edit", supports_tools=False,
+        timeout=650, extra_body={"output_format": "webp"},
+    ))["ok"]
+    before = json.loads(mc_tools.list_models(mid))
+    assert before["media_protocol"] == "openai"
+    assert before["config"]["timeout"] == 650
+    assert before["config"]["model_types"] == ["image_gen", "image_edit"]
+    assert "test-fixture-secret" not in json.dumps(before)
+    assert json.loads(mc_tools.update_model_config(mid, "extra_body", '{"output_format":"png"}'))["ok"]
+    assert json.loads(mc_tools.update_model_config(mid, "timeout", "700"))["ok"]
+    assert json.loads(mc_tools.update_model_config(mid, "model_types", '["image_gen"]'))["ok"]
+    assert mid not in [item["id"] for item in manager.get_type_priorities().get("image_edit", [])]
+    readback = json.loads(mc_tools.list_models(mid))["config"]
+    assert readback["extra_body"] == {"output_format": "png"}
+    restored = LLMManager(str(path)).get_client(mid)
+    assert restored is not None
+    assert restored.config.timeout == 700 and restored.config.model_types == ["image_gen"]
+    assert restored.config.extra_body == readback["extra_body"]
+    assert json.loads(mc_tools.update_model_config(mid, "extra_body", "{}"))["ok"]
+    assert json.loads(mc_tools.list_models(mid))["config"]["extra_body"] == {}
+
+
+@pytest.mark.parametrize(("field", "value"), [
+    ("extra_body", "[]"), ("extra_body", '{"area":NaN}'), ("model_types", '{}'),
+    ("model_types", '["unsupported"]'), ("timeout", "nan"), ("timeout", "inf"),
+])
+def test_structured_model_update_rejects_invalid_values_without_mutation(
+    env: tuple[LLMManager, Path], field: str, value: str,
+) -> None:
+    manager, path = env
+    mc_tools.add_provider("p1", "https://example.invalid/v1")
+    mc_tools.add_model("p1", "image", model_types="image_gen", extra_body={"output_format": "webp"})
+    before = path.read_bytes()
+    result = json.loads(mc_tools.update_model_config("image", field, value))
+    assert result.get("error") and result["retryable"] is False
+    assert path.read_bytes() == before
+    client = manager.get_client("image")
+    assert client is not None and client.config.extra_body == {"output_format": "webp"}
+    assert client.config.model_types == ["image_gen"]
 
 
 class TestAddProvider:
@@ -230,6 +284,7 @@ class TestReloadAndList:
         mc_tools.add_provider("p1", "http://a", api_key="test-fixture-mock-key-002")
         mc_tools.add_model("p1", "m1")
         result = json.loads(mc_tools.list_models())
+        assert result["tool_group"] == "model_control"
         providers = result["providers"]
         assert providers[0]["id"] == "p1" and providers[0]["model_count"] == 1
         assert "sk-list-secret-1" not in json.dumps(result, ensure_ascii=False)

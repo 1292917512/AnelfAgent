@@ -14,7 +14,7 @@ AI 通过这些工具可以自主完成：
 - 管理 Ollama 本地模型（状态、拉取、删除、详情）— 仅在检测到本地安装 Ollama 时才注册
 
 Model Experience:
-- 模型看到：本组工具 schema（静态注册）；档案内容不注入任何 prompt 层，
+- 模型看到：本组工具 schema（静态注册）；按需读取模型详情、更新类型和扩展参数；档案内容不注入任何 prompt 层，
   AI 经 list_sub_agents 按需查询；Ollama 失败回执保留退出码与输出证据
 - token 影响：工具 schema 增量（一次性），档案查询按需
 - KV Cache 影响：无持续影响 — 无动态内容进入前缀层，档案变更不触碰任何缓存字节
@@ -23,11 +23,13 @@ Model Experience:
 from __future__ import annotations
 
 import json
+import math
 import re
 import shutil
 from typing import TYPE_CHECKING, Any
 
 from core.config import expand_env_refs, is_masked_secret, mask_secret
+from core.sanitizer import sanitize_text
 from entities._sdk import ErrorCause, ProxyMode, entity, error_from_exception, tool, tool_error
 
 if TYPE_CHECKING:
@@ -49,18 +51,37 @@ if _OLLAMA_AVAILABLE:
 
 
 @tool(name="list_models", concurrency_safe=True, group="model_control", tags=["core"],
-      description="列出所有已配置的模型及其类型、能力和当前默认状态")
-def list_models() -> str:
-    """列出所有已配置的 LLM 模型，包含类型（chat/vision/embedding）、能力和当前默认标记。"""
+      description="列出模型、供应商与优先级；指定 model_name 读取该模型的可更新配置（含超时、类型和扩展参数）")
+def list_models(model_name: str = "") -> str:
+    """查看模型摘要或指定模型的配置；供应商密钥不返回明文。
+
+    Args:
+        model_name: 模型配置 ID；留空列出摘要，指定后读取该模型的配置供更新前后核对。
+    """
     try:
         from entities._sdk import get_llm_manager
         manager = get_llm_manager()
+
+        if model_name:
+            client = manager.get_client(model_name)
+            if client is None:
+                return tool_error(f"模型 '{model_name}' 不存在", cause=ErrorCause.NOT_FOUND, retryable=False)
+            cfg = client.config
+            return sanitize_text(json.dumps({
+                "model_id": cfg.name, "provider_id": cfg.provider_id,
+                "base_url": cfg.base_url, "api_type": cfg.api_type,
+                "media_protocol": cfg.media_protocol, "proxy_mode": cfg.proxy_mode,
+                "config": {field: getattr(cfg, field) for field in _UPDATABLE_FIELDS},
+                "update_tool": "update_model_config",
+                "structured_values": "model_types 使用 JSON 数组，extra_body 使用 JSON 对象字符串；整体替换，先读取再修改",
+            }, ensure_ascii=False))
 
         summary = manager.get_models_summary()
         priorities = manager.get_type_priorities()
         default_name = manager.default_name
 
         result: dict = {
+            "tool_group": "model_control",
             "current_default": default_name,
             "model_summary": summary,
             "priorities": priorities,
@@ -71,6 +92,8 @@ def list_models() -> str:
                     "name": p["name"],
                     "base_url": p["base_url"],
                     "api_type": p["api_type"],
+                    "media_protocol": p.get("media_protocol", ""),
+                    "proxy_mode": p.get("proxy_mode", "system"),
                     "api_key": mask_secret(str(p.get("api_key", ""))),
                     "model_count": p.get("model_count", 0),
                 }
@@ -236,13 +259,15 @@ _UPDATABLE_FIELDS = {
     "reasoning_effort": str,
     "enabled": bool,
     "model": str,
+    "model_types": list,
+    "extra_body": dict,
 }
 
 
 @tool(name="update_model_config", group="model_control", tags=["core"],
       description="持久化修改指定模型的配置参数"
                   "（timeout/max_tokens/context_window/supports_forced_tool_choice/supports_reasoning"
-                  "/supports_vision/supports_video/supports_tools/reasoning_effort/enabled/model），"
+                  "/supports_vision/supports_video/supports_tools/reasoning_effort/enabled/model/model_types/extra_body），"
                   "用于固化端点行为与能力声明（如 list_models 中 runtime_issues 提示的问题）、"
                   "停用/启用模型或修正底层模型名，重启后仍生效")
 def update_model_config(model_name: str, field: str, value: str) -> str:
@@ -253,8 +278,9 @@ def update_model_config(model_name: str, field: str, value: str) -> str:
         field: 配置字段，可选值: timeout（秒）、max_tokens、context_window、
             supports_forced_tool_choice / supports_reasoning / supports_vision /
             supports_video / supports_tools / enabled（布尔）、
-            reasoning_effort（low/medium/high 或空串清除）、model（底层模型名）
-        value: 新值（按字段类型解析）
+            reasoning_effort（low/medium/high 或空串清除）、model（底层模型名）、
+            model_types（JSON 字符串数组）、extra_body（JSON 对象，媒体扩展参数默认值）
+        value: 新值（按字段类型解析）；数组和对象整体替换，先用 list_models(model_name) 读取，{} 清空扩展参数
     """
     try:
         from entities._sdk import get_llm_manager
@@ -262,34 +288,30 @@ def update_model_config(model_name: str, field: str, value: str) -> str:
 
         client = manager.get_client(model_name)
         if client is None:
-            return json.dumps({
-                "ok": False,
-                "error": f"模型 '{model_name}' 不存在，请用 list_models 查看可用名称",
-            }, ensure_ascii=False)
+            return tool_error(f"模型 '{model_name}' 不存在，请用 list_models 查看可用名称",
+                              cause=ErrorCause.NOT_FOUND, retryable=False, ok=False)
 
         if field not in _UPDATABLE_FIELDS:
-            return json.dumps({
-                "ok": False,
-                "error": f"字段 '{field}' 不允许修改，可修改字段: {list(_UPDATABLE_FIELDS)}",
-            }, ensure_ascii=False)
+            return tool_error(f"字段 '{field}' 不允许修改，可修改字段: {list(_UPDATABLE_FIELDS)}",
+                              cause=ErrorCause.PARAM, retryable=False, ok=False)
 
         parsed, parse_err = _parse_field_value(field, value)
         if parse_err:
-            return json.dumps({"ok": False, "error": parse_err}, ensure_ascii=False)
+            return tool_error(parse_err, cause=ErrorCause.PARAM, retryable=False, ok=False)
 
         old_value = getattr(client.config, field)
         if not manager.update_model(model_name, **{field: parsed}):
             return tool_error(f"更新模型 '{model_name}' 失败，配置写入未生效",
                               cause=ErrorCause.INTERNAL, retryable=False, ok=False)
 
-        return json.dumps({
+        return sanitize_text(json.dumps({
             "ok": True,
             "message": f"已持久化 {model_name}.{field}: {old_value} -> {parsed}，立即生效且重启后保留",
             "model": model_name,
             "field": field,
             "old": old_value,
             "new": parsed,
-        }, ensure_ascii=False)
+        }, ensure_ascii=False))
     except Exception as e:
         return error_from_exception(e, action=f"更新模型 '{model_name}' 配置")
 
@@ -298,6 +320,15 @@ def _parse_field_value(field: str, value: str) -> tuple[Any, str]:
     """按字段类型解析配置值，返回 (解析值, 错误描述)。"""
     ptype = _UPDATABLE_FIELDS[field]
     text = value.strip()
+    if ptype in (dict, list):
+        try:
+            structured = json.loads(text)
+            json.dumps(structured, allow_nan=False)
+        except (ValueError, TypeError):
+            return None, f"字段 {field} 需要合法 JSON，数值必须有限"
+        if not isinstance(structured, ptype):
+            return None, f"字段 {field} 需要 JSON {'对象' if ptype is dict else '数组'}"
+        return structured, ""
     if ptype is bool:
         lowered = text.lower()
         if lowered in ("true", "1", "yes"):
@@ -321,18 +352,18 @@ def _parse_field_value(field: str, value: str) -> tuple[Any, str]:
         parsed = ptype(text)
     except (TypeError, ValueError):
         return None, f"字段 {field} 需要 {ptype.__name__} 类型，收到: {value!r}"
-    if parsed <= 0:
-        return None, f"字段 {field} 必须为正数，收到: {parsed}"
+    if not math.isfinite(parsed) or parsed <= 0:
+        return None, f"字段 {field} 必须为有限正数，收到: {parsed}"
     return parsed, ""
 
 
 @tool(name="get_model_priority", concurrency_safe=True, group="model_control", tags=["core"],
-      description="查看指定类型（chat/vision/embedding/rerank）的模型优先级顺序")
+      description="查看指定类型（如 chat/vision/embedding/image_gen/image_edit）的模型优先级顺序")
 def get_model_priority(model_type: str = "chat") -> str:
     """查看指定模型类型的优先级列表（按优先级从高到低排列）。
 
     Args:
-        model_type: 模型类型，支持 chat / vision / embedding / rerank，默认 chat
+        model_type: 模型类型，如 chat / vision / embedding / rerank / image_gen / image_edit，默认 chat
     """
     try:
         from entities._sdk import get_llm_manager
@@ -360,7 +391,7 @@ def set_model_priority(model_type: str, model_ids: str) -> str:
     """设置指定模型类型的优先级顺序，持久化到配置文件。
 
     Args:
-        model_type: 模型类型，支持 chat / vision / embedding / rerank
+        model_type: 模型类型，如 chat / vision / embedding / rerank / image_gen / image_edit
         model_ids: 逗号分隔的模型 ID 列表，如 "gpt4o,claude3,qwen" （优先级从高到低）
     """
     try:
@@ -577,14 +608,14 @@ def add_model(provider_id: str, model_id: str, model: str = "", model_types: str
               supports_video: bool = False, supports_reasoning: bool = False,
               reasoning_effort: str = "", temperature: float = -1.0, max_tokens: int = -1,
               timeout: float = -1.0, context_window: int = 0, chat_protocol: str = "",
-              enabled: bool = True) -> str:
+              enabled: bool = True, extra_body: dict[str, Any] | None = None) -> str:
     """注册新模型到指定供应商下并持久化，立即生效（无需重启）。
 
     Args:
         provider_id: 目标供应商 ID（list_models 的 providers 列表查看）
         model_id: 模型 ID（系统内唯一标识，如 glm-flash）
         model: 底层 API 模型名（空 = 同 model_id；供应商侧名称与 ID 不同时填写）
-        model_types: 模型类型，逗号分隔（chat/vision/embedding/rerank/image_gen/asr/tts 等）
+        model_types: 模型类型，逗号分隔（chat/vision/embedding/rerank/image_gen/image_edit/asr/tts 等）
         supports_tools: 是否支持工具调用（chat 模型默认 True）
         supports_vision: 是否支持图片理解
         supports_video: 是否支持视频理解
@@ -596,6 +627,7 @@ def add_model(provider_id: str, model_id: str, model: str = "", model_types: str
         context_window: 上下文窗口 token 数（0 = 未知，按 litellm 模型表/默认推断）
         chat_protocol: 对话协议（chat_completions/responses/auto，空 = chat_completions）
         enabled: 是否启用（False = 注册但停用，不参与任何自动选择）
+        extra_body: 模型扩展参数默认值（JSON 对象）；图片调用 options 可逐项覆盖
     """
     try:
         from entities._sdk import canonical_efforts, get_llm_manager
@@ -638,6 +670,9 @@ def add_model(provider_id: str, model_id: str, model: str = "", model_types: str
             kwargs["context_window"] = context_window
         if chat_protocol:
             kwargs["chat_protocol"] = chat_protocol
+        if extra_body is not None:
+            json.dumps(extra_body, allow_nan=False)
+            kwargs["extra_body"] = extra_body
 
         try:
             client = manager.create_model(pid, mid, **kwargs)

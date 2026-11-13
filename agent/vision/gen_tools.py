@@ -175,7 +175,27 @@ async def recognize_video(video_path: str = "", prompt: str = "", provider: str 
 # 图片生成 / 编辑
 # ==================================================================
 
-@deferred_tool(name="generate_image", group=_group, tags=["always", "media:image_gen"], timeout=300.0)
+def _image_sources(single: str, multiple: list[str] | None) -> list[str]:
+    """所有本地参考图在调用提供者前统一执行工作区沙箱校验。"""
+    sources = ([single] if single else []) + list(multiple or ())
+    resolved: list[str] = []
+    for source in sources:
+        if not isinstance(source, str) or not source:
+            raise ValueError("图片引用必须为非空字符串")
+        if ("://" in source and len(source.split("://", 1)[0]) > 1) or source.startswith("data:"):
+            resolved.append(source)
+        else:
+            try:
+                path = ws.resolve_workspace_path(source)
+            except ValueError as exc:
+                raise PermissionError(str(exc)) from exc
+            if not os.path.isfile(path):
+                raise FileNotFoundError(f"图片不存在: {source}")
+            resolved.append(path)
+    return resolved
+
+
+@deferred_tool(name="generate_image", group=_group, tags=["always", "media:image_gen"], timeout=0)
 async def generate_image(
     prompt: str,
     image_size: str = "",
@@ -184,78 +204,84 @@ async def generate_image(
     style: str = "",
     reference_image: str = "",
     provider: str = "auto",
+    reference_images: list[str] | None = None,
+    options: dict[str, Any] | None = None,
 ) -> str:
-    """根据文字描述生成图片（文生图），生成结果保存到本地并返回文件路径。
-
-    reference_image 非空时转为人物参考图生图（保持人物特征，仅支持的组件提供者）。
+    """根据描述生成图片，支持有序多参考图，结果保存到本地。
 
     Args:
-        prompt: 图片内容的文字描述
-        image_size: 图片尺寸，留空用默认配置；支持像素格式 "1024x1024"、"1664x928"
-            或比例格式 "1:1"/"16:9"/"9:16"（组件提供者按最近比例映射）
-        n: 生成数量 1~9（仅支持的组件提供者生效，models 链由模型决定）
-        num_inference_steps: 推理步数，默认 20（仅 models 链生效），越高越精细但更慢
-        style: 可选风格预设名（vision_style_presets 配置）或自定义风格描述
-        reference_image: 人物参考照片的本地路径或 URL（非空=人物参考图生图）
-        provider: auto（默认，按该模型类型的优先级与切换设置路由）或指定提供者名
+        prompt: 图片内容或参考图编辑指令，可按图1、图2描述。
+        image_size: 像素尺寸、比例或 auto；留空用视觉默认配置。
+        n: 生成数量，由所选协议校验上限。
+        num_inference_steps: 推理步数，仅支持此参数的协议生效。
+        style: 风格预设名或自定义描述。
+        reference_image: 单张参考图，兼容旧调用，排在 reference_images 之前。
+        provider: auto 或已注册的提供者名；模型管理配置走 models。
+        reference_images: 有序参考图列表，接受本地路径、URL、Data URL 或协议支持的文件引用。
+        options: 所选图片协议的扩展选项，不能覆盖模型、提示词和参考图等标准输入。
     """
     err = _check_provider(provider)
     if err:
         return err
-    prompt = apply_style(prompt, style)
-    image_size = image_size or str(get_default_param("image_size", "1024x1024"))
-    n = min(max(1, int(n)), 9)
+    try:
+        images = _image_sources(reference_image, reference_images)
+        prompt = apply_style(prompt, style)
+        image_size = image_size or str(get_default_param("image_size", "1024x1024"))
+        out = await get_visual_router().run(
+            "image_gen", "图片生成", provider=provider or "auto",
+            prompt=prompt, image_size=image_size, n=n, num_inference_steps=num_inference_steps,
+            reference_images=images, options=options,
+        )
+        if out.get("success") and isinstance(out.get("image_results"), list):
+            out["file_paths"] = await ws.save_images(out.pop("image_results"))
+        return _dumps(out)
+    except Exception as exc:
+        return error_from_exception(exc, action="图片生成")
 
-    out = await get_visual_router().run(
-        "image_gen", "图片生成", provider=provider or "auto",
-        prompt=prompt, image_size=image_size, n=n,
-        num_inference_steps=num_inference_steps, reference_image=reference_image,
-    )
-    if out.get("success") and isinstance(out.get("image_results"), list):
-        out["file_paths"] = await ws.save_images(out.pop("image_results"))
-        if n > 1 and out.get("provider") == "models":
-            out["note"] = "n 参数仅部分组件提供者生效，models 链生成数量由模型决定"
-    return _dumps(out)
 
-
-@deferred_tool(name="edit_image", group=_group, tags=["always", "media:image_edit"], timeout=300.0)
+@deferred_tool(name="edit_image", group=_group, tags=["always", "media:image_edit"], timeout=0)
 async def edit_image(
-    image_path: str,
-    prompt: str,
+    image_path: str = "",
+    prompt: str = "",
     num_inference_steps: int = 20,
     provider: str = "auto",
+    image_paths: list[str] | None = None,
+    image_size: str = "",
+    n: int = 1,
+    options: dict[str, Any] | None = None,
 ) -> str:
-    """对已有图片按文字指令进行编辑/修改，返回编辑后图片的文件路径。
+    """按文字指令编辑一张或多张图片，结果保存到本地。
 
     Args:
-        image_path: 要编辑的图片，本地路径或 URL
-        prompt: 编辑指令，描述希望如何修改图片
-        num_inference_steps: 推理步数，默认 20
-        provider: auto（默认，按该模型类型的优先级与切换设置路由）或指定提供者名
+        image_path: 单张图片引用，兼容旧调用，排在 image_paths 之前。
+        prompt: 编辑指令，可按图1、图2引用输入顺序。
+        num_inference_steps: 推理步数，仅支持此参数的协议生效。
+        provider: auto 或已注册提供者名。
+        image_paths: 有序图片引用列表；与 image_path 至少提供一张。
+        image_size: 输出尺寸或比例，留空由协议决定。
+        n: 生成数量，由所选协议校验上限。
+        options: 所选图片协议的扩展选项。
     """
     err = _check_provider(provider)
     if err:
         return err
-    if image_path.startswith(("http://", "https://")):
-        resolved_image = image_path
-    else:
-        try:
-            resolved_image = ws.resolve_workspace_path(image_path)
-        except ValueError as e:
-            return tool_error(str(e), cause=ErrorCause.PERMISSION, retryable=False,
-                              hint="请使用工作目录（workspace）内的路径")
-        if not os.path.exists(resolved_image):
-            return tool_error(f"图片不存在: {image_path}", cause=ErrorCause.NOT_FOUND,
-                              retryable=False)
-
-    out = await get_visual_router().run(
-        "image_edit", "图片编辑", provider=provider or "auto",
-        image_path=resolved_image, prompt=prompt, num_inference_steps=num_inference_steps,
-    )
-    if out.get("success") and isinstance(out.get("image_results"), list):
-        out["file_paths"] = await ws.save_images(out.pop("image_results"))
-        out["source_image"] = image_path
-    return _dumps(out)
+    try:
+        images = _image_sources(image_path, image_paths)
+        if not images:
+            raise ValueError("图片编辑至少需要一张参考图")
+        out = await get_visual_router().run(
+            "image_edit", "图片编辑", provider=provider or "auto",
+            image_path="", image_paths=images, prompt=prompt,
+            num_inference_steps=num_inference_steps, image_size=image_size, n=n, options=options,
+        )
+        if out.get("success") and isinstance(out.get("image_results"), list):
+            out["file_paths"] = await ws.save_images(out.pop("image_results"))
+            out["source_images"] = ["inline image" if src.startswith("data:") else src for src in images]
+            if image_path:
+                out["source_image"] = "inline image" if image_path.startswith("data:") else image_path
+        return _dumps(out)
+    except Exception as exc:
+        return error_from_exception(exc, action="图片编辑")
 
 
 # ==================================================================
@@ -449,7 +475,8 @@ async def vision_config(action: str = "capabilities", key: str = "", value: str 
             "success": True,
             "capabilities": matrix,
             "hint": "available=false 的能力说明链上提供者均未配置，可用 providers 动作查看详情，"
-                    "或引导主人在视觉页签/模型配置中补齐",
+                    "按提供者详情中的接入说明配置；用 list_entity_methods(group='model_control') "
+                    "发现模型配置工具。缺少凭据时请主人补充，不要猜测密钥",
         })
     if action != "set":
         return tool_error(f"未知操作: {action}", cause=ErrorCause.PARAM, retryable=False,

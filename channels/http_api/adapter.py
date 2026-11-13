@@ -618,8 +618,9 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
         from fastapi.responses import JSONResponse
         from starlette.exceptions import HTTPException as StarletteHTTPException
 
+        from agent.llm.adapter_base import MediaOutcomeUnknown
         from agent.llm.model_api import JudgmentError, LLMNotConfiguredError, ModelCallError
-        from core.tool_errors import error_from_exception
+        from core.tool_errors import ErrorCause, error_from_exception, tool_error
 
         from .context_routes import build_context_router
         from .routes import build_router
@@ -651,11 +652,16 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
 
         async def sdk_error(request: Request, exc: Exception) -> JSONResponse:
             status_code = (503 if isinstance(exc, LLMNotConfiguredError) else
-                           502 if isinstance(exc, ModelCallError) else 422 if isinstance(exc, ValueError) else 500)
-            return JSONResponse({"status": "error", **json.loads(error_from_exception(exc))}, status_code=status_code,
+                           502 if isinstance(exc, (ModelCallError, MediaOutcomeUnknown)) else
+                           422 if isinstance(exc, ValueError) else 500)
+            error = tool_error(
+                str(exc), cause=ErrorCause.NETWORK, retryable=False, outcome="unknown",
+                hint="请求可能已生成并计费，请先核查服务端结果，勿自动重新生成",
+            ) if isinstance(exc, MediaOutcomeUnknown) else error_from_exception(exc)
+            return JSONResponse({"status": "error", **json.loads(error)}, status_code=status_code,
                                 headers={"X-Request-ID": getattr(request.state, "request_id", "")})
 
-        for error_type in (LLMNotConfiguredError, ModelCallError, JudgmentError, ValueError):
+        for error_type in (LLMNotConfiguredError, ModelCallError, MediaOutcomeUnknown, JudgmentError, ValueError):
             app.add_exception_handler(error_type, sdk_error)
         app.add_exception_handler(Exception, sdk_error)
 

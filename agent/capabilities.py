@@ -22,6 +22,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Protocol, Tuple, runtime_checkable
 
+from agent.llm.adapter_base import MediaOutcomeUnknown
 from core.log import log
 from core.registration import record_mapping
 from core.sanitizer import sanitize_text
@@ -309,6 +310,12 @@ class CapabilityRouter:
                         f"{k}: {v}" for k, v in errors.items()
                     )[:200]
                 return result
+            except MediaOutcomeUnknown as exc:
+                return error_payload(
+                    sanitize_text(str(exc)), cause=ErrorCause.NETWORK, retryable=False,
+                    outcome="unknown", provider=name, capability=capability,
+                    hint="请求可能已生成并计费，请先核查服务端结果，勿自动重新生成",
+                )
             except (CapabilityNotSupported, ProviderUnavailable) as exc:
                 skipped[name] = sanitize_text(str(exc))[:200]
                 continue

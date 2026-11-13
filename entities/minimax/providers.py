@@ -1,7 +1,7 @@
 """MiniMax 能力组件 — 视觉理解/图像生成、语音合成/音色管理、联网检索、流式 TTS。
 
 四类组件分别接入核心路由：
-- MiniMaxVisualProvider：understand（Coding Plan 图片理解）+ image_gen → 视觉能力路由
+- MiniMaxVisualProvider：understand（Coding Plan 图片理解）+ image_gen/image_edit → 视觉能力路由
 - MiniMaxSoundProvider：tts（一次性合成）+ voice_mgmt（音色复刻/设计/查询/删除）→ 声音能力路由
 - MiniMaxSearchProvider：Coding Plan 联网检索 → 检索提供者矩阵
 - MiniMaxTtsProvider / MiniMaxWsTtsProvider：HTTP/WS 双传输流式 TTS → 核心 TTS 注册表
@@ -19,22 +19,12 @@ from entities._sdk import (
     SOURCE_CONFIG,
     SOURCE_ENV,
     CapabilityNotSupported,
+    ImageResults,
     ProviderUnavailable,
     RetrievalProvider,
     TtsStream,
     run_coro_sync,
 )
-
-# size 像素格式 → MiniMax aspect_ratio 比例的映射表（取最近比例）
-_SIZE_TO_RATIO = {
-    "1024x1024": "1:1",
-    "1664x928": "16:9",
-    "928x1664": "9:16",
-    "1472x1104": "4:3",
-    "1104x1472": "3:4",
-    "1376x768": "16:9",
-    "768x1376": "9:16",
-}
 
 _SEARCH_TIMEOUT = 15.0
 
@@ -42,14 +32,6 @@ _SEARCH_TIMEOUT = 15.0
 def _client() -> Any:
     from entities.minimax.client import MiniMaxClient
     return MiniMaxClient()
-
-
-def _to_aspect_ratio(image_size: str) -> str:
-    """统一 size 参数转 MiniMax 比例：比例格式直通，像素格式映射最近比例。"""
-    size = image_size.strip()
-    if ":" in size:
-        return size
-    return _SIZE_TO_RATIO.get(size, "1:1")
 
 
 # ==================================================================
@@ -60,7 +42,7 @@ class MiniMaxVisualProvider:
     """MiniMax 视觉能力组件：Coding Plan 图片理解 + 平台图像生成。"""
 
     name = "minimax"
-    capabilities = frozenset({"understand", "image_gen"})
+    capabilities = frozenset({"understand", "image_gen", "image_edit"})
 
     def is_configured(self, capability: str) -> bool:
         try:
@@ -72,6 +54,11 @@ class MiniMaxVisualProvider:
             return False
 
     def status_details(self, capability: str) -> Dict[str, Any]:
+        if capability == "image_gen":
+            from .guide import image_setup_guide
+            return {"setup_guide": image_setup_guide()}
+        if capability == "image_edit":
+            return {"setup_guide_capability": "image_gen"}
         return {}
 
     async def run(self, capability: str, **kwargs: Any) -> Dict[str, Any]:
@@ -79,6 +66,8 @@ class MiniMaxVisualProvider:
             return await self._understand(**kwargs)
         if capability == "image_gen":
             return await self._image_gen(**kwargs)
+        if capability == "image_edit":
+            return await self._image_edit(**kwargs)
         raise CapabilityNotSupported(f"minimax 组件不支持能力 '{capability}'")
 
     async def _understand(self, *, image_path: str, prompt: str) -> Dict[str, Any]:
@@ -99,40 +88,32 @@ class MiniMaxVisualProvider:
         return {"description": content, "model": "minimax-coding-plan"}
 
     async def _image_gen(
-        self,
-        *,
-        prompt: str,
-        image_size: str,
-        num_inference_steps: int,
-        n: int,
-        reference_image: str,
+        self, *, prompt: str, image_size: str = "", num_inference_steps: int = 20,
+        n: int = 1, reference_image: str = "", reference_images: list[str] | None = None,
+        options: dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
         client = _client()
         if not client.configured:
             raise ProviderUnavailable("MiniMax 未配置 api_key")
-        aspect_ratio = _to_aspect_ratio(image_size)
-        if reference_image:
-            if not reference_image.startswith(("http://", "https://", "data:image/")):
-                import base64
-                import mimetypes
-
-                from entities._sdk import resolve_workspace_path
-                resolved = resolve_workspace_path(reference_image)
-                if not os.path.exists(resolved):
-                    raise FileNotFoundError(f"参考图片不存在: {reference_image}")
-                mime = mimetypes.guess_type(os.path.basename(resolved))[0] or "image/jpeg"
-                with open(resolved, "rb") as f:
-                    reference_image = f"data:{mime};base64,{base64.b64encode(f.read()).decode()}"
-            image_results = await client.image_to_image(
-                prompt, reference_image, aspect_ratio=aspect_ratio, n=n,
-            )
-        else:
-            image_results = await client.generate_image(
-                prompt, aspect_ratio=aspect_ratio, n=n,
-            )
-        if not image_results:
+        images = ([reference_image] if reference_image else []) + list(reference_images or ())
+        result = await client.generate_image(
+            prompt, image_size=image_size, n=n, reference_images=images, options=options,
+        )
+        if not result:
             raise RuntimeError("未返回结果")
-        return {"image_results": image_results, "model": "minimax-direct"}
+        details = result.details if isinstance(result, ImageResults) else {}
+        return {"image_results": result, "model": "minimax-direct", **details}
+
+    async def _image_edit(
+        self, *, prompt: str, image_path: str = "", image_paths: list[str] | None = None,
+        image_size: str = "", num_inference_steps: int = 20, n: int = 1,
+        options: dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        images = ([image_path] if image_path else []) + list(image_paths or ())
+        if not images:
+            raise ValueError("图片编辑至少需要一张参考图")
+        return await self._image_gen(prompt=prompt, image_size=image_size, n=n,
+                                     reference_images=images, options=options)
 
 
 # ==================================================================

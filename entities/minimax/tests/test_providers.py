@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import json
+from types import SimpleNamespace
 from typing import Any, Dict
 
 import pytest
@@ -29,8 +31,8 @@ class _FakeClient:
         self.calls.append(("tts", text, kwargs))
         return b"audio-bytes"
 
-    async def generate_image(self, prompt: str, *, aspect_ratio: str, n: int) -> list:
-        self.calls.append(("image_gen", prompt, aspect_ratio, n))
+    async def generate_image(self, prompt: str, **kwargs: Any) -> list:
+        self.calls.append(("image_gen", prompt, kwargs))
         return ["https://cdn.example.com/a.png"]
 
     async def coding_plan_understand_image(self, prompt: str, data_url: str) -> str:
@@ -46,6 +48,49 @@ def fake_client(monkeypatch: pytest.MonkeyPatch):
 
 
 class TestVisualProvider:
+    async def test_image_guide_is_lazy_unique_and_does_not_change_prompt_or_tools(
+        self, monkeypatch: pytest.MonkeyPatch, fake_client: Dict[str, Any],
+    ) -> None:
+        from agent.capabilities import CapabilityRouter
+        from agent.context.assembly import ContextAssembly
+        from agent.vision import capabilities, gen_tools
+        from core.entity import EntityRegistry
+        from entities.minimax import guide
+
+        fake_client["client"] = _FakeClient(configured=False, coding_plan=False)
+        router = CapabilityRouter(config_key="test_image_guide", default_chain=[], log_tag="test",
+                                  allow_fallback=lambda capability: False)
+        monkeypatch.setattr(capabilities, "_router", router)
+        assembly = ContextAssembly(SimpleNamespace(), SimpleNamespace())
+        prompt_before = assembly.build_tool_system_prompt()
+        catalog_before = EntityRegistry.get_entity_catalog()
+        schemas_before = EntityRegistry.get_tool_schemas()
+        assert EntityRegistry.get("minimax_image_guide") is None
+        assert not any(item["group"] == "minimax" for item in catalog_before)
+        calls: list[bool] = []
+        original = guide.image_setup_guide
+
+        def load_guide() -> dict[str, Any]:
+            calls.append(True)
+            return original()
+
+        monkeypatch.setattr(guide, "image_setup_guide", load_guide)
+        router.register(MiniMaxVisualProvider())
+        summary = json.loads(await gen_tools.vision_config("capabilities"))
+        assert summary["capabilities"]["image_gen"]["available"] is False
+        assert not calls
+        status = json.loads(await gen_tools.vision_config("providers"))
+        details = status["providers"][0]["details"]
+        assert details["image_gen"]["setup_guide"]["setup"][1]["arguments"]["timeout"] == 650
+        assert details["image_edit"] == {"setup_guide_capability": "image_gen"}
+        assert calls == [True]
+        assert assembly.build_tool_system_prompt() == prompt_before
+        assert EntityRegistry.get_entity_catalog() == catalog_before
+        assert EntityRegistry.get_tool_schemas() == schemas_before
+        router.unregister("minimax")
+        assert json.loads(await gen_tools.vision_config("providers"))["providers"] == []
+        assert assembly.build_tool_system_prompt() == prompt_before
+
     def test_is_configured_split_credential(self, fake_client):
         provider = MiniMaxVisualProvider()
         fake_client["client"] = _FakeClient(configured=True, coding_plan=False)
@@ -74,13 +119,13 @@ class TestVisualProvider:
                 "understand", image_path="/tmp/a.mp4", prompt="描述",
             )
 
-    async def test_image_gen_maps_pixel_size_to_ratio(self, fake_client):
+    async def test_image_gen_preserves_size_for_protocol_adapter(self, fake_client):
         out = await MiniMaxVisualProvider().run(
             "image_gen", prompt="猫", image_size="1664x928",
             num_inference_steps=20, n=1, reference_image="",
         )
         assert out["image_results"] == ["https://cdn.example.com/a.png"]
-        assert fake_client["client"].calls[0][2] == "16:9"
+        assert fake_client["client"].calls[0][2]["image_size"] == "1664x928"
 
     async def test_unsupported_capability_rejected(self, fake_client):
         from entities._sdk import CapabilityNotSupported

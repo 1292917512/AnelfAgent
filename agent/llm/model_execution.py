@@ -1,13 +1,19 @@
-"""模型能力调用：按类型选择候选，聚合失败归因并保留实际模型身份。"""
+"""模型能力调用：按类型选择候选，聚合失败归因并保留实际模型身份。
+
+模型可见：媒体详情随结果返回，未知结果阻止自动回退，不额外注入提示词。
+Token：仅调用方展示的媒体详情增加少量结果文本，不增加模型调用。
+缓存：媒体详情属于动态结果，不修改主对话稳定前缀。
+"""
 
 from __future__ import annotations
 
 import asyncio
 import math
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
-from typing import Generic, TypeVar
+from dataclasses import dataclass, field
+from typing import Any, Generic, TypeVar
 
+from agent.llm.adapter_base import MediaOutcomeUnknown
 from agent.llm.config import ModelType
 from agent.llm.fallback import fallback_enabled
 from agent.llm.llm_client import LLMClient, LLMNotConfiguredError
@@ -21,11 +27,12 @@ T = TypeVar("T")
 
 @dataclass(frozen=True, slots=True)
 class ModelResult(Generic[T]):
-    """调用产物及实际使用的配置 ID、供应商模型名。"""
+    """调用产物、模型归属及可序列化的媒体详情。"""
 
     value: T
     model_id: str
     model: str
+    details: dict[str, Any] = field(default_factory=dict)
 
 
 class ModelCallError(RuntimeError):
@@ -86,8 +93,16 @@ async def execute_candidates(
         try:
             async with asyncio.timeout(timeout):
                 value = await invoke(client)
-            return ModelResult(value, client.config.name, client.config.model)
+            details = getattr(value, "details", None)
+            return ModelResult(
+                value, client.config.name, client.config.model,
+                details=dict(details) if isinstance(details, dict) else {},
+            )
+        except MediaOutcomeUnknown:
+            raise
         except Exception as exc:
+            if isinstance(exc, TimeoutError) and model_type in (ModelType.IMAGE_GEN, ModelType.IMAGE_EDIT):
+                raise MediaOutcomeUnknown("图片请求超时，远端结果未知，请勿自动重试") from exc
             policy_rejects += classify_llm_error(exc).category is ErrorCategory.CONTENT_POLICY
             detail = manager.safe_error(exc, client).strip() or type(exc).__name__
             errors[client.config.name] = f"{type(exc).__name__}: {detail}"[:500]

@@ -19,14 +19,19 @@ import math
 import mimetypes
 import os
 import time
+from collections.abc import AsyncGenerator
+from contextlib import aclosing
+from dataclasses import replace
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import httpx
+from httpx_sse import aconnect_sse
 
-from agent.llm.adapter_base import AdapterRequest
+from agent.llm.adapter_base import AdapterRequest, MediaOutcomeUnknown
 from agent.llm.asr_adapters import AsrAdapter, resolve_asr_adapter
 from agent.llm.config import LLMClientConfig
-from agent.llm.image_adapters import ImageGenAdapter, resolve_image_adapter
+from agent.llm.image_adapters import ImageGenAdapter, ImageGenParams, ImageResults, resolve_image_adapter
 from agent.llm.music_adapters import MusicAdapter, MusicParams, MusicResult, resolve_music_adapter
 from agent.llm.speech_adapters import (
     SpeechAdapter,
@@ -43,8 +48,6 @@ from core.log import log
 from core.network import ProxyMode, async_network_client
 
 _TIMEOUT = 120.0
-# 同步图片生成/编辑单请求耗时可达数分钟（高步数/排队），长于通用超时
-_IMAGE_TIMEOUT = 300.0
 _VIDEO_POLL_INTERVAL = 5.0
 _VIDEO_MAX_POLL = 120
 _TTS_ASYNC_THRESHOLD = 3000
@@ -62,6 +65,7 @@ class MediaClient:
             base_url=config.base_url, api_key=config.api_key,
             timeout=config.timeout, proxy_mode=config.proxy_mode,
             media_protocol=config.media_protocol, extra_headers=config.extra_headers,
+            extra_body=config.extra_body,
         )
 
     def __init__(
@@ -73,7 +77,10 @@ class MediaClient:
         proxy_mode: ProxyMode = "system",
         media_protocol: str = "",
         extra_headers: Dict[str, str] | None = None,
+        extra_body: Dict[str, Any] | None = None,
     ) -> None:
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("媒体请求 timeout 必须为有限正数")
         self._base_url = base_url.rstrip("/")
         # host 规则匹配的适配器依赖 netloc 非空；缺 scheme 会静默落到兜底适配器
         if self._base_url and not self._base_url.startswith(("http://", "https://")):
@@ -83,6 +90,7 @@ class MediaClient:
         self._proxy_mode = proxy_mode
         self._media_protocol = media_protocol
         self._extra_headers = dict(extra_headers or {})
+        self._extra_body = dict(extra_body or {})
 
     def _http_client(self, timeout: Optional[float] = None) -> httpx.AsyncClient:
         """创建 httpx 异步客户端（若配置了代理则自动应用）。"""
@@ -628,21 +636,17 @@ class MediaClient:
         image_size: str = "1024x1024",
         num_inference_steps: int = 20,
         cfg: Optional[float] = None,
-    ) -> List[str]:
-        """文生图：由图片协议适配器构建请求并解析响应，返回图片 URL 列表。"""
-        adapter = self._image_adapter()
-        req = adapter.build_generate_request(
-            self._base_url,
-            model=model,
-            prompt=prompt,
-            image_size=image_size,
-            num_inference_steps=num_inference_steps,
-            cfg=cfg,
-        )
-        urls = adapter.extract_urls(await self._send(req, timeout=_IMAGE_TIMEOUT))
-        if not urls:
-            raise RuntimeError(f"图片生成响应中无图片（模型 {model}）")
-        return urls
+        n: int = 1,
+        reference_images: list[str] | None = None,
+        options: dict[str, Any] | None = None,
+    ) -> ImageResults:
+        """生成图片；提供参考图时由协议构建编辑请求，超时遵循模型配置。"""
+        return await self._run_image(ImageGenParams(
+            model=model, prompt=prompt, image_size=image_size,
+            images=tuple(reference_images or ()), n=n,
+            num_inference_steps=num_inference_steps, cfg=cfg,
+            options={**self._extra_body, **(options or {})},
+        ))
 
     async def edit_image(
         self,
@@ -650,32 +654,71 @@ class MediaClient:
         *,
         model: str = "",
         image_path: str = "",
+        image_paths: list[str] | None = None,
+        image_size: str = "",
         num_inference_steps: int = 20,
         cfg: float = 4.0,
-    ) -> List[str]:
-        """图片编辑：image 可为 URL 或本地路径（转 "data:image/...;base64,XXX"）。"""
-        if image_path.startswith(("http://", "https://")):
-            image_content: str = image_path
-        else:
-            with open(image_path, "rb") as f:
-                raw = f.read()
-            mime_type, _ = mimetypes.guess_type(os.path.basename(image_path))
-            mime_type = mime_type or "image/png"
-            image_content = f"data:{mime_type};base64,{base64.b64encode(raw).decode()}"
+        n: int = 1,
+        options: dict[str, Any] | None = None,
+    ) -> ImageResults:
+        """编辑单图或多图；image_path 兼容旧调用，置于 image_paths 之前。"""
+        paths = ([image_path] if image_path else []) + list(image_paths or ())
+        if not paths:
+            raise ValueError("图片编辑至少需要一张参考图")
+        return await self._run_image(ImageGenParams(
+            model=model, prompt=prompt, image_size=image_size, images=tuple(paths), n=n,
+            num_inference_steps=num_inference_steps, cfg=cfg,
+            options={**self._extra_body, **(options or {})},
+        ))
 
+    async def _run_image(self, params: ImageGenParams) -> ImageResults:
+        """单次有界调用；同步与 SSE 共用适配器、凭据和取消边界，不自动重试。"""
         adapter = self._image_adapter()
-        req = adapter.build_edit_request(
-            self._base_url,
-            model=model,
-            prompt=prompt,
-            image_content=image_content,
-            num_inference_steps=num_inference_steps,
-            cfg=cfg,
-        )
-        urls = adapter.extract_urls(await self._send(req, timeout=_IMAGE_TIMEOUT))
-        if not urls:
-            raise RuntimeError(f"图片编辑响应中无图片（模型 {model}）")
-        return urls
+        submitted = False
+        try:
+            async with asyncio.timeout(self._timeout):
+                images: list[str] = []
+                for path in params.images:
+                    if path.startswith(adapter.reference_schemes):
+                        images.append(path)
+                    else:
+                        raw = await asyncio.to_thread(Path(path).read_bytes)
+                        mime = mimetypes.guess_type(path)[0] or "image/png"
+                        images.append(f"data:{mime};base64,{base64.b64encode(raw).decode()}")
+                req = adapter.build_request(self._base_url, replace(params, images=tuple(images)))
+                submitted = True
+                if req.payload and req.payload.get("stream"):
+                    async with aclosing(self._image_events(req)) as events:
+                        urls = await adapter.read_stream(events, expected_count=params.n)
+                else:
+                    result = await self._send(req)
+                    if not isinstance(result, dict):
+                        raise ValueError("图片响应必须为 JSON 对象")
+                    urls = adapter.extract_urls(result)
+                if not urls:
+                    raise MediaOutcomeUnknown(f"图片响应中无图片，远端结果未知（模型 {params.model}）")
+                return urls
+        except (TimeoutError, httpx.TransportError, ValueError) as exc:
+            if not submitted:
+                raise
+            raise MediaOutcomeUnknown(f"图片请求结果未知（模型 {params.model}，{type(exc).__name__}），请勿自动重试") from exc
+
+    async def _image_events(self, req: AdapterRequest) -> AsyncGenerator[dict[str, Any], None]:
+        """解码标准 SSE；事件语义由组件负责。"""
+        async with self._http_client() as client:
+            async with aconnect_sse(
+                client, req.method, req.url, json=req.payload,
+                headers={**self._headers(), **(req.headers or {})},
+            ) as source:
+                if source.response.is_error:
+                    await source.response.aread()
+                    self._check_resp(source.response)
+                async for event in source.aiter_sse():
+                    if event.data and event.data != "[DONE]":
+                        data = event.json()
+                        if not isinstance(data, dict):
+                            raise ValueError("图片 SSE 事件必须为 JSON 对象")
+                        yield data
 
     async def download_and_save_images(
         self,
@@ -691,13 +734,13 @@ class MediaClient:
                 if src.startswith("data:image/"):
                     header, b64 = src.split(",", 1)
                     img_bytes = base64.b64decode(b64)
-                    ext = ".png" if "png" in header else ".jpg"
+                    ext = ".webp" if "webp" in header else ".png" if "png" in header else ".jpg"
                 else:
                     resp = await client.get(src, follow_redirects=True)
                     self._check_resp(resp)
                     img_bytes = resp.content
                     ct = resp.headers.get("content-type", "image/png")
-                    ext = ".png" if "png" in ct else ".jpg"
+                    ext = ".webp" if "webp" in ct else ".png" if "png" in ct else ".jpg"
                 fname = f"gen_{ts}_{i}{ext}"
                 fpath = os.path.join(save_dir, fname)
                 with open(fpath, "wb") as f:

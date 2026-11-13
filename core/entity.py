@@ -1345,7 +1345,8 @@ class EntityRegistry:
         if inner_timeout > 0:
             tool_timeout = max(tool_timeout, inner_timeout + _INNER_TIMEOUT_MARGIN)
 
-        deadline = asyncio.timeout(tool_timeout)
+        # 声明 timeout=0 的工具自行管理动态请求预算；显式 _timeout 仍保持最高优先级。
+        deadline = asyncio.timeout(tool_timeout if tool_timeout else None)
         try:
             from core.tool_preconditions import tool_precondition_port
             if tool_precondition_port.bound:

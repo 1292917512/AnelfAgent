@@ -211,6 +211,14 @@ async def test_media_fallback_keeps_each_providers_credentials(
     ("rerank", "rerank", ("query", ["doc"]), {"top_n": 1}, [{"index": 0}]),
     ("image_gen", "generate_image", ("draw",), {"image_size": "512x512"}, ["image"]),
     ("image_edit", "edit_image", ("edit",), {"image_path": "source.png"}, ["edited"]),
+    ("image_gen", "generate_image", ("draw",), {
+        "n": 2, "reference_images": ["https://cdn/a.png", "https://cdn/b.png"],
+        "options": {"output_format": "webp"},
+    }, ["first", "second"]),
+    ("image_edit", "edit_image", ("edit",), {
+        "n": 2, "image_paths": ["https://cdn/a.png", "https://cdn/b.png"], "image_size": "auto",
+        "options": {"area": "2K"},
+    }, ["first", "second"]),
     ("video", "generate_video", ("video",), {"duration": 5}, "video-url"),
     ("music", "generate_music", (), {"lyrics": "song"}, "music-result"),
 ])
@@ -233,6 +241,27 @@ async def test_media_operations_use_their_own_type_chain(
     assert [item.kwargs["model"] for item in call.call_args_list] == ["remote-first", "remote-second"]
     for key, expected in kwargs.items():
         assert call.call_args.kwargs[key] == expected
+
+
+@pytest.mark.parametrize(("kind", "method"), [("image_gen", "generate_image"), ("image_edit", "edit_image")])
+async def test_image_details_survive_sdk_serialization(
+    manager: LLMManager, monkeypatch: pytest.MonkeyPatch, kind: str, method: str,
+) -> None:
+    from pydantic_core import to_jsonable_python
+
+    from agent.llm.image_adapters import ImageResults
+
+    add(manager, "image", kind)
+    details = {"usage": {"generated_images": 1}, "image_details": [
+        {"index": 0, "size": "1024x1024"}, {"index": 1, "error": {"message": "rejected"}},
+    ]}
+    value = ImageResults(["https://cdn/image.webp"], details=details)
+    monkeypatch.setattr(MediaClient, method, AsyncMock(return_value=value))
+    result = await getattr(ModelAPI(manager), method)("draw")
+    serialized = to_jsonable_python(result, bytes_mode="base64")
+    assert serialized["value"] == ["https://cdn/image.webp"]
+    assert serialized["details"] == details
+    assert result.details is not value.details
 
 
 async def test_vision_filters_unsupported_video_and_returns_identity(manager: LLMManager) -> None:
@@ -268,6 +297,49 @@ async def test_generate_image_tool_obeys_policy_before_saving(
     assert done["model"] == "remote-backup" and done["file_paths"] == ["result.png"]
     assert [call.kwargs["model"] for call in generate.call_args_list] == ["remote-primary", "remote-primary", "remote-backup"]
     save.assert_awaited_once_with(["generated"])
+
+
+async def test_unknown_image_outcome_stops_model_and_provider_fallback(manager, monkeypatch) -> None:
+    from agent.llm.adapter_base import MediaOutcomeUnknown
+    from agent.vision import capabilities, gen_tools
+
+    add(manager, "primary", "image_gen")
+    add(manager, "backup", "image_gen")
+    ConfigManager.set("model_fallback_image_gen", True)
+    monkeypatch.setattr(capabilities, "_router", None)
+    monkeypatch.setattr(capabilities, "_mgr", lambda: manager)
+    call = AsyncMock(side_effect=MediaOutcomeUnknown("remote outcome unknown"))
+    monkeypatch.setattr(MediaClient, "generate_image", call)
+    out = json.loads(await gen_tools.generate_image("draw", n=2, reference_images=["https://cdn/a.png", "https://cdn/b.png"]))
+    assert out["outcome"] == "unknown" and out["retryable"] is False
+    call.assert_awaited_once()
+    assert call.call_args.kwargs["reference_images"] == ["https://cdn/a.png", "https://cdn/b.png"]
+    assert call.call_args.kwargs["n"] == 2
+
+
+@pytest.mark.parametrize("method", ["generate_image", "edit_image"])
+async def test_all_reference_paths_are_sandboxed_before_generation(method, monkeypatch, tmp_path) -> None:
+    from agent.vision import gen_tools
+
+    allowed = tmp_path / "allowed.png"
+    allowed.write_bytes(b"image")
+    checked: list[str] = []
+
+    def resolve(path: str) -> str:
+        checked.append(path)
+        if path != "allowed.png":
+            raise ValueError("outside workspace")
+        return str(allowed)
+
+    call = AsyncMock()
+    monkeypatch.setattr(gen_tools, "_check_provider", lambda value: None)
+    monkeypatch.setattr(gen_tools.ws, "resolve_workspace_path", resolve)
+    monkeypatch.setattr(gen_tools, "get_visual_router", lambda: type("Router", (), {"run": call})())
+    key = "reference_images" if method == "generate_image" else "image_paths"
+    result = await getattr(gen_tools, method)(prompt="edit", **{key: ["allowed.png", "C://outside.png"]})
+    assert json.loads(result)["cause"] == "permission"
+    assert checked == ["allowed.png", "C://outside.png"]
+    call.assert_not_awaited()
 
 
 async def test_embedding_timeout_falls_back_but_pinned_space_never_switches(manager: LLMManager) -> None:

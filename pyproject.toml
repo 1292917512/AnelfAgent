@@ -9,7 +9,7 @@ dependencies = [
     # 精确锁定：litellm 流式 usage 处理对本项目是脆弱契约（1.100 曾对未收录
     # 模型伪造流式 usage），版本变动必须同步运行缓存健康门验证后再放行：
     #   LLM_CACHE_E2E=1 uv run pytest tests/integration/test_llm_cache_hit_e2e.py
-    "litellm==1.106.2",
+    "litellm==1.109.1",
     "aiosqlite>=0.21.0",
     # 声纹向量代数（agent/audio/vectors.py 直接依赖）
     "numpy>=1.26.0",
@@ -84,6 +84,7 @@ dependencies = [
     "filelock>=3.32.7",
     "githubkit[auth-app]==0.14.0",
     "graphql-core>=3.2.6,<3.3",
+    "httpx-sse>=0.4.0,<0.5",
 ]
 
 [tool.uv]

@@ -22,6 +22,22 @@
   上下文注入排除/外部推送拒收；AI 与 Web 页签同源开关
 - **生成能力组件**经 `_sdk.register_visual_provider` 接入
 
+## 图片生成协议与多参考图
+
+`MediaClient` 只负责通用参数、异步读取参考图、HTTP/SSE、凭据、代理和模型超时；
+`ImageGenAdapter` 通过 `ImageGenParams` 构建请求并解析结果。平台专属协议由实体经
+`_sdk.register_image_adapter` 注册，跟随模块事务回滚与热卸载。MiniMax 新旧图片协议位于
+`entities/minimax/image_adapter.py`，配置与参数见[组件文档](../entities/minimax/README.md)。
+
+图片 SDK 和视觉工具统一支持数量、扩展选项与有序多参考图，单图参数保持兼容。工具入口先
+校验每个本地路径的沙箱权限，URL/Data URL/组件声明的文件引用交由协议处理；不支持多图的
+协议明确拒绝，不静默丢图。模型 `extra_body` 为图片选项默认值，按次 `options` 优先，协议
+实现保护标准输入不被扩展选项覆盖。`ImageResults` 保持地址列表兼容，并携带逐图诊断与用量。
+
+图片请求使用模型配置的有限总时限，不叠加固定工具时限；显式工具 `_timeout` 和取消仍然
+有效。网络中断或超时后结果未知的生成请求停止模型与提供者回退，防止重复提交；部分成功
+保留逐图错误，并只保存成功产物。SSE 由组件汇总后复用同一工具返回契约，不增设后台任务系统。
+
 ## 图片输入与辅助识别
 
 图片库 `StickerStore` 经实体 `register_lifecycle()` 托管。运行时先注册实体存储，再注册

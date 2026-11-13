@@ -38,6 +38,15 @@ import json
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, TypeVar
 
 from agent.execution_control import request_execution_stop
+from agent.llm.adapter_base import AdapterRequest, MediaOutcomeUnknown, check_base_resp, host_root
+from agent.llm.image_adapters import (
+    ImageGenAdapter,
+    ImageGenParams,
+    ImageResults,
+    OpenAIImagesAdapter,
+    register_image_adapter,
+)
+from agent.llm.media_client import MediaClient
 from agent.llm.model_api import (
     ChatResult,
     ChoiceQuestion,
@@ -102,6 +111,8 @@ from core.network import (
 from core.network.httpx2 import async_network_client2
 
 __all__ = [
+    "AdapterRequest", "ImageGenAdapter", "ImageGenParams", "ImageResults", "OpenAIImagesAdapter",
+    "register_image_adapter", "MediaClient", "MediaOutcomeUnknown", "check_base_resp", "host_root",
     "request_execution_stop", "get_execution_signal", "ExecutionSignal", "ToolCancelled",
     "get_model_api", "ModelAPI", "ModelType", "ModelResult", "ModelCallError", "LLMNotConfiguredError",
     "ChatResult", "ImageContent", "VideoContent", "MusicResult",
@@ -795,6 +806,7 @@ def unregister_module_components(module: str) -> None:
     from agent.audio.providers import get_audio_registry
     from agent.audio.source_fetch import unregister_source_fetchers_by_module
     from agent.hooks_llm.spec import HookRegistry
+    from agent.llm.image_adapters import unregister_image_adapters_by_module
     from agent.memory.embedding.worker import unregister_embedding_backlogs
     from agent.retrieval import providers
     from agent.tts.providers import get_tts_registry
@@ -828,6 +840,7 @@ def unregister_module_components(module: str) -> None:
     unregister_source_fetchers_by_module(module)
     unregister_embedding_backlogs(module)
     unregister_provider_keys_by_module(module)
+    unregister_image_adapters_by_module(module)
 
 
 # 检索组件实现契约（桥层再导出）：Provider 基类 + 凭据来源常量 + 凭据回退辅助

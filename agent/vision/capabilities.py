@@ -24,6 +24,7 @@ from agent.capabilities import (
 )
 from agent.llm.config import ModelType
 from agent.llm.fallback import fallback_enabled
+from agent.llm.image_adapters import ImageResults
 from core.log import log
 
 CAP_UNDERSTAND = "understand"
@@ -80,8 +81,6 @@ class ModelsVisualProvider:
     async def run(self, capability: str, **kwargs: Any) -> Dict[str, Any]:
         if capability == CAP_UNDERSTAND:
             return await self._run_understand(**kwargs)
-        if capability == CAP_IMAGE_GEN and kwargs.get("reference_image"):
-            raise CapabilityNotSupported("参考图生图仅部分组件提供者支持")
         dispatch: Dict[str, Callable[..., Awaitable[Dict[str, Any]]]] = {
             CAP_IMAGE_GEN: self._image_gen,
             CAP_IMAGE_EDIT: self._image_edit,
@@ -155,15 +154,20 @@ class ModelsVisualProvider:
         image_size: str,
         num_inference_steps: int,
         n: int,
-        reference_image: str,
+        reference_image: str = "",
+        reference_images: list[str] | None = None,
+        options: dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
         image_results = await client.generate_image(
             prompt, model=model, image_size=image_size,
             num_inference_steps=num_inference_steps,
+            n=n, reference_images=([reference_image] if reference_image else []) + list(reference_images or ()),
+            options=options,
         )
         if not image_results:
             raise RuntimeError("未返回结果")
-        return {"image_results": image_results}
+        details = image_results.details if isinstance(image_results, ImageResults) else {}
+        return {"image_results": image_results, **details}
 
     async def _image_edit(
         self,
@@ -173,14 +177,20 @@ class ModelsVisualProvider:
         image_path: str,
         prompt: str,
         num_inference_steps: int,
+        image_paths: list[str] | None = None,
+        image_size: str = "",
+        n: int = 1,
+        options: dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
         image_results = await client.edit_image(
             prompt, model=model, image_path=image_path,
             num_inference_steps=num_inference_steps,
+            image_paths=image_paths, image_size=image_size, n=n, options=options,
         )
         if not image_results:
             raise RuntimeError("未返回结果")
-        return {"image_results": image_results}
+        details = image_results.details if isinstance(image_results, ImageResults) else {}
+        return {"image_results": image_results, **details}
 
     async def _video(self, model: str, client: Any, *, op: str, **kwargs: Any) -> Dict[str, Any]:
         if op == "generate":

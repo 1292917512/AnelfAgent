@@ -5,7 +5,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from agent.llm.image_adapters import DashScopeImagesAdapter
+from agent.llm.image_adapters import DashScopeImagesAdapter, ImageGenParams
 from agent.llm.media_client import MediaClient
 
 
@@ -52,13 +52,13 @@ class TestCheckResp:
 class TestDashScopeImageEdit:
     def test_edit_request_messages_with_image(self) -> None:
         adapter = DashScopeImagesAdapter()
-        req = adapter.build_edit_request(
+        req = adapter.build_request(
             "https://example-workspace.cn-beijing.maas.aliyuncs.com/compatible-mode/v1",
-            model="qwen-image-3.0-pro",
+            ImageGenParams(model="qwen-image-3.0-pro",
             prompt="把猫变成戴眼镜的样子",
-            image_content="https://oss.example/cat.png",
+            images=("https://oss.example/cat.png",),
             num_inference_steps=20,
-            cfg=4.0,
+            cfg=4.0),
         )
         assert req.url == (
             "https://example-workspace.cn-beijing.maas.aliyuncs.com"
@@ -131,3 +131,47 @@ async def test_rerank_rejects_nonfinite_score(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr(client, "_http_client", lambda: httpx.AsyncClient(transport=transport))
     with pytest.raises(ValueError, match="有限数值"):
         await client.rerank("证据", ["候选一"])
+
+
+async def test_image_uses_model_timeout_options_and_quantity(monkeypatch: pytest.MonkeyPatch) -> None:
+    import json
+
+    from agent.llm.config import LLMClientConfig
+
+    sent: list[httpx.Request] = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        sent.append(request)
+        return httpx.Response(200, json={"data": [{"url": "https://cdn/a.png"}]})
+
+    monkeypatch.setattr("agent.llm.media_client.async_network_client", lambda **kwargs: httpx.AsyncClient(
+        transport=httpx.MockTransport(respond), timeout=kwargs["timeout"],
+    ))
+    client = MediaClient.from_config(LLMClientConfig(
+        name="images", base_url="https://images.test/v1", api_key="key", model="generic-image",
+        media_protocol="openai", timeout=650, extra_body={"quality": "high", "output_format": "png"},
+    ))
+    await client.generate_image("draw", model="generic-image", n=3, options={"quality": "medium"})
+    assert sent[0].extensions["timeout"]["read"] == 650
+    assert json.loads(sent[0].content) == {"model": "generic-image", "prompt": "draw", "n": 3,
+                                         "size": "1024x1024", "quality": "medium", "output_format": "png"}
+
+
+async def test_image_timeout_is_total_and_never_retries(monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncio
+
+    from agent.llm.adapter_base import MediaOutcomeUnknown
+
+    calls = 0
+
+    async def respond(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        await asyncio.sleep(1)
+        return httpx.Response(200, json={"data": []})
+
+    client = MediaClient("https://images.test/v1", "", media_protocol="openai", timeout=0.01)
+    monkeypatch.setattr(client, "_http_client", lambda timeout=None: httpx.AsyncClient(transport=httpx.MockTransport(respond)))
+    with pytest.raises(MediaOutcomeUnknown):
+        await client.generate_image("draw")
+    assert calls == 1

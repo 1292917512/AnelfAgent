@@ -7,6 +7,11 @@ from typing import Any, Callable, Dict, Generic, List, Optional, Protocol, Tuple
 from urllib.parse import urlparse
 
 from core.log import log
+from core.registration import belongs_to, record_undo
+
+
+class MediaOutcomeUnknown(RuntimeError):
+    """非幂等媒体请求已发送但未确认结果；禁止自动换模型或提供者重复提交。"""
 
 
 @dataclass(slots=True)
@@ -81,6 +86,14 @@ class AdapterRegistry(Generic[AdapterT]):
         default: 设为未命中任何规则时的兜底适配器；
         model_dispatch: 命中该适配器名时按模型名再分流（返回最终适配器名）。
         """
+        previous = (dict(self._adapters), list(self._host_rules), self._default, dict(self._model_dispatch))
+
+        def undo() -> None:
+            self._adapters, self._host_rules, self._default, self._model_dispatch = previous
+
+        record_undo(undo, owner=type(adapter).__module__)
+        self._host_rules = [(key, name) for key, name in self._host_rules if name != adapter.name]
+        self._model_dispatch.pop(adapter.name, None)
         self._adapters[adapter.name] = adapter
         for keyword in host_keywords:
             self._host_rules.append((keyword, adapter.name))
@@ -88,6 +101,17 @@ class AdapterRegistry(Generic[AdapterT]):
             self._default = adapter.name
         if model_dispatch is not None:
             self._model_dispatch[adapter.name] = model_dispatch
+
+    def unregister_by_module(self, module: str) -> None:
+        """按实现归属移除组件协议及其匹配规则。"""
+        names = {name for name, adapter in self._adapters.items()
+                 if belongs_to(type(adapter).__module__, module)}
+        for name in names:
+            self._adapters.pop(name)
+            self._model_dispatch.pop(name, None)
+        self._host_rules = [(key, name) for key, name in self._host_rules if name not in names]
+        if self._default in names:
+            self._default = ""
 
     def resolve(self, base_url: str, protocol: str = "", model: str = "") -> AdapterT:
         """解析适配器：显式 protocol → host 规则 → 默认兜底 → 抛 NotImplementedError。"""

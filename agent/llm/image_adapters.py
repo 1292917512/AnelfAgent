@@ -1,306 +1,188 @@
-"""图片生成协议适配器：收口不同供应商的文生图 API 差异。
+"""图片协议契约与通用适配器；平台专属实现由组件通过 SDK 注册。
 
-各家图片生成接口没有统一标准（路径、请求体、响应格式均不同），
-MediaClient 不感知具体差异，统一通过适配器构建请求、解析响应。
-
-扩展新供应商：实现 ImageGenAdapter 并调用 register_image_adapter() 注册；
-供应商配置可通过 media_protocol 显式指定适配器，未指定时按 host 规则自动匹配。
+模型可见：生成参数、多参考图和逐图错误经工具调用与结果传递。
+Token：仅所选工具的参数与结果增加少量文本，不增加主模型调用。
+缓存：媒体请求独立执行，结果位于动态工具区，不修改稳定前缀。
 """
-
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Tuple
+from collections.abc import AsyncIterator
+from dataclasses import dataclass, field
+from typing import Any
 
-from agent.llm.adapter_base import AdapterRegistry, AdapterRequest, check_base_resp, host_root
+from agent.llm.adapter_base import AdapterRegistry, AdapterRequest, host_root
 
-# 图片请求与共享请求类型同构，直接复用（保留别名以兼容既有引用）
-ImageGenRequest = AdapterRequest
+
+@dataclass(frozen=True)
+class ImageGenParams:
+    """通用图片请求；images 保持调用方顺序，options 由协议实现解释。"""
+
+    model: str
+    prompt: str
+    image_size: str = ""
+    images: tuple[str, ...] = ()
+    n: int = 1
+    num_inference_steps: int = 20
+    cfg: float | None = None
+    options: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not self.prompt.strip():
+            raise ValueError("图片提示词不能为空")
+        if type(self.n) is not int or self.n < 1:
+            raise ValueError("图片数量 n 必须为正整数")
+
+
+class ImageResults(list[str]):
+    """兼容图片地址列表，同时保留逐图诊断、尺寸和供应商用量。"""
+
+    def __init__(self, urls: list[str], *, details: dict[str, Any] | None = None) -> None:
+        super().__init__(urls)
+        self.details = details or {}
 
 
 class ImageGenAdapter(ABC):
-    """图片生成协议适配器基类。"""
+    """组件构建请求并解析响应；HTTP、凭据、代理和超时由媒体客户端统一管理。"""
 
     name: str = ""
+    reference_schemes: tuple[str, ...] = ("http://", "https://", "data:image/")
 
     @abstractmethod
-    def build_generate_request(
-        self,
-        base_url: str,
-        *,
-        model: str,
-        prompt: str,
-        image_size: str,
-        num_inference_steps: int,
-        cfg: Optional[float],
-    ) -> ImageGenRequest:
-        """构建文生图请求。"""
-
-    def build_edit_request(
-        self,
-        base_url: str,
-        *,
-        model: str,
-        prompt: str,
-        image_content: str,
-        num_inference_steps: int,
-        cfg: float,
-    ) -> ImageGenRequest:
-        """构建图片编辑请求；协议未实现时默认不支持。"""
-        raise NotImplementedError(f"图片协议 '{self.name}' 不支持图片编辑")
+    def build_request(self, base_url: str, params: ImageGenParams) -> AdapterRequest:
+        """images 非空时构建编辑请求，否则构建文生图请求。"""
 
     @abstractmethod
-    def extract_urls(self, result: Dict[str, Any]) -> List[str]:
-        """从响应 JSON 提取图片 URL（或 data:base64）列表。"""
+    def extract_urls(self, result: dict[str, Any]) -> ImageResults:
+        """提取成功产物和诊断；无成功产物时由调用方报错。"""
+
+    async def read_stream(self, events: AsyncIterator[dict[str, Any]], *, expected_count: int = 1) -> ImageResults:
+        """汇总协议事件；未声明支持时拒绝流式调用。"""
+        raise NotImplementedError(f"图片协议 '{self.name}' 不支持流式响应")
+
+
+def merge_image_options(payload: dict[str, Any], options: dict[str, Any]) -> dict[str, Any]:
+    """扩展参数不得覆盖已经构建的模型、输入或数量字段。"""
+    conflicts = payload.keys() & options.keys()
+    if conflicts:
+        raise ValueError(f"图片扩展参数与标准参数冲突: {', '.join(sorted(conflicts))}")
+    return {**payload, **options}
 
 
 class SiliconFlowAdapter(ImageGenAdapter):
-    """SiliconFlow 风格：POST {base_url}/images/generations（image_size/num_inference_steps/cfg）。"""
+    """SiliconFlow 图片接口；单图编辑沿用 image 字段。"""
 
     name = "siliconflow"
 
-    def build_generate_request(
-        self,
-        base_url: str,
-        *,
-        model: str,
-        prompt: str,
-        image_size: str,
-        num_inference_steps: int,
-        cfg: Optional[float],
-    ) -> ImageGenRequest:
-        payload: Dict[str, Any] = {
-            "model": model,
-            "prompt": prompt,
-            "image_size": image_size,
-            "num_inference_steps": num_inference_steps,
+    def build_request(self, base_url: str, params: ImageGenParams) -> AdapterRequest:
+        if len(params.images) > 1:
+            raise ValueError("siliconflow 图片协议仅支持一张参考图")
+        if params.options.get("stream"):
+            raise ValueError("siliconflow 图片适配器暂不支持流式输出")
+        payload: dict[str, Any] = {
+            "model": params.model, "prompt": params.prompt,
+            "num_inference_steps": params.num_inference_steps,
         }
-        if cfg is not None:
-            payload["cfg"] = cfg
-        return ImageGenRequest(url=f"{base_url}/images/generations", payload=payload)
+        if params.images:
+            payload.update(image=params.images[0], cfg=params.cfg if params.cfg is not None else 4.0)
+        else:
+            payload["image_size"] = params.image_size or "1024x1024"
+            if params.cfg is not None:
+                payload["cfg"] = params.cfg
+        if params.n != 1:
+            payload["batch_size"] = params.n
+        return AdapterRequest(url=f"{base_url}/images/generations",
+                              payload=merge_image_options(payload, params.options))
 
-    def build_edit_request(
-        self,
-        base_url: str,
-        *,
-        model: str,
-        prompt: str,
-        image_content: str,
-        num_inference_steps: int,
-        cfg: float,
-    ) -> ImageGenRequest:
-        payload: Dict[str, Any] = {
-            "model": model,
-            "prompt": prompt,
-            "image": image_content,
-            "num_inference_steps": num_inference_steps,
-            "cfg": cfg,
-        }
-        return ImageGenRequest(url=f"{base_url}/images/generations", payload=payload)
-
-    def extract_urls(self, result: Dict[str, Any]) -> List[str]:
-        """SiliconFlow 格式优先，OpenAI 格式兜底（部分网关混用）。"""
-        out = [
-            item["url"]
-            for item in result.get("images", [])
-            if isinstance(item, dict) and item.get("url")
-        ]
-        if out:
-            return out
-        return OpenAIImagesAdapter().extract_urls(result)
+    def extract_urls(self, result: dict[str, Any]) -> ImageResults:
+        urls = [item["url"] for item in result.get("images", [])
+                if isinstance(item, dict) and item.get("url")]
+        return ImageResults(urls) if urls else OpenAIImagesAdapter().extract_urls(result)
 
 
 class OpenAIImagesAdapter(ImageGenAdapter):
-    """OpenAI 风格：POST {base_url}/images/generations（size/n）。"""
+    """OpenAI 兼容文生图；编辑的文件上传契约由支持该协议的组件实现。"""
 
     name = "openai"
 
-    def build_generate_request(
-        self,
-        base_url: str,
-        *,
-        model: str,
-        prompt: str,
-        image_size: str,
-        num_inference_steps: int,
-        cfg: Optional[float],
-    ) -> ImageGenRequest:
-        payload: Dict[str, Any] = {
-            "model": model,
-            "prompt": prompt,
-            "size": image_size,
-            "n": 1,
-        }
-        return ImageGenRequest(url=f"{base_url}/images/generations", payload=payload)
+    def build_request(self, base_url: str, params: ImageGenParams) -> AdapterRequest:
+        if params.images:
+            raise NotImplementedError("图片协议 'openai' 不支持图片编辑")
+        payload = {"model": params.model, "prompt": params.prompt,
+                   "size": params.image_size or "1024x1024", "n": params.n}
+        if params.options.get("stream"):
+            raise ValueError("openai 图片适配器暂不支持流式输出")
+        return AdapterRequest(url=f"{base_url}/images/generations",
+                              payload=merge_image_options(payload, params.options))
 
-    def extract_urls(self, result: Dict[str, Any]) -> List[str]:
-        out: List[str] = []
-        for item in result.get("data", []):
+    def extract_urls(self, result: dict[str, Any]) -> ImageResults:
+        urls: list[str] = []
+        items: list[dict[str, Any]] = []
+        fmt = result.get("output_format") or "png"
+        mime = "jpeg" if fmt == "jpg" else fmt
+        for index, item in enumerate(result.get("data", [])):
             if not isinstance(item, dict):
                 continue
             if item.get("url"):
-                out.append(item["url"])
+                urls.append(item["url"])
             elif item.get("b64_json"):
-                out.append(f"data:image/png;base64,{item['b64_json']}")
-        return out
+                urls.append(f"data:image/{mime};base64,{item['b64_json']}")
+            items.append({"index": index, **{k: v for k, v in item.items() if k not in {"url", "b64_json"}}})
+        details: dict[str, Any] = {key: result[key] for key in ("usage", "request_id", "output_format") if key in result}
+        if items:
+            details["image_details"] = items
+        if not urls and items:
+            errors = [str(item["error"]) for item in items if item.get("error")]
+            if errors:
+                raise RuntimeError("图片生成全部失败: " + "; ".join(errors))
+        return ImageResults(urls, details=details)
 
 
 class DashScopeImagesAdapter(ImageGenAdapter):
-    """阿里云百炼原生同步多模态生成接口。
-
-    接口挂在网关机根路径（dashscope.aliyuncs.com、token-plan.*.maas.aliyuncs.com 等），
-    与 base_url 中的聊天协议路径（/compatible-mode/v1、/apps/anthropic）无关，
-    因此始终从 host 根路径拼接。
-    """
+    """百炼原生同步多模态生成接口，图片与文本保持输入顺序。"""
 
     name = "dashscope"
     _PATH = "/api/v1/services/aigc/multimodal-generation/generation"
 
-    def build_generate_request(
-        self,
-        base_url: str,
-        *,
-        model: str,
-        prompt: str,
-        image_size: str,
-        num_inference_steps: int,
-        cfg: Optional[float],
-    ) -> ImageGenRequest:
-        payload: Dict[str, Any] = {
-            "model": model,
-            "input": {"messages": [{"role": "user", "content": [{"text": prompt}]}]},
-            "parameters": {"size": image_size.replace("x", "*"), "n": 1},
-        }
-        return ImageGenRequest(url=f"{host_root(base_url)}{self._PATH}", payload=payload)
+    def build_request(self, base_url: str, params: ImageGenParams) -> AdapterRequest:
+        content = [{"image": value} for value in params.images] + [{"text": params.prompt}]
+        parameters: dict[str, Any] = {"n": params.n}
+        if params.image_size or not params.images:
+            parameters["size"] = (params.image_size or "1024x1024").replace("x", "*")
+        if params.options.get("stream"):
+            raise ValueError("dashscope 图片适配器暂不支持流式输出")
+        payload = {"model": params.model, "input": {"messages": [{"role": "user", "content": content}]},
+                   "parameters": merge_image_options(parameters, params.options)}
+        return AdapterRequest(url=f"{host_root(base_url)}{self._PATH}", payload=payload)
 
-    def build_edit_request(
-        self,
-        base_url: str,
-        *,
-        model: str,
-        prompt: str,
-        image_content: str,
-        num_inference_steps: int,
-        cfg: float,
-    ) -> ImageGenRequest:
-        """图片编辑与文生图同端点，messages 里图片（URL 或 data:base64）+ 编辑指令。"""
-        payload: Dict[str, Any] = {
-            "model": model,
-            "input": {"messages": [{"role": "user", "content": [
-                {"image": image_content},
-                {"text": prompt},
-            ]}]},
-            "parameters": {"n": 1},
-        }
-        return ImageGenRequest(url=f"{host_root(base_url)}{self._PATH}", payload=payload)
-
-    def extract_urls(self, result: Dict[str, Any]) -> List[str]:
-        # 该端点内容项结构不统一：有的只有 image 键、有的带 type 标记，按 image 键存在提取
-        out: List[str] = []
+    def extract_urls(self, result: dict[str, Any]) -> ImageResults:
+        urls: list[str] = []
         for choice in result.get("output", {}).get("choices", []):
-            content = (choice.get("message") or {}).get("content", [])
-            for item in content:
+            for item in (choice.get("message") or {}).get("content", []):
                 if isinstance(item, dict) and item.get("image"):
-                    out.append(item["image"])
-        return out
-
-
-class MiniMaxImagesAdapter(ImageGenAdapter):
-    """MiniMax 图片生成（image-01 / image-01-live）：POST /v1/image_generation。
-
-    文生图直接走 prompt；图片编辑映射为主体参考（subject_reference character）。
-    接口挂在网关机根路径，始终从 host 根拼接。
-    """
-
-    name = "minimax"
-
-    @staticmethod
-    def _aspect_ratio(image_size: str) -> str:
-        """将 "WxH" 尺寸换算为最近的 MiniMax 画幅比。"""
-        try:
-            w, h = image_size.lower().split("x", 1)
-            ratio = int(w) / int(h)
-        except (ValueError, ZeroDivisionError):
-            return "1:1"
-        candidates = {
-            "21:9": 21 / 9, "16:9": 16 / 9, "4:3": 4 / 3, "3:2": 3 / 2,
-            "1:1": 1.0, "2:3": 2 / 3, "3:4": 3 / 4, "9:16": 9 / 16,
-        }
-        return min(candidates, key=lambda k: abs(candidates[k] - ratio))
-
-    def build_generate_request(
-        self,
-        base_url: str,
-        *,
-        model: str,
-        prompt: str,
-        image_size: str,
-        num_inference_steps: int,
-        cfg: Optional[float],
-    ) -> ImageGenRequest:
-        payload: Dict[str, Any] = {
-            "model": model,
-            "prompt": prompt,
-            "aspect_ratio": self._aspect_ratio(image_size),
-            "response_format": "url",
-            "n": 1,
-        }
-        return ImageGenRequest(
-            url=f"{host_root(base_url)}/v1/image_generation", payload=payload,
-        )
-
-    def build_edit_request(
-        self,
-        base_url: str,
-        *,
-        model: str,
-        prompt: str,
-        image_content: str,
-        num_inference_steps: int,
-        cfg: float,
-    ) -> ImageGenRequest:
-        payload: Dict[str, Any] = {
-            "model": model,
-            "prompt": prompt,
-            "subject_reference": [{"type": "character", "image_file": image_content}],
-            "response_format": "url",
-            "n": 1,
-        }
-        return ImageGenRequest(
-            url=f"{host_root(base_url)}/v1/image_generation", payload=payload,
-        )
-
-    def extract_urls(self, result: Dict[str, Any]) -> List[str]:
-        check_base_resp(result)
-        data = result.get("data") or {}
-        out: List[str] = [u for u in data.get("image_urls", []) if u]
-        if not out:
-            out = [f"data:image/png;base64,{b}" for b in data.get("image_base64", []) if b]
-        metadata = result.get("metadata") or {}
-        if not out and metadata.get("failed_count"):
-            raise RuntimeError("图片生成被内容安全拦截（failed_count>0）")
-        return out
+                    urls.append(item["image"])
+        return ImageResults(urls)
 
 
 _REGISTRY: AdapterRegistry[ImageGenAdapter] = AdapterRegistry("图片")
 
 
-def register_image_adapter(
-    adapter: ImageGenAdapter,
-    *,
-    host_keywords: Tuple[str, ...] = (),
-    default: bool = False,
-) -> None:
-    """注册图片协议适配器（语义见 AdapterRegistry.register）。"""
+def register_image_adapter(adapter: ImageGenAdapter, *, host_keywords: tuple[str, ...] = (),
+                           default: bool = False) -> None:
+    """注册组件图片协议，同名重载不重复累积主机规则。"""
     _REGISTRY.register(adapter, host_keywords=host_keywords, default=default)
 
 
+def unregister_image_adapters_by_module(module: str) -> None:
+    """实体热拔除时移除所属图片协议。"""
+    _REGISTRY.unregister_by_module(module)
+
+
 def resolve_image_adapter(base_url: str, protocol: str = "") -> ImageGenAdapter:
-    """解析图片协议适配器（语义见 AdapterRegistry.resolve）。"""
+    """显式协议优先，其次主机匹配，最后使用默认协议。"""
     return _REGISTRY.resolve(base_url, protocol)
 
 
 register_image_adapter(SiliconFlowAdapter(), default=True)
 register_image_adapter(OpenAIImagesAdapter())
 register_image_adapter(DashScopeImagesAdapter(), host_keywords=("aliyuncs.com",))
-register_image_adapter(MiniMaxImagesAdapter(), host_keywords=("minimaxi.com", "minimax.io"))

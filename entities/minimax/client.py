@@ -11,17 +11,15 @@ from __future__ import annotations
 import base64
 import json
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import httpx
 
 from core.log import log
-from entities._sdk import ProxyMode, async_network_client
+from entities._sdk import ImageResults, MediaClient, ProxyMode, async_network_client
 
 _BASE_URL = "https://api.minimaxi.com"
 _TIMEOUT = 120.0
-# 同步图片生成单请求耗时可达数分钟（参考图/自动优化提示词/排队），长于通用超时
-_IMAGE_TIMEOUT = 300.0
 _CONFIG_FILE = os.path.join(os.path.dirname(__file__), "config.json")
 
 _config_cache: Optional[Dict[str, Any]] = None
@@ -223,57 +221,44 @@ class MiniMaxClient:
             raise MiniMaxError(-1, "响应中无音频数据")
         return bytes.fromhex(audio_hex)
 
-    # ------------------------------------------------------------------
-    # Image Generation: POST /v1/image_generation
-    # ------------------------------------------------------------------
+    def _image_client(self, model: str) -> MediaClient:
+        """平台凭据调用与模型管理复用同一图片传输和协议实现。"""
+        from core.config import ConfigManager
+
+        default_url = "https://api.minimax.cn/v1" if model.lower().startswith("minimax-h3-image") else _BASE_URL
+        base_url = str(ConfigManager.get("minimax_image_base_url", "") or default_url)
+        timeout = float(ConfigManager.get("minimax_image_timeout", 600.0))
+        return MediaClient(base_url, self._api_key, timeout=timeout,
+                           proxy_mode=self._proxy_mode, media_protocol="minimax")
 
     async def generate_image(
         self,
         prompt: str,
         *,
         model: str = "",
-        aspect_ratio: str = "1:1",
+        aspect_ratio: str = "",
+        image_size: str = "",
         n: int = 1,
-        response_format: str = "url",
-        prompt_optimizer: bool = False,
-    ) -> List[str]:
-        """文生图，返回图片 URL 或 base64 列表。
+        response_format: str = "",
+        prompt_optimizer: bool | None = None,
+        reference_images: list[str] | None = None,
+        options: dict[str, Any] | None = None,
+    ) -> ImageResults:
+        """生成/参考图编辑共用组件适配器；保留旧版调用参数。"""
+        from core.config import ConfigManager
 
-        Args:
-            prompt: 图片描述，上限 1500 字符
-            model: 模型 image-01 或 image-01-live
-            aspect_ratio: 宽高比 1:1/16:9/4:3/3:2/2:3/3:4/9:16/21:9
-            n: 生成数量 [1, 9]
-            response_format: url 或 base64
-            prompt_optimizer: 是否自动优化 prompt
-        """
-        model = model or get_config("default_image_model", "image-01")
-        payload: Dict[str, Any] = {
-            "model": model,
-            "prompt": prompt,
-            "aspect_ratio": aspect_ratio,
-            "n": n,
-            "response_format": response_format,
-            "prompt_optimizer": prompt_optimizer,
-        }
-        async with self._http_client(timeout=_IMAGE_TIMEOUT) as client:
-            resp = await client.post(
-                f"{_BASE_URL}/v1/image_generation",
-                headers=self._json_headers(),
-                json=payload,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-
-        self._check_resp(data)
-        img_data = data.get("data", {})
-        if response_format == "url":
-            return img_data.get("image_urls", [])
-        return [f"data:image/png;base64,{b}" for b in img_data.get("image_base64", [])]
-
-    # ------------------------------------------------------------------
-    # Image-to-Image: POST /v1/image_generation + subject_reference
-    # ------------------------------------------------------------------
+        model = model or str(ConfigManager.get("minimax_image_model", "") or get_config("default_image_model", "image-01"))
+        extra = dict(options or {})
+        if aspect_ratio:
+            extra["aspect_ratio"] = aspect_ratio
+        if response_format:
+            extra["response_format"] = response_format
+        if prompt_optimizer is not None:
+            extra["prompt_optimizer"] = prompt_optimizer
+        return await self._image_client(model).generate_image(
+            prompt, model=model, image_size=image_size, n=n,
+            reference_images=reference_images, options=extra,
+        )
 
     async def image_to_image(
         self,
@@ -283,38 +268,10 @@ class MiniMaxClient:
         model: str = "",
         aspect_ratio: str = "1:1",
         n: int = 1,
-    ) -> List[str]:
-        """图生图（人物参考），返回图片 URL 列表。
-
-        Args:
-            prompt: 图片描述
-            reference_image: 参考图的 URL 或 base64 Data URL
-            model: 模型 image-01 或 image-01-live
-            aspect_ratio: 宽高比
-            n: 生成数量
-        """
-        model = model or get_config("default_image_model", "image-01")
-        payload: Dict[str, Any] = {
-            "model": model,
-            "prompt": prompt,
-            "aspect_ratio": aspect_ratio,
-            "n": n,
-            "response_format": "url",
-            "subject_reference": [
-                {"type": "character", "image_file": reference_image},
-            ],
-        }
-        async with self._http_client(timeout=_IMAGE_TIMEOUT) as client:
-            resp = await client.post(
-                f"{_BASE_URL}/v1/image_generation",
-                headers=self._json_headers(),
-                json=payload,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-
-        self._check_resp(data)
-        return data.get("data", {}).get("image_urls", [])
+    ) -> ImageResults:
+        """兼容单张主体参考调用，按所选模型转交新旧协议。"""
+        return await self.generate_image(prompt, model=model, aspect_ratio=aspect_ratio,
+                                         n=n, reference_images=[reference_image])
 
     # ------------------------------------------------------------------
     # File Upload: POST /v1/files/upload (multipart/form-data)

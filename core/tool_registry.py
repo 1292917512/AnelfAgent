@@ -30,7 +30,7 @@ def tool(
     参数的名称、类型、是否必填从函数签名自动推导。
 
     Args:
-        timeout: 工具执行超时时间（秒），默认使用全局默认（60秒）
+        timeout: 工具执行超时时间（秒），默认使用全局默认（60秒）；0 表示工具内部管理有限时限
         check_fn: 工具门控前置检查（返回 bool 或 Awaitable[bool]），
             检查不通过时工具不出现在 LLM schema 中
         allow_sleep: 是否允许沉睡（沉睡时仅展示 sleep_brief）
@@ -114,7 +114,7 @@ def deferred_tool(
     参数名称、类型、描述从函数签名和 docstring 自动推导。
 
     Args:
-        timeout: 工具执行超时时间（秒），默认使用全局默认（60秒）
+        timeout: 工具执行超时时间（秒），默认使用全局默认（60秒）；0 表示工具内部管理有限时限
         check_fn: 工具门控前置检查（返回 bool 或 Awaitable[bool]）
         allow_sleep: 是否允许沉睡（沉睡时仅展示 sleep_brief）
         sleep_brief: 沉睡状态下展示给 AI 的简短描述

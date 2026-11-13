@@ -977,6 +977,22 @@ class TestSdkPortal:
         )
         assert response.status_code == 413
 
+    def test_sdk_preserves_unknown_media_outcome(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from unittest.mock import AsyncMock
+
+        from agent.llm.adapter_base import MediaOutcomeUnknown
+
+        generate = AsyncMock(side_effect=MediaOutcomeUnknown("图片流未收到完成事件"))
+        monkeypatch.setattr("channels.http_api.sdk_routes.get_model_api", lambda: SimpleNamespace(
+            generate_image=generate,
+        ))
+        response = _client(HttpApiChannel()).post("/api/sdk/models/generate_image", json={"prompt": "draw"})
+        assert response.status_code == 502
+        result = response.json()
+        assert result["outcome"] == "unknown" and result["retryable"] is False
+        assert result["hint"] and response.headers["X-Request-ID"]
+        generate.assert_awaited_once()
+
     def test_sdk_models_keep_typed_media_and_encode_binary_results(self, monkeypatch) -> None:
         from unittest.mock import AsyncMock
 

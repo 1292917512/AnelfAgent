@@ -21,6 +21,7 @@ from agent.judgment.types import (
     ScoreQuestion,
 )
 from agent.llm.config import ModelType
+from agent.llm.image_adapters import ImageResults
 from agent.llm.llm_client import LLMClient, LLMNotConfiguredError
 from agent.llm.llm_manager import LLMManager, get_llm_manager
 from agent.llm.model_execution import (
@@ -206,26 +207,31 @@ class ModelAPI:
     async def generate_image(
         self, prompt: str, *, image_size: str = "1024x1024", num_inference_steps: int = 20,
         cfg: float | None = None, model_id: str = "", timeout: float | None = None,
-    ) -> ModelResult[list[str]]:
+        n: int = 1, reference_images: list[str] | None = None, options: dict[str, Any] | None = None,
+    ) -> ModelResult[ImageResults]:
         """按图片生成模型优先级返回图片地址。"""
         return await execute_media(
             self.manager, ModelType.IMAGE_GEN,
             lambda model, client: client.generate_image(
                 prompt, model=model, image_size=image_size,
                 num_inference_steps=num_inference_steps, cfg=cfg,
+                n=n, reference_images=reference_images, options=options,
             ), model_id=model_id, timeout=timeout,
         )
 
     async def edit_image(
-        self, prompt: str, *, image_path: str, num_inference_steps: int = 20,
+        self, prompt: str, *, image_path: str = "", num_inference_steps: int = 20,
         cfg: float = 4.0, model_id: str = "", timeout: float | None = None,
-    ) -> ModelResult[list[str]]:
+        image_paths: list[str] | None = None, image_size: str = "", n: int = 1,
+        options: dict[str, Any] | None = None,
+    ) -> ModelResult[ImageResults]:
         """按图片编辑模型优先级返回编辑结果地址。"""
         return await execute_media(
             self.manager, ModelType.IMAGE_EDIT,
             lambda model, client: client.edit_image(
                 prompt, model=model, image_path=image_path,
                 num_inference_steps=num_inference_steps, cfg=cfg,
+                image_paths=image_paths, image_size=image_size, n=n, options=options,
             ), model_id=model_id, timeout=timeout,
         )
 

@@ -39,6 +39,12 @@ audio_bytes = audio.value
 - 媒体调用继承所选模型的凭据、自定义请求头、协议和代理配置，每个候选只尝试一次；
   `ModelCallError.errors` 提供按尝试顺序排列的脱敏错误。取消立即传播，不触发下一候选。
   可选 `timeout` 限制每个媒体候选的完整操作；不设置时沿用客户端自身的请求、流式空闲或任务轮询时限。
+- 图片生成/编辑接受数量、有序参考图和 `options`，模型 `extra_body` 提供选项默认值。
+  `ModelResult.value` 为兼容地址列表的 `ImageResults`，其 `details` 保存逐图诊断与供应商用量；
+  同时透出到 `ModelResult.details`，确保 HTTP SDK 序列化后仍保留这些信息。
+  图片请求使用模型配置的有限总时限；已发送但结果未确认时抛 `MediaOutcomeUnknown` 并停止自动
+  回退，视觉工具和 HTTP SDK 均保留 `outcome=unknown` / `retryable=false`；HTTP SDK 返回 502，
+  调用方不可仅根据 HTTP 状态重试，以免再次生成与计费。
 - `rerank` 校验候选索引唯一且属于本次请求、评分为有限数值、结果数满足请求上限。
   空响应、缺项、重复或越界按调用失败处理，遵循重排序类型的切换设置；不把相关性评分当作已校准概率。
 - `judge` 接受显式状态和类型化问题，复用判断引擎的候选排序、离线跳过与恢复。
@@ -98,7 +104,9 @@ audio_bytes = audio.value
 ## 模型配置与管理（llm_clients.json）
 
 - **AI 可全生命周期管理模型配置**：add/update/remove_provider + add/remove_model（CRITICAL 走
-  审批面，返回脱敏摘要、密钥永不回显），update_model_config 白名单含 enabled/model；
+  审批面，返回脱敏摘要、密钥永不回显），update_model_config 白名单含 enabled/model、
+  model_types（JSON 数组）和 extra_body（JSON 对象，整体替换，{} 清空）；
+  list_models(model_name=...) 按需回读可更新配置，更新前后均可核对。add_model 支持 extra_body 初始值。
   Web 经模型页，双路径同 LLMManager 内存态 + 原子落盘即热生效
 - **api_key 支持 `${ENV_VAR}` 引用**（两步写盘：引用串建档落盘后再写展开值，`_restore_env_refs`
   比对使磁盘保引用、内存持真值）

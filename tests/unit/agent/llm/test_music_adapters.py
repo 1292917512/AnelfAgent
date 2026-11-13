@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import pytest
 
-from agent.llm.image_adapters import MiniMaxImagesAdapter, resolve_image_adapter
 from agent.llm.music_adapters import (
     MiniMaxMusicAdapter,
     MusicParams,
@@ -96,50 +95,3 @@ class TestResolveMusicAdapter:
     def test_unsupported_provider(self) -> None:
         with pytest.raises(NotImplementedError):
             resolve_music_adapter("https://api.siliconflow.cn/v1")
-
-
-class TestMiniMaxImagesAdapter:
-    def test_generate_request(self) -> None:
-        adapter = MiniMaxImagesAdapter()
-        req = adapter.build_generate_request(
-            "https://api.minimaxi.com/anthropic",
-            model="image-01", prompt="猫", image_size="1280x720",
-            num_inference_steps=20, cfg=None,
-        )
-        assert req.url == "https://api.minimaxi.com/v1/image_generation"
-        payload = req.payload
-        assert payload["model"] == "image-01"
-        assert payload["aspect_ratio"] == "16:9"
-        assert payload["response_format"] == "url"
-
-    def test_aspect_ratio_mapping(self) -> None:
-        assert MiniMaxImagesAdapter._aspect_ratio("1024x1024") == "1:1"
-        assert MiniMaxImagesAdapter._aspect_ratio("928x1664") == "9:16"
-        assert MiniMaxImagesAdapter._aspect_ratio("bad") == "1:1"
-
-    def test_edit_request_maps_subject_reference(self) -> None:
-        adapter = MiniMaxImagesAdapter()
-        req = adapter.build_edit_request(
-            "https://api.minimaxi.com/v1",
-            model="image-01", prompt="换装", image_content="data:image/png;base64,AA",
-            num_inference_steps=20, cfg=4.0,
-        )
-        assert req.payload["subject_reference"] == [
-            {"type": "character", "image_file": "data:image/png;base64,AA"}
-        ]
-
-    def test_extract_urls(self) -> None:
-        adapter = MiniMaxImagesAdapter()
-        result = {
-            "data": {"image_urls": ["https://cdn/a.png"]},
-            "metadata": {"success_count": 1, "failed_count": 0},
-            "base_resp": {"status_code": 0},
-        }
-        assert adapter.extract_urls(result) == ["https://cdn/a.png"]
-        b64 = {"data": {"image_base64": ["QUJD"]}, "base_resp": {"status_code": 0}}
-        assert adapter.extract_urls(b64) == ["data:image/png;base64,QUJD"]
-        with pytest.raises(RuntimeError, match="1026"):
-            adapter.extract_urls({"base_resp": {"status_code": 1026, "status_msg": "敏感"}})
-
-    def test_resolve_host_rule(self) -> None:
-        assert resolve_image_adapter("https://api.minimaxi.com/anthropic").name == "minimax"
