@@ -9,8 +9,8 @@ EntityRegistry.execute_tool。引擎只做编排层自己的事：
 - **journal 化执行**：准入先落 running 行，终态一笔写；进程崩溃后
   running run 由 recovery 收敛为 stopped(interrupted)。
 - **断点恢复**：resume 同 run —— completed 步骤经 input_hash 防御性
-  比对后缓存结算（不重付费），running 步骤重派。
-- **修订导入**：start(resume_of=父) —— 父 run 每步最新 completed 成果
+  比对后缓存结算（不重付费）；工具按派发事实与显式重放策略恢复。
+- **修订导入**：start(resume_of=父) —— 父 run 每步最新尝试的 completed 成果
   在 input_hash 一致时导入为 cached，规格分歧自然级联为重跑。
 - **门控重跑**：tool 步的 gate 不满足时先委托子代理按失败上下文修复
   再重跑（有界轮次，每轮独立 ordinal）——「模型生成、代码把关」。
@@ -30,23 +30,25 @@ Token：步骤背景按需进入本次委托；内部展示回执不增加内容
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from agent.approval.types import ApprovalResult
 from agent.workflow import journal as wf_journal
+from agent.workflow.contracts import bind_input, check_gate, content_digest, input_digest, receipt_origin, step_input
 from agent.workflow.journal import (
     NODE_COMPLETED,
     NODE_FAILED,
     WorkflowJournal,
 )
 from agent.workflow.spec import (
+    GateSpec,
     WorkflowSpec,
     WorkflowSpecError,
+    WorkflowStepSpec,
     canonical_spec,
     parse_spec,
     spec_hash,
@@ -54,7 +56,8 @@ from agent.workflow.spec import (
 )
 from core.config import get_config_bool, get_config_int, register_configs_safe
 from core.log import log
-from core.tool_results import PresentedToolResult, extract_error_text, parse_tool_result_json
+from core.sanitizer import sanitize_text
+from core.tool_results import PresentedToolResult, extract_error_text, parse_tool_result_json, redact_tool_result
 
 if TYPE_CHECKING:
     from agent.delegation.delegation_manager import DelegationManager
@@ -62,38 +65,18 @@ if TYPE_CHECKING:
 
 _TAG = "工作流"
 
-# 事件/结果字段的截断上限（journal 尺寸纪律）
+# 模型背景与展示预览的上限；完整执行回执不按预览长度截断。
 _INPUT_PREVIEW_CHARS = 600
 _RESULT_PREVIEW_CHARS = 2000
-_NODE_RESULT_MAX_CHARS = 16_000
+_NODE_RESULT_PREVIEW_CHARS = 16_000
 _UPSTREAM_CONTEXT_CHARS = 2000
 _REPAIR_CONTEXT_CHARS = 4000
 # 失败重试的固定退避（秒）
 _RETRY_BACKOFF_SECONDS = 1.0
 
 
-def _hash_input(desc: Dict[str, Any]) -> str:
-    """步骤输入指纹（规范化 JSON 的 sha256 前 12 位；缓存比对基础）。"""
-    canonical = json.dumps(desc, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
-
-
 def _bounded(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[:limit] + f"…[截断，原长度 {len(text)}]"
-
-
-def _dig(data: Any, path: str) -> Any:
-    """结果 JSON 的点路径取值（支持 dict 键与 list 下标）。"""
-    current = data
-    for part in path.split("."):
-        if isinstance(current, dict):
-            current = current.get(part)
-        elif isinstance(current, list) and part.isdigit():
-            index = int(part)
-            current = current[index] if 0 <= index < len(current) else None
-        else:
-            return None
-    return current
 
 
 @dataclass
@@ -107,22 +90,29 @@ class _StepOutcome:
     delegation_id: str = ""
     usage: Optional[Dict[str, Any]] = None
     retryable: bool = True
+    outcome_unknown: bool = False
+    sensitive_result: bool = False
+    result_origin: str = ""
 
 
 @dataclass
 class _RunState:
-    """运行中的内存态（journal 是事实源，这里只放运行时句柄）。"""
+    """运行句柄与本轮证据投影；journal 是持久事实源。"""
 
     run_id: str
     scope: str
     name: str
     loop: Optional[asyncio.AbstractEventLoop] = None
-    task: Optional[asyncio.Task] = None
+    task: asyncio.Task[None] | None = None
     registry_id: str = ""
-    step_tasks: set = field(default_factory=set)
+    step_tasks: set[asyncio.Task[_StepOutcome]] = field(default_factory=set)
     # step_key → delegation_id（ask/repair 步；停止级联与续聊数据源）
     delegation_ids: Dict[str, str] = field(default_factory=dict)
     stop_requested: bool = False
+    input_hashes: dict[str, str] = field(default_factory=dict)
+    result_views: dict[str, str] = field(default_factory=dict)
+    result_origins: dict[str, str] = field(default_factory=dict)
+    parent_steps: dict[str, WorkflowStepSpec] = field(default_factory=dict)
 
     def stopping(self) -> bool:
         """读取可被取消入口更新的停止信号。"""
@@ -206,7 +196,7 @@ class WorkflowEngine:
         return summary
 
     async def resume(self, run_id: str) -> Dict[str, Any]:
-        """续跑已停止的 run（completed 步骤缓存结算，中断步骤重派）。"""
+        """续跑已停止的 run；已派发工具缺少回执时先检查显式重放契约。"""
         async with self._lifecycle_lock:
             if self._closing:
                 raise RuntimeError("工作流引擎正在关闭")
@@ -270,7 +260,7 @@ class WorkflowEngine:
         self._runs[run_id] = state
         state.task = asyncio.create_task(self._execute_run(run_id), name=f"workflow.{run_id}")
 
-        def _done(task: asyncio.Task) -> None:
+        def _done(task: asyncio.Task[None]) -> None:
             self._runs.pop(run_id, None)
             if not task.cancelled():
                 _ = task.exception()
@@ -301,7 +291,14 @@ class WorkflowEngine:
             existing = await self._journal.latest_nodes(run_id)
             imports: Dict[str, Dict[str, Any]] = {}
             if run.get("parent_run_id"):
-                imports = await self._journal.importable_nodes(str(run["parent_run_id"]))
+                parent_id = str(run["parent_run_id"])
+                imports = await self._journal.latest_nodes(parent_id)
+                parent = await self._journal.get_run(parent_id)
+                if parent is None:
+                    raise ValueError(f"修订源 run 不存在: {parent_id}")
+                parent_spec = WorkflowSpec.model_validate_json(parent["spec_json"])
+                state.parent_steps = {step.key: step for step in parent_spec.steps}
+                self._bind_legacy_receipts(parent_spec, imports, is_revision=bool(parent.get("parent_run_id")))
 
             results: Dict[str, str] = {}
             failure: Optional[Dict[str, Any]] = None
@@ -385,7 +382,7 @@ class WorkflowEngine:
                     "name": spec.name,
                     "steps": {
                         key: {"status": NODE_COMPLETED,
-                              "result": _bounded(results.get(key, ""), _RESULT_PREVIEW_CHARS)}
+                              "result": _bounded(state.result_views.get(key, ""), _RESULT_PREVIEW_CHARS)}
                         for key in by_key
                     },
                 }
@@ -419,51 +416,64 @@ class WorkflowEngine:
     # ------------------------------------------------------------------
 
     async def _run_step(
-            self, run_id: str, run: Dict[str, Any], step: Any,
+            self, run_id: str, run: Dict[str, Any], step: WorkflowStepSpec,
             state: _RunState, existing: Dict[str, Dict[str, Any]],
             imports: Dict[str, Dict[str, Any]], results: Dict[str, str],
     ) -> _StepOutcome:
         try:
-            return await self._run_step_inner(run_id, run, step, state, existing, imports, results)
+            outcome = await self._run_step_inner(run_id, run, step, state, existing, imports, results)
+            if outcome.status == NODE_COMPLETED:
+                state.result_origins[step.key] = outcome.result_origin
+                state.result_views[step.key] = redact_tool_result(
+                    outcome.result, sensitive_result=outcome.sensitive_result)
+            return outcome
         except asyncio.CancelledError:
             if state.stopping():
                 return _StepOutcome(status="cancelled", error="停止请求")
             raise  # 进程关停：上抛由执行循环留待启动收敛
 
     async def _run_step_inner(
-            self, run_id: str, run: Dict[str, Any], step: Any,
+            self, run_id: str, run: Dict[str, Any], step: WorkflowStepSpec,
             state: _RunState, existing: Dict[str, Dict[str, Any]],
             imports: Dict[str, Dict[str, Any]], results: Dict[str, str],
     ) -> _StepOutcome:
-        context = ""
-        if step.kind == "ask":
-            upstream = self._upstream_context(step, results)
-            context = "\n\n".join(part for part in (step.context, upstream) if part)
-            input_desc: Dict[str, Any] = {
-                "goal": step.goal, "context": context,
-                "agent": step.agent_name, "continue_from": step.continue_from,
-            }
-        else:
-            input_desc = {"tool": step.tool, "args": step.args}
-        input_hash = _hash_input(input_desc)
-        input_json = _bounded(json.dumps(input_desc, ensure_ascii=False), _INPUT_PREVIEW_CHARS)
+        context = self._step_context(step, results)
+        input_desc = step_input(step, context)
+        dependency_keys = set(step.depends_on)
+        if step.continue_from:
+            dependency_keys.add(step.continue_from)
+        dependencies = {key: {"input": state.input_hashes[key], "result": content_digest(results[key]),
+                              "origin": state.result_origins[key]}
+                        for key in dependency_keys}
+        input_hash = bind_input(step, context, dependencies)
+        state.input_hashes[step.key] = input_hash
+        preview = {**input_desc, "context": f"<{len(context)} 字符>"} if step.kind == "ask" else input_desc
+        input_json = _bounded(sanitize_text(json.dumps(preview, ensure_ascii=False)), _INPUT_PREVIEW_CHARS)
 
         def _gate_passes(result_text: str) -> bool:
             """缓存结算前的门控复验：门不过的成果不可当完成（继续修复+重跑）。"""
             if step.kind != "tool" or step.gate is None:
                 return True
-            ok, _actual = self._gate_check(result_text, step.gate)
+            ok, _actual = check_gate(result_text, step.gate)
             return ok
 
-        # 同 run 重放（resume）：completed 缓存结算 / failed 复现 / running 重派
+        # 旧摘要只用于原 run 的规格核验；修订复用要求完整依赖绑定。
         prior = existing.get(step.key)
         if prior is not None:
-            if prior["input_hash"] != input_hash:
+            if prior["input_hash"] not in (input_hash, input_digest(input_desc)[:12]):
                 error = (f"重放偏移：步骤 {step.key} 的 journal 记录与规格推导不一致"
                          f"（{prior['input_hash']} != {input_hash}），拒绝缓存结算")
                 log(error, "ERROR", tag=_TAG)
                 return _StepOutcome(status=NODE_FAILED, error=error)
             if prior["status"] == NODE_COMPLETED:
+                if run.get("parent_run_id") and not str(prior["input_hash"]).startswith("v2:"):
+                    return await self._refuse_receipt(run_id, step, prior, input_hash, input_json,
+                                                     "旧格式修订回执缺少可核验的依赖来源；请先核验实际结果",
+                                                     outcome_unknown=step.kind == "tool")
+                if not prior["result_complete"]:
+                    return await self._refuse_receipt(run_id, step, prior, input_hash, input_json,
+                                                     "历史结果不完整或已脱敏，无法安全复用；请核验实际结果后修订运行",
+                                                     outcome_unknown=step.kind == "tool")
                 cached_result = str(prior.get("result_text") or "")
                 if _gate_passes(cached_result):
                     results[step.key] = cached_result
@@ -471,15 +481,38 @@ class WorkflowEngine:
                         state.delegation_ids[step.key] = str(prior["delegation_id"])
                     await self._emit_settled(run_id, step.key, prior["ordinal"],
                                              NODE_COMPLETED, cached=True)
-                    return _StepOutcome(status=NODE_COMPLETED, result=cached_result, cached=True)
+                    return _StepOutcome(status=NODE_COMPLETED, result=cached_result, cached=True,
+                                        result_origin=receipt_origin(prior))
                 # 门控未过的历史轮：不当完成，换新 ordinal 进修复+重跑循环
             elif prior["status"] == NODE_FAILED:
                 return _StepOutcome(status=NODE_FAILED,
                                     error=str(prior.get("error_text") or "历史失败（重放）"))
+            elif self._requires_effect_verification(step, prior):
+                return await self._refuse_receipt(run_id, step, prior, input_hash, input_json,
+                                                 "工具已派发但结果未知，禁止自动重放；请先核验外部状态",
+                                                 outcome_unknown=True)
 
         # 修订导入：父 run 同名步骤输入一致且门控可通过 → 成果直接入账（不重付费）
         imported = imports.get(step.key)
-        if imported is not None and imported["input_hash"] == input_hash \
+        source_step = state.parent_steps.get(step.key)
+        if imported is not None and source_step is not None and step.kind == source_step.kind == "tool" \
+                and input_digest(step_input(step, "")) == input_digest(step_input(source_step, "")) \
+                and self._requires_effect_verification(step, imported):
+            return await self._refuse_receipt(run_id, step, imported, input_hash, input_json,
+                                             "修订源工具结果未知，禁止重复执行；请先核验外部状态",
+                                             outcome_unknown=True)
+        if imported is not None and imported["status"] == NODE_COMPLETED \
+                and imported["input_hash"] in (input_hash, input_digest(input_desc)[:12]) \
+                and not imported["result_complete"]:
+            return await self._refuse_receipt(run_id, step, imported, input_hash, input_json,
+                                             "修订源结果不完整或已脱敏，无法安全复用；请核验实际结果后修订运行",
+                                             outcome_unknown=step.kind == "tool")
+        if imported is not None and imported["status"] == NODE_COMPLETED \
+                and imported["input_hash"] == input_digest(input_desc)[:12]:
+            return await self._refuse_receipt(run_id, step, imported, input_hash, input_json,
+                                             "旧格式修订回执缺少可核验的依赖来源，不能自动复用或重派；请先核验实际结果",
+                                             outcome_unknown=step.kind == "tool")
+        if imported is not None and imported["status"] == NODE_COMPLETED and imported["input_hash"] == input_hash \
                 and _gate_passes(str(imported.get("result_text") or "")):
             ordinal = await self._journal.next_ordinal(run_id, step.key)
             await self._journal.admit_node(run_id, step.key, ordinal, step.kind,
@@ -489,13 +522,15 @@ class WorkflowEngine:
                 result_text=str(imported.get("result_text") or ""),
                 delegation_id=str(imported.get("delegation_id") or ""),
                 usage=self._usage_of(imported),
+                result_origin=receipt_origin(imported),
             )
             imported_result = str(imported.get("result_text") or "")
             results[step.key] = imported_result
             if imported.get("delegation_id"):
                 state.delegation_ids[step.key] = str(imported["delegation_id"])
             await self._emit_settled(run_id, step.key, ordinal, NODE_COMPLETED, cached=True)
-            return _StepOutcome(status=NODE_COMPLETED, result=imported_result, cached=True)
+            return _StepOutcome(status=NODE_COMPLETED, result=imported_result, cached=True,
+                                result_origin=receipt_origin(imported))
 
         ordinal = int(prior["ordinal"]) \
             if prior is not None and prior["status"] == wf_journal.NODE_RUNNING \
@@ -520,20 +555,22 @@ class WorkflowEngine:
                     step.goal or f"{step.tool}({json.dumps(step.args, ensure_ascii=False)})",
                     200),
             })
-            outcome = await self._dispatch(run, step, state, existing, context)
+            outcome = await self._dispatch(run, step, state, existing, context, ordinal)
             if outcome.status == "cancelled":
-                # 节点行保持 running：续跑时按「执行中被打断」重派本 ordinal
-                # （节点终态只有 completed/failed，取消不是步骤结局而是运行暂停）
+                # 节点行保持 running，派发事实保留，恢复时不能把取消当成回滚。
                 await self._emit_settled(run_id, step.key, ordinal, "cancelled",
                                          error=_bounded(outcome.error, 400))
                 return outcome
-            stored_result = str(_bounded(outcome.result, _NODE_RESULT_MAX_CHARS)) if outcome.result else ""
+            stored_result = redact_tool_result(outcome.result, sensitive_result=outcome.sensitive_result)
             await self._journal.settle_node(
                 run_id, step.key, ordinal,
                 result_text=stored_result,
                 error_text=_bounded(outcome.error, 4000) if outcome.error else "",
                 delegation_id=outcome.delegation_id, usage=outcome.usage,
+                result_complete=stored_result == outcome.result,
+                outcome_unknown=outcome.outcome_unknown,
             )
+            outcome.result_origin = f"{run_id}/{step.key}/{ordinal}"
             if isinstance(outcome.result, PresentedToolResult):
                 outcome.result.acknowledge(stored_result)
                 outcome.result = str(outcome.result)
@@ -541,14 +578,14 @@ class WorkflowEngine:
                                      error=_bounded(outcome.error, 400))
 
             if outcome.status == NODE_COMPLETED and gate_cfg is not None:
-                ok, actual = self._gate_check(outcome.result, gate_cfg)
+                ok, actual = check_gate(outcome.result, gate_cfg)
+                actual_view = "<敏感结果>" if outcome.sensitive_result else actual
                 if ok:
                     results[step.key] = outcome.result
-                    return _StepOutcome(status=NODE_COMPLETED, result=outcome.result,
-                                        delegation_id=outcome.delegation_id)
+                    return outcome
                 if attempt < max_attempts:
                     repair = await self._run_repair(run_id, step, state,
-                                                    gate_cfg, actual, outcome.result)
+                                                    gate_cfg, actual_view, outcome.result)
                     if repair.status == "cancelled":
                         return repair
                     if repair.status != NODE_COMPLETED:
@@ -561,7 +598,7 @@ class WorkflowEngine:
                     status=NODE_FAILED,
                     error=_bounded(
                         f"门控未通过：{gate_cfg.field} 期望 {gate_cfg.equals!r}，"
-                        f"实际 {actual!r}；末轮结果：{outcome.result}", 2000),
+                        f"实际 {actual_view!r}；末轮结果：{stored_result}", 2000),
                 )
 
             if outcome.status == NODE_COMPLETED:
@@ -579,18 +616,64 @@ class WorkflowEngine:
             return outcome
         return _StepOutcome(status=NODE_FAILED, error="执行预算耗尽")
 
-    def _gate_check(self, result_text: str, gate: Any) -> Tuple[bool, Any]:
-        """门控判定：结果 JSON 的点路径取值与期望比较（解析失败即不通过）。"""
-        try:
-            parsed = json.loads(result_text)
-        except ValueError:
-            return False, "<非 JSON 结果>"
-        actual = _dig(parsed, gate.field)
-        return actual == gate.equals, actual
+    def _step_context(self, step: WorkflowStepSpec, results: Dict[str, str]) -> str:
+        """模型背景保持有界；完整依赖内容另行绑定，不扩张模型上下文。"""
+        if step.kind != "ask":
+            return ""
+        return "\n\n".join(part for part in (step.context, self._upstream_context(step, results)) if part)
+
+    def _bind_legacy_receipts(self, spec: WorkflowSpec, nodes: Dict[str, Dict[str, Any]], *, is_revision: bool) -> None:
+        """从源规格与完整回执补足旧输入绑定；缺失证据不推断、不回写历史。"""
+        steps = {step.key: step for step in spec.steps}
+        inputs: dict[str, str] = {}
+        results: dict[str, str] = {}
+        for layer in topo_layers(spec):
+            for key in layer:
+                step, node = steps[key], nodes.get(key)
+                if node is None or node["status"] != NODE_COMPLETED or not node["result_complete"]:
+                    continue
+                dependencies = set(step.depends_on) | ({step.continue_from} if step.continue_from else set())
+                if not dependencies.issubset(inputs):
+                    continue
+                stored_hash = str(node["input_hash"])
+                if not stored_hash.startswith("v2:"):
+                    if is_revision:
+                        continue  # 旧修订未绑定依赖与原始执行身份，不能从当前图反推历史验证。
+                    context = self._step_context(step, results)
+                    if stored_hash != input_digest(step_input(step, context))[:12]:
+                        continue
+                    node["input_hash"] = bind_input(step, context, {
+                        dep: {"input": inputs[dep], "result": content_digest(results[dep]),
+                              "origin": receipt_origin(nodes[dep])} for dep in dependencies})
+                inputs[key] = str(node["input_hash"])
+                results[key] = str(node.get("result_text") or "")
+
+    @staticmethod
+    def _requires_effect_verification(step: WorkflowStepSpec, node: Dict[str, Any]) -> bool:
+        """未知工具效果仅在旧调用与当前工具均显式允许重放时可重试。"""
+        if step.kind != "tool" or node["status"] == NODE_COMPLETED \
+                or node["dispatch_state"] not in ("dispatched", "unknown"):
+            return False
+        from core.entity import EntityRegistry
+        entity = EntityRegistry.get(step.tool)
+        return not (node["replay_safe"] and entity is not None and entity.meta.get("replay_safe") is True)
+
+    async def _refuse_receipt(self, run_id: str, step: WorkflowStepSpec, source: Dict[str, Any],
+                              input_hash: str, input_json: str, error: str, *,
+                              outcome_unknown: bool = False) -> _StepOutcome:
+        """将无法安全恢复的证据落为失败，后续修订仍能识别未知效果。"""
+        ordinal = (int(source["ordinal"]) if source["run_id"] == run_id
+                   else await self._journal.next_ordinal(run_id, step.key))
+        await self._journal.admit_node(run_id, step.key, ordinal, step.kind, input_hash, input_json)
+        await self._journal.settle_node(
+            run_id, step.key, ordinal, error_text=error, result_text=str(source.get("result_text") or ""),
+            result_complete=bool(source["result_complete"]), outcome_unknown=outcome_unknown)
+        await self._emit_settled(run_id, step.key, ordinal, NODE_FAILED, error=error)
+        return _StepOutcome(status=NODE_FAILED, error=error, retryable=False, outcome_unknown=outcome_unknown)
 
     async def _run_repair(
-            self, run_id: str, step: Any, state: _RunState,
-            gate: Any, actual: Any, last_result: str,
+            self, run_id: str, step: WorkflowStepSpec, state: _RunState,
+            gate: GateSpec, actual: Any, last_result: str,
     ) -> _StepOutcome:
         """门控失败后的修复委托（独立 repair 节点行，成功后主步骤重跑）。"""
         goal = (gate.repair_goal or "").strip() or (
@@ -599,7 +682,7 @@ class WorkflowEngine:
             "请分析失败原因并修复，使下次执行能通过门控。")
         context = _bounded(last_result, _REPAIR_CONTEXT_CHARS)
         key = f"{step.key}#repair"
-        input_hash = _hash_input({"goal": goal, "context": context, "repair_for": step.key})
+        input_hash = input_digest({"goal": goal, "context": context, "repair_for": step.key})
         ordinal = await self._journal.next_ordinal(run_id, key)
         await self._journal.admit_node(run_id, key, ordinal, "repair", input_hash,
                                        _bounded(goal, _INPUT_PREVIEW_CHARS))
@@ -608,9 +691,10 @@ class WorkflowEngine:
             "input_preview": _bounded(goal, 200),
         })
         outcome = await self._dispatch_ask(goal, context, "", state, key)
+        stored_result = redact_tool_result(outcome.result, sensitive_result=outcome.sensitive_result)
         await self._journal.settle_node(
             run_id, key, ordinal,
-            result_text=_bounded(outcome.result, _NODE_RESULT_MAX_CHARS) if outcome.result else "",
+            result_text=stored_result, result_complete=stored_result == outcome.result,
             error_text=_bounded(outcome.error, 4000)
             if outcome.error or outcome.status != NODE_COMPLETED else "",
             delegation_id=outcome.delegation_id, usage=outcome.usage,
@@ -631,14 +715,15 @@ class WorkflowEngine:
         return self._dispatch_sem
 
     async def _dispatch(
-            self, run: Dict[str, Any], step: Any, state: _RunState,
-            existing: Dict[str, Dict[str, Any]], context: str,
+            self, run: Dict[str, Any], step: WorkflowStepSpec, state: _RunState,
+            existing: Dict[str, Dict[str, Any]], context: str, ordinal: int,
     ) -> _StepOutcome:
         if step.kind == "ask":
             return await self._dispatch_ask(step.goal, context, step.agent_name,
                                             state, step.key, step.continue_from, existing,
                                             timeout=float(step.timeout or 0))
-        return await self._dispatch_tool(run, step, timeout=float(step.timeout or 0))
+        return await self._dispatch_tool(run, step, timeout=float(step.timeout or 0),
+                                         node=(state.run_id, step.key, ordinal))
 
     async def _dispatch_ask(
             self, goal: str, context: str, agent_name: str,
@@ -730,9 +815,11 @@ class WorkflowEngine:
         return messages
 
     async def _dispatch_tool(
-            self, run: Dict[str, Any], step: Any, timeout: float = 0.0,
+            self, run: Dict[str, Any], step: WorkflowStepSpec, timeout: float = 0.0,
+            *, node: tuple[str, str, int] | None = None,
     ) -> _StepOutcome:
         started = False
+        sensitive_result = False
         try:
             async with asyncio.timeout(timeout if timeout > 0 else None):
                 async with self._slot():
@@ -741,18 +828,26 @@ class WorkflowEngine:
                         return _StepOutcome(status=NODE_FAILED, error=f"权限检查拒绝: {decision.reason}", retryable=False)
                     from core.entity import EntityRegistry
                     arguments = json.dumps(step.args, ensure_ascii=False)
+                    entity = EntityRegistry.get(step.tool)
+                    sensitive_result = bool(entity and entity.meta.get("sensitive_result") is True)
+                    if node is not None:
+                        await self._journal.mark_dispatched(
+                            *node, replay_safe=bool(entity and entity.meta.get("replay_safe") is True))
                     started = True
                     result_str = await EntityRegistry.execute_tool(step.tool, arguments)
         except TimeoutError:
             detail = "操作结果未确认，请先核验" if started else "排队或权限检查未完成，工具尚未执行"
             return _StepOutcome(status=NODE_FAILED, error=f"步骤超时（{timeout:g}s），{detail}: {step.tool}",
-                                retryable=not started)
+                                retryable=not started, outcome_unknown=started)
         parsed = parse_tool_result_json(result_str)
-        error = extract_error_text(parsed)
+        unknown = isinstance(parsed, dict) and parsed.get("outcome") == "unknown"
+        error = extract_error_text(parsed) or ("工具结果未确认" if unknown else "")
         if error:
             retryable = isinstance(parsed, dict) and parsed.get("retryable") is not False \
                 and parsed.get("outcome") != "unknown"
-            return _StepOutcome(status=NODE_FAILED, error=error[:4000], result=result_str, retryable=retryable)
+            return _StepOutcome(status=NODE_FAILED, error=error[:4000], result=result_str, retryable=retryable,
+                                outcome_unknown=unknown,
+                                sensitive_result=sensitive_result)
         if decision.notice:
             source_result = result_str
             payload = parsed if isinstance(parsed, dict) else {"result": result_str}
@@ -764,9 +859,9 @@ class WorkflowEngine:
                     text = delivered.get("result", "") if isinstance(delivered, dict) else ""
                     source_result.acknowledge(visible if isinstance(parsed, dict) else text if isinstance(text, str) else "")
                 result_str = PresentedToolResult(result_str, acknowledge)
-        return _StepOutcome(status=NODE_COMPLETED, result=result_str)
+        return _StepOutcome(status=NODE_COMPLETED, result=result_str, sensitive_result=sensitive_result)
 
-    async def _request_approval(self, step: Any, run: Dict[str, Any]) -> "ApprovalResult":
+    async def _request_approval(self, step: WorkflowStepSpec, run: Dict[str, Any]) -> ApprovalResult:
         """工具步骤使用与对话相同的规则和 AI 评审。"""
         from agent.approval import get_approval_gate
         return await get_approval_gate().check(
@@ -785,7 +880,7 @@ class WorkflowEngine:
         except ValueError:
             return None
 
-    def _upstream_context(self, step: Any, results: Dict[str, str]) -> str:
+    def _upstream_context(self, step: WorkflowStepSpec, results: Dict[str, str]) -> str:
         """依赖步骤结果的有界注入（每步 ≤ workflow_upstream_context_chars）。"""
         bound = max(200, get_config_int("workflow_upstream_context_chars",
                                         _UPSTREAM_CONTEXT_CHARS))
@@ -864,7 +959,7 @@ class WorkflowEngine:
                 {
                     "key": n["step_key"], "ordinal": n["ordinal"], "kind": n["kind"],
                     "status": n["status"],
-                    "result": str(n.get("result_text") or ""),
+                    "result": _bounded(str(n.get("result_text") or ""), _NODE_RESULT_PREVIEW_CHARS),
                     "error": str(n.get("error_text") or ""),
                     "usage": self._usage_of(n),
                     "delegation_id": n.get("delegation_id") or "",

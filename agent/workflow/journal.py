@@ -2,8 +2,8 @@
 
 写入纪律（对齐成熟 journal 设计，是断点恢复正确性的全部前提）：
 
-- **准入即落 running**：步骤派发前先写 running 行，崩溃后 running 行
-  即「执行中被打断」的证据（恢复时重派）。
+- **准入与派发分离**：步骤先落 pending，工具通过权限检查后持久化 dispatched
+  再调用；无终态回执的 dispatched/unknown 不代表工具未执行。
 - **终态一笔写**：run 的终态与结算袋（stop_reason/failure/result/
   finished_at）一条 UPDATE 写完——分两条会开出「completed 但无 result」
   的崩溃窗口；翻回非终态（resume）同笔清空结算袋。
@@ -13,10 +13,9 @@
 恢复语义（engine 消费）：
 
 - 同 run 续跑（resume）：completed 行以 input_hash 防御性比对后缓存
-  结算（不重付费）；running 行重派；failed 行复现失败。
-- 修订运行（amend，start 时 resume_of=父 run）：父 run 每步「最新
-  completed 行」可导入——子 run 执行到该步时 input_hash 一致即结算
-  为 cached，分歧（hash 不一致）自然级联为重跑。
+  结算（不重付费）；running 行按派发事实恢复；failed 行复现失败。
+- 修订运行读取每步最新尝试，不能用早先的成功掩盖后续失败或未知效果。
+  完整结果与展示预览分离；脱敏结果不得冒充可恢复的完整回执。
 """
 
 from __future__ import annotations
@@ -79,6 +78,10 @@ CREATE TABLE IF NOT EXISTS workflow_node (
     error_text TEXT,
     delegation_id TEXT,
     usage_json TEXT,
+    dispatch_state TEXT NOT NULL DEFAULT 'unknown',
+    replay_safe INTEGER NOT NULL DEFAULT 0,
+    result_complete INTEGER NOT NULL DEFAULT 0,
+    result_origin TEXT,
     created_at REAL NOT NULL,
     updated_at REAL NOT NULL,
     PRIMARY KEY (run_id, step_key, ordinal)
@@ -122,14 +125,39 @@ class WorkflowJournal:
 
             os.makedirs(os.path.dirname(os.path.abspath(self._db_path)) or ".", exist_ok=True)
             db = await aiosqlite.connect(self._db_path)
-            await db.execute("PRAGMA journal_mode=WAL;")
-            await db.execute("PRAGMA synchronous=NORMAL;")
-            await db.execute("PRAGMA busy_timeout=5000;")
-            db.row_factory = aiosqlite.Row
-            await db.executescript(_SCHEMA)
-            await db.commit()
+            try:
+                await db.execute("PRAGMA journal_mode=WAL;")
+                await db.execute("PRAGMA synchronous=FULL;")
+                await db.execute("PRAGMA busy_timeout=5000;")
+                db.row_factory = aiosqlite.Row
+                await db.executescript(_SCHEMA)
+                await self._migrate_nodes(db)
+                await db.commit()
+            except BaseException:
+                await db.close()
+                raise
             self._conn = db
             return db
+
+    @staticmethod
+    async def _migrate_nodes(db: aiosqlite.Connection) -> None:
+        """保留旧回执；旧格式未记录派发事实，不能推断为尚未执行。"""
+        async with db.execute("PRAGMA table_info(workflow_node)") as cursor:
+            columns = {str(row["name"]) for row in await cursor.fetchall()}
+        additions = {
+            "dispatch_state": "TEXT NOT NULL DEFAULT 'unknown'",
+            "replay_safe": "INTEGER NOT NULL DEFAULT 0",
+            "result_complete": "INTEGER NOT NULL DEFAULT 0",
+            "result_origin": "TEXT",
+        }
+        for name, definition in additions.items():
+            if name not in columns:
+                await db.execute(f"ALTER TABLE workflow_node ADD COLUMN {name} {definition}")
+        if "result_complete" not in columns:
+            # 旧格式原文最多 16000 字符，超长值含截断标记，不可恢复原 JSON。
+            await db.execute(
+                "UPDATE workflow_node SET result_complete = 1"
+                " WHERE result_text IS NOT NULL AND length(result_text) <= 16000")
 
     async def aclose(self) -> None:
         async with self._conn_lock:
@@ -280,8 +308,8 @@ class WorkflowJournal:
         async with self._write_lock:
             await db.execute(
                 "INSERT INTO workflow_node (run_id, step_key, ordinal, kind, status,"
-                " input_hash, input_json, created_at, updated_at)"
-                " VALUES (?, ?, ?, ?, 'running', ?, ?, ?, ?)"
+                " input_hash, input_json, dispatch_state, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, 'running', ?, ?, 'pending', ?, ?)"
                 " ON CONFLICT(run_id, step_key, ordinal) DO UPDATE SET"
                 " input_hash = excluded.input_hash, input_json = excluded.input_json,"
                 " updated_at = excluded.updated_at",
@@ -289,10 +317,26 @@ class WorkflowJournal:
             )
             await db.commit()
 
+    async def mark_dispatched(self, run_id: str, step_key: str, ordinal: int, *, replay_safe: bool) -> None:
+        """工具调用前提交派发意图和重放策略；提交失败时不得执行工具。"""
+        db = await self._get_db()
+        async with self._write_lock:
+            cursor = await db.execute(
+                "UPDATE workflow_node SET dispatch_state = 'dispatched', replay_safe = ?, updated_at = ?"
+                " WHERE run_id = ? AND step_key = ? AND ordinal = ? AND status = 'running'",
+                (int(replay_safe), time.time(), run_id, step_key, ordinal),
+            )
+            if cursor.rowcount != 1:
+                await db.rollback()
+                raise ValueError(f"工作流工具派发缺少在途节点: {run_id}/{step_key}/{ordinal}")
+            await db.commit()
+
     async def settle_node(
             self, run_id: str, step_key: str, ordinal: int, *,
             result_text: str = "", error_text: str = "",
             delegation_id: str = "", usage: Optional[Dict[str, Any]] = None,
+            result_complete: bool = True, outcome_unknown: bool = False,
+            result_origin: str = "",
     ) -> None:
         """步骤终态（completed/error 二选一由 error_text 是否非空决定）。"""
         db = await self._get_db()
@@ -300,10 +344,12 @@ class WorkflowJournal:
         async with self._write_lock:
             await db.execute(
                 "UPDATE workflow_node SET status = ?, result_text = ?, error_text = ?,"
-                " delegation_id = ?, usage_json = ?, updated_at = ?"
+                " delegation_id = ?, usage_json = ?, result_complete = ?, dispatch_state = ?, result_origin = ?, updated_at = ?"
                 " WHERE run_id = ? AND step_key = ? AND ordinal = ?",
                 (status, result_text, error_text or None, delegation_id or None,
                  json.dumps(usage, ensure_ascii=False) if usage else None,
+                 int(result_complete), "unknown" if outcome_unknown else "settled",
+                 result_origin or f"{run_id}/{step_key}/{ordinal}",
                  time.time(), run_id, step_key, ordinal),
             )
             await db.commit()
@@ -336,18 +382,6 @@ class WorkflowJournal:
                 " WHERE run_id = ? AND step_key = ?", (run_id, step_key)) as cur:
             row = await cur.fetchone()
         return int(row["mo"]) + 1 if row is not None else 0
-
-    async def importable_nodes(self, parent_run_id: str) -> Dict[str, Dict[str, Any]]:
-        """父 run 可导入的步骤成果：每 key 的最新 completed 行（input_hash 比对用）。"""
-        db = await self._get_db()
-        async with db.execute(
-                "SELECT n.* FROM workflow_node n JOIN ("
-                "  SELECT step_key, MAX(ordinal) AS mo FROM workflow_node"
-                "  WHERE run_id = ? AND status = 'completed' GROUP BY step_key"
-                ") m ON n.run_id = ? AND n.step_key = m.step_key AND n.ordinal = m.mo",
-                (parent_run_id, parent_run_id)) as cur:
-            rows = await cur.fetchall()
-        return {_row_to_dict(r)["step_key"]: _row_to_dict(r) for r in rows}
 
     async def nodes_of_run(self, run_id: str) -> List[Dict[str, Any]]:
         """run 全部节点（按 key、ordinal 排序；详情页数据源）。"""

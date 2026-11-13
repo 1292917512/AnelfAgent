@@ -90,7 +90,7 @@ async def test_events_monotonic_sequence(journal: WorkflowJournal):
     assert events[-1]["payload"] == {"status": "completed"}
 
 
-async def test_importable_nodes_picks_latest_completed(journal: WorkflowJournal):
+async def test_latest_attempt_keeps_failure_and_unknown_effect(journal: WorkflowJournal):
     await journal.create_run("parent", "t", "{}", "h", "")
     await journal.admit_node("parent", "a", 1, "ask", "ih1", "{}")
     await journal.settle_node("parent", "a", 1, result_text="v1")
@@ -98,10 +98,83 @@ async def test_importable_nodes_picks_latest_completed(journal: WorkflowJournal)
     await journal.settle_node("parent", "a", 2, result_text="v2")
     await journal.admit_node("parent", "b", 1, "tool", "ihb", "{}")
     await journal.settle_node("parent", "b", 1, error_text="x")  # 失败步不可导入
+    await journal.admit_node("parent", "a", 3, "ask", "ih1", "{}")
+    await journal.mark_dispatched("parent", "a", 3, replay_safe=False)
+    nodes = await journal.latest_nodes("parent")
+    assert nodes["a"]["ordinal"] == 3
+    assert nodes["a"]["dispatch_state"] == "dispatched"
+    assert nodes["b"]["status"] == "failed"
+    with pytest.raises(ValueError, match="在途节点"):
+        await journal.mark_dispatched("parent", "b", 1, replay_safe=False)
 
-    imports = await journal.importable_nodes("parent")
-    assert set(imports) == {"a"}
-    assert imports["a"]["result_text"] == "v2"
+
+async def test_legacy_node_migration_keeps_unknown_dispatch_and_result_completeness(tmp_path):
+    import sqlite3
+
+    path = tmp_path / "legacy.sqlite3"
+    with sqlite3.connect(path) as connection:
+        connection.execute("""CREATE TABLE workflow_node (
+            run_id TEXT, step_key TEXT, ordinal INTEGER, kind TEXT, status TEXT,
+            input_hash TEXT, input_json TEXT, result_text TEXT, error_text TEXT,
+            delegation_id TEXT, usage_json TEXT, created_at REAL, updated_at REAL,
+            PRIMARY KEY(run_id, step_key, ordinal))""")
+        connection.executemany(
+            "INSERT INTO workflow_node VALUES ('legacy', ?, 1, 'tool', ?, 'oldhash', '{}', ?, NULL, NULL, NULL, 0, 0)",
+            [("complete", "completed", '{"verified":true}'),
+             ("truncated", "completed", "x" * 16000 + "…[截断，原长度 20000]"),
+             ("inflight", "running", None)],
+        )
+    for _ in range(2):
+        journal = WorkflowJournal(str(path))
+        try:
+            nodes = await journal.latest_nodes("legacy")
+            assert nodes["complete"]["result_complete"] == 1
+            assert nodes["truncated"]["result_complete"] == 0
+            assert nodes["inflight"]["dispatch_state"] == "unknown"
+            assert nodes["inflight"]["replay_safe"] == 0
+        finally:
+            await journal.aclose()
+
+
+@pytest.mark.parametrize("completed", [False, True])
+async def test_durable_receipt_survives_abrupt_process_exit(tmp_path, completed):
+    import asyncio
+    import os
+    import subprocess
+    import sys
+    import textwrap
+
+    path = tmp_path / "crash.sqlite3"
+    code = textwrap.dedent("""
+        import asyncio, os, sys
+        from agent.workflow.journal import WorkflowJournal
+
+        async def main():
+            journal = WorkflowJournal(sys.argv[1])
+            await journal.create_run("crash", "crash", "{}", "spec", "")
+            await journal.admit_node("crash", "effect", 1, "tool", "input")
+            await journal.mark_dispatched("crash", "effect", 1, replay_safe=False)
+            if sys.argv[2] == "True":
+                await journal.settle_node("crash", "effect", 1, result_text='{"done":true}')
+            os._exit(71)
+
+        asyncio.run(main())
+    """)
+    env = {**os.environ, "ANELF_CONFIG_DIR": str(tmp_path / "config"), "ANELF_DATA_DIR": str(tmp_path / "data")}
+    process = await asyncio.to_thread(subprocess.run, [sys.executable, "-c", code, str(path), str(completed)],
+                                      env=env, capture_output=True, timeout=20)
+    assert process.returncode == 71, process.stderr.decode(errors="replace")
+    journal = WorkflowJournal(str(path))
+    try:
+        node = await journal.get_node("crash", "effect", 1)
+        assert node["status"] == ("completed" if completed else "running")
+        assert node["dispatch_state"] == ("settled" if completed else "dispatched")
+        assert node["replay_safe"] == 0
+        if completed:
+            assert node["result_complete"] == 1
+            assert node["result_text"] == '{"done":true}'
+    finally:
+        await journal.aclose()
 
 
 async def test_list_non_terminal_and_purge(journal: WorkflowJournal):

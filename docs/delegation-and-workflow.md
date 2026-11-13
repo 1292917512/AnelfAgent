@@ -84,6 +84,23 @@
 
 ## 工作流引擎（agent/workflow/）
 
+步骤输入绑定由 `contracts.py` 管理：完整 SHA-256 覆盖派发输入、gate、显式依赖和
+`continue_from` 隐式依赖。依赖同时绑定输入、完整结果摘要与原始执行身份；修订导入保留原始身份，
+实际重跑则产生新证据，即使回执文本相同也会使下游重新验证。绑定不注入模型，依赖背景仍按
+`workflow_upstream_context_chars` 有界呈现，不改变实时消息并入、跨频道感知和稳定缓存前缀。
+
+工具准入与派发分离：排队或审批期间为 `pending`，通过权限检查后先以 WAL/FULL 提交
+`dispatched` 再调用工具。回执丢失的调用仅在原调用和当前工具都声明 `replay_safe=True` 时重放；
+该声明由工具实现者通过 `tool`/`deferred_tool` 元数据提供，表示只读或具有幂等保障，与
+`concurrency_safe` 独立，工作流规格不能自行授予。其他未知结果保留为失败证据，续跑或连续修订
+均不会自动重派相同调用；须先核验外部状态再决定后续操作。ask 仍复用委托的既有停止与续跑逻辑。
+
+journal 保存完整的非敏感回执，模型背景、运行概要和详情预览分别限长。敏感工具结果仅在当前
+运行中传递，持久化使用占位且标记为不完整；不以占位或历史截断文本复验门控、冒充完整结果或
+触发隐式重跑。gate 区分字段缺失与 null，并递归区分布尔值和数字，JSON 数字保持数值比较。
+旧库增量迁移保留记录；旧输入绑定只在源运行未经过修订导入、原规格及完整依赖回执齐全时补算。
+旧格式修订缺少原始执行身份，不能从当前依赖图反推旧验证有效，也不能隐式重派相同调用。
+
 声明式 DAG + journal 化断点续跑：
 
 并行容量同时约束 ask、tool 和 repair。工具仅在实体声明 `concurrency_safe` 时与同层安全步骤
@@ -96,7 +113,7 @@
 | 工作流规格 | `agent/workflow/spec.py` | 步骤 kind=ask（goal/agent_name/continue_from 续聊）/ tool（tool/args/gate 门控）；校验一次性收集全部错误（key 唯一、依赖已知、无环、gate 仅 tool、continue_from 指向 ask 且构成隐式依赖边）；canonical JSON + sha256 指纹 |
 | 可复用定义 | `workflow_definition` + `WorkflowEngine.save_definition` | 保存时统一规格校验，不执行；可编辑、删除、分页查询，通过 `workflow_id` 重复启动。每次运行保存独立规格快照，后续编辑/删除定义不改变已有运行；定义不受运行历史 retention 影响 |
 | journal | `agent/workflow/journal.py`（`<data_dir>/workflow.sqlite3`，WAL） | 断点恢复唯一事实源：run（**终态一笔写**——status 与 stop_reason/failure/result/finished_at 同笔 UPDATE）、node（step_key×ordinal，**准入先落 running**；latest_nodes 为重放事实源）、event（写锁内 max+1 单调序；run-settled 必为最后一条），同库独立保存 definition。retention 在启动时按天清理终态 run |
-| 编排引擎 | `engine.py::WorkflowEngine`（Mind 持有，经 `workflow_engine_port` 施绑） | graphlib 分层 + 层内并发（workflow_max_parallel_steps 闸门）；**缓存结算**——同 run 续跑时 completed 行经 input_hash 防御性比对后直接复用（不重付费）、running 行重派、failed 复现；**修订导入**——start(resume_of=父) 把父 run 输入一致的 completed 成果入账，规格分歧自然级联重跑；**门控重跑**——tool 步 gate 不满足时先委托子代理按失败上下文修复（独立 repair 节点行）再重跑（有界轮次）；**取消二分**——用户停止转化为步骤 cancelled 结局（节点行保持 running 供续跑重派）、run 结算 stopped(user) 可续跑。执行面零新机制：ask=DelegationManager.delegate（预登记 delegation_id 供停止级联与续聊 transcript）、tool=统一审批门（channel=None 的 Guardian 路径）+ EntityRegistry.execute_tool |
+| 编排引擎 | `engine.py::WorkflowEngine`（Mind 持有，经 `workflow_engine_port` 施绑） | graphlib 分层 + 层内并发（workflow_max_parallel_steps 闸门）；同 run completed 按输入与完整回执缓存结算，running 按派发事实恢复，failed 复现；修订只检查源运行每步最新尝试，不用旧成功覆盖后续失败或未知结果。gate 不满足时按有界轮次委托修复再执行，各轮独立 ordinal。用户停止结算 stopped(user)，保留派发事实；ask 复用 DelegationManager，tool 复用统一审批门与 EntityRegistry.execute_tool |
 | 管理与可见性 | BackgroundTaskRegistry 登记（kind=workflow，killer→stop）+ AI 工具组 `workflow` + `services/workflow.py` + `/api/workflow/definitions*`、`/api/workflow/runs*` + 前端「工作流」页 | Web 分定义与运行两页签；定义可增删改查、重复启动，历史可另存为定义。AI 经 `workflow_save/definitions` 保存与查询定义，`workflow_start` 接受 spec 或 workflow_id 二选一；`workflow_status/stop/resume` 管理运行，`workflow_delete` 删除定义或运行，`workflow_cleanup` 按天清理历史。完成通知自动路由（轮内会合/轮外新 REPLY），启动返回 run_id；列表支持 limit/offset 分页 |
 | 删除与清理 | `WorkflowEngine.delete_run/cleanup_runs` + journal 事务 | 与 start/resume 共用生命周期锁；单次删除及清理在一个事务中删除 run/node/event，失败回滚。执行或结算中的运行不可删除；保留运行中或仍需续跑的修订所依赖的源记录，自动 retention 同样遵循保护规则。手动清理默认保留 stopped，include_stopped 才包含，days=0 清理全部符合条件的历史。删除运行后不能续跑或导入其结果；已启动修订的独立规格快照不变 |
 | 崩溃收敛 | `agent/workflow/recovery.py`（bootstrap recover_interrupted 节点） | running 残留 → stopped(interrupted)（不合成步骤结局、不重派）；**只收敛上一进程遗留**——跳过引擎在飞表中的 run 与引擎构造之后创建的 run；start/resume 开账-派发段持 `_lifecycle_lock`；归属会话注入中断元消息引导 workflow_resume（at-most-once） |

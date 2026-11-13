@@ -24,6 +24,7 @@ def tool(
     risk: str = "",
     path_resolver: Optional[Callable[[str], Path]] = None,
     sensitive_result: bool = False,
+    replay_safe: bool = False,
 ) -> Callable[[F], F]:
     """装饰器：将函数注册为 LLM 可调用工具（注册到 EntityRegistry）。
 
@@ -42,6 +43,7 @@ def tool(
         risk: 风险等级标记（如 CRITICAL），供规则与自动评审判断执行条件
         path_resolver: 将工具文件参数解析为绝对路径，供界面定位；不改变调用参数或授权
         sensitive_result: 成功结果含临时凭据，权限放行后仅当前任务可见，观测和持久化时隐藏
+        replay_safe: 已派发但回执丢失时能否再次调用；须保证只读或幂等，与并发安全独立
     """
     def decorator(func: F) -> F:
         tool_name = name or func.__name__
@@ -59,6 +61,8 @@ def tool(
             meta["path_resolver"] = path_resolver
         if sensitive_result:
             meta["sensitive_result"] = True
+        if replay_safe:
+            meta["replay_safe"] = True
 
         registered = EntityRegistry.register_tool(
             name=tool_name,
@@ -107,6 +111,7 @@ def deferred_tool(
     schema_extra: Optional[Dict[str, Dict[str, Any]]] = None,
     path_resolver: Optional[Callable[[str], Path]] = None,
     sensitive_result: bool = False,
+    replay_safe: bool = False,
 ) -> Callable[[F], F]:
     """延迟注册装饰器：装饰时仅收集元数据，activate_group() 时批量注册。
 
@@ -123,6 +128,7 @@ def deferred_tool(
         risk: 风险等级标记（如 CRITICAL），供规则与自动评审判断执行条件
         path_resolver: 将工具文件参数解析为绝对路径，供界面定位；不改变调用参数或授权
         sensitive_result: 成功结果含临时凭据；与 tool 装饰器使用同一可见性契约
+        replay_safe: 已派发但回执丢失时能否再次调用；须保证只读或幂等，与并发安全独立
         schema_extra: 参数级额外 JSON Schema 字段（{参数名: {...}}，如
             items/minItems），用于补充类型声明未表达的结构约束
     """
@@ -147,6 +153,8 @@ def deferred_tool(
             meta["path_resolver"] = path_resolver
         if sensitive_result:
             meta["sensitive_result"] = True
+        if replay_safe:
+            meta["replay_safe"] = True
 
         _deferred_registry.setdefault(group, []).append({
             "name": tool_name, "func": func, "description": tool_desc,

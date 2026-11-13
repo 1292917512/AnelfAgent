@@ -44,6 +44,30 @@ def test_nested_schema_and_optional_array():
     assert schema["properties"]["mode"]["enum"] == ["fast", "full"]
 
 
+@pytest.mark.parametrize("deferred", [False, True])
+def test_replay_contract_is_host_metadata_and_preserves_model_schema(deferred):
+    from core.tool_registry import activate_group, deferred_tool, tool
+
+    def probe(value: str) -> str:
+        """Return a value."""
+        return value
+
+    schemas = []
+    decorator = deferred_tool if deferred else tool
+    for replay_safe in (False, True):
+        try:
+            decorator(name="_replay_contract", group="_replay_contract", concurrency_safe=True,
+                      replay_safe=replay_safe)(probe)
+            if deferred:
+                activate_group("_replay_contract")
+            entity = EntityRegistry.get("_replay_contract")
+            assert entity.meta.get("replay_safe", False) is replay_safe
+            schemas.append(EntityRegistry.get_tool_schema_by_names(["_replay_contract"]))
+        finally:
+            EntityRegistry.unregister("_replay_contract")
+    assert schemas[0] == schemas[1]
+
+
 @pytest.mark.parametrize("arguments,expected", [
     ({"count": 3, "enabled": True, "ratio": 0.25}, {"count": 3, "enabled": True, "ratio": 0.25}),
     ({"count": "12", "enabled": "false", "ratio": "0.75"}, {"count": 12, "enabled": False, "ratio": 0.75}),

@@ -185,11 +185,47 @@ async def test_tool_receipt_uses_committed_result(engine, monkeypatch, notice, o
     assert run["status"] == wf_journal.COMPLETED
     nodes = await engine.journal.nodes_of_run(summary["run_id"])
     stored = nodes[0]["result_text"]
-    expected = ("" if oversized else content) if notice else stored
-    assert delivered == [expected]
-    assert (len(expected) < len(content)) == oversized
+    assert delivered == [content]
+    assert (json.loads(stored)["result"] if notice else stored) == content
+    assert nodes[0]["result_complete"]
+    detail = await engine.run_detail(summary["run_id"])
+    assert (len(detail["nodes"][0]["result"]) < len(stored)) == oversized
     source.acknowledge(content)
-    assert delivered == [expected]
+    assert delivered == [content]
+
+
+async def test_sensitive_receipt_is_ephemeral_and_never_replayed(engine, fake_manager, monkeypatch, approve_all):
+    from core.entity import EntityRegistry
+
+    secret = "temporary-secret-for-workflow-test"
+    calls = []
+
+    async def credential() -> str:
+        calls.append(True)
+        return json.dumps({"credential": secret})
+
+    EntityRegistry.register_tool(name="test_workflow_credential", func=credential, group="tests",
+                                 meta={"sensitive_result": True})
+    spec = {"name": "sensitive", "steps": [
+        {"key": "credential", "kind": "tool", "tool": "test_workflow_credential"},
+        {"key": "consume", "goal": "consume", "depends_on": ["credential"]},
+    ]}
+    try:
+        first = await engine.start(spec)
+        await wait_until(lambda: not engine.is_running(first["run_id"]))
+        assert secret in fake_manager.calls[0]["context"]
+        node = (await engine.journal.latest_nodes(first["run_id"]))["credential"]
+        assert not node["result_complete"]
+        assert secret not in str(await engine.journal.nodes_of_run(first["run_id"]))
+        assert secret not in json.dumps(await engine.run_detail(first["run_id"]))
+        assert secret not in str(await engine.journal.get_run(first["run_id"]))
+        second = await engine.start(spec, resume_of=first["run_id"])
+        run = await wait_run_terminal(engine.journal, second["run_id"])
+        assert run["status"] == wf_journal.FAILED
+        assert "脱敏" in run["failure_json"]
+        assert len(calls) == 1
+    finally:
+        EntityRegistry.unregister("test_workflow_credential")
 
 
 @pytest.mark.parametrize("payload", [
@@ -340,6 +376,52 @@ class TestFailure:
 
 
 class TestGate:
+    @pytest.mark.parametrize("result,field,expected,passed", [
+        ('{}', 'value', None, False),
+        ('{"value":null}', 'value', None, True),
+        ('{"value":0}', 'value', False, False),
+        ('{"value":1}', 'value', True, False),
+        ('{"value":false}', 'value', False, True),
+        ('{"value":1.0}', 'value', 1, True),
+        ('{"value":{"nested":[1]}}', 'value', {"nested": [True]}, False),
+        ('{"value":{"nested":[1]}}', 'value', {"nested": [1]}, True),
+        ('{"value":[null]}', 'value.0', None, True),
+        ('{"value":[null]}', 'value.1', None, False),
+        ('{"value":NaN}', 'value', None, False),
+        ('{"value":1e999}', 'value', float('inf'), False),
+        ('truncated {"value":', 'value', None, False),
+    ])
+    def test_gate_preserves_json_types_and_missing_fields(self, result, field, expected, passed):
+        from agent.workflow.contracts import check_gate
+        from agent.workflow.spec import GateSpec
+
+        assert check_gate(result, GateSpec(field=field, equals=expected))[0] is passed
+
+    async def test_large_receipt_survives_resume_and_revision(self, engine, fake_manager, monkeypatch, approve_all):
+        payload = {"padding": "证据" * 12000, "verified": True}
+        tool = _fake_tool_results([payload])
+        monkeypatch.setattr("core.entity.EntityRegistry.execute_tool", tool)
+        fake_manager.gates["wait"] = asyncio.Event()
+        spec = {"name": "full receipt", "steps": [
+            {"key": "check", "kind": "tool", "tool": "check", "args": {},
+             "gate": {"field": "verified", "equals": True, "max_rounds": 1}},
+            {"key": "wait", "goal": "wait", "depends_on": ["check"]},
+        ]}
+        parent = await engine.start(spec)
+        await wait_until(lambda: bool(fake_manager.calls))
+        engine.stop(parent["run_id"])
+        await wait_until(lambda: not engine.is_running(parent["run_id"]))
+        nodes = await engine.journal.latest_nodes(parent["run_id"])
+        assert json.loads(nodes["check"]["result_text"]) == payload
+        fake_manager.gates["wait"].set()
+        await engine.resume(parent["run_id"])
+        await wait_until(lambda: not engine.is_running(parent["run_id"]))
+        child = await engine.start(spec, resume_of=parent["run_id"])
+        run = await wait_run_terminal(engine.journal, child["run_id"])
+        assert run["status"] == wf_journal.COMPLETED
+        assert len(tool.calls) == 1
+        assert len(fake_manager.calls[0]["context"]) < 2200
+
     async def test_gate_repair_loop(self, engine, fake_manager, monkeypatch, approve_all):
         tool = _fake_tool_results([
             {"exit_code": 1, "stderr": "boom"},   # 第 1 轮不过门
@@ -447,6 +529,107 @@ class TestStopResume:
 
 
 class TestAmendImport:
+    @pytest.mark.parametrize("changed,historical_revision", [(False, False), (True, False), (False, True)])
+    async def test_legacy_revision_reconstructs_dependencies_from_source_receipts(
+            self, engine, monkeypatch, approve_all, changed, historical_revision):
+        import hashlib
+        import sqlite3
+
+        tool = _fake_tool_results([{"verified": True}])
+        monkeypatch.setattr("core.entity.EntityRegistry.execute_tool", tool)
+        spec = {"name": "legacy", "steps": [
+            {"key": "edit", "kind": "tool", "tool": "edit", "args": {"version": 1}},
+            {"key": "verify", "kind": "tool", "tool": "verify", "depends_on": ["edit"]},
+        ]}
+        parent = await engine.start(spec)
+        await wait_until(lambda: not engine.is_running(parent["run_id"]))
+        with sqlite3.connect(engine.journal._db_path) as connection:
+            if historical_revision:
+                connection.execute("UPDATE workflow_run SET parent_run_id = 'expired-source' WHERE id = ?",
+                                   (parent["run_id"],))
+            for step in spec["steps"]:
+                old_input = json.dumps({"tool": step["tool"], "args": step.get("args", {})},
+                                       ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+                connection.execute("UPDATE workflow_node SET input_hash = ?, result_origin = NULL WHERE run_id = ? AND step_key = ?",
+                                   (hashlib.sha256(old_input.encode()).hexdigest()[:12], parent["run_id"], step["key"]))
+        if changed:
+            spec["steps"][0]["args"]["version"] = 2
+        child = await engine.start(spec, resume_of=parent["run_id"])
+        await wait_until(lambda: not engine.is_running(child["run_id"]))
+        child_run = await engine.journal.get_run(child["run_id"])
+        if historical_revision:
+            assert child_run["status"] == wf_journal.FAILED
+            assert "依赖来源" in child_run["failure_json"]
+            assert len(tool.calls) == 2
+            return
+        assert child_run["status"] == wf_journal.COMPLETED
+        assert len(tool.calls) == (4 if changed else 2)
+        grandchild = await engine.start(spec, resume_of=child["run_id"])
+        await wait_until(lambda: not engine.is_running(grandchild["run_id"]))
+        assert (await engine.journal.get_run(grandchild["run_id"]))["status"] == wf_journal.COMPLETED
+        assert len(tool.calls) == (4 if changed else 2)
+
+    async def test_tool_dependency_changes_invalidate_descendants_only(self, engine, monkeypatch, approve_all):
+        tool = _fake_tool_results([{"verified": True}])
+        monkeypatch.setattr("core.entity.EntityRegistry.execute_tool", tool)
+        spec = {"name": "dependency evidence", "steps": [
+            {"key": "edit", "kind": "tool", "tool": "edit", "args": {"version": 1}},
+            {"key": "verify", "kind": "tool", "tool": "verify", "depends_on": ["edit"]},
+            {"key": "report", "kind": "tool", "tool": "report", "depends_on": ["verify"]},
+            {"key": "independent", "kind": "tool", "tool": "independent"},
+        ]}
+        parent = await engine.start(spec)
+        await wait_until(lambda: not engine.is_running(parent["run_id"]))
+        spec["steps"][0]["args"]["version"] = 2
+        child = await engine.start(spec, resume_of=parent["run_id"])
+        run = await wait_run_terminal(engine.journal, child["run_id"])
+        assert run["status"] == wf_journal.COMPLETED
+        names = [call["tool"] for call in tool.calls]
+        assert {name: names.count(name) for name in names} == {
+            "edit": 2, "verify": 2, "report": 2, "independent": 1}
+
+    @pytest.mark.parametrize("continue_from", [False, True])
+    async def test_equal_preview_does_not_hide_changed_dependency(self, engine, fake_manager, monkeypatch, continue_from):
+        from agent.delegation.sub_agent import SubAgentResult
+
+        delegate = fake_manager.delegate
+
+        async def answer(goal, *args, **kwargs):
+            result = await delegate(goal, *args, **kwargs)
+            return SubAgentResult(goal=goal, output="same prefix" * 400 + goal, success=True) if goal != "inspect" else result
+
+        monkeypatch.setattr(fake_manager, "delegate", answer)
+        dependency = {"continue_from": "source"} if continue_from else {"depends_on": ["source"]}
+        spec = {"name": "full dependency", "steps": [
+            {"key": "source", "goal": "old"}, {"key": "inspect", "goal": "inspect", **dependency},
+        ]}
+        parent = await engine.start(spec)
+        await wait_until(lambda: not engine.is_running(parent["run_id"]))
+        spec["steps"][0]["goal"] = "new"
+        child = await engine.start(spec, resume_of=parent["run_id"])
+        run = await wait_run_terminal(engine.journal, child["run_id"])
+        assert run["status"] == wf_journal.COMPLETED
+        inspections = [call for call in fake_manager.calls if call["goal"] == "inspect"]
+        assert len(inspections) == 2
+        assert inspections[0]["context"] == inspections[1]["context"]
+
+    async def test_revision_does_not_resurrect_success_before_failure(self, engine, monkeypatch, approve_all):
+        tool = _fake_tool_results([{"verified": True}])
+        monkeypatch.setattr("core.entity.EntityRegistry.execute_tool", tool)
+        spec = {"name": "latest attempt", "steps": [
+            {"key": "check", "kind": "tool", "tool": "check"},
+            {"key": "verify", "kind": "tool", "tool": "verify", "depends_on": ["check"]},
+        ]}
+        parent = await engine.start(spec)
+        await wait_until(lambda: not engine.is_running(parent["run_id"]))
+        node = (await engine.journal.latest_nodes(parent["run_id"]))["check"]
+        await engine.journal.admit_node(parent["run_id"], "check", 2, "tool", node["input_hash"])
+        await engine.journal.settle_node(parent["run_id"], "check", 2, error_text="later failure")
+        child = await engine.start(spec, resume_of=parent["run_id"])
+        run = await wait_run_terminal(engine.journal, child["run_id"])
+        assert run["status"] == wf_journal.COMPLETED
+        assert [call["tool"] for call in tool.calls] == ["check", "verify", "check", "verify"]
+
     async def test_revision_imports_matching_steps(self, engine, fake_manager):
         first = await engine.start({
             "name": "v1",
@@ -515,6 +698,89 @@ class TestSpecGuard:
 
 
 class TestRecovery:
+    @pytest.mark.parametrize("revision", [False, True])
+    async def test_legacy_resume_requires_proven_receipt_origin(self, engine, monkeypatch, revision):
+        import hashlib
+        from unittest.mock import AsyncMock
+
+        from agent.workflow.spec import canonical_spec, parse_spec, spec_hash
+
+        spec = parse_spec({"name": "legacy resume", "steps": [{"key": "effect", "kind": "tool", "tool": "effect"}]})
+        await engine.journal.create_run("source", spec.name, canonical_spec(spec), spec_hash(spec), "")
+        await engine.journal.settle_run("source", wf_journal.COMPLETED)
+        await engine.journal.create_run("legacy", spec.name, canonical_spec(spec), spec_hash(spec), "",
+                                        "source" if revision else "")
+        old_hash = hashlib.sha256(b'{"args":{},"tool":"effect"}').hexdigest()[:12]
+        await engine.journal.admit_node("legacy", "effect", 1, "tool", old_hash)
+        await engine.journal.settle_node("legacy", "effect", 1, result_text='{"done":true}')
+        await engine.journal.settle_run("legacy", wf_journal.STOPPED)
+        execute = AsyncMock()
+        monkeypatch.setattr("core.entity.EntityRegistry.execute_tool", execute)
+        await engine.resume("legacy")
+        run = await wait_run_terminal(engine.journal, "legacy")
+        assert run["status"] == (wf_journal.FAILED if revision else wf_journal.COMPLETED)
+        execute.assert_not_awaited()
+
+    @pytest.mark.parametrize("replay_safe", [False, True])
+    @pytest.mark.parametrize("boundary", ["approval", "before_result", "after_result"])
+    async def test_tool_crash_boundary_and_explicit_replay_policy(
+            self, engine, fake_manager, stub_mind, monkeypatch, approve_all, boundary, replay_safe):
+        from agent.workflow.engine import WorkflowEngine
+        from agent.workflow.recovery import recover_interrupted_workflows
+        from core.entity import EntityRegistry
+
+        entered = asyncio.Event()
+        calls = []
+
+        async def effect() -> str:
+            calls.append(True)
+            return '{"done":true}'
+
+        EntityRegistry.register_tool(name="test_workflow_effect", func=effect, group="tests",
+                                     meta={"concurrency_safe": True, "replay_safe": replay_safe})
+        settle = engine.journal.settle_node
+
+        async def pause_settle(*args, **kwargs):
+            if boundary == "after_result":
+                await settle(*args, **kwargs)
+            entered.set()
+            await asyncio.Event().wait()
+
+        async def pause_approval(*args):
+            entered.set()
+            await asyncio.Event().wait()
+
+        if boundary == "approval":
+            monkeypatch.setattr(engine, "_request_approval", pause_approval)
+        else:
+            monkeypatch.setattr(engine.journal, "settle_node", pause_settle)
+        spec = {"name": "crash", "steps": [{"key": "effect", "kind": "tool", "tool": "test_workflow_effect"}]}
+        restored = None
+        try:
+            first = await engine.start(spec)
+            await asyncio.wait_for(entered.wait(), 5)
+            await engine.aclose()
+            restored = WorkflowEngine(stub_mind.background_tasks, fake_manager)
+            await recover_interrupted_workflows(stub_mind, restored)
+            await restored.resume(first["run_id"])
+            await wait_until(lambda: not restored.is_running(first["run_id"]))
+            run = await restored.journal.get_run(first["run_id"])
+            unknown = boundary == "before_result" and not replay_safe
+            assert run["status"] == (wf_journal.FAILED if unknown else wf_journal.COMPLETED)
+            assert len(calls) == (2 if boundary == "before_result" and replay_safe else 1)
+            if unknown:
+                assert "结果未知" in run["failure_json"]
+                for _ in range(2):
+                    revised = await restored.start(spec, resume_of=run["id"])
+                    await wait_until(lambda: not restored.is_running(revised["run_id"]))
+                    run = await restored.journal.get_run(revised["run_id"])
+                    assert run["status"] == wf_journal.FAILED
+                assert len(calls) == 1
+        finally:
+            if restored is not None:
+                await restored.aclose()
+            EntityRegistry.unregister("test_workflow_effect")
+
     async def test_interrupted_runs_converged(self, engine, stub_mind):
         # 直接造崩溃残留：running run + running 节点行（时间戳回拨到引擎启动前，
         # 模拟上一进程遗留）
