@@ -268,6 +268,168 @@ async def test_button_event_ack_and_template_reply(bot: BotFixture, monkeypatch:
     }
 
 
+@pytest.mark.parametrize("address,mode,member,expected", [
+    ("group.g", None, "peer", None),
+    ("group.g", "markdown", "peer", '<qqbot-at-user id="peer" />'),
+    ("group.g", None, "all", '<qqbot-at-everyone />'),
+    ("group.g", "markdown", "all", '<qqbot-at-everyone />'),
+    ("channel.c", None, "peer", '<qqbot-at-user id="peer" />'),
+    ("channel.c", "markdown", "peer", '<qqbot-at-user id="peer" />'),
+    ("channel.c", None, "all", '<qqbot-at-everyone />'),
+    ("channel.c", "markdown", "all", '<qqbot-at-everyone />'),
+    ("c2c.p", None, "peer", None),
+    ("c2c.p", "markdown", "all", None),
+    ("dm.g.p", None, "peer", None),
+    ("dm.g.p", "markdown", "peer", None),
+    ("group.g", "markdown", "", None),
+    ("group.g", "markdown", 'bad"id', None),
+])
+async def test_outbound_mentions_follow_target_and_message_type(
+    bot: BotFixture, address: str, mode: str | None, member: str, expected: str | None,
+) -> None:
+    from core.tags import tag_label
+
+    channel, traffic = bot
+    target = Target.parse(address)
+    content = tag_label("at_uid", member) + " **结果** <原文> & 内容"
+    request = SendRequest(adapter_key="qqbot", channel=target.channel,
+                          segments=[SendSegment(content=content)], parse_mode=mode)
+    before = len(traffic)
+    assert channel._sender is not None
+    if expected is None:
+        with pytest.raises(ValueError):
+            await channel._sender.send(request, 4000, gateway_online=True)
+        assert len(traffic) == before
+        return
+    result = await channel._sender.send(request, 4000, gateway_online=True)
+    assert result.success and len(traffic) == before + 1
+    body = json.loads(traffic[-1].content)
+    if mode == "markdown":
+        assert body["markdown"]["content"] == expected + " **结果** <原文> & 内容"
+    else:
+        assert body["content"] == expected + " **结果** &lt;原文&gt; &amp; 内容"
+    if target.kind == "group":
+        assert body["msg_type"] == (2 if mode == "markdown" else 0)
+    else:
+        assert "msg_type" not in body
+
+
+async def test_markdown_mentions_keep_explicit_reply_reference(bot: BotFixture, monkeypatch: pytest.MonkeyPatch) -> None:
+    channel, traffic = bot
+    monkeypatch.setattr(channel, "on_message", AsyncMock())
+    event = group_event()
+    event["d"]["message_scene"] = {"ext": ["msg_idx=REFIDX_original="]}
+    await channel.dispatch(event)
+    await channel.dispatch({**event, "d": {**event["d"], "id": "newer"}})
+    before = len(traffic)
+    rejected = json.loads(await channel.send_text("group.group1", "[at_uid:member1] 技术分析", reply_to="incoming"))
+    assert not rejected["success"] and "qqbot_send_markdown" in rejected["error"]
+    assert len(traffic) == before
+    result = json.loads(await channel.send_markdown(
+        "group.group1", "[at_uid:member1] **技术分析**", "keyboard", reply_to_message_id="incoming",
+    ))
+    assert result["success"]
+    assert json.loads(traffic[-1].content) == {
+        "msg_type": 2, "markdown": {"content": '<qqbot-at-user id="member1" /> **技术分析**'},
+        "keyboard": {"id": "keyboard"}, "msg_id": "incoming", "msg_seq": 1,
+        "message_reference": {"message_id": "REFIDX_original="},
+    }
+
+
+@pytest.mark.parametrize("invalid_part", ["text", "media", "at", "card"])
+async def test_invalid_mentions_are_rejected_before_any_send_or_upload(bot: BotFixture, invalid_part: str) -> None:
+    channel, traffic = bot
+    bad = {"text": SendSegment(content="[at_uid:peer] 后段"),
+           "media": SendSegment(type=SegmentType.IMAGE, file_path="https://example.test/p.png",
+                                caption="[at_uid:peer] 图片说明"),
+           "at": SendSegment(type=SegmentType.AT, at_user_id="peer"),
+           "card": SendSegment(content="[at_uid:peer] 卡片说明")}[invalid_part]
+    extra = {"card": {"title": "标题", "url": "https://example.test", "pic_url": "https://example.test/p.png"}}
+    request = SendRequest(adapter_key="qqbot", channel=Target("group", "g").channel,
+                          segments=[SendSegment(type=SegmentType.IMAGE, file_path="https://example.test/first.png"), bad],
+                          extra=extra if invalid_part == "card" else {})
+    before = len(traffic)
+    result = await channel.forward_message(request)
+    assert not result.success and not result.message_ids and len(traffic) == before
+    assert "不支持" in (result.error or "") or "qqbot_send_markdown" in (result.error or "")
+
+
+async def test_adjacent_at_segments_share_markdown_body(bot: BotFixture) -> None:
+    channel, traffic = bot
+    segments = [SendSegment(type=SegmentType.AT, at_user_id="first"), SendSegment(content=" 和 "),
+                SendSegment(type=SegmentType.AT, at_user_id="second"), SendSegment(content=" 请看结果。")]
+    request = SendRequest(adapter_key="qqbot", channel=Target("group", "g").channel,
+                          segments=segments, parse_mode="markdown", reply_to="incoming")
+    original = request.model_dump()
+    before = len(traffic)
+    result = await channel.forward_message(request)
+    assert result.success and len(traffic) == before + 1 and request.model_dump() == original
+    assert json.loads(traffic[-1].content) == {
+        "msg_type": 2, "msg_id": "incoming", "msg_seq": 1,
+        "markdown": {"content": '<qqbot-at-user id="first" /> 和 <qqbot-at-user id="second" /> 请看结果。'},
+    }
+
+
+async def test_at_coalescing_preserves_format_and_media_boundaries(bot: BotFixture) -> None:
+    channel, traffic = bot
+    request = SendRequest(adapter_key="qqbot", channel=Target("group", "g").channel, segments=[
+        SendSegment(content="普通文本"),
+        SendSegment(type=SegmentType.AT, at_user_id="peer", parse_mode="markdown"),
+        SendSegment(content=" **说明**", parse_mode="markdown"),
+        SendSegment(type=SegmentType.IMAGE, file_path="https://example.test/p.png"),
+        SendSegment(content="独立后文", parse_mode="markdown"),
+    ], reply_to="incoming")
+    before = len(traffic)
+    result = await channel.forward_message(request)
+    assert result.success and len(result.message_ids) == 4
+    bodies = [json.loads(r.content) for r in traffic[before:] if r.url.path.endswith("/messages")]
+    assert [body["msg_type"] for body in bodies] == [0, 2, 7, 2]
+    assert [body["msg_seq"] for body in bodies] == [1, 2, 3, 4]
+    assert bodies[0]["content"] == "普通文本"
+    assert bodies[1]["markdown"]["content"] == '<qqbot-at-user id="peer" /> **说明**'
+    assert bodies[3]["markdown"]["content"] == "独立后文"
+
+
+@pytest.mark.parametrize("mode", [None, "markdown"])
+@pytest.mark.parametrize("limit", [50, 64])
+async def test_split_encoded_text_preserves_mentions_entities_and_whitespace(
+    bot: BotFixture, mode: str | None, limit: int,
+) -> None:
+    channel, traffic = bot
+    content = "前文 " * 19 + "[at_uid:" + "A" * 32 + "]  \n" + "& " * 50
+    request = SendRequest(adapter_key="qqbot", channel=Target("channel", "c").channel,
+                          segments=[SendSegment(content=content)], parse_mode=mode, reply_to="original")
+    before = len(traffic)
+    assert channel._sender is not None
+    if limit == 50:
+        with pytest.raises(ValueError, match="无法完整发送"):
+            await channel._sender.send(request, limit, gateway_online=True)
+        assert len(traffic) == before
+        return
+    result = await channel._sender.send(request, limit, gateway_online=True)
+    assert result.success
+    bodies = [json.loads(r.content) for r in traffic[before:]]
+    parts = [body["markdown"]["content"] if mode else body["content"] for body in bodies]
+    mention = '<qqbot-at-user id="' + "A" * 32 + '" />'
+    assert "".join(parts) == "前文 " * 19 + mention + "  \n" + ("& " if mode else "&amp; ") * 50
+    assert all(len(part) <= 64 for part in parts) and sum(mention in part for part in parts) == 1
+    assert all(body["msg_id"] == "original" and body["message_reference"] == {"message_id": "original"} for body in bodies)
+    if not mode:
+        assert all("&" not in part.replace("&amp;", "") for part in parts)
+
+
+async def test_media_caption_uses_guild_mention_encoding(bot: BotFixture) -> None:
+    channel, traffic = bot
+    request = SendRequest(adapter_key="qqbot", channel=Target("channel", "c").channel,
+                          segments=[SendSegment(type=SegmentType.IMAGE, file_path="https://example.test/p.png",
+                                                caption="[at_uid:peer] 图 <说明>")])
+    assert channel._sender is not None
+    assert (await channel._sender.send(request, 4000, gateway_online=True)).success
+    assert json.loads(traffic[-1].content) == {
+        "content": '<qqbot-at-user id="peer" /> 图 &lt;说明&gt;', "image": "https://example.test/p.png",
+    }
+
+
 async def test_multipart_upload_stays_in_target_and_omits_credentials(tmp_path: Path) -> None:
     path = tmp_path / "video.mp4"
     block = 3 * 1024 * 1024

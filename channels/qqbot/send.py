@@ -1,7 +1,6 @@
 """QQ 会话出站，按目标选择协议、分配被动回复序号并保留逐段送达凭据。"""
 
 import asyncio
-import html
 import json
 import time
 from collections import OrderedDict
@@ -13,27 +12,15 @@ from urllib.parse import urlsplit
 import httpx
 
 from agent.channel.schemas import SegmentType, SendRequest, SendResponse, SendSegment
-from channels._shared.text import split_text
-from core.tags import replace_tags, tag_label
 from core.tool_context import request_trace
 
 from .client import QQAPI, DeliveryUnconfirmed, QQAPIError
-from .events import Target, identifier
+from .events import Target
 from .media import guild_image, upload_media
+from .text import render_text, text_chunks, text_segments
 
 _MEDIA = {SegmentType.IMAGE: 1, SegmentType.VIDEO: 2, SegmentType.AUDIO: 3,
           SegmentType.VOICE: 3, SegmentType.FILE: 4}
-
-
-def _text(content: str, target: Target) -> str:
-    def replace(key: str, value: str) -> str:
-        if key != "at_uid":
-            return tag_label(key, value)
-        if target.kind not in {"group", "channel"}:
-            return "@" + value
-        return "@everyone" if value == "all" else f"<@{identifier(value)}>"
-
-    return replace_tags(html.escape(content, quote=False), replace)
 
 
 @dataclass
@@ -151,13 +138,19 @@ class Sender:
         failures: list[str] = []
         if not request.segments:
             raise ValueError("不能发送空消息")
-        for segment in request.segments:
+        # 在第一次发送或上传前完成本地编码，避免无效后段造成部分发送后重试。
+        prepared = [
+            (segment, list(self._text_bodies(target, request, segment, max_length))
+             if segment.type == SegmentType.TEXT else [self._media_body(target, segment)])
+            for segment in text_segments(request)
+        ]
+        for segment, bodies in prepared:
             try:
-                if segment.type in (SegmentType.TEXT, SegmentType.AT):
-                    for body in self._text_bodies(target, request, segment, max_length):
+                if segment.type == SegmentType.TEXT:
+                    for body in bodies:
                         ids.append(await self._post(target, reply, body))
                 else:
-                    ids.append(await self._media(target, reply, segment))
+                    ids.append(await self._media(target, reply, segment, bodies[0]))
             except DeliveryUnconfirmed as exc:
                 failures.append(f"{segment.type.value}: {exc}，请核对平台回执后再发送")
                 return QQReceipt(success=False, outcome="unknown", retryable=False, error="；".join(failures),
@@ -170,11 +163,11 @@ class Sender:
     @staticmethod
     def _text_bodies(target: Target, request: SendRequest, segment: SendSegment,
                      max_length: int) -> Iterator[dict[str, Any]]:
-        content = (segment.content if segment.type == SegmentType.TEXT else
-                   tag_label("at_uid", segment.at_user_id))
+        content = segment.content
         if not content.strip():
             raise ValueError("文本为空")
         if "card" in request.extra:
+            content = render_text(content, target, "card")
             card = request.extra["card"]
             if target.kind not in ("c2c", "group") or not 1 <= len(card["title"]) <= 50 or len(content) > 200:
                 raise ValueError("图文卡片限 QQ 单聊或群聊，标题 1–50 字，描述 1–200 字")
@@ -187,11 +180,10 @@ class Sender:
             }}}
             yield body
             return
-        # 分段数由全文决定，避免共享工具的默认截断。
-        chunks = split_text(content, max_length, max_chunks=len(content))
         markdown = (request.parse_mode or segment.parse_mode or "").lower() == "markdown"
+        chunks = text_chunks(render_text(content, target, "markdown" if markdown else "text"), max_length)
         for index, chunk in enumerate(chunks):
-            body = ({"markdown": {"content": chunk}} if markdown else {"content": _text(chunk, target)})
+            body = ({"markdown": {"content": chunk}} if markdown else {"content": chunk})
             if target.kind in {"group", "c2c"}:
                 body["msg_type"] = 2 if markdown else 0
             keyboard_id = request.extra.get("keyboard_id")
@@ -224,13 +216,18 @@ class Sender:
         self.replies.sent(target.address, result)
         return str(result["id"])
 
-    async def _media(self, target: Target, reply: Reply, segment: SendSegment) -> str:
+    @staticmethod
+    def _media_body(target: Target, segment: SendSegment) -> dict[str, Any]:
+        """在上传前编码说明；媒体正文不继承请求的 Markdown 格式。"""
+        body: dict[str, Any] = {}
+        if segment.caption:
+            body["content"] = render_text(segment.caption, target, "media")
+        return body
+
+    async def _media(self, target: Target, reply: Reply, segment: SendSegment, body: dict[str, Any]) -> str:
         file_type = _MEDIA.get(segment.type)
         if not file_type or not segment.file_path:
             raise ValueError("不支持该消息段或缺少媒体路径")
-        body: dict[str, Any] = {}
-        if segment.caption:
-            body["content"] = _text(segment.caption, target)
         if target.kind in {"group", "c2c"}:
             info = await upload_media(self.api, target, segment.file_path, file_type)
             body.update(msg_type=7, media={"file_info": info})

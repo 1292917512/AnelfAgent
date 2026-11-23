@@ -1,8 +1,8 @@
 """QQ 开放平台机器人，接入统一频道发现、生命周期、投递与工具注册。
 
-模型经 Anelf 消息管线看到单聊、群聊、频道消息、附件和引用摘要。
-消息与按需发现的频道工具增加动态 token，大小取决于正文及附件。
-使用既有入站和出站层，不改写稳定前缀。
+模型经 Anelf 消息管线看到消息、附件和引用摘要；channel_policy 说明各会话的提及方式。
+频道规则增加约百余 token，消息与按需发现的工具按实际内容计量。
+使用既有入站和出站层，规则位于历史后的频道策略层，不改写稳定前缀。
 """
 
 import asyncio
@@ -15,6 +15,7 @@ from urllib.parse import quote
 from agent.channel import BaseChannel, ChannelMetadata, async_network_client, channel_tool
 from agent.channel.channel_types import ChannelCapability, ChannelStatus, _ok
 from agent.channel.dedup import MessageDedup
+from agent.channel.reply_policy import ReplyPolicy
 from agent.channel.schemas import (
     AdapterMessage,
     ChannelInfo,
@@ -48,6 +49,12 @@ class QQBotChannel(QQBotTools, BaseChannel[QQBotConfig]):
     metadata = ChannelMetadata(name=display_name, description="通过 QQ 开放平台收发群、用户和频道消息",
                                author="AnelfAgent", tags=["qq", "qqbot"])
     _Configs = QQBotConfig
+    reply_policy = ReplyPolicy(instructions=(
+        "QQ 官方机器人使用 OpenID，不能与普通 QQ 的数字账号互换。普通回复用 send_message，"
+        "可指定 reply_to_message_id，不必额外 @ 对方。group.* 群聊需要 @ 指定成员时，"
+        "用 qqbot_send_markdown，content 使用 [at_uid:成员OpenID]；channel.* 子频道的文本和 Markdown 均支持提及。"
+        "不要自行拼接平台提及标签。@全体用 [at_uid:all]，受平台权限和频次限制；单聊与频道私信不支持提及。"
+    ))
     capabilities = {
         ChannelCapability.SEND_TEXT, ChannelCapability.SEND_PHOTO, ChannelCapability.SEND_VOICE,
         ChannelCapability.SEND_AUDIO, ChannelCapability.SEND_VIDEO, ChannelCapability.SEND_FILE,
@@ -240,10 +247,12 @@ class QQBotChannel(QQBotTools, BaseChannel[QQBotConfig]):
     def _media_tool_result(self, resp: SendResponse) -> str:
         return resp.model_dump_json(exclude_none=True)
 
-    @channel_tool(outbound=True, description="向 QQ 会话发送 Markdown，可附带开放平台键盘模板")
-    async def send_markdown(self, chat_id: str, content: str, keyboard_id: str = "", session_id: str = "") -> str:
-        """通过统一出站管道发送 Markdown，键盘模板需要平台已开通相应权限。"""
+    @channel_tool(outbound=True, description="向 QQ 会话发送 Markdown，群成员提及使用 [at_uid:OpenID]，支持回复引用和键盘模板")
+    async def send_markdown(self, chat_id: str, content: str, keyboard_id: str = "", session_id: str = "",
+                            reply_to_message_id: str = "") -> str:
+        """发送 Markdown，支持 [at_uid:成员OpenID] 和显式回复引用；键盘模板需平台权限。"""
         return await self.send_text(chat_id, content, parse_mode="markdown", session_id=session_id,
+                                    reply_to=reply_to_message_id or None,
                                     keyboard_id=keyboard_id)
 
     @channel_tool(outbound=True, description="向 QQ 单聊或群聊发送带封面和跳转链接的图文卡片")

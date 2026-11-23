@@ -17,7 +17,7 @@
 | 场景 | Anelf 目标 | 消息能力 |
 | --- | --- | --- |
 | QQ 单聊 | `c2c.USER_OPENID` | 收发文本、图片、语音、视频、文件，回复及撤回 |
-| QQ 群聊 | `group.GROUP_OPENID` | 同上，支持群 @、按权限查询群资料和分页成员，以及设置或解除成员禁言 |
+| QQ 群聊 | `group.GROUP_OPENID` | 同上，Markdown 支持 @ 成员，文本或 Markdown 支持 @ 全体；可按权限查询群资料和分页成员，以及设置或解除成员禁言 |
 | QQ 频道子频道 | `channel.CHANNEL_ID` | 文本、图片、回复、撤回、发表或移除表情回应、子频道信息 |
 | QQ 频道私信 | `dm.DM_GUILD_ID.USER_ID` | 文本、图片、回复、撤回。使用私信事件的虚拟 Guild ID；发送者身份与私信会话分开保存 |
 
@@ -27,7 +27,15 @@
 
 使用 `qqbot_open_direct_message` 可从共同频道 ID 和成员 ID 获取私信目标，再通过 Anelf 的发送工具发消息。群成员禁言与消息撤回走 Anelf 敏感操作门控，平台也会检查机器人权限。
 
-`qqbot_send_markdown` 可发送 Markdown 和键盘模板。`qqbot_upload_markdown_material` 将本地图片上传为当前机器人可复用的 `qqbot-media://` 素材；另有分页查询和删除工具。按钮和快捷菜单点击进入对应会话，使用事件外层 ID 回复，使用互动对象 ID 回应客户端。`qqbot_send_card` 在群聊或单聊发送图文卡片。群聊及子频道普通文本支持 Anelf 的 `[at_uid:ID]` 标记。[QQ 素材管理](https://bot.q.qq.com/wiki/develop/api-v2/server-inter/message/material-management.html)
+`qqbot_send_markdown` 可发送 Markdown 和键盘模板，`reply_to_message_id` 与普通发送共用回复引用规则。`qqbot_upload_markdown_material` 将本地图片上传为当前机器人可复用的 `qqbot-media://` 素材；另有分页查询和删除工具。按钮和快捷菜单点击进入对应会话，使用事件外层 ID 回复，使用互动对象 ID 回应客户端。`qqbot_send_card` 在群聊或单聊发送图文卡片。[QQ 素材管理](https://bot.q.qq.com/wiki/develop/api-v2/server-inter/message/material-management.html)
+
+提及统一使用 `[at_uid:ID]`（全体为 `[at_uid:all]`），由本频道编码为平台的 `<qqbot-at-user id="ID" />` 或 `<qqbot-at-everyone />`。ID 使用当前会话的 OpenID，不能与普通 QQ 的数字账号互换。按[官方文本链能力表](https://bot.q.qq.com/wiki/develop/api-v2/server-inter/message/trans/text-chain.html)：
+
+- QQ 群聊 @ 指定成员须使用 `qqbot_send_markdown`；@ 全体支持文本及 Markdown，受群管理权限和频次限制。
+- 频道文字子频道的文本、Markdown 和图片说明支持提及；单聊、频道私信及图文卡片不支持。
+- 普通回复可以使用回复引用，无需额外 @。不支持的提及组合在上传或发送前返回错误，不自动改变消息格式；群媒体说明中的提及应单独发送为 Markdown。
+
+相邻同格式的 AT 与文本段合为正文，独立文本段保留各自的消息边界；正文分段保持提及标签和转义实体完整。频道规则经既有 `channel_policy` 动态层告知模型，不改动稳定前缀。
 
 单聊/群聊媒体接受 HTTP(S) URL、本地路径、本机 file URI、Anelf 上传 URL，以及 `data:…;base64,…` 或 `base64://…` 内联媒体。小文件直接上传，大文件按平台预签名计划逐片 PUT 并确认。仅在同一分片可安全重放时重试 PUT；分片确认遇到平台错误码 `40093001` 时最多尝试三次。文件上限为 200 MiB，内联媒体和子频道本地图片上限为 20 MiB，Markdown 图片素材上限为 10 MiB。入站语音优先使用平台提供的 WAV 地址，ASR 文本标记为转写。[QQ 富媒体说明](https://bot.q.qq.com/wiki/develop/api-v2/server-inter/message/rich-media.html)
 
