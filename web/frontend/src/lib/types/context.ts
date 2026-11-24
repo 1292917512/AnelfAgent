@@ -136,7 +136,6 @@ export interface ContextSnapshotData {
   call_id?: string;
   scope?: string;
   kind?: string;
-  requested_model?: string;
   completed_at?: number;
   captured_at: number;
   model: string;

@@ -274,7 +274,6 @@ class TestContinuousCapture:
         assert rows["a"]["model"] == "fallback"
         assert rows["b"]["cache_hit_rate"] == 0.1
         saved = snapshot.load_snapshot(first.filename)
-        assert saved["requested_model"] == "requested"
         assert saved["cache"]["call"]["total_input_tokens"] == 100
         assert saved["cache"]["call"]["call_id"] == saved["call_id"]
         assert len(snapshot.list_records()) == 2

@@ -107,7 +107,6 @@ class TestReasoningTracePayload:
         data = observer.get()
         assert data["call_id"] == ends[0]["call_id"] == data["cache"]["call"]["call_id"]
         assert data["model"] == "actual-fallback-model"
-        assert data["requested_model"] == "fake"
         assert data["cache"]["call"]["kind"] == "reflect"
         assert data["cache"]["call"]["cache_hit_rate"] == ends[0]["usage"]["cache_hit_rate"] == 0.8
         assert sent[0][1] == tools

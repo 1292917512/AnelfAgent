@@ -28,9 +28,9 @@ export function SnapshotDetail({ snapshot }: SnapshotDetailProps) {
 
       {/* 缓存观测：本次响应与捕获前的聚合参考分开展示 */}
       {snapshot.cache && (() => {
-        const lastCall = snapshot.call_id && snapshot.cache.call?.call_id === snapshot.call_id
+        const call = snapshot.call_id && snapshot.cache.call?.call_id === snapshot.call_id
           ? snapshot.cache.call : null;
-        const unobs = !!lastCall?.unobservable;
+        const unobs = !!call?.unobservable;
         const allUnobs = snapshot.cache.recent.unobservable_count === snapshot.cache.recent.sample_count
           && snapshot.cache.recent.sample_count > 0;
         return (
@@ -38,8 +38,8 @@ export function SnapshotDetail({ snapshot }: SnapshotDetailProps) {
             <p className="text-xs font-semibold text-heading">{t("cache.title")}</p>
             <div className="grid grid-cols-[repeat(auto-fit,minmax(105px,1fr))] gap-2 text-center">
               <div>
-                <p className={cn("text-sm font-bold font-mono", (!lastCall || unobs) ? "text-muted" : "text-ok")}>
-                  {unobs ? "—" : lastCall ? `${Math.round(lastCall.cache_hit_rate * 100)}%` : "—"}
+                <p className={cn("text-sm font-bold font-mono", (!call || unobs) ? "text-muted" : "text-ok")}>
+                  {unobs ? "—" : call ? `${Math.round(call.cache_hit_rate * 100)}%` : "—"}
                 </p>
                 <p className="text-[10px] text-muted mt-0.5">
                   {t("cache.callHitRate")}
@@ -47,7 +47,7 @@ export function SnapshotDetail({ snapshot }: SnapshotDetailProps) {
               </div>
               <div>
                 <p className="text-sm font-bold text-heading font-mono">
-                  {lastCall && !unobs ? lastCall.cache_read_input_tokens.toLocaleString() : "—"}
+                  {call && !unobs ? call.cache_read_input_tokens.toLocaleString() : "—"}
                 </p>
                 <p className="text-[10px] text-muted mt-0.5">{t("cache.callReadTokens")}</p>
               </div>
@@ -80,10 +80,10 @@ export function SnapshotDetail({ snapshot }: SnapshotDetailProps) {
             </div>
             {unobs && (
               <p className="text-[10px] text-muted">
-                {t("cache.unobservable", { model: lastCall?.model ?? "" })}
+                {t("cache.unobservable", { model: call?.model ?? "" })}
               </p>
             )}
-            {!lastCall && (
+            {!call && (
               <p className="text-[10px] text-muted">
                 {t(`cache.state.${snapshot.cache.status ?? "unlinked"}`)}
               </p>
