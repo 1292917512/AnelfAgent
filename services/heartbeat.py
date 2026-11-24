@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
-from typing import Any, Dict
+from typing import TYPE_CHECKING, Any, Dict
 
-from agent.heartbeat.config import ScheduleMode, TaskSchedule, validate_schedules
 from core.log import log
 from services._runtime import get_runtime
+
+if TYPE_CHECKING:
+    from agent.heartbeat.config import TaskSchedule
 
 
 class HeartbeatServiceError(Exception):
@@ -20,6 +22,8 @@ class HeartbeatServiceError(Exception):
 
 
 def _schedule_table(rows: list[dict[str, Any]]) -> dict[str, TaskSchedule]:
+    from agent.heartbeat.config import TaskSchedule
+
     schedules: dict[str, TaskSchedule] = {}
     for row in rows:
         try:
@@ -42,6 +46,8 @@ def _definition(schedule: TaskSchedule | None) -> dict[str, Any] | None:
 
 def _merge_schedules(current: list[TaskSchedule], params: dict[str, Any]) -> list[TaskSchedule]:
     """按任务对比编辑基线和目标定义，提交前保留实时计数并校验合并结果。"""
+    from agent.heartbeat.config import ScheduleMode, validate_schedules
+
     if "base_task_schedules" not in params or "task_schedules" not in params:
         raise HeartbeatServiceError("请重新加载调度配置并随修改提交编辑基线", status_code=428)
     baseline = _schedule_table(params["base_task_schedules"])

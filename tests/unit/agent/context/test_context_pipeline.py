@@ -125,6 +125,7 @@ assert {'stable', 'summary', 'conversation', 'memory', 'provider', 'exec_context
 assert layers['stable']['volatility'] == 0
 assert layers['memory']['volatility'] == 43
 assert not any(name == 'agent.mind' or name.startswith('agent.mind.') for name in sys.modules)
+assert 'agent.heartbeat.engine' not in sys.modules
 assert not _deferred_registry.get('thinking')
 """],
             capture_output=True, timeout=30,
