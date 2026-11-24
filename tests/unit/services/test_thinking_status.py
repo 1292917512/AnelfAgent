@@ -22,6 +22,7 @@ def test_thinking_snapshot_reads_owners_without_changing_work(monkeypatch, cache
     memory.add_temporary({"role": "system", "content": "notice"}, scope="user_qq:42")
     tools._tool_recall = {"read_file": 3}
     tools._discovered_tools.add("inspect_workspace")
+    tools._scope_discovered_tools["user_qq:42"] = {"inspect_workspace", "read_file"}
     tools._tag_activated_tools.add("recognize_image")
     runtime = SimpleNamespace(pfc=memory, mind=SimpleNamespace(tool_assembly=tools))
     monkeypatch.setattr(status, "get_runtime", lambda: runtime)
@@ -31,7 +32,7 @@ def test_thinking_snapshot_reads_owners_without_changing_work(monkeypatch, cache
     before = memory.peek_all_tasks(), tools.tools_version
     snapshot = status.AgentStatusService().get_thinking_snapshot()
     assert snapshot["tool_recall"] == [{"name": "read_file", "count": 3}]
-    assert snapshot["discovered_tools"] == ["inspect_workspace"]
+    assert snapshot["discovered_tools"] == ["inspect_workspace", "read_file"]
     assert snapshot["tag_activated_tools"] == ["recognize_image"]
     assert snapshot["pending_messages"] == [{"scope": "user_qq:42", "uid": "42", "group_id": "0", "preview": "pending", "adapter_key": "qq"}]
     assert snapshot["short_term_memory_count"] == 1

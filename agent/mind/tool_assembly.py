@@ -14,7 +14,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Set
+from collections.abc import Collection, Set
 from copy import deepcopy
 from typing import TYPE_CHECKING, Optional
 
@@ -175,6 +175,10 @@ class ToolAssembly:
             return []
         return EntityRegistry.get_tool_schema_by_names(sorted(self._tag_activated_tools))
 
+    def get_discovered_tool_names(self, scope: str) -> Collection[str]:
+        """读取指定会话发现的工具名。空 scope 使用无会话调用的记录。"""
+        return self._scope_discovered_tools.get(scope, ()) if scope else self._discovered_tools
+
     def expand_discovered_tools(self, tool_calls: list, scope: str = "") -> None:
         """解析 list_entity_methods 调用结果，将发现的工具加入动态发现集。"""
         import json as _json
@@ -309,7 +313,7 @@ class ToolAssembly:
         _merge(self.resolve_tag_tool_schemas(), "tag_match")
         _merge(self.get_hot_tool_schemas(), "hot_recall")
 
-        discovered = self._scope_discovered_tools.get(scope, set()) if scope else self._discovered_tools
+        discovered = self.get_discovered_tool_names(scope)
         if discovered:
             _merge(EntityRegistry.get_tool_schema_by_names(
                 sorted(discovered)), "discovered", scoped=True)
@@ -441,7 +445,7 @@ class ToolAssembly:
 
         # 自服务扩展：list_entity_methods 动态发现 + activate_tool_group 唤醒
         self._touch_scope(scope)
-        discovered = self._scope_discovered_tools.get(scope, set()) if scope else self._discovered_tools
+        discovered = self.get_discovered_tool_names(scope)
         if discovered:
             _merge(EntityRegistry.get_tool_schema_by_names(
                 sorted(discovered)), scoped=True)
@@ -580,4 +584,5 @@ class ToolAssembly:
 
     @property
     def discovered_tools(self) -> set[str]:
+        """供管理端汇总各会话及无会话调用发现的工具。"""
         return self._discovered_tools.union(*self._scope_discovered_tools.values())

@@ -8,7 +8,7 @@
 - 完整 LLM 上下文组装（stable/context/volatile/对话历史分层）
 - 每轮执行上下文（轮次/工具态势/当前空间；跨会话通知独立放在动态区）
 
-模型看到：工具态势只列本轮可调用的工具。
+模型看到：工具态势只列本轮可调用的工具，动态发现标记取自当前执行会话。
 Token 影响：省去目录外工具名，每轮最多缩短一行提示。
 缓存影响：仅更新动态执行上下文，不改稳定前缀。
 """
@@ -27,6 +27,7 @@ from agent.context.usage_rules import (
     PLAN_USAGE_RULES,
     TOOL_USAGE_RULES,
 )
+from core.conversation_scope import current_scope
 from core.entity import EntityRegistry
 from core.log import log
 
@@ -820,8 +821,9 @@ channel_id 和 target_id 取当前请求的频道与会话标签，群聊目标�
 
         # 工具态势摘要（名单截断展示： exec_context 每轮重建，全量名单是纯增量 token）
         tool_parts: list[str] = []
+        scope = current_scope()
         tagged = ta.tag_activated_tools & available_tool_names
-        discovered = ta.discovered_tools & available_tool_names
+        discovered = available_tool_names.intersection(ta.get_discovered_tool_names(scope))
         if tagged:
             tool_parts.append(f"标签激活: {_cap_names(sorted(tagged))}")
         if discovered:
@@ -835,8 +837,7 @@ channel_id 和 target_id 取当前请求的频道与会话标签，群聊目标�
         # 目标 nag 提醒（目标连续 10 轮未更新才提醒）
         try:
             from agent.planning.nag import maybe_nag
-            from core.conversation_scope import current_scope
-            nag_text = maybe_nag(current_scope())
+            nag_text = maybe_nag(scope)
             if nag_text:
                 lines.append(nag_text)
         except Exception:

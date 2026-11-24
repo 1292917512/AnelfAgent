@@ -216,15 +216,24 @@ class TestAdaptMessagesCacheControl:
 # ==================================================================
 
 class TestSessionNotification:
-    def test_tool_status_shows_only_callable_names(self) -> None:
+    @pytest.mark.parametrize("scope", ["user_webui:reader#one", "user_webui:reader#two", "reflect:worker"])
+    def test_tool_status_shows_only_callable_names(self, scope: str) -> None:
+        from core.conversation_scope import bind_scope, reset_scope
+
         tools = ToolAssembly()
         tools.tag_activated_tools.update({"bilibili_check_messages", "read_image"})
-        tools._scope_discovered_tools["other"] = {"other_tool"}
+        owner = "user_webui:reader#one"
+        tools._scope_discovered_tools[owner] = {"read_image", "other_tool"}
         tools.record_tool_use("bilibili_check_messages")
         tools.record_tool_use("read_image")
-        ctx = ContextAssembly(_pfc(), tools).build_execution_context(
-            [], time.time(), 0, available_tool_names=frozenset({"read_image"}),
-        )
+        token = bind_scope(scope)
+        try:
+            ctx = ContextAssembly(_pfc(), tools).build_execution_context(
+                [], time.time(), 0, available_tool_names=frozenset({"read_image"}),
+            )
+        finally:
+            reset_scope(token)
+        assert ("动态发现: read_image" in ctx["content"]) == (scope == owner)
         assert "标签激活: read_image" in ctx["content"] and "热工具: read_image" in ctx["content"]
         assert "bilibili_check_messages" not in ctx["content"] and "other_tool" not in ctx["content"]
 

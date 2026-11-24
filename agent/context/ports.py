@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
@@ -31,8 +32,7 @@ class ToolContextView(Protocol):
     @property
     def tag_activated_tools(self) -> set[str]: ...
 
-    @property
-    def discovered_tools(self) -> set[str]: ...
+    def get_discovered_tool_names(self, scope: str) -> Collection[str]: ...
 
     def get_hot_tool_names(self) -> list[str]: ...
 
