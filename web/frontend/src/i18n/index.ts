@@ -23,6 +23,10 @@ const backend: BackendModule = {
   },
 };
 
+i18n.on("languageChanged", () => {
+  document.documentElement.lang = i18n.resolvedLanguage === "en" ? "en" : "zh-CN";
+});
+
 export const i18nReady = new Promise<void>((resolve, reject) => {
   void i18n.use(LanguageDetector).use(backend).use(initReactI18next).init({
     resources: { zh: { common: zhCommon }, en: { common: enCommon } },

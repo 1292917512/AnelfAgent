@@ -43,6 +43,10 @@
     "saving": "保存中…"
   },
   "schedule": {
+    "triggerMode": "触发模式",
+    "effort": "推理强度",
+    "removeTask": "解除 {{name}} 的调度绑定",
+    "removeTime": "移除 {{time}}",
     "title": "任务调度",
     "subtitle": "将任务绑定到心跳并配置触发规则",
     "modeHeartbeat": "心跳触发",

@@ -15,7 +15,6 @@ interface AppState {
   paletteOpen: boolean;
   branding: Branding;
   configLoaded: boolean;
-  startedAt: number | null;
   toggleTheme: () => void;
   toggleDensity: () => void;
   toggleFavorite: (path: string) => void;
@@ -23,7 +22,6 @@ interface AppState {
   setMobileMenuOpen: (open: boolean) => void;
   setPaletteOpen: (open: boolean) => void;
   setConfig: (config: { branding?: Branding }) => void;
-  setStartedAt: (serverUptime: number) => void;
 }
 
 export function getInitialTheme(): Theme {
@@ -47,7 +45,6 @@ export const useAppStore = create<AppState>((set) => ({
   paletteOpen: false,
   branding: { title: "AnelfAgent", subtitle: "Personal AI workspace", version },
   configLoaded: false,
-  startedAt: null,
   toggleTheme: () => set((state) => {
     const theme = state.theme === "dark" ? "light" : "dark";
     writeLocal("theme", theme);
@@ -72,8 +69,4 @@ export const useAppStore = create<AppState>((set) => ({
   setMobileMenuOpen: (mobileMenuOpen) => set({ mobileMenuOpen }),
   setPaletteOpen: (paletteOpen) => set({ paletteOpen }),
   setConfig: (config) => set((state) => ({ branding: config.branding ?? state.branding, configLoaded: true })),
-  setStartedAt: (uptime) => set((state) => {
-    const startedAt = Date.now() / 1000 - uptime;
-    return { startedAt: state.startedAt === null || Math.abs(startedAt - state.startedAt) > 5 ? startedAt : state.startedAt };
-  }),
 }));

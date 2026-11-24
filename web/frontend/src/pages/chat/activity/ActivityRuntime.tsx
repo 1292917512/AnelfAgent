@@ -24,7 +24,7 @@ export function ActivityRuntime() {
   const queued = !status.isError ? status.data?.status?.queue_size ?? 0 : 0;
 
   if (observed && !unobserved) return null;
-  const unavailable = status.isError || thinking.isError;
+  const unavailable = status.isError || thinking.isError || (status.data?.ready && thinking.data === null);
   const checking = !loaded || status.isPending || thinking.isPending;
   if (!waiting && phase === "idle" && !pending.length && !tasks && !queued && !unavailable && !checking && status.data?.ready) return null;
   const label = unavailable ? t("activity.runtime.unavailable") : checking ? t("activity.runtime.checking")

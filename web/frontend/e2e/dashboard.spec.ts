@@ -96,6 +96,28 @@ test("overview prioritizes delegations and makes nested history traceable", asyn
   await page.screenshot({ path: info.outputPath("dashboard.png") });
 });
 
+test("partial outages preserve actionable alerts and distinguish missing metrics from zero", async ({ page }) => {
+  let mcpAvailable = false;
+  await page.route("**/api/status/", (route) => route.fulfill({ json: { ready: false } }));
+  await page.route("**/api/status/components", (route) => route.fulfill({ status: 503, json: { detail: "Components offline" } }));
+  await page.route("**/api/status/thinking", (route) => route.fulfill({ json: {} }));
+  await page.route("**/api/mcp/", (route) => route.fulfill(mcpAvailable ? { json: [] } : { status: 503, json: { detail: "MCP offline" } }));
+  await page.route("**/api/status/logs?**", (route) => route.fulfill({ json: { logs: [logEntry(1, "Worker queue delayed", "WARNING")] } }));
+  await page.goto("/webui/dashboard");
+  await expect(page.getByText("Components offline")).toBeVisible();
+  await expect(page.locator(".overview-status h2")).toHaveText("—");
+  await expect(page.locator(".dashboard-metrics strong")).toHaveText(["—", "—", "—", "—"]);
+  await expect(page.locator(".overview-pending")).toHaveText("Unavailable");
+  const inbox = page.locator(".overview-inbox");
+  await expect(inbox.getByText("MCP offline")).toBeVisible();
+  await expect(inbox.getByRole("link", { name: /Worker queue delayed/ })).toBeVisible();
+  await expect(inbox.getByText("Agent is not ready")).toBeVisible();
+  mcpAvailable = true;
+  await inbox.getByRole("button", { name: "Retry" }).click();
+  await expect(inbox.getByText("MCP offline")).toHaveCount(0);
+  await expect(inbox.getByRole("link", { name: /Worker queue delayed/ })).toBeVisible();
+});
+
 test("logs preserve full messages, filter by source and retain data when clearing fails", async ({ page }, info) => {
   const message = "Tool output\n" + "A long diagnostic line. ".repeat(40) + "\nTRACE-END";
   await logStream(page, [logEntry(1, "Ready"), logEntry(2, message, "ERROR"), logEntry(3, "Queued")]);

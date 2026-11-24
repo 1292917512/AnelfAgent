@@ -9,11 +9,17 @@ export function useElementSize<T extends HTMLElement>() {
     const el = ref.current;
     if (!el) return;
     // 先直接量一次——部分 WebView 中 ResizeObserver 回调可能不触发，不能只靠它
-    const rect = el.getBoundingClientRect();
-    setSize({ width: rect.width, height: rect.height });
+    const measure = ({ width, height }: DOMRectReadOnly) =>
+      setSize((previous) => previous?.width === width && previous.height === height ? previous : { width, height });
+    const measureElement = () => measure(el.getBoundingClientRect());
+    measureElement();
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", measureElement);
+      return () => window.removeEventListener("resize", measureElement);
+    }
     const observer = new ResizeObserver((entries) => {
       const r = entries[0]?.contentRect;
-      if (r) setSize({ width: r.width, height: r.height });
+      if (r) measure(r);
     });
     observer.observe(el);
     return () => observer.disconnect();

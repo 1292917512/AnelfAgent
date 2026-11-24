@@ -7,7 +7,7 @@ import type { TaskConfig } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Button, ConfirmDialog, Select } from "@/components/ui";
 import { ListToolbar } from "@/components/common/ListToolbar";
-import { AsyncState } from "@/components/common/AsyncState";
+import { AsyncState, QueryError } from "@/components/common/AsyncState";
 import { TaskDetail } from "./TaskForm";
 import { TaskEditor, taskIdentity } from "./TaskEditor";
 import { LastRunLine, TaskHistoryList } from "./TaskHistory";
@@ -33,12 +33,13 @@ export function TasksPanel() {
     [task.name, task.display_name, task.description, task.folder].join(" ").toLowerCase().includes(search.trim().toLowerCase())
     && (status === "all" || task.enabled === (status === "enabled")));
   return <div className="space-y-4">
-    <ListToolbar search={search} onSearch={setSearch} count={matches.length}>
+    <ListToolbar search={search} onSearch={setSearch} count={tasks.data ? matches.length : undefined}>
       <Select aria-label={t("common:status")} value={status} onChange={(event) => setStatus(event.target.value)}>
         <option value="all">{t("common:all")}</option><option value="enabled">{t("tasks.enableTask")}</option><option value="disabled">{t("tasks.disabled")}</option>
       </Select>
       <Button variant="primary" onClick={() => setEditor({ task: null })}><Plus size={15} />{t("tasks.addTask")}</Button>
     </ListToolbar>
+    {tasks.data && tasks.error && <QueryError compact title={t("common:refreshFailedCached")} error={tasks.error} retry={() => void tasks.refetch()} />}
     <AsyncState pending={tasks.isPending} error={!tasks.data ? tasks.error : undefined} retry={() => void tasks.refetch()}>
       {matches.length === 0 && <p className="rounded-xl border border-dashed border-border py-16 text-center text-muted">{t(search || status !== "all" ? "common:noMatches" : "tasks.empty")}</p>}
       <div className="space-y-3">
@@ -47,15 +48,15 @@ export function TasksPanel() {
           const open = key === expanded;
           return <section key={key} className="overflow-hidden rounded-xl border border-border bg-card">
             <div className="flex flex-wrap items-center gap-3 p-4">
-              <button aria-expanded={open} onClick={() => setExpanded(open ? null : key)} className="flex min-w-0 flex-1 items-start gap-3 text-left">
+              <button aria-expanded={open} onClick={() => setExpanded(open ? null : key)} className="flex min-w-0 flex-1 items-start gap-3 text-left max-[420px]:basis-full">
                 <ChevronDown size={16} className={cn("mt-1 shrink-0 text-muted transition-transform", open && "rotate-180")} />
                 <div className="min-w-0">
-                  <span className="flex flex-wrap items-center gap-2 text-sm font-semibold text-heading">{task.display_name || task.name}
+                  <span className="flex flex-wrap items-center gap-2 text-sm font-semibold text-heading wrap-anywhere">{task.display_name || task.name}
                     <span className={cn("h-1.5 w-1.5 rounded-full", task.enabled ? "bg-ok" : "bg-muted")} />
                     {!task.enabled && <span className="text-xs font-normal text-muted">{t("tasks.disabled")}</span>}
                   </span>
                   <span className="block truncate text-xs text-muted">{task.folder ? task.folder + "/" : ""}{task.name}</span>
-                  {task.description && <p className="mt-1 text-xs text-muted">{task.description}</p>}
+                  {task.description && <p className="mt-1 text-xs text-muted wrap-anywhere">{task.description}</p>}
                   {task.last_run && <LastRunLine lastRun={task.last_run} t={t} />}
                 </div>
               </button>

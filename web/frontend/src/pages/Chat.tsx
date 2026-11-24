@@ -1,4 +1,4 @@
-import { useEffect, useState, lazy, Suspense } from "react";
+import { useEffect, useMemo, useState, lazy, Suspense, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { Group, Panel, Separator, type Layout } from "react-resizable-panels";
 import { useElementSize } from "@/hooks/useElementSize";
@@ -36,6 +36,14 @@ function ResizeHandle({ id }: { id: string }) {
   return <Separator id={id} className="workbench-separator" />;
 }
 
+function WorkbenchPanels({ layoutId, children }: { layoutId: string; children: ReactNode }) {
+  const defaultLayout = useMemo(() => loadLayout(layoutId), [layoutId]);
+  return <Group orientation="horizontal" className="min-h-0 flex-1" defaultLayout={defaultLayout}
+    onLayoutChanged={(next, meta) => {
+      if (meta.isUserInteraction) try { localStorage.setItem(LAYOUT_KEY + layoutId, JSON.stringify(next)); } catch { /* 布局存储可选 */ }
+    }}>{children}</Group>;
+}
+
 /** 全局执行为主视图，Web 频道独立停靠，文件与辅助面板按可用空间排列。 */
 export default function Chat() {
   const { t } = useTranslation("chat");
@@ -59,10 +67,8 @@ export default function Chat() {
   const layoutId = [filesInline && "files", editorInline && "editor", !executionHidden && "execution", chatInline && "chat", dockInline && "dock"].filter(Boolean).join("-");
 
   useEffect(() => { loadChats(); loadHistory(); }, [loadChats, loadHistory]);
-  useEffect(() => {
-    setContainerWidth(width);
-    return () => setContainerWidth(null);
-  }, [width, setContainerWidth]);
+  useEffect(() => { setContainerWidth(width); }, [width, setContainerWidth]);
+  useEffect(() => () => setContainerWidth(null), [setContainerWidth]);
 
   const editor = (overlay: boolean) => <Suspense fallback={<div className="p-6 text-sm text-muted" role="status">{t("workbench:editor.loading")}</div>}><FileEditor overlay={overlay} /></Suspense>;
 
@@ -72,16 +78,13 @@ export default function Chat() {
         try { localStorage.removeItem(LAYOUT_KEY + layoutId); } catch { /* 布局存储可选 */ }
         setLayoutRevision((revision) => revision + 1);
       }} />
-      <Group key={layoutRevision} orientation="horizontal" className="min-h-0 flex-1" defaultLayout={loadLayout(layoutId)}
-        onLayoutChanged={(next, meta) => {
-          if (meta.isUserInteraction) try { localStorage.setItem(LAYOUT_KEY + layoutId, JSON.stringify(next)); } catch { /* 布局存储可选 */ }
-        }}>
+      <WorkbenchPanels key={layoutRevision} layoutId={layoutId}>
         {filesInline && <><Panel id="files" defaultSize={256} minSize={240} maxSize="35%"><LeftDock /></Panel><ResizeHandle id="files-separator" /></>}
         {editorInline && <><Panel id="editor" defaultSize="45%" minSize={420}>{editor(false)}</Panel>{!executionHidden && <ResizeHandle id="editor-separator" />}</>}
         {!executionHidden && <Panel id="execution" minSize={Math.min(500, size?.width ?? 500)}><Suspense fallback={<div className="p-6 text-sm text-muted">{t("common:loading")}</div>}><ExecutionWorkspace /></Suspense></Panel>}
         {chatInline && <>{!executionHidden && <ResizeHandle id="chat-separator" />}<Panel id="chat" defaultSize={chatExpanded ? "100%" : 380} minSize={360} maxSize={chatExpanded ? "100%" : "45%"}><WebConversation onClose={toggleChat} /></Panel></>}
         {dockInline && <><ResizeHandle id="dock-separator" /><Panel id="dock" defaultSize={340} minSize={320} maxSize="40%"><Dock /></Panel></>}
-      </Group>
+      </WorkbenchPanels>
       <DialogSurface open={layout.chatVisible && !chatInline} onClose={dismissSurface} title={t("workbench:webChat")} placement="right" className="workbench-sheet sm:max-w-[520px]">
         <WebConversation onClose={dismissSurface} />
       </DialogSurface>

@@ -1,4 +1,35 @@
 import { test, expect, task } from "./fixtures";
+import type { HeartbeatConfig } from "../src/lib/types";
+
+test("heartbeat preserves a zero-temperature draft, retries and saves only the edited field", async ({ page }) => {
+  const config: HeartbeatConfig = { enabled: true, interval_seconds: 600, analysis_temperature: 0.7, min_conversations_for_analysis: 3, task_schedules: [] };
+  const writes: Partial<HeartbeatConfig>[] = [];
+  await page.route("**/api/config/heartbeat", (route) => {
+    if (route.request().method() !== "PUT") return route.fulfill({ json: config });
+    const patch: Partial<HeartbeatConfig> = route.request().postDataJSON();
+    writes.push(patch);
+    if (writes.length === 1) return route.fulfill({ status: 503, json: { detail: "Save offline" } });
+    Object.assign(config, patch);
+    return route.fulfill({ json: { status: "ok" } });
+  });
+  await page.goto("/webui/heartbeat?tab=config");
+  const temperature = page.getByRole("spinbutton", { name: "Analysis Temperature" });
+  const save = page.getByRole("button", { name: "Save Config" });
+  await temperature.fill("");
+  await save.click();
+  expect(writes).toHaveLength(0);
+  await temperature.fill("0");
+  await page.getByRole("tab").first().click();
+  await page.getByRole("button", { name: "Keep editing" }).click();
+  await expect(temperature).toHaveValue("0");
+  await save.click();
+  await expect(page.getByRole("alert")).toHaveText("Save offline");
+  await expect(temperature).toHaveValue("0");
+  await save.click();
+  await expect(save).toBeDisabled();
+  await expect(page.getByText("Saved", { exact: true })).toBeVisible();
+  expect(writes).toEqual([{ analysis_temperature: 0 }, { analysis_temperature: 0 }]);
+});
 
 test("task history keeps uncertain progress distinct from successful work", async ({ page }) => {
   const record = { started_at: 1720000000, duration_ms: 4200, status: "incomplete", trigger: "scheduled",

@@ -2,6 +2,7 @@
 .app-sidebar { background: var(--sidebar-bg); }
 .app-frame { margin: 10px 10px 10px 0; border: 1px solid var(--border); border-radius: 18px; overflow: hidden; background: var(--bg); box-shadow: 0 8px 32px rgb(15 23 42 / .025); }
 .app-header { background: var(--card); }
+.toast-stack { pointer-events: none; top: calc(var(--viewport-top, 0px) + max(8px, env(safe-area-inset-top))); right: max(8px, env(safe-area-inset-right)); width: min(360px, calc(100% - max(8px, env(safe-area-inset-left)) - max(8px, env(safe-area-inset-right)))); max-height: calc(var(--viewport-height, 100dvh) * .5); overflow-y: auto; overscroll-behavior: contain; padding: 4px; }
 .sidebar-brand { display: flex; align-items: center; gap: 9px; min-height: 74px; padding: 12px 14px; }
 .brand-mark { display: grid; place-items: center; width: 32px; height: 36px; flex-shrink: 0; color: var(--accent); }
 .sidebar-navigation { padding: 4px 12px 20px; scrollbar-width: thin; }
@@ -62,7 +63,8 @@
 }
 .sidebar-link:hover { background: var(--bg-hover); color: var(--text-strong); }
 .sidebar-link.is-active { background: var(--accent-subtle); color: var(--accent); font-weight: 600; }
-.sidebar-link.is-active::before { content: ""; position: absolute; left: 0; top: 12px; bottom: 12px; width: 2px; background: var(--accent); border-radius: 2px; }
+.sidebar-link.is-active::before { content: ""; position: absolute; left: 0; top: 12px; bottom: 12px; width: 2px; background: var(--accent); border-radius: 2px; animation: nav-marker-in var(--duration-normal) var(--ease-out); }
+@keyframes nav-marker-in { from { opacity: 0; scale: .55; } to { opacity: 1; scale: 1; } }
 .sidebar-link.is-active .sidebar-icon { opacity: 1; }
 [data-density="compact"] .sidebar-link { min-height: 31px; padding-block: 5px; }
 .page-container { width: 100%; max-width: 1440px; margin-inline: auto; display: flex; flex-direction: column; gap: 24px; animation: fade-in var(--duration-normal) var(--ease-out); }
@@ -100,7 +102,7 @@ input:is([type="checkbox"], [type="radio"], [type="range"]):focus-visible { outl
 @media (max-width: 767px) {
   .app-shell { position: relative; top: var(--viewport-top, 0px); }
   .app-frame { margin: 0; border: 0; border-radius: 0; }
-  .app-header { min-height: 52px; height: 52px; padding-inline: max(12px, env(safe-area-inset-left)); }
+  .app-header { min-height: 52px; height: 52px; padding-left: max(12px, env(safe-area-inset-left)); padding-right: max(12px, env(safe-area-inset-right)); }
   .app-header button { min-width: 40px; min-height: 40px; }
   .app-button { min-height: 44px; }
   .file-tree-menu [role="menuitem"] { min-height: 44px; }
@@ -110,10 +112,11 @@ input:is([type="checkbox"], [type="radio"], [type="range"]):focus-visible { outl
   .mobile-menu .sidebar-link { min-height: 46px; padding: 12px 48px 12px 12px; font-size: 13px; }
   .mobile-menu .sidebar-pin { opacity: 1; width: 44px; height: 44px; right: 0; }
   .mobile-menu .sidebar-footer { padding-bottom: env(safe-area-inset-bottom); }
-  .mobile-nav { padding-inline: max(6px, env(safe-area-inset-left)); }
-  .mobile-nav-item { position: relative; margin: 5px 2px; min-height: 50px; border-radius: 14px; }
+  .mobile-nav { padding-left: max(6px, env(safe-area-inset-left)); padding-right: max(6px, env(safe-area-inset-right)); }
+  .mobile-nav-item { position: relative; margin: 5px 2px; min-height: 50px; border-radius: 14px; transition: color var(--duration-fast), background-color var(--duration-fast); }
   .mobile-nav-item.is-active { background: var(--accent-subtle); }
-  .mobile-nav-item.is-active::before { content: ""; position: absolute; top: 0; width: 18px; height: 2px; border-radius: 2px; background: var(--accent); }
+  .mobile-nav-item.is-active::before { content: ""; position: absolute; top: 0; width: 18px; height: 2px; border-radius: 2px; background: var(--accent); animation: nav-marker-in var(--duration-normal) var(--ease-out); }
+  .command-palette { top: calc(var(--viewport-top, 0px) + 8px); max-height: calc(var(--viewport-height, 100dvh) - 16px); width: calc(100% - 16px); }
   .page-header { gap: 12px; }
   .page-header-actions { width: 100%; }
   .page-header-actions > button { flex: 0 1 auto; }

@@ -62,7 +62,7 @@ export function ToolSystemRulesPanel() {
               className={cn(
                 "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md transition-[color,background-color,border-color,box-shadow,opacity]",
                 saved
-                  ? "bg-ok text-white border border-[var(--ok)]"
+                  ? "bg-ok-subtle text-ok border border-ok/40"
                   : "bg-accent text-primary-foreground hover:bg-[var(--accent-hover)]",
               )}
             >

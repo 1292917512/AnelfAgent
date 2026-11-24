@@ -1,15 +1,13 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { Brain, ChevronDown, Clock3, Inbox, MessageSquare, Server, Wrench } from "lucide-react";
+import { Brain, ChevronDown, Clock3, Eye, Inbox, MessageSquare, Send, Server, Wrench } from "lucide-react";
 import { useNow } from "@/hooks/useNow";
-import { statusApi } from "@/lib/api";
-import { runtimeStatusQuery, runtimeThinkingQuery } from "@/lib/runtime-queries";
+import { runtimeComponentsQuery, runtimeStatusQuery, runtimeThinkingQuery } from "@/lib/runtime-queries";
 import { SectionBoundary } from "@/components/common/SectionBoundary";
 import { QueryError } from "@/components/common/AsyncState";
 import { Card } from "@/components/common/Card";
 import { StatusDot } from "@/components/common/StatusDot";
-import { useAppStore } from "@/stores/app-store";
 import { AttentionPanel } from "./AttentionPanel";
 import { ComponentInfoCard } from "./ComponentInfoCard";
 import { DelegationsPanel } from "@/components/delegation/DelegationsPanel";
@@ -18,11 +16,17 @@ import { EventsPanel } from "./EventsPanel";
 import { ServicesPanel } from "./ServicesPanel";
 import { PendingTasks } from "./PendingTasks";
 
-function Uptime() {
-  const startedAt = useAppStore((s) => s.startedAt);
+const PHASE_STEPS = [
+  { key: "observe", icon: Eye, phases: ["accepting", "recalling"] },
+  { key: "think", icon: Brain, phases: ["deciding", "introspecting", "llm_calling"] },
+  { key: "execute", icon: Wrench, phases: ["tool_executing"] },
+  { key: "deliver", icon: Send, phases: ["replying"] },
+];
+
+function Uptime({ uptime, observedAt }: { uptime?: number; observedAt: number }) {
   const { t } = useTranslation("dashboard");
-  const now = useNow(startedAt !== null);
-  const seconds = startedAt === null ? null : Math.max(0, Math.floor(now / 1000 - startedAt));
+  const now = useNow(uptime !== undefined);
+  const seconds = uptime === undefined ? null : Math.floor(uptime + Math.max(0, now - observedAt) / 1000);
   const parts: [number, string][] = seconds === null ? [] : [
     [Math.floor(seconds / 86400), "day"], [Math.floor(seconds % 86400 / 3600), "hour"],
     [Math.floor(seconds % 3600 / 60), "minute"], [seconds % 60, "second"],
@@ -32,44 +36,44 @@ function Uptime() {
 
 export function OverviewPanel() {
   const { t } = useTranslation(["dashboard", "status", "common"]);
-  const setStartedAt = useAppStore((s) => s.setStartedAt);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const statusQuery = useQuery(runtimeStatusQuery());
-  const { data: thinking } = useQuery({ ...runtimeThinkingQuery(), refetchInterval: statusQuery.data?.status?.mind_phase === "idle" ? 10_000 : 3000 });
-  const { data: components } = useQuery({ queryKey: ["components"], queryFn: () => statusApi.components().then((r) => r.data), refetchInterval: 10000 });
-  const isReady = statusQuery.data?.ready;
-  const statusInfo = statusQuery.data?.status;
-  const phase = String(statusInfo?.mind_phase ?? "idle");
-  const pendingTotal = (thinking?.pending_messages?.length ?? 0) + (thinking?.general_tasks?.length ?? 0);
-  const tools = components?.structured?.tools;
-  const phaseIndex = ["accepting", "recalling"].includes(phase) ? 0 : ["deciding", "introspecting", "llm_calling"].includes(phase) ? 1 : phase === "tool_executing" ? 2 : phase === "replying" ? 3 : -1;
-  useEffect(() => {
-    if (typeof statusInfo?.uptime === "number" && statusInfo.uptime > 0) setStartedAt(statusInfo.uptime);
-  }, [statusInfo?.uptime, setStartedAt]);
+  const thinkingQuery = useQuery({ ...runtimeThinkingQuery(), refetchInterval: statusQuery.data?.status?.mind_phase === "idle" ? 10_000 : 3000 });
+  const components = useQuery({ ...runtimeComponentsQuery(), refetchInterval: 10_000 });
+  const statusInfo = statusQuery.isSuccess ? statusQuery.data.status : undefined;
+  const phase = statusInfo?.mind_phase;
+  const thinking = thinkingQuery.isSuccess ? thinkingQuery.data : null;
+  const pendingTotal = thinking?.pending_messages && thinking.general_tasks ? thinking.pending_messages.length + thinking.general_tasks.length : "—";
+  const tools = components.isSuccess ? components.data.structured?.tools : undefined;
+  const health = statusQuery.isPending ? "loading" : statusQuery.isError ? "serviceUnavailable" : statusQuery.data?.ready ? "running" : "notReady";
 
   return (
     <div className="overview-layout">
       {statusQuery.error && <QueryError compact error={statusQuery.error} retry={() => void statusQuery.refetch()} />}
+      {components.error && <QueryError compact title={t("overview.componentsFailed")} error={components.error} retry={() => void components.refetch()} />}
       <div className="overview-summary">
         <section className="overview-status" aria-label={t("runningStatus")}>
           <div className="overview-status-copy">
-            <div className="flex items-center gap-2 text-xs text-muted"><StatusDot status={statusQuery.isPending ? "offline" : isReady ? "ok" : "danger"} />{statusQuery.isPending ? t("common:loading") : isReady ? t("common:running") : t("common:notReady")}</div>
-            <h2>{t(`phaseLabels.${phase}`, { ns: "status", defaultValue: phase })}</h2>
-            <Uptime />
+            <div className="flex items-center gap-2 text-xs text-muted"><StatusDot status={health === "running" ? "ok" : statusQuery.isError ? "danger" : "offline"} />{t(`common:${health}`)}</div>
+            <h2>{phase ? t(`phaseLabels.${phase}`, { ns: "status", defaultValue: phase }) : "—"}</h2>
+            <Uptime uptime={statusInfo?.uptime} observedAt={statusQuery.dataUpdatedAt} />
           </div>
-          <div className="overview-phase-track" aria-label={t("status:thinkingPhase")}>
-            {["observe", "think", "execute", "deliver"].map((step, index) => <div key={step} data-active={isReady && phaseIndex === index}>
-              <span className="overview-phase-node">{String(index + 1).padStart(2, "0")}</span>
-              <span>{t(`overview.${step}`)}</span>
-            </div>)}
-          </div>
+          <ol className="overview-phase-track" aria-label={t("status:thinkingPhase")}>
+            {PHASE_STEPS.map(({ key, icon: Icon, phases }) => {
+              const active = health === "running" && !!phase && phases.includes(phase);
+              return <li key={key} data-active={active} aria-current={active ? "step" : undefined}>
+                <span className="overview-phase-node"><Icon size={16} strokeWidth={1.7} aria-hidden="true" /></span>
+                <span>{t(`overview.${key}`)}</span>
+              </li>;
+            })}
+          </ol>
         </section>
         <div className="dashboard-metrics">
           {[
             { label: t("messageCount"), icon: MessageSquare, value: statusInfo?.message_count ?? "—", note: t("overview.received") },
             { label: t("tools"), icon: Wrench, value: tools ? `${tools.enabled} / ${tools.total}` : "—", note: t("overview.availableTools") },
-            { label: t("status:stm"), icon: Brain, value: thinking ? `${thinking.short_term_memory_count ?? 0} / ${thinking.short_term_memory_max ?? 0}` : "—", note: t("overview.memoryWindow") },
-            { label: t("status:pending"), icon: Inbox, value: thinking ? pendingTotal : "—", note: t("overview.pendingHint") },
+            { label: t("status:stm"), icon: Brain, value: thinking?.short_term_memory_count != null ? `${thinking.short_term_memory_count} / ${thinking.short_term_memory_max ?? "—"}` : "—", note: t("overview.memoryWindow") },
+            { label: t("status:pending"), icon: Inbox, value: pendingTotal, note: t("overview.pendingHint") },
           ].map((metric) => <div key={metric.label} className="overview-metric">
             <div><span>{metric.label}</span><metric.icon size={16} /></div>
             <strong>{String(metric.value)}</strong><span className="overview-metric-note">{metric.note}</span>
@@ -78,7 +82,7 @@ export function OverviewPanel() {
       </div>
       <div className="overview-inbox">
         <SectionBoundary><AttentionPanel /></SectionBoundary>
-        <PendingTasks snapshot={thinking} />
+        <PendingTasks snapshot={thinking} loading={thinkingQuery.isPending} error={thinkingQuery.error} retry={() => void thinkingQuery.refetch()} />
       </div>
       <SectionBoundary><DelegationsPanel /></SectionBoundary>
       <Card className="overview-details !p-0">

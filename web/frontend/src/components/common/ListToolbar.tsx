@@ -4,7 +4,7 @@ import { useTranslation } from "react-i18next";
 import { Input, Button } from "@/components/ui";
 
 export function ListToolbar({ search, onSearch, count, children }: {
-  search: string; onSearch: (value: string) => void; count: number; children?: ReactNode;
+  search: string; onSearch: (value: string) => void; count?: number; children?: ReactNode;
 }) {
   const { t } = useTranslation("common");
   return (
@@ -16,7 +16,7 @@ export function ListToolbar({ search, onSearch, count, children }: {
         {search && <Button variant="ghost" size="icon" className="absolute right-1 top-1/2 -translate-y-1/2"
           title={t("clearFilters")} onClick={() => onSearch("")}><X size={14} /></Button>}
       </div>
-      <span className="text-xs text-muted tabular-nums" role="status">{t("resultsCount", { count })}</span>
+      <span className="text-xs text-muted tabular-nums" role="status">{count !== undefined && t("resultsCount", { count })}</span>
       <div className="ml-auto flex flex-wrap items-center gap-2">{children}</div>
     </div>
   );

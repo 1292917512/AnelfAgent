@@ -33,7 +33,7 @@ for (const route of ["models", "memory", "data", "thinking"]) {
     await expect(page.getByRole("status", { name: "Loading...", exact: true })).toHaveCount(0);
     const assets = scripts.filter((path) => path.startsWith("/webui/assets/"));
     if (assets.length) expect(assets.length).toBeLessThanOrEqual(35);
-    expect(scripts.some((path) => /(?:GraphPanel|FlowView|QueryPanel|RowEditModal|RowDetailModal|FileEditor|RecallPolicyPanel)[-.]/.test(path))).toBe(false);
+    expect(scripts.some((path) => /(?:CogneePanel|GraphPanel|FlowView|QueryPanel|RowEditModal|RowDetailModal|FileEditor|RecallPolicyPanel)[-.]/.test(path))).toBe(false);
     await testInfo.attach("initial-scripts", { body: JSON.stringify(scripts, null, 2), contentType: "application/json" });
     if (route === "memory") {
       await page.getByRole("tab", { name: "Automatic recall", exact: true }).click();

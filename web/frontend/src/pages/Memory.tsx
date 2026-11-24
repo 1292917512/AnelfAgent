@@ -16,7 +16,7 @@ import { NotesPanel } from "@/pages/memory/NotesPanel";
 import { RulesPanel } from "@/pages/memory/RulesPanel";
 import { DailyNotesPanel } from "@/pages/memory/DailyNotesPanel";
 import { DocsPanel } from "@/pages/memory/DocsPanel";
-import { CogneePanel } from "@/pages/memory/cognee/CogneePanel";
+const CogneePanel = lazy(() => import("@/pages/memory/cognee/CogneePanel").then((module) => ({ default: module.CogneePanel })));
 const RecallPolicyPanel = lazy(() => import("@/pages/memory/RecallPolicyPanel").then((module) => ({ default: module.RecallPolicyPanel })));
 const GraphPanel = lazy(() => import("@/pages/memory/graph/GraphPanel").then((module) => ({ default: module.GraphPanel })));
 
@@ -62,7 +62,7 @@ export default function Memory() {
         {tab === "entity" && <EntityPanel />}
         {tab === "ltm" && <LTMPanel />}
         {tab === "graph" && <Suspense fallback={<PageSkeleton />}><GraphPanel /></Suspense>}
-        {tab === "cognee" && <CogneePanel />}
+        {tab === "cognee" && <Suspense fallback={<PageSkeleton />}><CogneePanel /></Suspense>}
       </div>
     </PageContainer>
   );

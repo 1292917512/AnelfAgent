@@ -94,11 +94,13 @@
 .overview-uptime { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; color: var(--muted); font-size: 11px; }
 .overview-uptime strong { font-weight: 500; font-variant-numeric: tabular-nums; color: var(--text); }
 .overview-phase-track { display: grid; grid-template-columns: repeat(4, 1fr); width: min(46%, 400px); flex-shrink: 0; }
-.overview-phase-track > div { position: relative; display: flex; flex-direction: column; align-items: center; gap: 9px; color: var(--muted); font-size: 11px; }
-.overview-phase-track > div:not(:last-child)::after { content: ""; position: absolute; top: 18px; left: calc(50% + 23px); right: calc(-50% + 23px); height: 1px; background: var(--border); }
-.overview-phase-node { display: grid; place-items: center; width: 36px; height: 36px; border: 1px solid var(--border); border-radius: 50%; font: 11px var(--mono); background: var(--card); }
+.overview-phase-track > li { position: relative; display: flex; flex-direction: column; align-items: center; gap: 9px; color: var(--muted); font-size: 12px; transition: color var(--duration-fast); }
+.overview-phase-track > li:not(:last-child)::after { content: ""; position: absolute; top: 18px; left: calc(50% + 23px); right: calc(-50% + 23px); height: 1px; background: var(--border-strong); }
+.overview-phase-node { display: grid; place-items: center; width: 36px; height: 36px; border: 1px solid var(--border); border-radius: 50%; background: var(--card); transition: background-color var(--duration-fast), border-color var(--duration-fast), box-shadow var(--duration-normal); }
 .overview-phase-track > [data-active="true"] { color: var(--accent); }
 .overview-phase-track > [data-active="true"] .overview-phase-node { background: var(--accent-subtle); border-color: var(--accent); box-shadow: 0 0 0 5px var(--accent-subtle); }
+.overview-phase-track > [data-active="true"] svg { animation: phase-arrive var(--duration-normal) var(--ease-out); }
+@keyframes phase-arrive { from { opacity: .6; transform: translateY(2px); } to { opacity: 1; transform: translateY(0); } }
 .dashboard-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px; border-top: 1px solid var(--border); background: var(--border); }
 .overview-metric { display: flex; flex-direction: column; gap: 6px; padding: 16px 24px; background: var(--card); min-width: 0; }
 .overview-metric > div { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--muted); font-size: 12px; }

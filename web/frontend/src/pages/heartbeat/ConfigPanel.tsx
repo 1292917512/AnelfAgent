@@ -1,8 +1,10 @@
-import { useState, useEffect } from "react";
+import { useId, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { heartbeatApi, tasksApi } from "@/lib/api";
-import type { HeartbeatConfig, TaskSchedule, TaskConfig } from "@/lib/types";
+import { apiErrorMessage, heartbeatApi, tasksApi } from "@/lib/api";
+import type { HeartbeatConfig, TaskSchedule } from "@/lib/types";
+import { useUnsavedChanges } from "@/components/common/UnsavedChanges";
+import { PageSkeleton } from "@/components/common/AsyncState";
 import { Card } from "@/components/common/Card";
 import { Save, Plus } from "lucide-react";
 import { Button, Input, Switch } from "@/components/ui";
@@ -11,6 +13,7 @@ import { ScheduleRow } from "./ScheduleRow";
 export function ConfigPanel() {
   const { t } = useTranslation("heartbeat");
   const queryClient = useQueryClient();
+  const formId = useId();
 
   const { data: config } = useQuery({
     queryKey: ["heartbeat-config"],
@@ -19,119 +22,110 @@ export function ConfigPanel() {
 
   const { data: tasks = [] } = useQuery({
     queryKey: ["tasks"],
-    queryFn: () => tasksApi.list().then((r) => r.data as TaskConfig[]),
+    queryFn: () => tasksApi.list().then((r) => r.data),
   });
 
-  const [form, setForm] = useState<Partial<HeartbeatConfig>>({});
-  const [schedules, setSchedules] = useState<TaskSchedule[] | null>(null);
-
-  useEffect(() => {
-    if (config) {
-      setForm(config);
-      setSchedules(null);
-    }
-  }, [config]);
-
-  const activeSchedules = schedules ?? form.task_schedules ?? config?.task_schedules ?? [];
-  const interval = form.interval_seconds ?? config?.interval_seconds ?? 300;
+  const [draft, setDraft] = useState<Partial<HeartbeatConfig>>({});
+  const form = { ...config, ...draft };
+  const dirty = Object.keys(draft).length > 0;
+  useUnsavedChanges(dirty);
+  const activeSchedules = form.task_schedules ?? [];
+  const interval = form.interval_seconds ?? 300;
+  const invalidIdle = activeSchedules.filter((schedule) => schedule.mode === "idle").length > 1;
 
   const saveMut = useMutation({
-    mutationFn: (data: Partial<HeartbeatConfig>) => heartbeatApi.saveConfig(data),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["heartbeat-config"] });
-      queryClient.invalidateQueries({ queryKey: ["heartbeat-status"] });
-      setSchedules(null);
+    mutationFn: heartbeatApi.saveConfig,
+    onSuccess: async (_response, changes) => {
+      queryClient.setQueryData<HeartbeatConfig>(["heartbeat-config"], (previous) => previous && { ...previous, ...changes });
+      setDraft({});
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["heartbeat-config"] }),
+        queryClient.invalidateQueries({ queryKey: ["heartbeat-status"] }),
+        ...(changes.interval_seconds !== undefined ? [queryClient.invalidateQueries({ queryKey: ["configMeta"] })] : []),
+      ]);
     },
   });
 
-  const setField = <K extends keyof HeartbeatConfig>(key: K, value: HeartbeatConfig[K]) =>
-    setForm((prev) => ({ ...prev, [key]: value }));
+  const setField = <K extends keyof HeartbeatConfig>(key: K, value: HeartbeatConfig[K]) => {
+    saveMut.reset();
+    setDraft((previous) => {
+      const next = { ...previous, [key]: value };
+      if (value === config?.[key]) delete next[key];
+      return next;
+    });
+  };
 
   const updateSchedule = (idx: number, patch: Partial<TaskSchedule>) => {
     const next = activeSchedules.map((s, i) => (i === idx ? { ...s, ...patch } : s));
-    setSchedules(next);
-    setForm((prev) => ({ ...prev, task_schedules: next }));
+    setField("task_schedules", next);
   };
 
   const removeSchedule = (idx: number) => {
     const next = activeSchedules.filter((_, i) => i !== idx);
-    setSchedules(next);
-    setForm((prev) => ({ ...prev, task_schedules: next }));
+    setField("task_schedules", next);
   };
 
   const addSchedule = (taskName: string) => {
     const next: TaskSchedule[] = [...activeSchedules, { task_name: taskName, mode: "manual" }];
-    setSchedules(next);
-    setForm((prev) => ({ ...prev, task_schedules: next }));
+    setField("task_schedules", next);
   };
 
-  const unboundTasks = (tasks as TaskConfig[]).filter(
+  const unboundTasks = tasks.filter(
     (t) => !activeSchedules.some((s) => s.task_name === t.name),
   );
 
-  if (!config) return null;
-
-  const handleSave = () => {
-    const payload: Partial<HeartbeatConfig> = { ...form };
-    if (schedules !== null) {
-      payload.task_schedules = schedules;
-    }
-    // idle 单例校验（后端 PUT 亦强校验兜底）：思考会刷新空闲计数，多条会互相抢占
-    const idleCount = (payload.task_schedules ?? []).filter((s) => s.mode === "idle").length;
-    if (idleCount > 1) {
-      window.alert(t("schedule.idleSingleError"));
-      return;
-    }
-    saveMut.mutate(payload);
-  };
+  if (!config) return <PageSkeleton />;
 
   return (
-    <div className="space-y-4">
+    <fieldset disabled={saveMut.isPending} className="min-w-0 space-y-4">
       {/* 基础配置 */}
       <Card title={t("config.title")} subtitle={t("config.subtitle")}>
-        <div className="space-y-4">
+        <form id={formId} className="space-y-4" onSubmit={(event) => {
+          event.preventDefault();
+          if (dirty && !invalidIdle && !saveMut.isPending) saveMut.mutate(draft);
+        }}>
           <div className="flex items-center justify-between">
             <div>
               <div className="text-sm font-medium text-heading">{t("config.enabled")}</div>
               <div className="text-xs text-muted">{t("config.enabledDesc")}</div>
             </div>
-            <Switch checked={!!form.enabled} onChange={(v) => setField("enabled", v)} />
+            <Switch label={t("config.enabled")} checked={!!form.enabled} onChange={(v) => setField("enabled", v)} />
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div className="flex flex-col gap-1">
-              <label className="text-xs text-muted font-medium">{t("config.interval")}</label>
+              <label htmlFor={formId + "-interval"} className="text-xs text-muted font-medium">{t("config.interval")}</label>
               <div className="flex items-center gap-2">
                 <Input
-                  type="number" min={60} step={10}
-                  value={form.interval_seconds ?? 300}
-                  onChange={(e) => setField("interval_seconds", parseInt(e.target.value) || 300)}
+                  id={formId + "-interval"} type="number" min={60} required
+                  value={Number.isFinite(interval) ? interval : ""}
+                  onChange={(e) => setField("interval_seconds", e.currentTarget.valueAsNumber)}
                 />
                 <span className="text-xs text-muted whitespace-nowrap">
-                  {t("config.intervalUnit")} ({Math.round((form.interval_seconds ?? 300) / 60)} {t("config.minutes")})
+                  {t("config.intervalUnit")} {Number.isFinite(interval) && `(${Math.round(interval / 60)} ${t("config.minutes")})`}
                 </span>
               </div>
             </div>
 
             <div className="flex flex-col gap-1">
-              <label className="text-xs text-muted font-medium">{t("config.temperature")}</label>
+              <label htmlFor={formId + "-temperature"} className="text-xs text-muted font-medium">{t("config.temperature")}</label>
               <Input
-                type="number" min={0} max={1} step={0.1}
-                value={form.analysis_temperature ?? 0.7}
-                onChange={(e) => setField("analysis_temperature", parseFloat(e.target.value) || 0.7)}
+                id={formId + "-temperature"} type="number" min={0} max={1} step="any" required
+                value={Number.isFinite(form.analysis_temperature) ? form.analysis_temperature : ""}
+                onChange={(e) => setField("analysis_temperature", e.currentTarget.valueAsNumber)}
               />
             </div>
 
             <div className="flex flex-col gap-1">
-              <label className="text-xs text-muted font-medium">{t("config.minConversations")}</label>
+              <label htmlFor={formId + "-conversations"} className="text-xs text-muted font-medium">{t("config.minConversations")}</label>
               <Input
-                type="number" min={1}
-                value={form.min_conversations_for_analysis ?? 3}
-                onChange={(e) => setField("min_conversations_for_analysis", parseInt(e.target.value) || 3)}
+                id={formId + "-conversations"} type="number" min={1} required
+                value={Number.isFinite(form.min_conversations_for_analysis) ? form.min_conversations_for_analysis : ""}
+                onChange={(e) => setField("min_conversations_for_analysis", e.currentTarget.valueAsNumber)}
               />
             </div>
           </div>
-        </div>
+        </form>
       </Card>
 
       {/* 任务调度绑定 */}
@@ -141,8 +135,8 @@ export function ConfigPanel() {
             <ScheduleRow
               key={s.task_name}
               schedule={s}
-              task={(tasks as TaskConfig[]).find((t) => t.name === s.task_name)}
-              interval={interval}
+              task={tasks.find((t) => t.name === s.task_name)}
+              interval={Number.isFinite(interval) ? interval : config.interval_seconds}
               onUpdate={(patch) => updateSchedule(idx, patch)}
               onRemove={() => removeSchedule(idx)}
             />
@@ -166,11 +160,14 @@ export function ConfigPanel() {
       </Card>
 
       {/* 统一保存 */}
-      <div className="flex justify-end">
-        <Button variant="primary" onClick={handleSave} loading={saveMut.isPending}>
+      <div className="flex flex-wrap items-center justify-end gap-3">
+        {invalidIdle && <p role="alert" className="text-sm text-danger">{t("schedule.idleSingleError")}</p>}
+        {saveMut.error && <p role="alert" className="text-sm text-danger">{apiErrorMessage(saveMut.error, t("common:requestFailed"))}</p>}
+        {saveMut.isSuccess && <p role="status" className="text-sm text-ok">{t("common:saved")}</p>}
+        <Button variant="primary" type="submit" form={formId} disabled={!dirty || invalidIdle} loading={saveMut.isPending}>
           <Save size={14} /> {saveMut.isPending ? t("config.saving") : t("config.save")}
         </Button>
       </div>
-    </div>
+    </fieldset>
   );
 }

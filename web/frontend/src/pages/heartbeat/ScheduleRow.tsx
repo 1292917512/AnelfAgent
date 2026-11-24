@@ -39,7 +39,7 @@ export function ScheduleRow({
           </span>
           <span className="text-[11px] text-muted">{s.task_name}</span>
         </div>
-        <button onClick={onRemove} className="p-1 text-muted hover:text-danger transition-colors">
+        <button onClick={onRemove} aria-label={t("schedule.removeTask", { name: s.task_name })} className="grid size-8 shrink-0 place-items-center rounded-md text-muted hover:text-danger pointer-coarse:size-11">
           <Trash2 size={14} />
         </button>
       </div>
@@ -47,6 +47,7 @@ export function ScheduleRow({
       <div className="flex flex-wrap items-center gap-3">
         <Select
           className="w-32"
+          aria-label={t("schedule.triggerMode")}
           value={s.mode}
           onChange={(e) => onUpdate({ mode: e.target.value as TaskSchedule["mode"] })}
         >
@@ -59,7 +60,7 @@ export function ScheduleRow({
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-xs text-muted">{t("schedule.every")}</span>
             <Input
-              type="number" min={1} className="!w-16"
+              type="number" min={1} aria-label={t("schedule.beats")} className="!w-16"
               value={s.every_n_beats ?? 10}
               onChange={(e) => onUpdate({ every_n_beats: parseInt(e.target.value) || 10 })}
             />
@@ -86,7 +87,7 @@ export function ScheduleRow({
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-xs text-muted">{t("schedule.idleAfter")}</span>
             <Input
-              type="number" min={1} className="!w-16"
+              type="number" min={1} aria-label={t("schedule.idleBeats")} className="!w-16"
               value={s.every_n_beats ?? 4}
               onChange={(e) => onUpdate({ every_n_beats: parseInt(e.target.value) || 4 })}
             />
@@ -120,6 +121,7 @@ export function ScheduleRow({
           />
           <Select
             className="w-28"
+            aria-label={t("schedule.effort")}
             value={s.reasoning_effort ?? ""}
             onChange={(e) => onUpdate({ reasoning_effort: e.target.value as TaskSchedule["reasoning_effort"] })}
           >

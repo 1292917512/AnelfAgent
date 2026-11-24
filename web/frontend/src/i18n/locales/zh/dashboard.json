@@ -24,6 +24,8 @@
   "minute": "分",
   "second": "秒",
   "attention": {
+    "partial": "部分状态检查暂不可用",
+    "channelsNotReady": "频道状态尚未就绪",
     "title": "需要注意",
     "okShort": "正常",
     "allClear": "运行正常，未发现需要关注的问题",
@@ -74,6 +76,7 @@
     }
   },
   "overview": {
+    "componentsFailed": "运行组件信息加载失败",
     "observe": "感知",
     "think": "思考",
     "execute": "执行",

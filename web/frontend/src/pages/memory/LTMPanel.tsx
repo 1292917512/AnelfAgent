@@ -121,7 +121,7 @@ export function LTMPanel() {
             <div className="flex justify-end gap-2">
               <button onClick={() => setShowMerge(false)} className="px-3 py-1 text-xs text-muted">{t("common:cancel")}</button>
               <button onClick={() => mergeContent && mergeMutation.mutate()} disabled={!mergeContent}
-                className="px-3 py-1 text-xs font-medium rounded-md bg-ok text-white disabled:opacity-50">{t("common:merge")}</button>
+                className="px-3 py-1 text-xs font-medium rounded-md bg-accent text-primary-foreground hover:bg-accent-hover disabled:opacity-50">{t("common:merge")}</button>
             </div>
           </div>
         )}

@@ -114,7 +114,7 @@ export const mcpApi = {
 /** 从 axios 错误中提取可读信息（统一用于 toast 反馈） */
 
 export const adaptersApi = {
-  list: () => api.get<AdapterListResult>("/adapters/"),
+  list: (signal?: AbortSignal) => api.get<AdapterListResult>("/adapters/", { signal }),
   reload: (key: string | null = null) => api.post<ModuleSyncResult>(key ? `/adapters/${encodeURIComponent(key)}/reload` : "/adapters/reload"),
   toggle: (key: string) => api.put(`/adapters/${encodeURIComponent(key)}/toggle`),
   start: (key: string) => api.put(`/adapters/${encodeURIComponent(key)}/start`),

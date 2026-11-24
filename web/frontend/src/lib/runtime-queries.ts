@@ -11,7 +11,13 @@ export const runtimeStatusQuery = () => queryOptions({
 
 export const runtimeThinkingQuery = () => queryOptions({
   queryKey: ["thinking"],
-  queryFn: ({ signal }) => statusApi.thinking(signal).then((response) => response.data),
+  queryFn: ({ signal }) => statusApi.thinking(signal).then(({ data }) => Object.keys(data).length ? data : null),
   retry: false, throwOnError: false,
   staleTime: 2000,
+});
+
+export const runtimeComponentsQuery = () => queryOptions({
+  queryKey: ["components"],
+  queryFn: ({ signal }) => statusApi.components(signal).then(({ data }) => data),
+  staleTime: 10_000, throwOnError: false,
 });

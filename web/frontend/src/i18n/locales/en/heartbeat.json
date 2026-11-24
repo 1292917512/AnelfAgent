@@ -43,6 +43,10 @@
     "saving": "Saving…"
   },
   "schedule": {
+    "triggerMode": "Trigger mode",
+    "effort": "Reasoning effort",
+    "removeTask": "Unbind {{name}}",
+    "removeTime": "Remove {{time}}",
     "title": "Task Schedule",
     "subtitle": "Bind tasks to heartbeat and configure trigger rules",
     "modeHeartbeat": "Heartbeat",

@@ -69,6 +69,15 @@ class HeartbeatService:
             validate_schedules,
         )
 
+        schedules = None
+        if "task_schedules" in params:
+            try:
+                schedules = [TaskSchedule.from_dict(s) for s in params["task_schedules"]]
+            except (KeyError, TypeError, ValueError) as exc:
+                raise HeartbeatServiceError(f"任务调度配置无效: {exc}") from exc
+            if err := validate_schedules(schedules):
+                raise HeartbeatServiceError(err, status_code=400)
+
         if "interval_seconds" in params:
             HeartbeatService._save_interval_seconds(params["interval_seconds"])
 
@@ -79,10 +88,7 @@ class HeartbeatService:
             cfg.analysis_temperature = params["analysis_temperature"]
         if "min_conversations_for_analysis" in params:
             cfg.min_conversations_for_analysis = params["min_conversations_for_analysis"]
-        if "task_schedules" in params:
-            schedules = [TaskSchedule.from_dict(s) for s in params["task_schedules"]]
-            if err := validate_schedules(schedules):
-                raise HeartbeatServiceError(err, status_code=400)
+        if schedules is not None:
             cfg.task_schedules = schedules
         cfg.save()
 

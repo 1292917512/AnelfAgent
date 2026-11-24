@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
-import { statusApi } from "@/lib/api";
+import { runtimeComponentsQuery } from "@/lib/runtime-queries";
 import { Card } from "@/components/common/Card";
 import { QueryError } from "@/components/common/AsyncState";
 import { Badge } from "@/components/ui/Badge";
@@ -10,11 +10,7 @@ import { Cpu, Database, Wrench, UserCircle, Brain, AlertTriangle } from "lucide-
 /** 运行时模型、存储与工具注册概况。 */
 export function ComponentInfoCard() {
   const { t } = useTranslation(["dashboard", "common"]);
-  const { data, error, refetch } = useQuery({
-    queryKey: ["components"],
-    queryFn: () => statusApi.components().then((r) => r.data),
-    staleTime: 10_000,
-  });
+  const { data, error, refetch } = useQuery(runtimeComponentsQuery());
 
   const c = data?.structured;
   if (error) return <Card title={t("componentInfo")}><QueryError compact error={error} retry={() => void refetch()} /></Card>;

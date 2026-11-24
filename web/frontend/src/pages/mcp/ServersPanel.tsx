@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { mcpServersQuery } from "@/lib/mcp-queries";
 import { useTranslation } from "react-i18next";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
@@ -41,8 +42,7 @@ export function ServersPanel() {
     onSuccess: () => toast.success(t("reorder.saved")),
     onSettled: refresh,
   });
-  const query = useQuery({ queryKey: ["mcpServers"], queryFn: ({ signal }) => mcpApi.list(signal).then((r) => r.data),
-    refetchInterval: reorder.isPending ? false : 5000, enabled: !reorder.isPending, throwOnError: false });
+  const query = useQuery({ ...mcpServersQuery(), refetchInterval: 5000, enabled: !reorder.isPending });
   const servers = query.data ?? [];
   const { data: oauthStatus = {} } = useQuery({ queryKey: ["mcpOauthStatus"], queryFn: () => mcpApi.oauthStatus().then((r) => r.data),
     refetchInterval: 5000, enabled: servers.some((server) => server.transport !== "stdio"), throwOnError: false });
@@ -66,7 +66,7 @@ export function ServersPanel() {
   return <div className="space-y-4">
     <div className="flex flex-wrap items-center justify-between gap-3">
       <div className="space-y-1">
-        <p className="text-sm font-medium text-heading">{t("summary", { total: servers.length, connected: servers.filter((server) => server.connected).length, tools: servers.reduce((sum, server) => sum + server.tool_count, 0) })}</p>
+        {query.data && <p className="text-sm font-medium text-heading">{t("summary", { total: servers.length, connected: servers.filter((server) => server.connected).length, tools: servers.reduce((sum, server) => sum + server.tool_count, 0) })}</p>}
         <p role="status" className="text-xs text-muted">{t(reorder.isPending ? "reorder.saving" : search.trim() ? "reorder.filtered" : "reorder.hint")}</p>
       </div>
       <div className="flex w-full items-center gap-2 sm:w-auto">
@@ -76,7 +76,7 @@ export function ServersPanel() {
         <Button variant="primary" size="sm" disabled={busy} onClick={() => setForm(null)}><Plus size={15} />{t("addServer")}</Button>
       </div>
     </div>
-    {query.data && query.error && <QueryError compact error={query.error} retry={() => void query.refetch()} />}
+    {query.data && query.error && <QueryError compact title={t("common:refreshFailedCached")} error={query.error} retry={() => void query.refetch()} />}
     <AsyncState pending={query.isPending} error={query.data ? undefined : query.error} retry={() => void query.refetch()}>
       {!servers.length ? <EmptyState icon={Plug} title={t("noServers")} description={t("noServersHint")} />
         : !filtered.length ? <p className="py-12 text-center text-sm text-muted">{t("noMatches")}</p>

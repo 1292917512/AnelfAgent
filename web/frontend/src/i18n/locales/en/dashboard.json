@@ -24,6 +24,8 @@
   "minute": "m",
   "second": "s",
   "attention": {
+    "partial": "Some health checks are unavailable",
+    "channelsNotReady": "Channel status is not ready yet",
     "title": "Attention Needed",
     "okShort": "OK",
     "allClear": "All systems normal, no issues found",
@@ -74,6 +76,7 @@
     }
   },
   "overview": {
+    "componentsFailed": "Couldn’t load runtime components",
     "observe": "Observe",
     "think": "Think",
     "execute": "Execute",

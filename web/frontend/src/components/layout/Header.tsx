@@ -10,6 +10,7 @@ import { AppearanceMenu } from "./AppearanceMenu";
 export function Header() {
   const { t } = useTranslation(["nav", "palette"]);
   const setMobileMenuOpen = useAppStore((state) => state.setMobileMenuOpen);
+  const menuOpen = useAppStore((state) => state.mobileMenuOpen);
   const setPaletteOpen = useAppStore((state) => state.setPaletteOpen);
   const location = useLocation();
   const route = findRoute(location.pathname);
@@ -17,7 +18,7 @@ export function Header() {
   return (
     <header className="app-header flex h-14 shrink-0 items-center justify-between gap-3 border-b border-border px-3 md:px-6">
       <div className="flex min-w-0 items-center gap-2">
-        <Button variant="ghost" size="icon" className="md:hidden" onClick={() => setMobileMenuOpen(true)} aria-label={t("menu", { ns: "palette" })}><Menu size={20} /></Button>
+        <Button variant="ghost" size="icon" className="md:hidden" onClick={() => setMobileMenuOpen(true)} aria-haspopup="dialog" aria-expanded={menuOpen} aria-label={t("menu", { ns: "palette" })}><Menu size={20} /></Button>
         {location.pathname !== "/" && <><Link to="/" className="hidden text-xs text-muted hover:text-accent sm:block">{t("chat")}</Link><ChevronRight size={13} className="hidden text-muted sm:block" /></>}
         {route && <><route.icon size={16} className="shrink-0 text-muted" /><span className="truncate text-sm font-medium text-heading">{t(route.label, { defaultValue: route.label })}</span></>}
       </div>

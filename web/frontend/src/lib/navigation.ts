@@ -10,6 +10,7 @@ export interface NavItem {
   icon: LucideIcon;
   group: NavigationGroup;
   mobile?: boolean;
+  workspace?: boolean;
 }
 export const NAVIGATION_GROUPS: NavigationGroup[] = ["workspace", "agent", "capabilities", "system"];
 
@@ -23,7 +24,7 @@ export function getNavigation(): NavItem[] {
   return [...core, ...extensions];
 }
 
-export function findRoute(pathname: string) {
+export function findRoute(pathname: string): NavItem | undefined {
   return CORE_ROUTES.find((route) => matchPath({ path: route.path, end: true }, pathname))
-    ?? getNavigation().find((route) => route.path === pathname);
+    ?? getNavigation().find((route) => matchPath(route.path, pathname));
 }

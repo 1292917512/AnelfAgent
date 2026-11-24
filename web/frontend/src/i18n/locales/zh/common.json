@@ -98,6 +98,7 @@
   "keepEditing": "继续编辑",
   "unsavedDescription": "离开后将丢失当前未保存的修改。",
   "resultsCount": "共 {{count}} 项",
+  "refreshFailedCached": "刷新失败，当前显示上次获取的数据。",
   "noMatches": "没有匹配结果",
   "clearFilters": "清除筛选",
   "saved": "已保存",

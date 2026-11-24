@@ -102,8 +102,13 @@ def test_web_reflection_schedule_modes(
         "schedule_times": ["09:00"], "model_id": "chosen", "reasoning_effort": "high",
     }]}
     if mode != "idle":
+        saved: dict[str, float] = {}
+        _stub_provider(monkeypatch, saved)
+        before = cfg.to_dict()
         with pytest.raises(HeartbeatServiceError, match="manual 或 idle"):
-            HeartbeatService.save_config(params)
+            HeartbeatService.save_config({**params, "interval_seconds": 900, "enabled": not cfg.enabled})
+        assert saved == {}
+        assert cfg.to_dict() == before
         assert not path.exists()
         return
 

@@ -2,10 +2,10 @@ import { useQuery } from "@tanstack/react-query";
 
 import { useTranslation } from "react-i18next";
 import { Link } from "react-router-dom";
-import { statusApi, mcpApi, adaptersApi } from "@/lib/api";
+import { statusApi, adaptersApi } from "@/lib/api";
+import { mcpServersQuery } from "@/lib/mcp-queries";
 import { runtimeStatusQuery } from "@/lib/runtime-queries";
 import { groupAttentionLogs } from "./log-buffer";
-import type { MCPServer, AdapterInfo } from "@/lib/types";
 import { Card } from "@/components/common/Card";
 import { QueryError } from "@/components/common/AsyncState";
 import { Badge } from "@/components/ui/Badge";
@@ -45,40 +45,36 @@ const SEVERITY_ICON: Record<Severity, string> = {
 export function AttentionPanel() {
   const { t } = useTranslation(["dashboard", "common"]);
 
-  const { data: status, isPending: statusPending, error: statusError } = useQuery(runtimeStatusQuery());
-  const { data: errorLogs, isPending: errorLogsPending, error: errorLogsError } = useQuery({
+  const status = useQuery(runtimeStatusQuery());
+  const errorLogs = useQuery({
     queryKey: ["logs", "ERROR"],
-    queryFn: async () => {
-      const results = await Promise.all(["ERROR", "CRITICAL"].map((level) => statusApi.logs(level, undefined, undefined, 5)));
+    queryFn: async ({ signal }) => {
+      const results = await Promise.all(["ERROR", "CRITICAL"].map((level) => statusApi.logs(level, undefined, undefined, 5, signal)));
       return { logs: results.flatMap((result) => result.data.logs) };
     },
-    refetchInterval: 10000,
+    refetchInterval: 10000, throwOnError: false,
   });
-  const { data: warnLogs, isPending: warnLogsPending, error: warnLogsError } = useQuery({
+  const warnLogs = useQuery({
     queryKey: ["logs", "WARNING"],
-    queryFn: () => statusApi.logs("WARNING", undefined, undefined, 5).then((r) => r.data),
-    refetchInterval: 10000,
+    queryFn: ({ signal }) => statusApi.logs("WARNING", undefined, undefined, 5, signal).then((r) => r.data),
+    refetchInterval: 10000, throwOnError: false,
   });
-  const { data: mcpServers, isPending: mcpServersPending, error: mcpError } = useQuery({
-    queryKey: ["mcp"],
-    queryFn: () => mcpApi.list().then((r) => r.data),
-    refetchInterval: 5000,
-  });
-  const { data: adapters, isPending: adaptersPending, error: adaptersError } = useQuery({
+  const mcpServers = useQuery({ ...mcpServersQuery(), refetchInterval: 5000 });
+  const adapters = useQuery({
     queryKey: ["adapters"],
-    queryFn: () => adaptersApi.list().then((r) => r.data),
-    refetchInterval: 10000,
+    queryFn: ({ signal }) => adaptersApi.list(signal).then((r) => r.data),
+    refetchInterval: 10000, throwOnError: false,
   });
 
-  const error = statusError || errorLogsError || warnLogsError || mcpError || adaptersError;
-  if (error) return <Card title={t("attention.title")}><QueryError compact error={error} /></Card>;
-  if (statusPending || errorLogsPending || warnLogsPending || mcpServersPending || adaptersPending) {
-    return <Card title={t("attention.title")}><p role="status" className="text-sm text-muted">{t("common:loading")}</p></Card>;
-  }
+  const sources = [status, errorLogs, warnLogs, mcpServers, adapters];
+  const failed = sources.filter((query) => query.isError);
+  const firstFailure = failed[0];
+  const pending = sources.some((query) => query.isPending);
+  const complete = !pending && !failed.length;
   const items: AttentionItem[] = [];
 
   // Agent 未就绪
-  if (status && !status.ready) {
+  if (status.isSuccess && !status.data.ready) {
     items.push({
       key: "not-ready",
       severity: "danger",
@@ -88,7 +84,7 @@ export function AttentionPanel() {
   }
 
   // MCP 服务器启用但未连接
-  (mcpServers ?? []).forEach((s: MCPServer) => {
+  if (mcpServers.isSuccess) mcpServers.data.forEach((s) => {
     if (s.enabled && !s.connected) {
       items.push({
         key: `mcp-${s.name}`,
@@ -102,7 +98,10 @@ export function AttentionPanel() {
   });
 
   // 通道适配器异常
-  (adapters?.adapters ?? []).forEach((a: AdapterInfo) => {
+  if (adapters.data?.ready === false && status.data?.ready) {
+    items.push({ key: "adapters-not-ready", severity: "warn", icon: Radio, title: t("attention.channelsNotReady"), to: "/channels" });
+  }
+  if (adapters.isSuccess) adapters.data.adapters.forEach((a) => {
     if (a.status === "error") {
       items.push({
         key: `adapter-${a.key}`,
@@ -115,7 +114,7 @@ export function AttentionPanel() {
     }
   });
 
-  const recentLogs = groupAttentionLogs([...(errorLogs?.logs ?? []), ...(warnLogs?.logs ?? [])]).slice(0, 5);
+  const recentLogs = groupAttentionLogs([...(errorLogs.isSuccess ? errorLogs.data.logs : []), ...(warnLogs.isSuccess ? warnLogs.data.logs : [])]).slice(0, 5);
   recentLogs.forEach(({ log, count, danger }) => {
     items.push({
       key: `log-${log.tag}-${log.message}`,
@@ -135,46 +134,50 @@ export function AttentionPanel() {
           <Badge variant={items.some((i) => i.severity === "danger") ? "danger" : "warn"}>
             {items.length}
           </Badge>
-        ) : (
+        ) : complete && (
           <Badge variant="ok">{t("attention.okShort")}</Badge>
         )
       }
     >
-      {items.length === 0 ? (
-        <div className="flex items-center gap-3 py-2 text-sm text-ok">
-          <CheckCircle2 size={18} />
-          <span>{t("attention.allClear")}</span>
-        </div>
-      ) : (
-        <div className="overview-attention">
-          {items.map((item) => {
-            const inner = (
-              <>
-                <item.icon size={16} className={cn("shrink-0 mt-0.5", SEVERITY_ICON[item.severity])} />
-                <div className="flex-1 min-w-0">
-                  <div className="text-sm text-foreground line-clamp-2 break-words">{item.title}</div>
-                  {item.desc && <div className="text-xs text-muted truncate mt-0.5">{item.desc}</div>}
+      <div className="min-w-0 space-y-2">
+        {firstFailure && <QueryError compact title={t("attention.partial")} error={firstFailure.error} retry={() => { failed.forEach((query) => { void query.refetch(); }); }} />}
+        {pending && <p role="status" className="text-sm text-muted">{t("common:loading")}</p>}
+        {items.length === 0 && complete ? (
+          <div className="flex items-center gap-3 py-2 text-sm text-ok">
+            <CheckCircle2 size={18} />
+            <span>{t("attention.allClear")}</span>
+          </div>
+        ) : (
+          <div className="overview-attention">
+            {items.map((item) => {
+              const inner = (
+                <>
+                  <item.icon size={16} className={cn("shrink-0 mt-0.5", SEVERITY_ICON[item.severity])} />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm text-foreground line-clamp-2 break-words">{item.title}</div>
+                    {item.desc && <div className="text-xs text-muted truncate mt-0.5">{item.desc}</div>}
+                  </div>
+                  {item.to && <ChevronRight size={14} className="shrink-0 text-muted mt-1" />}
+                </>
+              );
+              const cls = cn(
+                "flex items-start gap-2.5 px-3 py-2.5 rounded-md border transition-colors",
+                SEVERITY_STYLE[item.severity],
+                item.to && "hover:border-border-strong cursor-pointer",
+              );
+              return item.to ? (
+                <Link key={item.key} to={item.to} className={cls}>
+                  {inner}
+                </Link>
+              ) : (
+                <div key={item.key} className={cls}>
+                  {inner}
                 </div>
-                {item.to && <ChevronRight size={14} className="shrink-0 text-muted mt-1" />}
-              </>
-            );
-            const cls = cn(
-              "flex items-start gap-2.5 px-3 py-2.5 rounded-md border transition-colors",
-              SEVERITY_STYLE[item.severity],
-              item.to && "hover:border-border-strong cursor-pointer",
-            );
-            return item.to ? (
-              <Link key={item.key} to={item.to} className={cls}>
-                {inner}
-              </Link>
-            ) : (
-              <div key={item.key} className={cls}>
-                {inner}
-              </div>
-            );
-          })}
-        </div>
-      )}
+              );
+            })}
+          </div>
+        )}
+      </div>
     </Card>
   );
 }

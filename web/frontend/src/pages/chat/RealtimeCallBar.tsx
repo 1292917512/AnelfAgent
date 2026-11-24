@@ -223,7 +223,7 @@ export function RealtimeCallPanel() {
           </div>
           <button
             onClick={call.stop}
-            className="flex items-center gap-1 text-xs px-2 py-1 rounded-md bg-danger text-white hover:opacity-90 transition-opacity"
+            className="flex items-center gap-1 text-xs px-2 py-1 rounded-md bg-danger-solid text-white hover:bg-danger-solid-hover transition-colors"
           >
             <PhoneOff size={12} />
             {t("call.hangup")}

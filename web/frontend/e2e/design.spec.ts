@@ -211,14 +211,43 @@ test("navigation and appearance remain discoverable on a small screen", async ({
   await expect(sidebar.getByRole("link", { name: "Context", exact: true })).toHaveCount(1);
   await expect(sidebar.getByRole("button", { name: "Pin Context", exact: true })).toBeFocused();
   await page.screenshot({ path: info.outputPath("navigation.png") });
-  if (isMobile) await page.getByRole("dialog").getByRole("button", { name: "Close", exact: true }).click();
+  if (isMobile) {
+    await sidebar.getByRole("link", { name: "Tasks", exact: true }).click();
+    await expect(page.getByRole("dialog")).toHaveCount(0);
+  }
   await page.getByRole("button", { name: "Appearance & language", exact: true }).click();
   await page.getByRole("button", { name: /Switch to dark|Dark theme|Use dark|dark mode/i }).click();
   await page.keyboard.press("Escape");
   await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
+  await expect(page.locator(".appearance-menu")).toHaveCount(0);
   await page.screenshot({ path: info.outputPath("tasks-dark.png") });
   const results = await new AxeBuilder({ page }).include("main").withTags(["wcag2a", "wcag2aa", "wcag21aa"]).analyze();
   expect(results.violations.map((item) => ({ id: item.id, nodes: item.nodes.map((node) => node.target) }))).toEqual([]);
+});
+
+test("command palette restores focus and fits a short viewport on repeated opens", async ({ page, isMobile }) => {
+  if (isMobile) await page.setViewportSize({ width: 320, height: 480 });
+  await page.goto("/webui/tasks");
+  const trigger = page.getByRole("button", { name: "Command Palette", exact: true });
+  const dialog = page.getByRole("dialog", { name: "Command Palette" });
+  const setup = page.getByRole("complementary", { name: "Set up a chat model" });
+  if (isMobile) {
+    await expect(setup).toBeVisible();
+    expect((await setup.boundingBox())!.height).toBeLessThan(78);
+  }
+  for (const reducedMotion of ["no-preference", "reduce"] as const) {
+    await page.emulateMedia({ reducedMotion });
+    await trigger.click();
+    const input = dialog.getByRole("combobox");
+    await expect(input).toBeFocused();
+    await input.fill("Models");
+    const bounds = await dialog.boundingBox();
+    expect(bounds!.y).toBeGreaterThanOrEqual(0);
+    expect(bounds!.y + bounds!.height).toBeLessThanOrEqual(page.viewportSize()!.height + 1);
+    await input.press("Escape");
+    await expect(dialog).toHaveCount(0);
+    await expect(trigger).toBeFocused();
+  }
 });
 
 test("mobile configuration groups are searchable and selection keeps the deep link", async ({ page, isMobile }, info) => {
@@ -330,6 +359,7 @@ test("fresh visits default to Chinese and dark before hydration and preserve sav
     }
     const appearance = page.getByRole("button", { name: "外观与语言", exact: true });
     await expect(appearance).toBeVisible();
+    await expect(page.locator("html")).toHaveAttribute("lang", "zh-CN");
     await expect(page.locator("html")).toHaveAttribute("data-theme", "dark");
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await page.screenshot({ path: info.outputPath("default-dark-chinese.png"), animations: "disabled" });
@@ -339,6 +369,7 @@ test("fresh visits default to Chinese and dark before hydration and preserve sav
     await page.reload();
     await expect(page.locator("html")).toHaveAttribute("data-theme", "light");
     await expect(page.getByRole("button", { name: "Appearance & language", exact: true })).toBeVisible();
+    await expect(page.locator("html")).toHaveAttribute("lang", "en");
     expect(errors).toEqual([]);
   } finally {
     await context.close();

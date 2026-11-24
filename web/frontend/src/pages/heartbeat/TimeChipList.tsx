@@ -40,7 +40,8 @@ export function TimeChipList({
           {time}
           <button
             onClick={() => removeTime(idx)}
-            className="hover:text-danger transition-colors"
+            aria-label={t("schedule.removeTime", { time })}
+            className="grid size-6 place-items-center rounded-full hover:text-danger transition-colors pointer-coarse:size-9"
           >
             <X size={11} />
           </button>
@@ -51,6 +52,7 @@ export function TimeChipList({
         <div className="flex items-center gap-1.5">
           <Input
             type="time"
+            aria-label={t("schedule.times")}
             className="!w-28 !h-7 !text-xs"
             value={newTime}
             onChange={(e) => setNewTime(e.target.value)}
@@ -62,7 +64,8 @@ export function TimeChipList({
           </Button>
           <button
             onClick={() => setAdding(false)}
-            className="p-1 text-muted hover:text-foreground"
+            aria-label={t("common:cancel")}
+            className="grid size-8 place-items-center rounded-md text-muted hover:text-foreground pointer-coarse:size-11"
           >
             <X size={13} />
           </button>

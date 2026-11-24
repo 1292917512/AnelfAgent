@@ -16,11 +16,11 @@ import type {
 
 export const statusApi = {
   get: (signal?: AbortSignal) => api.get<AgentStatusResponse>("/status/", { signal }),
-  components: () => api.get<{ structured: RuntimeComponents; lines: string[] }>("/status/components"),
+  components: (signal?: AbortSignal) => api.get<{ structured: RuntimeComponents; lines: string[] }>("/status/components", { signal }),
   events: () => api.get<{ stats: Record<string, number> }>("/status/events"),
   thinking: (signal?: AbortSignal) => api.get<ThinkingSnapshot>("/status/thinking", { signal }),
-  logs: (level?: string, tag?: string, keyword?: string, limit = 50) =>
-    api.get<{ logs: LogEntry[]; count: number }>("/status/logs", { params: { level: level || undefined, tag: tag || undefined, keyword: keyword || undefined, limit } }),
+  logs: (level?: string, tag?: string, keyword?: string, limit = 50, signal?: AbortSignal) =>
+    api.get<{ logs: LogEntry[]; count: number }>("/status/logs", { signal, params: { level: level || undefined, tag: tag || undefined, keyword: keyword || undefined, limit } }),
   logStats: () => api.get<LogStats>("/status/log-stats"),
   services: () => api.get<{ services: LifecycleService[] }>("/status/services"),
   startup: () => api.get<{ timeline: StartupNode[] }>("/status/startup"),
