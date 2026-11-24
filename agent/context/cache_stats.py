@@ -17,6 +17,21 @@ from agent.llm.types import UsageInfo
 _MAX_RECORDS = 100
 
 
+def cache_usage_record(usage: UsageInfo, *, kind: str, model: str) -> Dict[str, Any]:
+    """将一次响应的用量转换为统一观测口径，不查询其他调用。"""
+    return {
+        "ts": time.time(),
+        "kind": kind,
+        "model": model,
+        "unobservable": not usage.cache_observable,
+        "prompt_tokens": usage.prompt_tokens,
+        "total_input_tokens": usage.total_input_tokens,
+        "cache_read_input_tokens": usage.cache_read_input_tokens,
+        "cache_creation_input_tokens": usage.cache_creation_input_tokens,
+        "cache_hit_rate": round(usage.cache_hit_rate, 4),
+    }
+
+
 class CacheUsageTracker:
     """最近 LLM 调用缓存用量的环形缓冲（全局单例）。
 
@@ -36,17 +51,7 @@ class CacheUsageTracker:
         chunk 的缓存字段存在性识别）：不可观测时前端显示"—"而非谎报 0%
         （缓存实际仍在服务端生效，仅无法度量）。
         """
-        unobservable = not usage.cache_observable
-        self._records.append({
-            "ts": time.time(),
-            "kind": kind,
-            "model": model,
-            "unobservable": unobservable,
-            "prompt_tokens": usage.prompt_tokens,
-            "cache_read_input_tokens": usage.cache_read_input_tokens,
-            "cache_creation_input_tokens": usage.cache_creation_input_tokens,
-            "cache_hit_rate": round(usage.cache_hit_rate, 4),
-        })
+        self._records.append(cache_usage_record(usage, kind=kind, model=model))
 
     def record_missing(self, *, kind: str = "reply") -> None:
         """记录一次未返回 usage 的调用（流式端点/网关可能丢弃 usage）。"""

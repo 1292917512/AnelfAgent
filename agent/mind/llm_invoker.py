@@ -147,6 +147,7 @@ class ModelInvoker:
         """
         runtime = self._runtime
         model_name = runtime.llm.config.model if isinstance(runtime.llm, LLMClient) else "unknown"
+        call_id = uuid.uuid4().hex
 
         # 前缀稳定性守卫（normalize 前，_layer 标签尚存）：对前缀层消息逐条哈希
         # 与同 scope 上一次调用比对，首个不一致位置即缓存断裂点。仅观测不阻断，
@@ -187,9 +188,9 @@ class ModelInvoker:
         # 任务首轮的结构性低命中不再被误读为主对话缓存故障；scope 与 kind
         # 共同构成变更对比的前缀族键（跨族对比会把族间差异误标为层漂移）
         from agent.context.snapshot import context_snapshot
-        await context_snapshot.try_capture(
+        capture = await context_snapshot.try_capture(
             messages, tools, model_name, kind=purpose, scope=_guard_scope,
-            prefix_drift=prefix_drift, legal_break=legal_break,
+            prefix_drift=prefix_drift, legal_break=legal_break, call_id=call_id,
         )
 
         # 缓存断点装饰（唯一装饰点，_layer 标签尚存时按锚点表放置；
@@ -229,7 +230,7 @@ class ModelInvoker:
         tool_names = [t.get("function", {}).get("name", "") for t in (tools or [])]
         from core.log import current_log_actor
 
-        trace = {"call_id": uuid.uuid4().hex, "request": request_trace(), "message_count": len(messages), "tool_count": len(tool_names),
+        trace = {"call_id": call_id, "request": request_trace(), "message_count": len(messages), "tool_count": len(tool_names),
                  "purpose": purpose, "actor": current_log_actor()}
         await event_bus.emit(EVENT_THINKING_LLM_START, {
             **trace,
@@ -275,14 +276,18 @@ class ModelInvoker:
                     ),
                     abort_event,
                 )
-        except Exception as exc:
+        except (Exception, asyncio.CancelledError) as exc:
+            cancelled = isinstance(exc, (LLMCallAborted, asyncio.CancelledError))
+            await context_snapshot.complete(
+                capture, model=model_name, status="cancelled" if cancelled else "failed",
+            )
             # 关闭链路中的 LLM 节点，避免一直停留在执行中
             await event_bus.emit(EVENT_THINKING_LLM_END, {
                 **trace,
                 "model": model_name,
                 "duration_ms": round((time.monotonic() - t0) * 1000),
                 "error": str(exc),
-                "cancelled": isinstance(exc, LLMCallAborted),
+                "cancelled": cancelled,
                 "success": False,
             })
             # 请求级审计：异常交换同样落盘（未开启时零开销）
@@ -292,6 +297,7 @@ class ModelInvoker:
             )
             raise
         elapsed_ms = (time.monotonic() - t0) * 1000
+        await context_snapshot.complete(capture, model=result.model or model_name, usage=result.usage)
         # 请求级审计：规整后最终发送的 messages + 完整响应（未开启时零开销）
         await context_audit.record_exchange(
             model=result.model or model_name, messages=messages, tools=tools,

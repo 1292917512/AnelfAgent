@@ -105,7 +105,7 @@ class TestCacheBlock:
     async def test_cache_block_present(
         self, snapshot: ContextSnapshot, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """cache 区块包含上次调用真实用量与可复用前缀估算。"""
+        """捕获时只有聚合参考，不将其他调用的用量当成本次响应。"""
         tracker = CacheUsageTracker()
         tracker.record(UsageInfo(
             prompt_tokens=1000, completion_tokens=50, total_tokens=1050,
@@ -124,7 +124,9 @@ class TestCacheBlock:
         data = snapshot.get()
         assert data is not None
         cache = data["cache"]
-        assert cache["last_call"]["cache_read_input_tokens"] == 800
+        assert cache["call"] is None
+        assert cache["status"] == "pending"
+        assert "last_call" not in cache
         assert cache["recent"]["sample_count"] == 1
         # 全部 section 未变更：可复用前缀 = 全部 section tokens 之和
         total = sum(s["estimated_tokens"] for s in data["sections"])
@@ -255,6 +257,63 @@ class TestCacheBlock:
 
 
 class TestContinuousCapture:
+    async def test_out_of_order_responses_keep_exact_call_attribution(self, snapshot, monkeypatch):
+        monkeypatch.setattr("agent.context.snapshot.time.time", lambda: 1000.0)
+        snapshot.set_continuous(True)
+        first = await snapshot.try_capture(_messages(), [], "requested", kind="reply", scope="a")
+        second = await snapshot.try_capture(_messages(), [], "other", kind="reflect", scope="b")
+        assert first and second and first.filename != second.filename
+        assert all(row["cache_hit_rate"] is None for row in snapshot.list_snapshots())
+        await snapshot.complete(second, model="other", usage=UsageInfo(prompt_tokens=100, cache_read_input_tokens=10))
+        await snapshot.complete(first, model="fallback", usage=UsageInfo(prompt_tokens=20, cache_read_input_tokens=80, prompt_includes_cache=False))
+        await snapshot.complete(first, model="wrong", usage=UsageInfo(prompt_tokens=999))
+        assert snapshot.get()["call_id"] == second.snapshot["call_id"]
+        assert snapshot.get()["model"] == "other"
+        rows = {row["scope"]: row for row in snapshot.list_snapshots()}
+        assert rows["a"]["cache_hit_rate"] == 0.8
+        assert rows["a"]["model"] == "fallback"
+        assert rows["b"]["cache_hit_rate"] == 0.1
+        saved = snapshot.load_snapshot(first.filename)
+        assert saved["requested_model"] == "requested"
+        assert saved["cache"]["call"]["total_input_tokens"] == 100
+        assert saved["cache"]["call"]["call_id"] == saved["call_id"]
+        assert len(snapshot.list_records()) == 2
+        assert snapshot.list_records()[-1]["cache"] == saved["cache"]
+
+    @pytest.mark.parametrize("status,usage", [
+        ("completed", None), ("failed", None), ("cancelled", None),
+        ("completed", UsageInfo(prompt_tokens=100, cache_observable=False)),
+    ])
+    async def test_unknown_usage_never_displays_zero(self, snapshot, status, usage):
+        await snapshot.arm()
+        capture = await snapshot.try_capture(_messages(), [], "m")
+        await snapshot.complete(capture, model="m", usage=usage, status=status)
+        row = snapshot.list_snapshots()[0]
+        assert row["cache_status"] == status
+        assert row["cache_hit_rate"] is None
+        assert row["cache_read_input_tokens"] is None
+
+    @pytest.mark.parametrize("clear_all", [False, True])
+    async def test_deleted_capture_not_resurrected(self, snapshot, clear_all):
+        snapshot.set_continuous(True)
+        capture = await snapshot.try_capture(_messages(), [], "m")
+        assert capture
+        if clear_all:
+            assert snapshot.clear_all_snapshots() == 1
+        else:
+            assert snapshot.delete_snapshot(capture.filename)
+        await snapshot.complete(capture, model="m", usage=UsageInfo(prompt_tokens=10))
+        assert snapshot.list_snapshots() == []
+        assert snapshot.list_records() == []
+
+    async def test_legacy_usage_is_not_attributed(self, snapshot, tmp_path):
+        (tmp_path / "snapshot_old.json").write_text(json.dumps({
+            "model": "a", "cache": {"last_call_any": {"model": "b", "cache_hit_rate": 0.9}},
+        }), encoding="utf-8")
+        row = snapshot.list_snapshots()[0]
+        assert row["cache_status"] == "unlinked"
+        assert row["cache_hit_rate"] is None
+
     async def test_continuous_captures_every_call(self, snapshot: ContextSnapshot) -> None:
         """连续模式：无需布防，每次调用都捕获且不解除。"""
         snapshot.set_continuous(True)
@@ -275,8 +334,11 @@ class TestContinuousCapture:
         """连续模式追加紧凑记录到 records.jsonl（外部调试数据流）。"""
         snapshot.set_continuous(True)
         try:
-            await snapshot.try_capture(_messages(), [], "fake")
-            await snapshot.try_capture(_messages(), [], "fake")
+            first = await snapshot.try_capture(_messages(), [], "fake")
+            second = await snapshot.try_capture(_messages(), [], "fake")
+            assert snapshot.list_records() == []
+            await snapshot.complete(first, model="fake")
+            await snapshot.complete(second, model="fake")
             records = snapshot.list_records()
             assert len(records) == 2
             rec = records[-1]
@@ -414,7 +476,8 @@ class TestFamilyIsolation:
     async def test_record_carries_scope(self, snapshot: ContextSnapshot) -> None:
         """连续捕获的紧凑记录携带 scope（前缀族取证用）。"""
         snapshot.set_continuous(True)
-        await snapshot.try_capture(_messages(), [], "fake", kind="reply", scope="group_qq:1")
+        capture = await snapshot.try_capture(_messages(), [], "fake", kind="reply", scope="group_qq:1")
+        await snapshot.complete(capture, model="fake")
         records = ContextSnapshot.list_records(10)
         assert records and records[-1].get("scope") == "group_qq:1"
 

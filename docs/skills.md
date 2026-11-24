@@ -12,10 +12,11 @@
 
 ## 召回双层
 
-- **目录（catalog.py）**：全部可用技能（active+stale，stale 行带「闲置」后缀）的 名称+单行描述
+- **目录（catalog.py）**：全部可用技能（active+stale）的名称+单行描述
   进 stable 工具块，按 (created_at, name) 排序保持 append-only 字节稳定，预算
   `skills_catalog_max_chars`/`skills_catalog_desc_chars`（默认 16000/160，配置组 skills/catalog）
-  逐级降级（半描述下限 48 → 纯名称+省略计数）——技能寻址不依赖匹配命中，描述长度是模型路由依据
+  逐级降级（半描述下限 48 → 纯名称+省略计数）——技能寻址不依赖匹配命中，描述长度是模型路由依据。
+  活跃/闲置状态不改变目录字节，实时状态经 `list_skills` 查询；归档、恢复、增删与描述修订仍更新目录。
 - **匹配器（skill_matcher.py，放大层）**：匹配面 = 全量技能含归档（归档命中 ×`skills_match_archived_factor`
   降权、注入标注【已归档】并附 restore 指引；归档是库容卫生而非删除）。混合评分 = 关键词
   （trigger_patterns ×2 加成与技能名 kebab 分词 token 命中率取 max，名称 token 零维护自给）×

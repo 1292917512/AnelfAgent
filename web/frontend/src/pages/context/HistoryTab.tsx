@@ -11,10 +11,11 @@ import { PageSkeleton, QueryError } from "@/components/common/AsyncState";
 
 /** 缓存命中率徽标：≥70% 绿 / ≥30% 黄 / 其余灰；
  *  合法断裂窗口（折叠/压缩刚重写前缀）= 首轮低命中属预期，单独标识；
- *  前缀字节稳定但命中低 = 供应商侧缓存波动（非内容断裂），单独标识 */
-function CacheHitBadge({ rate, prefixStable, legalBreak }: { rate?: number | null; prefixStable?: boolean | null; legalBreak?: string | null }) {
+ *  消息前缀未变只表示观测事实，不推断供应商原因。 */
+function CacheHitBadge({ snapshot }: { snapshot: SnapshotListItem }) {
   const { t } = useTranslation("context");
-  if (rate == null) return null;
+  const { cache_hit_rate: rate, prefix_stable: prefixStable, legal_break: legalBreak } = snapshot;
+  if (rate == null) return <span className="text-[10px] text-muted">{t(`cache.state.${snapshot.cache_unobservable ? "unobservable" : snapshot.cache_status ?? "unlinked"}`)}</span>;
   const pct = Math.round(rate * 100);
   if (pct < 70 && legalBreak) {
     return (
@@ -30,9 +31,9 @@ function CacheHitBadge({ rate, prefixStable, legalBreak }: { rate?: number | nul
     return (
       <span
         className="px-1.5 py-px rounded text-[9px] font-medium bg-sky-500/15 text-info"
-        title={t("history.jitterDesc")}
+        title={t("history.prefixUnchangedDesc")}
       >
-        {pct}% · {t("history.jitter")}
+        {pct}% · {t("history.prefixUnchanged")}
       </span>
     );
   }
@@ -70,11 +71,13 @@ export function HistoryTab() {
   const list = useQuery({
     queryKey: ["snapshots-list"],
     queryFn: () => contextApi.snapshotsList().then((r) => r.data),
+    refetchInterval: (query) => query.state.data?.snapshots.some((s) => s.cache_status === "pending") ? 2000 : false,
     throwOnError: false,
   });
   const details = useQuery({
     queryKey: ["context", "history", selected],
     queryFn: selected ? () => contextApi.snapshotDetail(selected).then((r) => r.data) : skipToken,
+    refetchInterval: (query) => query.state.data?.cache?.status === "pending" ? 2000 : false,
     throwOnError: false,
   });
   const detail = details.data;
@@ -149,7 +152,7 @@ export function HistoryTab() {
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="text-xs font-mono text-foreground">{s.model}</span>
                   <KindBadge kind={s.kind} />
-                  <CacheHitBadge rate={s.cache_hit_rate} prefixStable={s.prefix_stable} legalBreak={s.legal_break} />
+                  <CacheHitBadge snapshot={s} />
                   <span className="text-[10px] text-muted">{new Date(s.captured_at * 1000).toLocaleString()}</span>
                 </div>
                 <div className="flex flex-wrap items-center gap-3 mt-1 text-[10px] text-muted">

@@ -7,18 +7,23 @@ restore_skill 恢复回可用集。
 
 字节稳定（前缀缓存友好）：按入库时间排序，新技能只在尾部追加，既有行
 不移动；库内容版本不变时目录文本字节不变（计数类账本更新不改变版本，
-状态迁移只翻转单行的「闲置」后缀）。预算超限时逐级降级
+可用技能的 active/stale 迁移不改变目录）。预算超限时逐级降级
 （截断描述 → 仅名称 + 省略计数），任何库容下可注入。
+
+Model Experience:
+① 模型在 stable 工具块看到可用技能的名称与描述；实时状态通过技能工具查询。
+② 省去每个闲置技能的状态后缀，节省少量 token，不缩减寻址信息。
+③ 活跃与闲置迁移不破坏前缀；归档、增删和描述修订仍如实更新目录。
 """
 from __future__ import annotations
 
 import threading
 from typing import Dict, List, Tuple
 
-from agent.skills.skill_store import Skill, SkillState, SkillStore
+from agent.skills.skill_store import Skill, SkillStore
 
 _HEADER = (
-    "[技能库目录] 全部可用技能（按入库时间排序，「闲置」=长期未用但可正常调用）。"
+    "[技能库目录] 全部可用技能（含活跃与闲置，按入库时间排序；状态可用 list_skills 查询）。"
     "与当前任务相关时先用 get_skill 读取完整内容再按步骤执行，不相关则忽略、"
     "不要逐条翻读；已归档技能不在此列，"
     "匹配命中后可用 restore_skill 恢复。"
@@ -35,7 +40,7 @@ def _catalog_enabled() -> bool:
 
 
 def _line(skill: Skill, desc_chars: int) -> str:
-    """单条目录行：技能名 + 单行描述（超长截断）+ 闲置后缀。"""
+    """单条目录行：技能名 + 单行描述（超长截断）。"""
     desc = skill.description.strip().replace("\n", " ")
     if desc and desc_chars > 0:
         if len(desc) > desc_chars:
@@ -43,8 +48,6 @@ def _line(skill: Skill, desc_chars: int) -> str:
         text = f"- {skill.name}: {desc}"
     else:
         text = f"- {skill.name}"
-    if skill.state is SkillState.STALE:
-        text += "（闲置）"
     return text
 
 

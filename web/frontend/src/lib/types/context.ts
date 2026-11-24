@@ -88,6 +88,8 @@ export interface SnapshotPrefixBreak {
 
 /** 单次 LLM 调用的缓存用量记录 */
 export interface CacheCallRecord {
+  call_id?: string;
+  scope?: string;
   ts: number;
   /** 调用用途（reply=主对话 / reflect=辅助调用） */
   kind?: string;
@@ -96,11 +98,10 @@ export interface CacheCallRecord {
   /** 该模型流式 usage 缺缓存字段（缓存生效但不可度量） */
   unobservable?: boolean;
   prompt_tokens: number;
+  total_input_tokens?: number;
   cache_read_input_tokens: number;
   cache_creation_input_tokens: number;
   cache_hit_rate: number;
-  /** 距快照捕获的秒数（回显过久的数据会被前端弱化展示） */
-  age_sec?: number;
 }
 
 /** 缓存聚合统计（最近若干次调用） */
@@ -118,21 +119,25 @@ export interface CacheStatsSummary {
 
 /** 快照的缓存观测区块 */
 export interface SnapshotCacheInfo {
-  /** 捕获前最近一次主对话（reply）调用的真实缓存用量 */
-  last_call: CacheCallRecord | null;
-  /** 捕获前最近一次任意类型调用（含辅助调用，kind 字段区分） */
-  last_call_any?: CacheCallRecord | null;
-  /** 最近 N 次主对话调用聚合 */
+  /** 缺省表示旧快照未关联响应，不能借用其他调用的用量 */
+  status?: "pending" | "completed" | "failed" | "cancelled";
+  call?: CacheCallRecord | null;
+  /** 捕获前最近 N 次主对话调用聚合，独立于本次调用 */
   recent: CacheStatsSummary;
   /** 最近 N 次全部调用聚合 */
   recent_all?: CacheStatsSummary;
   /** 从头连续未变更 section 的估算 tokens（近似可复用缓存前缀）；null = 首次快照无基线 */
   estimated_cacheable_prefix_tokens: number | null;
-  /** 理论可命中前缀（断点锚点覆盖的字节稳定层 tokens 合计）；read 远低于它 ⇒ 非内容漂移 */
+  /** 稳定消息层的 tokens 估算，不包含工具 schema 或供应商适配 */
   expected_prefix_tokens?: number | null;
 }
 
 export interface ContextSnapshotData {
+  call_id?: string;
+  scope?: string;
+  kind?: string;
+  requested_model?: string;
+  completed_at?: number;
   captured_at: number;
   model: string;
   model_context_window: number;
@@ -162,6 +167,10 @@ export interface SnapshotStatus {
 
 /** 连续捕获的紧凑记录（records.jsonl 每行，供外部调试轮询） */
 export interface SnapshotRecord {
+  call_id?: string;
+  scope?: string;
+  kind?: string;
+  completed_at?: number;
   captured_at: number;
   /** 对应完整快照文件名（logs/context_snapshots/） */
   file: string;
@@ -186,6 +195,10 @@ export interface SnapshotResponse {
 }
 
 export interface SnapshotListItem {
+  call_id?: string;
+  scope?: string;
+  cache_status?: SnapshotCacheInfo["status"] | "unlinked";
+  cache_unobservable?: boolean;
   filename: string;
   captured_at: number;
   model: string;
@@ -199,11 +212,11 @@ export interface SnapshotListItem {
   estimated_tokens: number;
   message_count: number;
   tool_count: number;
-  /** 捕获前最近一次调用的缓存命中率 0~1（无数据为 null） */
+  /** 本次响应的缓存命中率 0~1（未关联或不可观测为 null） */
   cache_hit_rate?: number | null;
-  /** 捕获前最近一次调用的缓存命中 tokens */
+  /** 本次响应的缓存命中 tokens */
   cache_read_input_tokens?: number | null;
-  /** 捕获前最近一次调用的缓存写入 tokens */
+  /** 本次响应的缓存写入 tokens */
   cache_creation_input_tokens?: number | null;
   /** 从头连续未变更 section 的估算 tokens（近似可复用前缀） */
   estimated_cacheable_prefix_tokens?: number | null;

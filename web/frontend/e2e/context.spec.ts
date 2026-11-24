@@ -12,6 +12,36 @@ const snapshot: ContextSnapshotData = {
   ],
 };
 
+test("cache history waits for its own response and keeps unlinked usage unknown", async ({ page }) => {
+  let completed = false;
+  const recent = { sample_count: 0, avg_cache_hit_rate: 0, total_prompt_tokens: 0, total_cache_read_tokens: 0, total_cache_creation_tokens: 0, no_usage_count: 0 };
+  const cache = () => ({ status: completed ? "completed" : "pending", recent,
+    estimated_cacheable_prefix_tokens: null,
+    call: completed ? { call_id: "current", model: "actual-model", ts: 1, prompt_tokens: 1000, cache_read_input_tokens: 830, cache_creation_input_tokens: 0, cache_hit_rate: 0.83 } : null });
+  await page.route("**/api/context/snapshots", (route) => route.fulfill({ json: { snapshots: [
+    { ...snapshot, filename: "current.json", call_id: "current", model: completed ? "actual-model" : "requested-model", cache_status: completed ? "completed" : "pending", cache_hit_rate: completed ? 0.83 : null },
+    { ...snapshot, filename: "legacy.json", model: "legacy-model", cache_status: "unlinked", cache_hit_rate: null },
+  ] } }));
+  await page.route("**/api/context/snapshots/current.json", (route) => route.fulfill({ json: {
+    ...snapshot, call_id: "current", model: completed ? "actual-model" : "requested-model", cache: cache(),
+  } }));
+  await page.route("**/api/context/snapshots/legacy.json", (route) => route.fulfill({ json: {
+    ...snapshot, cache: { recent, estimated_cacheable_prefix_tokens: null,
+      last_call: { cache_hit_rate: 0.99, cache_read_input_tokens: 990 } },
+  } }));
+  await page.goto("/webui/context?tab=history");
+  await expect(page.getByText("Awaiting this response", { exact: true })).toBeVisible();
+  await page.getByRole("button").filter({ hasText: "requested-model" }).click();
+  await expect(page.getByText("Awaiting this response", { exact: true })).toBeVisible();
+  completed = true;
+  await expect(page.getByText("83%", { exact: true })).toBeVisible();
+  await expect(page.getByText("actual-model", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: /Back to list/ }).click();
+  await page.getByRole("button").filter({ hasText: "legacy-model" }).click();
+  await expect(page.getByText("Response not linked", { exact: true })).toBeVisible();
+  await expect(page.getByText("99%", { exact: true })).toHaveCount(0);
+});
+
 test("context is independent, shows window composition and follows server capture state", async ({ page }, info) => {
   let armed = false;
   await page.route("**/api/context/snapshot", (route) => route.fulfill({ json: { status: { armed, continuous: false }, snapshot } }));

@@ -30,8 +30,8 @@
     "kind": {
       "reflect": "task"
     },
-    "jitter": "provider jitter",
-    "jitterDesc": "Prefix bytes unchanged but hit dropped — provider-side cache write propagation delay/jitter; self-recovers in 1-2 rounds, no action needed",
+    "prefixUnchanged": "message prefix unchanged",
+    "prefixUnchangedDesc": "Captured message prefix unchanged. Tool schemas, provider adaptation and cache service state are outside this comparison; the cause of a lower hit rate remains unknown.",
     "legalBreak": {
       "fold": "folded",
       "compress": "compacted",
@@ -83,15 +83,20 @@
   },
   "cache": {
     "title": "Cache Insights",
-    "lastHitRate": "Last Call Hit Rate",
-    "lastReadTokens": "Last Call Cached Tokens",
-    "avgHitRate": "Avg Hit Rate (last {{count}})",
+    "callHitRate": "This Call Hit Rate",
+    "callReadTokens": "This Call Cached Tokens",
+    "avgHitRate": "Prior {{count}} Reply Calls (avg.)",
     "stablePrefix": "Reusable Prefix (est.)",
-    "noData": "No cache stats yet: the snapshot shows data from calls completed BEFORE capture. Chat a few rounds first, then arm again. The first capture after restart has no diff baseline.",
-    "noUsage": "{{count}} call(s) returned no usage data: the model endpoint (streaming) may not support include_usage, so cache stats are unavailable. Check DEBUG logs under tag「思维」to confirm.",
-    "staleMark": " (call from {{min}} min ago)",
-    "unobservable": "This model ({{model}}) does not report cache fields on streaming usage — caching still works server-side but is unmeasurable over stream, so hit rate is hidden",
-    "expectedPrefix": "Expected Prefix"
+    "state": {
+      "pending": "Awaiting this response",
+      "completed": "No usage returned",
+      "failed": "Call failed",
+      "cancelled": "Call cancelled",
+      "unlinked": "Response not linked",
+      "unobservable": "Cache usage unobservable"
+    },
+    "unobservable": "This response from {{model}} has no cache fields. Its hit rate is unknown, not zero.",
+    "expectedPrefix": "Stable Layer Tokens (est.)"
   },
   "window": {
     "title": "Context window",

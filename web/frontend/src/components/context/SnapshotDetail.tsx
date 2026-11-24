@@ -23,12 +23,13 @@ export function SnapshotDetail({ snapshot }: SnapshotDetailProps) {
         <span className="break-all font-mono text-foreground">{snapshot.model}</span>
         <span>{snapshot.message_count} {t("stats.messages")} · {snapshot.tool_count} {t("stats.tools")}</span>
         <time>{new Date(snapshot.captured_at * 1000).toLocaleString()}</time>
+        {snapshot.scope && <span className="break-all">{snapshot.scope}</span>}
       </div>
 
-      {/* 缓存观测：上次调用真实命中 + 可复用前缀估算 */}
+      {/* 缓存观测：本次响应与捕获前的聚合参考分开展示 */}
       {snapshot.cache && (() => {
-        const lastCall = snapshot.cache.last_call;
-        const stale = (lastCall?.age_sec ?? 0) > 120;
+        const lastCall = snapshot.call_id && snapshot.cache.call?.call_id === snapshot.call_id
+          ? snapshot.cache.call : null;
         const unobs = !!lastCall?.unobservable;
         const allUnobs = snapshot.cache.recent.unobservable_count === snapshot.cache.recent.sample_count
           && snapshot.cache.recent.sample_count > 0;
@@ -37,21 +38,18 @@ export function SnapshotDetail({ snapshot }: SnapshotDetailProps) {
             <p className="text-xs font-semibold text-heading">{t("cache.title")}</p>
             <div className="grid grid-cols-[repeat(auto-fit,minmax(105px,1fr))] gap-2 text-center">
               <div>
-                <p className={cn("text-sm font-bold font-mono", (stale || unobs) ? "text-muted" : "text-ok")}>
+                <p className={cn("text-sm font-bold font-mono", (!lastCall || unobs) ? "text-muted" : "text-ok")}>
                   {unobs ? "—" : lastCall ? `${Math.round(lastCall.cache_hit_rate * 100)}%` : "—"}
                 </p>
                 <p className="text-[10px] text-muted mt-0.5">
-                  {t("cache.lastHitRate")}
-                  {lastCall && stale && !unobs && (
-                    <span className="ml-1">{t("cache.staleMark", { min: Math.round((lastCall.age_sec ?? 0) / 60) })}</span>
-                  )}
+                  {t("cache.callHitRate")}
                 </p>
               </div>
               <div>
                 <p className="text-sm font-bold text-heading font-mono">
                   {lastCall && !unobs ? lastCall.cache_read_input_tokens.toLocaleString() : "—"}
                 </p>
-                <p className="text-[10px] text-muted mt-0.5">{t("cache.lastReadTokens")}</p>
+                <p className="text-[10px] text-muted mt-0.5">{t("cache.callReadTokens")}</p>
               </div>
               <div>
                 <p className="text-sm font-bold text-heading font-mono">
@@ -72,13 +70,7 @@ export function SnapshotDetail({ snapshot }: SnapshotDetailProps) {
                 <p className="text-[10px] text-muted mt-0.5">{t("cache.stablePrefix")}</p>
               </div>
               <div>
-                <p className={cn(
-                  "text-sm font-bold font-mono",
-                  lastCall && !unobs && snapshot.cache.expected_prefix_tokens != null
-                    && lastCall.cache_read_input_tokens < snapshot.cache.expected_prefix_tokens * 0.5
-                    ? "text-warn"
-                    : "text-heading",
-                )}>
+                <p className="text-sm font-bold font-mono text-heading">
                   {snapshot.cache.expected_prefix_tokens != null
                     ? `~${snapshot.cache.expected_prefix_tokens.toLocaleString()}t`
                     : "—"}
@@ -91,11 +83,9 @@ export function SnapshotDetail({ snapshot }: SnapshotDetailProps) {
                 {t("cache.unobservable", { model: lastCall?.model ?? "" })}
               </p>
             )}
-            {snapshot.cache.recent.sample_count === 0 && (
+            {!lastCall && (
               <p className="text-[10px] text-muted">
-                {snapshot.cache.recent.no_usage_count > 0
-                  ? t("cache.noUsage", { count: snapshot.cache.recent.no_usage_count })
-                  : t("cache.noData")}
+                {t(`cache.state.${snapshot.cache.status ?? "unlinked"}`)}
               </p>
             )}
           </div>

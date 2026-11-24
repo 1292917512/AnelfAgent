@@ -414,17 +414,39 @@ class TestSkillCatalog:
         assert text.index("- first:") < text.index("- second:")
         assert "archived-one" not in text  # 归档技能不进目录
 
-    def test_stale_listed_with_marker(self, store: SkillStore) -> None:
-        """闲置技能留在目录（仍可正常调用），带「闲置」后缀标注。"""
+    def test_idle_state_keeps_catalog_bytes_but_archive_updates_visibility(self, store: SkillStore) -> None:
+        """可用状态迁移不破前缀，归档和恢复仍如实更新可见性。"""
+        from types import SimpleNamespace
+
+        from agent.context.assembly import ContextAssembly
         from agent.skills.catalog import catalog_section
 
         store.create("active-one", "在役技能", "c")
         store.create("stale-one", "闲置技能", "c")
+        assembly = ContextAssembly(SimpleNamespace(), SimpleNamespace(tools_version=0, activation_version=0), skill_store=store)
+        prompt = assembly.build_tools_block()
+        fingerprint = assembly.stable_fingerprint()
+        before = catalog_section(store)
         store.set_state("stale-one", SkillState.STALE)
 
         text = catalog_section(store)
-        assert "- stale-one: 闲置技能（闲置）" in text
+        assert text == before
+        assert assembly.build_tools_block() == prompt
+        assert assembly.stable_fingerprint() == fingerprint
+        assert store.get("stale-one").state is SkillState.STALE
+        assert "- stale-one: 闲置技能" in text
         assert "- active-one: 在役技能" in text
+        store.set_state("stale-one", SkillState.ACTIVE)
+        assert catalog_section(store) == before
+        store.set_state("stale-one", SkillState.ARCHIVED)
+        assert "- stale-one:" not in catalog_section(store)
+        assert assembly.stable_fingerprint() != fingerprint
+        store.restore("stale-one")
+        assert catalog_section(store) == before
+        assert assembly.stable_fingerprint() == fingerprint
+        store.patch("stale-one", description="修订后的准确描述")
+        assert "- stale-one: 修订后的准确描述" in catalog_section(store)
+        assert assembly.stable_fingerprint() != fingerprint
 
     def test_append_only_bytes_stable(self, store: SkillStore) -> None:
         """新技能只在尾部追加；计数类更新不改变目录字节。"""
@@ -1167,6 +1189,8 @@ class TestSkillTools:
         listed = json.loads(skill_tools.list_skills())
         assert listed["count"] == 1
         assert listed["skills"][0]["name"] == "t1"
+        store.set_state("t1", SkillState.STALE)
+        assert json.loads(skill_tools.list_skills())["skills"][0]["state"] == "stale"
 
         detail = json.loads(skill_tools.get_skill("t1"))
         assert detail["content"] == "内容"

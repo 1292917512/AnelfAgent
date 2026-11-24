@@ -6,7 +6,10 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
+
+import pytest
 
 from agent.llm.llm_client import LLMClient
 from agent.llm.types import ChatResult, UsageInfo
@@ -67,6 +70,83 @@ async def _capture(result: ChatResult) -> dict:
 
 
 class TestReasoningTracePayload:
+    @pytest.mark.parametrize("stream", [False, True])
+    async def test_snapshot_uses_response_and_event_identity(self, monkeypatch, tmp_path, stream):
+        from agent.context import snapshot as snapshots
+
+        monkeypatch.setattr(snapshots, "_SNAPSHOT_DIR", str(tmp_path))
+        observer = snapshots.ContextSnapshot()
+        monkeypatch.setattr(snapshots, "context_snapshot", observer)
+        await observer.arm()
+        result = _result("")
+        result.model = "actual-fallback-model"
+        result.usage = UsageInfo(prompt_tokens=100, cache_read_input_tokens=80)
+        invoker = _invoker(result)
+        sent = []
+
+        async def chat(messages, tools, **kwargs):
+            sent.append((messages, tools))
+            assert observer.get()["cache"]["status"] == "pending"
+            return result
+
+        invoker.chat_with_retry = chat
+        invoker.chat_stream_once = chat
+        ends = []
+        async def on_end(payload):
+            ends.append(payload)
+
+        event_bus.on(EVENT_THINKING_LLM_END, on_end, owner="test:snapshot-response")
+        messages = [{"role": "system", "content": "stable", "_layer": "stable"},
+                    {"role": "user", "content": "hi"}]
+        tools = [{"type": "function", "function": {"name": "lookup", "parameters": {"type": "object"}}}]
+        try:
+            returned = await invoker.invoke(messages, tools, stream=stream, purpose="reflect")
+        finally:
+            event_bus.off_by_owner("test:snapshot-response")
+        assert returned is result
+        data = observer.get()
+        assert data["call_id"] == ends[0]["call_id"] == data["cache"]["call"]["call_id"]
+        assert data["model"] == "actual-fallback-model"
+        assert data["requested_model"] == "fake"
+        assert data["cache"]["call"]["kind"] == "reflect"
+        assert data["cache"]["call"]["cache_hit_rate"] == ends[0]["usage"]["cache_hit_rate"] == 0.8
+        assert sent[0][1] == tools
+        assert all("call_id" not in message for message in sent[0][0])
+        assert messages[0]["_layer"] == "stable"
+
+    @pytest.mark.parametrize("error", [RuntimeError("failed"), asyncio.CancelledError()])
+    async def test_snapshot_closes_on_failure_or_cancellation(self, monkeypatch, tmp_path, error):
+        from agent.context import snapshot as snapshots
+
+        monkeypatch.setattr(snapshots, "_SNAPSHOT_DIR", str(tmp_path))
+        observer = snapshots.ContextSnapshot()
+        monkeypatch.setattr(snapshots, "context_snapshot", observer)
+        await observer.arm()
+        invoker = _invoker(_result(""))
+
+        async def fail(*args, **kwargs):
+            raise error
+
+        invoker.chat_with_retry = fail
+        with pytest.raises(type(error)):
+            await invoker.invoke([{"role": "user", "content": "hi"}], None)
+        assert observer.get()["cache"]["status"] == ("cancelled" if isinstance(error, asyncio.CancelledError) else "failed")
+        assert observer.get()["cache"]["call"] is None
+
+    async def test_snapshot_disk_failure_does_not_fail_invocation(self, monkeypatch, tmp_path):
+        from agent.context import snapshot as snapshots
+
+        monkeypatch.setattr(snapshots, "_SNAPSHOT_DIR", str(tmp_path))
+        observer = snapshots.ContextSnapshot()
+        monkeypatch.setattr(snapshots, "context_snapshot", observer)
+        def fail(*args):
+            raise OSError("disk unavailable")
+        monkeypatch.setattr(snapshots, "atomic_write_text", fail)
+        await observer.arm()
+        payload = await _capture(_result(""))
+        assert observer.get()["cache"]["status"] == "completed"
+        assert observer.get()["call_id"] == payload["call_id"]
+
     async def test_hook_snapshot_preserves_layers_without_expanding_trace(self, monkeypatch):
         from core.trace_session import thinking_session
         from core.tracer import NodeType, Tracer

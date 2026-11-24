@@ -2,6 +2,7 @@
 
 布防后在下一次 LLM 调用前捕获完整 messages + tools（含 _layer 分类标签），
 捕获后自动解除布防并保存到 logs/context_snapshots/ 目录。
+调用结束后按 call_id 回填同一次响应的用量；连续记录只追加终态。
 敏感结果在观测副本中隐藏原文，字符数与变更哈希仍按真实输入计算。
 
 未布防时 try_capture 仅做一次 bool 检查，零开销。
@@ -12,14 +13,22 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import threading
 import time
-from typing import Any, Dict, List, Optional, Tuple, TypeVar
+import uuid
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, Dict, List, Literal, Optional, Tuple, TypeVar
 
+from agent.context.cache_stats import cache_usage_record
 from agent.context.pipeline import get_layer_meta, list_layer_metas
+from agent.llm.types import UsageInfo
+from core.file_utils import atomic_write_text
 from core.log import log
 from core.tool_results import redact_tool_messages
 
 _SNAPSHOT_DIR = os.path.join("logs", "context_snapshots")
+_STORE_LOCK = threading.RLock()
 
 # 变更对比基线的族数量上限（每族 = scope × kind；各族按层存若干哈希条目，
 # 条目总量上限约为族数 × 层数）
@@ -42,6 +51,15 @@ def _layer_order() -> List[str]:
 # ======================================================================
 # 捕获器
 # ======================================================================
+
+
+@dataclass
+class SnapshotCapture:
+    """单次调用持有的观测副本，不注册全局待完成请求，也不进入模型上下文。"""
+
+    snapshot: Dict[str, Any]
+    filename: str
+    continuous: bool
 
 
 class ContextSnapshot:
@@ -107,11 +125,12 @@ class ContextSnapshot:
             scope: str = "",
             prefix_drift: Optional[Dict[str, Any]] = None,
             legal_break: Optional[str] = None,
-    ) -> bool:
+            call_id: str = "",
+    ) -> Optional[SnapshotCapture]:
         """尝试捕获（在 ModelInvoker.invoke 中 normalize 前调用）。
 
-        未布防且未开启连续捕获时立即返回 False（零开销）。
-        一次性布防捕获后自动解除；连续模式持续捕获并追加紧凑记录。
+        未布防且未开启连续捕获时立即返回 None。
+        返回的句柄由调用方持有，并在响应完成或异常时交给 complete 回填。
         kind 为调用用途（reply/reflect…），随快照记录供列表按用途解读命中率。
         scope 为会话 scope（含 reflect 的一次性 scope），与 kind 共同构成
         变更对比的前缀族键——跨族比较会把族间差异误标为层漂移。
@@ -121,12 +140,12 @@ class ContextSnapshot:
         供命中率列表与供应商侧波动区分。
         """
         if not self._armed and not self._continuous:
-            return False
+            return None
 
         async with self._lock:
             oneshot = self._armed
             if not oneshot and not self._continuous:
-                return False
+                return None
 
             sections = self._categorize(messages, (scope, kind))
             tool_names = [
@@ -145,8 +164,10 @@ class ContextSnapshot:
             estimated_tokens = total_chars // 4
 
             self._snapshot = {
+                "call_id": call_id or uuid.uuid4().hex,
                 "captured_at": time.time(),
                 "model": model,
+                "requested_model": model,
                 "kind": kind,
                 "scope": scope,
                 "model_context_window": model_context_window,
@@ -164,17 +185,54 @@ class ContextSnapshot:
             self._armed = False
 
             # 持久化（同步文件写放工作线程，避免持锁阻塞事件循环）
-            filename = await asyncio.to_thread(self._save, self._snapshot)
-            if self._continuous:
-                await asyncio.to_thread(self._append_record, self._snapshot, filename)
+            capture = SnapshotCapture(self._snapshot, "", self._continuous)
+            capture.filename = await asyncio.to_thread(self._save, capture.snapshot)
 
             log(
                 f"上下文快照已捕获: {len(messages)} msgs, "
                 f"{len(tool_names)} tools, ~{estimated_tokens} tokens"
-                f"{f', 已保存 {filename}' if filename else ''}",
+                f"{f', 已保存 {capture.filename}' if capture.filename else ''}",
                 tag="快照",
             )
-            return True
+            return capture
+
+    async def complete(
+        self,
+        capture: Optional[SnapshotCapture],
+        *,
+        model: str,
+        usage: Optional[UsageInfo] = None,
+        status: Literal["completed", "failed", "cancelled"] = "completed",
+    ) -> None:
+        """回填本次调用的终态；缺失或不可观测的 usage 不冒充零命中。"""
+        if capture is None:
+            return
+        try:
+            async with self._lock:
+                snapshot = capture.snapshot
+                cache = snapshot["cache"]
+                if cache["status"] != "pending":
+                    return
+                call = cache_usage_record(usage, kind=snapshot["kind"], model=model) if usage else None
+                if call is not None:
+                    call["call_id"] = snapshot["call_id"]
+                    call["scope"] = snapshot["scope"]
+                snapshot["model"] = model
+                snapshot["completed_at"] = time.time()
+                cache.update(status=status, call=call)
+                await asyncio.to_thread(self._finish_capture, capture)
+        except Exception as exc:
+            log(f"快照用量回填失败: {exc}", "DEBUG", tag="快照")
+
+    @classmethod
+    def _finish_capture(cls, capture: SnapshotCapture) -> None:
+        """原子替换尚存在的捕获文件；删除过的快照不因晚到响应重新出现。"""
+        with _STORE_LOCK:
+            path = os.path.join(_SNAPSHOT_DIR, capture.filename)
+            if not capture.filename or not os.path.isfile(path):
+                return
+            if cls._save(capture.snapshot, filename=capture.filename) and capture.continuous:
+                cls._append_record(capture.snapshot, capture.filename)
 
     def get(self) -> Optional[Dict[str, Any]]:
         """获取当前内存快照。"""
@@ -217,9 +275,12 @@ class ContextSnapshot:
         try:
             os.makedirs(_SNAPSHOT_DIR, exist_ok=True)
             record = {
+                "call_id": snapshot.get("call_id"),
                 "captured_at": snapshot.get("captured_at"),
+                "completed_at": snapshot.get("completed_at"),
                 "file": filename,
                 "model": snapshot.get("model"),
+                "requested_model": snapshot.get("requested_model"),
                 "kind": snapshot.get("kind"),
                 "scope": snapshot.get("scope"),
                 "estimated_tokens": snapshot.get("estimated_tokens"),
@@ -293,18 +354,17 @@ class ContextSnapshot:
         return 0
 
     @staticmethod
-    def _save(snapshot: Dict[str, Any]) -> str:
+    def _save(snapshot: Dict[str, Any], *, filename: str = "") -> str:
         """保存快照到 JSON 文件，返回文件名。"""
         try:
-            os.makedirs(_SNAPSHOT_DIR, exist_ok=True)
-            ts = time.strftime("%Y%m%d_%H%M%S")
-            filename = f"snapshot_{ts}.json"
-            path = os.path.join(_SNAPSHOT_DIR, filename)
+            ts = time.strftime("%Y%m%d_%H%M%S", time.localtime(snapshot["captured_at"]))
+            filename = filename or f"snapshot_{ts}_{snapshot['call_id']}.json"
+            path = Path(_SNAPSHOT_DIR) / filename
             # 持久化时不保存完整 tools schema（体积大），只保存名称
             save_data = {**snapshot}
             save_data["tools"] = snapshot.get("tool_names", [])
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(save_data, f, ensure_ascii=False, indent=2, default=str)
+            with _STORE_LOCK:
+                atomic_write_text(path, json.dumps(save_data, ensure_ascii=False, indent=2, default=str))
             return filename
         except Exception as exc:
             log(f"快照保存失败: {exc}", "DEBUG", tag="快照")
@@ -324,14 +384,13 @@ class ContextSnapshot:
                 with open(path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 cache = data.get("cache") or {}
-                # 列表徽标取捕获时点最近的一次调用（不限用途）：若只看 reply
-                # 主口径，一次低命中会粘性盖在随后一串辅助调用捕获行上，
-                # 被误读为"连续多次低命中"
-                last_call = cache.get("last_call_any") or cache.get("last_call") or {}
+                # 仅展示按调用标识绑定的响应。历史文件的 last_call 无法证明归属。
+                call = cache.get("call") or {}
+                linked = bool(data.get("call_id")) and call.get("call_id") == data["call_id"]
+                measurable = linked and not call.get("unobservable")
                 # 前缀字节是否稳定：除每轮必变的工具链/实时注入/执行态外
-                # 所有 section 未变（None=无基线无法判定）。命中低而前缀稳定
-                # ⇒ 供应商侧缓存波动，列表以"平台波动"标识，与内容断裂导致的
-                # 真实低命中区分
+                # 所有 section 未变（None=无基线无法判定）。不包含工具 schema
+                # 或供应商最终请求，不能由此推断命中下降的原因。
                 tail_layers = {"tool_chain", "provider", "exec_context"}
                 prefix_flags = [
                     s.get("changed") for s in data.get("sections", [])
@@ -345,6 +404,10 @@ class ContextSnapshot:
                         prefix_stable = False
                 result.append({
                     "filename": fname,
+                    "call_id": data.get("call_id"),
+                    "scope": data.get("scope", ""),
+                    "cache_status": cache.get("status", "unlinked"),
+                    "cache_unobservable": bool(linked and call.get("unobservable")),
                     "captured_at": data.get("captured_at", 0),
                     "model": data.get("model", ""),
                     "kind": data.get("kind", ""),
@@ -354,10 +417,9 @@ class ContextSnapshot:
                     "estimated_tokens": data.get("estimated_tokens", 0),
                     "message_count": data.get("message_count", 0),
                     "tool_count": data.get("tool_count", 0),
-                    # 缓存简况：捕获前最近一次调用的真实命中（无数据为 None）
-                    "cache_hit_rate": last_call.get("cache_hit_rate"),
-                    "cache_read_input_tokens": last_call.get("cache_read_input_tokens"),
-                    "cache_creation_input_tokens": last_call.get("cache_creation_input_tokens"),
+                    "cache_hit_rate": call.get("cache_hit_rate") if measurable else None,
+                    "cache_read_input_tokens": call.get("cache_read_input_tokens") if measurable else None,
+                    "cache_creation_input_tokens": call.get("cache_creation_input_tokens") if measurable else None,
                     "estimated_cacheable_prefix_tokens": cache.get(
                         "estimated_cacheable_prefix_tokens"
                     ),
@@ -365,6 +427,7 @@ class ContextSnapshot:
                 })
             except Exception:
                 continue
+        result.sort(key=lambda item: item["captured_at"], reverse=True)
         return result
 
     @staticmethod
@@ -383,28 +446,28 @@ class ContextSnapshot:
     def delete_snapshot(filename: str) -> bool:
         """删除指定快照文件。"""
         path = os.path.join(_SNAPSHOT_DIR, filename)
-        if not os.path.isfile(path):
-            return False
-        try:
-            os.remove(path)
-            return True
-        except Exception:
-            return False
+        with _STORE_LOCK:
+            try:
+                os.remove(path)
+                return True
+            except OSError:
+                return False
 
     @staticmethod
     def clear_all_snapshots() -> int:
         """清空所有已保存的快照，返回删除数量。"""
-        if not os.path.isdir(_SNAPSHOT_DIR):
-            return 0
-        count = 0
-        for fname in os.listdir(_SNAPSHOT_DIR):
-            if fname.endswith(".json"):
-                try:
-                    os.remove(os.path.join(_SNAPSHOT_DIR, fname))
-                    count += 1
-                except Exception:
-                    continue
-        return count
+        with _STORE_LOCK:
+            if not os.path.isdir(_SNAPSHOT_DIR):
+                return 0
+            count = 0
+            for fname in os.listdir(_SNAPSHOT_DIR):
+                if fname.endswith(".json"):
+                    try:
+                        os.remove(os.path.join(_SNAPSHOT_DIR, fname))
+                        count += 1
+                    except OSError:
+                        continue
+            return count
 
     # ------------------------------------------------------------------
     # 分类
@@ -553,15 +616,13 @@ class ContextSnapshot:
 
     @staticmethod
     def _build_cache_block(sections: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """构建缓存观测区块：上次调用真实缓存用量 + 两种前缀口径。
+        """构建待完成的观测区块和捕获前的聚合参考，不借用其他调用的用量。
 
         - estimated_cacheable_prefix_tokens：消息级断链点之前的全部 tokens
           （与上次快照逐字节一致的最长前缀；会话追加等缓存友好变更计入
           既有部分），无基线时 None
-        - expected_prefix_tokens：按断点锚点布局的理论可命中前缀
-          （CACHEABLE_PREFIX_LAYERS 字节稳定层的 tokens 合计）——与本次
-          cache_read 对比即可秒判：expected 高而 read=0 ⇒ 非内容漂移
-          （网关侧/连接亲和问题）；expected 与 read 同步降 ⇒ 前缀内容变更
+        - expected_prefix_tokens：CACHEABLE_PREFIX_LAYERS 中消息的估算 tokens；
+          不含工具 schema 和供应商适配，不保证真实缓存命中，也不用于推断平台故障。
         """
         prefix_break = ContextSnapshot._compute_prefix_break(sections)
         if prefix_break is None:
@@ -576,25 +637,9 @@ class ContextSnapshot:
         )
 
         from agent.context.cache_stats import cache_usage_tracker
-        # 主口径只看主对话调用（reply）：reflect 评审/心跳分析等辅助调用
-        # 无共享前缀，命中率为 0 属正常，混入会误报"缓存崩了"
-        last_call = cache_usage_tracker.last(kind="reply")
-        if last_call is not None:
-            # 标注调用年龄与类型：上次调用可能来自更早的会话（回声），
-            # 无年龄标记的 0% 会被误读为当前缓存失效
-            last_call = {
-                **last_call,
-                "age_sec": round(max(0.0, time.time() - last_call["ts"]), 1),
-            }
-        last_any = cache_usage_tracker.last()
-        if last_any is not None:
-            last_any = {
-                **last_any,
-                "age_sec": round(max(0.0, time.time() - last_any["ts"]), 1),
-            }
         return {
-            "last_call": last_call,
-            "last_call_any": last_any,
+            "status": "pending",
+            "call": None,
             "recent": cache_usage_tracker.summary(kind="reply"),
             "recent_all": cache_usage_tracker.summary(),
             "estimated_cacheable_prefix_tokens": prefix_tokens,
