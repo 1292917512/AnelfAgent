@@ -4,7 +4,9 @@
 - ``manifest``：插件清单（plugin.json）与市场目录（marketplace.json）的解析模型
 - ``store``：已安装插件与已订阅市场的注册表持久化（plugins.json）
 - ``sources``：插件负载获取（git 克隆 / 本地拷贝，暂存 + 原子替换）
-- ``manager``：PluginManager 编排门面（安装/移除/升级/市场订阅/检索）
+- ``catalog`` / ``github_topic``：市场订阅、快照和条目检索
+- ``dsh`` / ``dsh_host``：DSH 清单适配、独立宿主 profile 管理
+- ``manager``：Web 与 AI 共用的安装、移除、升级与市场操作门面
 
 本包只依赖 core 内部设施；技能链接、MCP 合并、工具注册等运行时激活
 由上层实体（entities/plugins）经钩子注入实现。

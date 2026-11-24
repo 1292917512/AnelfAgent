@@ -5,6 +5,7 @@
     .codex-plugin/plugin.json
     .claude-plugin/plugin.json
     .cursor-plugin/plugin.json
+    package.json（声明 dsh.bundle 的 DeepSeek Harness 包）
 
 组件约定：
 - skills：manifest ``skills`` 字段（字符串或数组），缺省 ``./skills``
@@ -25,6 +26,7 @@ _MANIFEST_CANDIDATES = (
     ".codex-plugin/plugin.json",
     ".claude-plugin/plugin.json",
     ".cursor-plugin/plugin.json",
+    ".atomcode-plugin/plugin.json",
 )
 
 _MCP_CONFIG_CANDIDATES = (".mcp.json", "mcp.json")
@@ -36,9 +38,13 @@ class PluginError(ValueError):
     """插件清单/市场目录非法或插件操作失败。"""
 
 
+class PluginNotFound(PluginError, FileNotFoundError):
+    """操作引用的插件或市场尚未登记。"""
+
+
 def validate_plugin_name(name: str) -> str:
     """校验插件标识（小写字母/数字开头，可含 . _ -，最长 64 字符）。"""
-    if not _NAME_PATTERN.match(name or ""):
+    if not _NAME_PATTERN.fullmatch(name or ""):
         raise PluginError(f"插件名非法: {name!r}（须为小写字母/数字开头，可含 . _ -）")
     return name
 
@@ -95,6 +101,7 @@ class PluginManifest:
     mcp_servers_inline: Dict[str, Any] = field(default_factory=dict)
     tools_file: str = ""
     commands_dir: str = ""
+    format: str = "plugin"
 
     @property
     def display_name(self) -> str:
@@ -102,13 +109,23 @@ class PluginManifest:
         return self.interface.display_name or self.name
 
 
-def find_manifest_file(root: Path) -> Optional[Path]:
-    """按约定的多点发现顺序定位插件清单文件，不存在返回 None。"""
+def _discover_manifest(root: Path) -> tuple[Path | None, dict[str, Any]]:
     for rel in _MANIFEST_CANDIDATES:
         candidate = root / rel
         if candidate.is_file():
-            return candidate
-    return None
+            return candidate, {}
+    package = root / "package.json"
+    if package.is_file():
+        data = _read_manifest_data(package)
+        dsh = data.get("dsh")
+        if isinstance(dsh, dict) and "bundle" in dsh:
+            return package, data
+    return None, {}
+
+
+def find_manifest_file(root: Path) -> Optional[Path]:
+    """定位候选插件清单，普通 npm 包不作为插件。"""
+    return _discover_manifest(root)[0]
 
 
 def _resolve_component_path(root: Path, raw: Any) -> str:
@@ -123,18 +140,29 @@ def _resolve_component_path(root: Path, raw: Any) -> str:
     return rel
 
 
-def parse_manifest(root: Path) -> PluginManifest:
-    """解析插件根目录的清单，缺失或非法时抛 PluginError。"""
-    manifest_file = find_manifest_file(root)
-    if manifest_file is None:
-        raise PluginError(f"未找到插件清单: {root}（需要 plugin.json 或 .codex-plugin/plugin.json）")
+def _read_manifest_data(manifest_file: Path) -> dict[str, Any]:
     try:
         data = json.loads(manifest_file.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as e:
+    except (OSError, ValueError) as e:
         raise PluginError(f"插件清单解析失败: {manifest_file} - {e}") from e
     if not isinstance(data, dict):
         raise PluginError(f"插件清单必须是 JSON 对象: {manifest_file}")
+    return data
 
+
+def parse_manifest(root: Path) -> PluginManifest:
+    """解析插件根目录的清单，缺失或非法时抛 PluginError。"""
+    manifest_file, data = _discover_manifest(root)
+    if manifest_file is None:
+        if (root / "SKILL.md").is_file():
+            return PluginManifest(name=validate_plugin_name(root.name), skills=["."])
+        raise PluginError(f"未找到插件清单: {root}（需要 plugin.json 或声明 dsh.bundle 的 package.json）")
+    if manifest_file.name == "package.json":
+        from core.plugins.dsh import parse_dsh_manifest
+
+        return parse_dsh_manifest(root, data)
+
+    data = _read_manifest_data(manifest_file)
     name = validate_plugin_name(str(data.get("name") or root.name))
 
     author_raw = data.get("author")
@@ -248,6 +276,7 @@ class MarketplacePlugin:
     category: str = ""
     description: str = ""
     installation: str = "AVAILABLE"
+    inline_manifest: dict[str, Any] | None = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -294,7 +323,7 @@ def _parse_entry_source(raw: Any) -> Dict[str, str]:
         return {"source_type": "local", "path": ""}
 
     kind = str(raw.get("source") or "local").strip().lower()
-    ref = str(raw.get("ref") or raw.get("ref_name") or raw.get("sha") or "")
+    ref = str(raw.get("sha") or raw.get("ref") or raw.get("ref_name") or raw.get("branch") or "")
     if kind == "github":
         repo = str(raw.get("repo") or "").strip().strip("/")
         url = f"https://github.com/{repo}.git" if repo else ""
@@ -338,6 +367,8 @@ def parse_marketplace(data: Any) -> Marketplace:
             category=str(raw.get("category") or ""),
             description=str(raw.get("description") or ""),
             installation=str(policy.get("installation") or "AVAILABLE"),
+            inline_manifest={key: raw[key] for key in ("name", "version", "description", "author", "skills", "mcpServers")
+                             if key in raw} if raw.get("strict") is False else None,
         ))
     return Marketplace(
         name=name,

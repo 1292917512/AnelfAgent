@@ -10,10 +10,8 @@ import { tagsApi, toolsApi } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { Button, Input } from "@/components/ui";
 import { AsyncState, QueryError } from "@/components/common/AsyncState";
-import { SectionBoundary } from "@/components/common/SectionBoundary";
 import { ToolGroupCard } from "./ToolGroupCard";
 import { ToolEditModal } from "./ToolEditModal";
-import { PluginsCard } from "./PluginsCard";
 import type { ToolGroup, ToolOriginKind } from "@/lib/types";
 import type { EditState } from "./types";
 import { refreshToolCatalog, useEntityReload } from "./useEntityReload";
@@ -52,7 +50,6 @@ export function ToolsListPanel() {
   };
   const query = useQuery({ queryKey: ["tools-grouped"], queryFn: () => toolsApi.grouped().then((r) => r.data), refetchInterval: 10000, throwOnError: false });
   const tagQuery = useQuery({ queryKey: ["tool-tags"], queryFn: () => tagsApi.toolTags().then((r) => r.data), throwOnError: false });
-  const plugins = useQuery({ queryKey: ["plugins"], queryFn: () => toolsApi.plugins().then((r) => r.data), throwOnError: false });
   const refresh = () => refreshToolCatalog(client);
   const toggle = useMutation({
     mutationFn: ({ name, group }: { name: string; group: boolean }) => group ? toolsApi.toggleGroup(name) : toolsApi.toggle(name),
@@ -134,7 +131,6 @@ export function ToolsListPanel() {
         onOpenEntity={(groupName) => navigate(`/entities/${encodeURIComponent(groupName)}${params.size ? `?catalog=${encodeURIComponent(params.toString())}` : ""}`)} />)}</div>
         : <p className="rounded-xl border border-dashed border-border py-12 text-center text-sm text-muted">{t(activeFilters ? "noMatch" : "noTools")}</p>}
     </AsyncState>
-    <SectionBoundary>{plugins.error ? <QueryError compact error={plugins.error} retry={() => void plugins.refetch()} /> : plugins.data && <PluginsCard plugins={plugins.data} />}</SectionBoundary>
     {editing && <ToolEditModal editing={editing} onChange={setEditing} onClose={() => setEditing(null)} onSave={(onSaved) => save.mutate(editing, { onSuccess: onSaved })} isPending={save.isPending} error={save.error} />}
   </div>;
 }

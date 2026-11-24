@@ -36,11 +36,3 @@ export interface ToolGroup {
   enabled_count: number;
   total_count: number;
 }
-
-export interface PluginInfo {
-  name: string;
-  version: string;
-  author: string;
-  enabled: boolean;
-  description: string;
-}

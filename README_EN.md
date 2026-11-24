@@ -268,7 +268,11 @@ Platforms require their respective accounts, credentials, and runtime environmen
 | `plugins` / `mcp` | Marketplace subscriptions, installation / upgrade / removal, and MCP connections and tools |
 | `model_control` / `entity_query` / `system` | Models and Ollama, two-level capability discovery, and system / Git / log tools |
 
-The Tools page distinguishes **core, entity, channel, and external** sources from actual registration ownership. Core tools are not treated as individually reloadable entity extensions. Plugins can package manifests, skills, MCP settings, and Python tools; the AI can manage installation and upgrades within its permissions.
+The Tools page distinguishes **core, entity, channel, and external** sources from actual registration ownership. Core tools are not treated as individually reloadable entity extensions.
+
+Manage plugins under **Capabilities → Plugins**. **Browse & Install** opens the DSH marketplace first. Switch sources or open a card to inspect and install a plugin. Built-in sources are enabled by default. Use **Source settings** to enable, disable, refresh or add a marketplace. Direct installation accepts a Git repository or local directory and an optional package subdirectory. [Public DSH directory](https://github.com/topics/dsh-plugin)
+
+Existing `plugin.json` packages can contribute skills, Python tools and MCP servers. Standalone MCP declarations in DSH bundles connect to AnelfAgent. Packages that need Cordis or the DSH client use a dedicated DSH Web profile. The details panel provides its `DSH_HOME` and launch instructions. AI tools use the same subscription and plugin lifecycle operations.
 
 ## Architecture and Development
 

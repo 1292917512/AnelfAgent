@@ -3,6 +3,8 @@
 /** 已安装插件记录 */
 export interface InstalledPlugin {
   name: string;
+  format?: "plugin" | "dsh" | "dsh-host";
+  dsh_home?: string;
   version: string;
   sha: string;
   marketplace: string;
@@ -24,6 +26,9 @@ export interface InstalledPlugin {
 /** 已订阅市场 */
 export interface MarketplaceInfo {
   name: string;
+  enabled: boolean;
+  builtin: boolean;
+  pending: boolean;
   source_type: string;
   url: string;
   path: string;
@@ -51,6 +56,8 @@ export interface MarketplacePluginEntry {
 /** 检索响应 */
 export interface SearchResult {
   count: number;
+  next_offset: number | null;
+  errors: Record<string, string>;
   plugins: MarketplacePluginEntry[];
 }
 
@@ -64,9 +71,11 @@ export interface UpgradeResult {
 /** 批量升级响应 */
 export interface UpgradeAllResult {
   results: Record<string, boolean>;
+  errors?: Record<string, string>;
 }
 
 /** 市场刷新响应 */
 export interface RefreshResult {
   results: Record<string, number>;
+  errors?: Record<string, string>;
 }

@@ -42,7 +42,6 @@ function ParamsProbe() {
 async function mount(initialEntry = "/tools") {
   await i18n.changeLanguage("en");
   vi.spyOn(toolsApi, "grouped").mockResolvedValue(ok(GROUPS));
-  vi.spyOn(toolsApi, "plugins").mockResolvedValue(ok([]));
   vi.spyOn(tagsApi, "toolTags").mockResolvedValue(ok(["audio"]));
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   render(

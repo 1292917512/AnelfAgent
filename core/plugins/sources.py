@@ -10,6 +10,8 @@ import os
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional, Tuple
 from urllib.parse import urlsplit
@@ -53,7 +55,7 @@ def _run_git(args: list[str], cwd: Optional[Path] = None,
         try:
             result = subprocess.run(
                 ["git", *args], cwd=str(cwd) if cwd else None, env=_git_env(proxy),
-                capture_output=True, text=True, timeout=timeout,
+                capture_output=True, encoding="utf-8", errors="replace", timeout=timeout,
             )
         except FileNotFoundError as exc:
             raise PluginError("未找到 git 可执行文件，无法从 git 源安装插件") from exc
@@ -86,14 +88,21 @@ def cleanup_staging(staging: Path) -> None:
         log(f"插件暂存目录清理失败: {staging} - {e}", "DEBUG")
 
 
-def fetch_local(path: str, staging: Path) -> Tuple[Path, str]:
+def fetch_local(path: str, staging: Path, *, subdir: str = "") -> Tuple[Path, str]:
     """从本地目录拷贝插件负载到暂存目录，返回 (负载目录, 内容指纹)。
 
     暂存目录名保留来源目录名：清单缺省 name 字段时按目录名回退。
     """
     source = Path(os.path.expanduser(path)).resolve()
+    if subdir:
+        selected = (source / subdir).resolve()
+        if Path(subdir).anchor or not selected.is_relative_to(source):
+            raise PluginError(f"插件子目录越出本地来源: {subdir}")
+        source = selected
     if not source.is_dir():
         raise PluginError(f"本地插件路径不存在: {path}")
+    if staging.resolve().is_relative_to(source):
+        raise PluginError("本地来源包含插件暂存目录，请指定插件包的子目录")
     target = staging / source.name
     ignore = shutil.ignore_patterns(".git", "__pycache__", "node_modules", ".venv")
     try:
@@ -117,6 +126,15 @@ def _dir_fingerprint(root: Path) -> str:
     return digest.hexdigest()
 
 
+def looks_like_git_url(source: str) -> bool:
+    """判断来源字符串是否为 git 仓库地址。"""
+    text = source.strip()
+    return (
+        text.startswith(("http://", "https://", "git@", "ssh://", "file://"))
+        or text.endswith(".git")
+    )
+
+
 def _repo_dir_name(url: str) -> str:
     """从仓库地址推导目录名（清单缺省 name 时按仓库名回退）。"""
     text = url.replace("\\", "/").rstrip("/")
@@ -125,9 +143,10 @@ def _repo_dir_name(url: str) -> str:
     if ":" in text and not text.startswith(("http://", "https://", "file://", "ssh://")):
         text = text.split(":")[-1]  # git@host:owner/repo 形式
     name = text.split("/")[-1] or "repo"
-    if name in {".", ".."} or ":" in name:
+    name = name.removesuffix(".git")
+    if not name or name in {".", ".."} or ":" in name:
         raise PluginError(f"仓库目录名非法: {name}")
-    return name[:-4] if name.endswith(".git") else name
+    return name
 
 
 def _is_commit_sha(ref: str) -> bool:
@@ -150,14 +169,14 @@ def fetch_git(url: str, ref: str, staging: Path, *, subdir: str = "",
     if not payload.resolve().is_relative_to(clone_dir.resolve()):
         raise PluginError(f"插件子目录越出仓库: {subdir}")
     if ref and _is_commit_sha(ref):
-        _run_git(["clone", "--depth", "1", url, str(clone_dir)], timeout=timeout, url=url)
-        _run_git(["fetch", "--depth", "1", "origin", ref], cwd=clone_dir, timeout=timeout, url=url)
+        _run_git(["clone", "--depth", "1", "--", url, str(clone_dir)], timeout=timeout, url=url)
+        _run_git(["fetch", "--depth", "1", "--", "origin", ref], cwd=clone_dir, timeout=timeout, url=url)
         _run_git(["checkout", "--detach", "FETCH_HEAD"], cwd=clone_dir, timeout=timeout)
     else:
         args = ["clone", "--depth", "1"]
         if ref:
             args += ["--branch", ref]
-        args += [url, str(clone_dir)]
+        args += ["--", url, str(clone_dir)]
         _run_git(args, timeout=timeout, url=url)
     sha = _run_git(["rev-parse", "HEAD"], cwd=clone_dir)
     if not payload.resolve().is_relative_to(clone_dir.resolve()):
@@ -167,32 +186,40 @@ def fetch_git(url: str, ref: str, staging: Path, *, subdir: str = "",
     return payload, sha
 
 
-def git_pull(repo_dir: Path, *, timeout: float = _DEFAULT_GIT_TIMEOUT) -> str:
-    """在已有克隆上拉取最新代码，返回最新 commit sha。"""
+@contextmanager
+def updating_git_checkout(repo_dir: Path, ref: str) -> Iterator[None]:
+    """按订阅的 ref 刷新受管检出，目录校验失败时恢复上次可用提交。"""
+    previous = _run_git(["rev-parse", "HEAD"], cwd=repo_dir)
     url = _run_git(["remote", "get-url", "origin"], cwd=repo_dir)
-    _run_git(["fetch", "--depth", "1", "origin"], cwd=repo_dir, timeout=timeout, url=url)
-    _run_git(["reset", "--hard", "FETCH_HEAD"], cwd=repo_dir, timeout=timeout)
-    return _run_git(["rev-parse", "HEAD"], cwd=repo_dir)
-
-
-def replace_payload(payload: Path, target: Path) -> None:
-    """将暂存负载原子替换到正式目录（先移走旧目录再 rename，失败回滚）。"""
-    backup = target.with_name(f"{target.name}.old")
-    moved_old = False
+    _run_git(["fetch", "--depth", "1", "--", "origin", ref or "HEAD"], cwd=repo_dir, url=url)
+    _run_git(["reset", "--hard", "FETCH_HEAD"], cwd=repo_dir)
     try:
-        target.parent.mkdir(parents=True, exist_ok=True)
+        yield
+    except BaseException:
+        _run_git(["reset", "--hard", previous], cwd=repo_dir)
+        raise
+
+
+@contextmanager
+def replacing_payload(payload: Path | None, target: Path) -> Iterator[None]:
+    """发布或撤回目录；调用方成功提交后回收原目录，失败时还原。"""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    rollback = Path(tempfile.mkdtemp(prefix=".rollback_", dir=target.parent))
+    previous = rollback / "previous"
+    published = False
+    try:
         if target.exists():
-            if backup.exists():
-                shutil.rmtree(backup, ignore_errors=True)
-            os.replace(target, backup)
-            moved_old = True
-        os.replace(payload, target)
-    except OSError as e:
-        if moved_old and not target.exists():
-            try:
-                os.replace(backup, target)
-            except OSError:
-                log(f"插件目录回滚失败: {backup}", "ERROR")
-        raise PluginError(f"替换插件目录失败: {target} - {e}") from e
-    if backup.exists():
-        shutil.rmtree(backup, ignore_errors=True)
+            os.replace(target, previous)
+        if payload is not None:
+            os.replace(payload, target)
+            published = True
+        yield
+    except BaseException:
+        if published and payload is not None:
+            os.replace(target, payload)
+        if previous.exists():
+            os.replace(previous, target)
+        cleanup_staging(rollback)
+        raise
+    else:
+        cleanup_staging(rollback)

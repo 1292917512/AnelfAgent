@@ -24,7 +24,6 @@ import type {
   MCPToggleResult,
   MCPToolInfo,
   PermissionRuleItem,
-  PluginInfo,
   ToolGroup,
   RetrievalMatrix,
   RetrievalDeploymentStatus,
@@ -46,7 +45,6 @@ export const toolsApi = {
   updateMeta: (name: string, data: { tags?: string[]; description?: string }) =>
     api.put(`/tools/${encodeURIComponent(name)}/meta`, data),
   reload: () => api.post<ModuleSyncResult>("/tools/reload"),
-  plugins: () => api.get<PluginInfo[]>("/tools/plugins"),
 };
 
 // Entities

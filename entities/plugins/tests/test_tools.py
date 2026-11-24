@@ -69,13 +69,30 @@ class TestMarketplaceTools:
         markets = json.loads(svc.list_marketplaces())
         assert markets[0]["name"] == "mart"
         assert markets[0]["plugin_count"] == 0
+        assert json.loads(await svc.toggle_marketplace("mart", False)) == {"name": "mart", "enabled": False}
+        assert "error" in json.loads(await svc.search_plugins(marketplace="mart"))
+        assert json.loads(await svc.toggle_marketplace("mart", True))["enabled"] is True
 
         result = json.loads(svc.remove_marketplace("mart"))
         assert result["removed"] is True
 
     async def test_search_empty(self, svc):
-        result = json.loads(svc.search_plugins("x"))
+        result = json.loads(await svc.search_plugins("x"))
         assert result["count"] == 0
+
+    async def test_search_pages_and_refresh_failure(self, svc, plugin_env):
+        catalog = plugin_env.root / "marketplace.json"
+        catalog.write_text(json.dumps({"name": "mart", "plugins": [
+            {"name": name, "source": "./" + name} for name in ("first", "second")
+        ]}), encoding="utf-8")
+        assert json.loads(await svc.add_marketplace("mart", str(catalog)))["subscribed"]
+        page = json.loads(await svc.search_plugins(marketplace="mart", limit=1))
+        assert (page["count"], page["next_offset"], page["plugins"][0]["name"]) == (2, 1, "first")
+        last = json.loads(await svc.search_plugins(marketplace="mart", offset=page["next_offset"]))
+        assert last["next_offset"] is None and last["plugins"][0]["name"] == "second"
+        catalog.write_text("{", encoding="utf-8")
+        result = json.loads(await svc.refresh_marketplaces("mart"))
+        assert result["results"] == {"mart": -1} and result["errors"]["mart"]
 
     async def test_error_attribution(self, svc):
         """非法操作返回归因明确的工具错误而非异常。"""

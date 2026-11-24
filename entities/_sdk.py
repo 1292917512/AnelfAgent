@@ -1017,6 +1017,7 @@ def entity_manifest(
     order: int = 50,
     nav: Optional[Dict[str, Any]] = None,
     group: Optional[str] = None,
+    show_in_tool_catalog: bool = True,
 ) -> None:
     """声明实体展示清单（前端详情页 + 实体列表页 + 侧边栏导航使用）。
 
@@ -1046,6 +1047,7 @@ def entity_manifest(
         group: 目标分组名（必传）。历史上缺省时按 list_groups()[-1] 推导，
             但 _groups 仅收录已有工具的分组，推导结果不可靠（manifest 串组覆盖），
             因此缺省时拒绝注册并告警。
+        show_in_tool_catalog: 是否在 Web 工具目录展示此分组。独立管理页可自行接管入口。
     """
     from core.log import log
     if group is None:
@@ -1060,6 +1062,8 @@ def entity_manifest(
     }
     if nav is not None:
         manifest["nav"] = nav
+    if not show_in_tool_catalog:
+        manifest["show_in_tool_catalog"] = False
     EntityRegistry.register_group_manifest(group, manifest)
     EntityRegistry.register_group_order(group, order)
 

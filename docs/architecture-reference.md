@@ -368,6 +368,24 @@ SQLite 管理连接关闭失败保留句柄并阻止释放实例所有权，避�
 | `devops` | 运维管理 | `entities/devops/tools.py` | — |
 | `code` | 代码编排 | `entities/codebox/`（沉睡分组，order 27） | — |
 
+## 公共插件接口
+
+Web `/api/entity/plugins` 与 AI 的 `plugins` 工具组共享 `PluginManager`。市场目录由 `core/plugins/catalog.py` 负责。安装与升级先解析清单，再交由 `entities/plugins/activation.py` 登记技能、工具与 MCP 服务。Web 的能力导航由插件实体贡献 `/plugins` 路由。
+
+| 安装记录的 `format` | 执行位置 | 组件 |
+|---|---|---|
+| `plugin` | AnelfAgent | 根目录或 Codex、Claude、Cursor 子目录中的 `plugin.json`，可携带技能、Python 工具及 MCP 服务 |
+| `dsh` | AnelfAgent MCP 桥 | `package.json` 声明 `dsh.bundle.patch`，使用可独立表达的 stdio 或 Streamable HTTP MCP 服务 |
+| `dsh-host` | 官方 DSH Web profile | Cordis 模块、宿主专用设置、客户端扩展。详情里的 `dsh_home` 指向该插件独占的 `DSH_HOME` |
+
+独立 MCP 包中的 stdio 命令在 AnelfAgent 进程环境下运行。例如 `command: npx` 要求该环境的 PATH 可找到 `npx`。服务连接和工具发现状态可在 MCP 管理页查看。
+
+宿主插件优先使用 PATH 中的 `dsh`，否则由 `uv` 获取适配版本的官方运行时。安装中用到官方包管理器所需的 pnpm。运行宿主界面时先将 `DSH_HOME` 设为记录中的路径，再执行 `dsh web`。使用 uv 获取运行时的环境可用 `uv tool run --from deepseek-harness-runtime-bin==0.2.2rc2 dsh web`。宿主里的 JavaScript 工具供该 profile 使用。
+
+来源配置由 Web 和 AI 共用。内置市场默认启用，浏览时首选 DSH，第一次选择来源时才获取目录。后续搜索读取本地快照，刷新失败保留上一次成功的目录。配置页可单独启停或刷新来源，支持额外订阅 Git 仓库、本地市场目录、清单文件及 GitHub Topic。关闭来源会暂停发现和新安装，已装插件仍可使用。
+
+AI 用 `list_marketplaces` 查看来源，用 `toggle_marketplace(name, enabled)` 调整开关，用 `add_marketplace(name, source)` 添加自定义市场。`search_plugins(query, marketplace, offset, limit)` 返回分页结果和不可用来源。Topic 收录按星数排序的前 100 个未归档仓库，安装时检查清单。把条目的 `name` 和 `marketplace` 传给 `install_plugin`。同一仓库包含多个候选包时可用 `install_plugin_from_source(source, ref, subdir)` 指定子目录。后续启停、升级和移除均使用安装结果的 `name`。
+
 ## 关键文件索引
 
 | 文件 | 职责 |

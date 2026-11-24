@@ -12,8 +12,8 @@ from typing import List
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from core.plugins import get_plugin_manager
-from core.plugins.manifest import PluginError
+from core.plugins import PluginManager, get_plugin_manager
+from core.plugins.manifest import PluginError, PluginNotFound
 from entities.plugins.activation import wire_plugin_manager
 
 
@@ -46,10 +46,14 @@ class MarketplaceIn(BaseModel):
     ref: str = ""
 
 
-def _manager():
+def _manager() -> PluginManager:
     manager = get_plugin_manager()
     wire_plugin_manager(manager)
     return manager
+
+
+def _http_error(exc: PluginError) -> HTTPException:
+    return HTTPException(status_code=404 if isinstance(exc, PluginNotFound) else 400, detail=str(exc))
 
 
 def build_router() -> APIRouter:
@@ -61,10 +65,12 @@ def build_router() -> APIRouter:
         return [p.to_dict() for p in _manager().list_plugins()]
 
     @router.get("/search")
-    async def search_plugins(q: str = "") -> dict:
+    async def search_plugins(q: str = "", marketplace: str = "", offset: int = 0, limit: int | None = None) -> dict:
         """跨市场检索可安装插件。"""
-        results = await asyncio.to_thread(_manager().search, q)
-        return {"count": len(results), "plugins": results}
+        try:
+            return await asyncio.to_thread(_manager().search_page, q, marketplace, offset, limit)
+        except PluginError as e:
+            raise _http_error(e) from e
 
     @router.get("/marketplaces")
     async def list_marketplaces() -> List[dict]:
@@ -73,14 +79,14 @@ def build_router() -> APIRouter:
 
     @router.post("/marketplaces", status_code=201)
     async def add_marketplace(body: MarketplaceIn) -> dict:
-        """订阅市场（git URL 或本地目录）。"""
+        """订阅 GitHub Topic、Git 仓库或本地市场目录。"""
         try:
             record = await asyncio.to_thread(
                 _manager().add_marketplace, body.name, body.source, body.ref,
             )
             return record.to_dict()
         except PluginError as e:
-            raise HTTPException(status_code=400, detail=str(e)) from e
+            raise _http_error(e) from e
 
     @router.delete("/marketplaces/{name}")
     async def remove_marketplace(name: str) -> dict:
@@ -89,16 +95,26 @@ def build_router() -> APIRouter:
             record = await asyncio.to_thread(_manager().remove_marketplace, name)
             return {"removed": True, "name": record.name}
         except PluginError as e:
-            raise HTTPException(status_code=400, detail=str(e)) from e
+            raise _http_error(e) from e
+
+    @router.post("/marketplaces/{name}/toggle")
+    async def toggle_marketplace(name: str, body: ToggleIn) -> dict:
+        """保存来源开关，保留本地目录快照。"""
+        try:
+            record = await asyncio.to_thread(_manager().toggle_marketplace, name, body.enabled)
+            return {"name": record.name, "enabled": record.enabled}
+        except PluginError as e:
+            raise _http_error(e) from e
 
     @router.post("/marketplaces/refresh")
     async def refresh_marketplaces(name: str = "") -> dict:
         """刷新市场目录（git 市场执行 pull）。"""
         try:
-            results = await asyncio.to_thread(_manager().refresh_marketplaces, name)
-            return {"results": results}
+            errors: dict[str, str] = {}
+            results = await asyncio.to_thread(_manager().refresh_marketplaces, name, errors=errors)
+            return {"results": results, "errors": errors}
         except PluginError as e:
-            raise HTTPException(status_code=404, detail=str(e)) from e
+            raise _http_error(e) from e
 
     @router.get("/{name}")
     async def plugin_info(name: str) -> dict:
@@ -115,7 +131,7 @@ def build_router() -> APIRouter:
             record = await asyncio.to_thread(_manager().install, body.name, body.marketplace)
             return record.to_dict()
         except PluginError as e:
-            raise HTTPException(status_code=400, detail=str(e)) from e
+            raise _http_error(e) from e
 
     @router.post("/from-source", status_code=201)
     async def install_from_source(body: InstallSourceIn) -> dict:
@@ -126,7 +142,7 @@ def build_router() -> APIRouter:
             )
             return record.to_dict()
         except PluginError as e:
-            raise HTTPException(status_code=400, detail=str(e)) from e
+            raise _http_error(e) from e
 
     @router.post("/{name}/upgrade")
     async def upgrade_plugin(name: str) -> dict:
@@ -135,13 +151,14 @@ def build_router() -> APIRouter:
             record, changed = await asyncio.to_thread(_manager().upgrade, name)
             return {"name": record.name, "upgraded": changed, "version": record.version}
         except PluginError as e:
-            raise HTTPException(status_code=404, detail=str(e)) from e
+            raise _http_error(e) from e
 
     @router.post("/upgrade-all")
     async def upgrade_all() -> dict:
         """升级全部已安装插件。"""
-        results = await asyncio.to_thread(_manager().upgrade_all)
-        return {"results": results}
+        errors: dict[str, str] = {}
+        results = await asyncio.to_thread(_manager().upgrade_all, errors=errors)
+        return {"results": results, "errors": errors}
 
     @router.post("/{name}/toggle")
     async def toggle_plugin(name: str, body: ToggleIn) -> dict:
@@ -150,7 +167,7 @@ def build_router() -> APIRouter:
             record = await asyncio.to_thread(_manager().toggle, name, body.enabled)
             return {"name": record.name, "enabled": record.enabled}
         except PluginError as e:
-            raise HTTPException(status_code=404, detail=str(e)) from e
+            raise _http_error(e) from e
 
     @router.delete("/{name}")
     async def remove_plugin(name: str) -> dict:
@@ -159,6 +176,6 @@ def build_router() -> APIRouter:
             record = await asyncio.to_thread(_manager().remove, name)
             return {"removed": True, "name": record.name}
         except PluginError as e:
-            raise HTTPException(status_code=404, detail=str(e)) from e
+            raise _http_error(e) from e
 
     return router

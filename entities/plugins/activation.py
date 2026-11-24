@@ -21,6 +21,7 @@ from typing import List
 from core.entity import EntityMetadata, EntityRegistry, EntityType
 from core.log import log
 from core.path import workspace_root
+from core.plugins import PluginManager
 from core.plugins.manifest import PluginError, load_plugin_mcp_servers, parse_manifest
 from core.plugins.roster import roster_line
 from core.plugins.store import InstalledPlugin
@@ -46,15 +47,13 @@ def activate_plugin(record: InstalledPlugin, payload_dir: Path) -> InstalledPlug
 
     单组件失败不阻断整体（记 WARNING 继续），与内置实体发现的容错口径一致。
     """
-    try:
-        manifest = parse_manifest(payload_dir)
-    except PluginError as e:
-        log(f"插件清单失效，跳过激活: {record.name} - {e}", "ERROR", tag=_TAG)
-        return record
+    manifest = parse_manifest(payload_dir)
 
     record.skills = _activate_skills(record.name, payload_dir, manifest.skills)
     record.skills += _activate_commands(record.name, payload_dir, manifest.commands_dir)
     record.mcp_servers = _activate_mcp_servers(record.name, payload_dir, manifest)
+    if manifest.format == "dsh" and len(record.mcp_servers) != len(manifest.mcp_servers_inline):
+        raise PluginError(f"DSH 插件 {record.name} 的 MCP 服务注册不完整，请检查服务名称和配置")
     record.tools = _activate_tools(record.name, payload_dir, manifest)
     _register_plugin_entity(record)
     log(
@@ -80,30 +79,16 @@ def activate_installed_plugins() -> int:
     由 discover_entities() 在内置实体扫描后调用；单个插件失败不阻断启动。
     """
     from core.plugins import get_plugin_manager
-    from core.plugins.store import plugin_payload_dir
 
     manager = get_plugin_manager()
     wire_plugin_manager(manager)
-    activated = 0
-    for record in manager.list_plugins():
-        if not record.enabled:
-            continue
-        payload = plugin_payload_dir(record.name)
-        if not payload.is_dir():
-            log(f"插件负载目录缺失，跳过激活: {record.name} ({payload})", "WARNING", tag=_TAG)
-            continue
-        try:
-            refreshed = activate_plugin(record, payload)
-            manager.registry.upsert(refreshed)
-            activated += 1
-        except Exception as e:
-            log(f"插件激活失败: {record.name} - {e}", "ERROR", tag=_TAG)
+    activated = manager.restore_enabled()
     if activated:
         log(f"插件激活完成: {activated} 个", tag=_TAG)
     return activated
 
 
-def wire_plugin_manager(manager) -> None:
+def wire_plugin_manager(manager: PluginManager) -> None:
     """把激活与变更钩子注入插件管理器（幂等）。"""
     manager.on_activate = activate_plugin
     manager.on_deactivate = deactivate_plugin
@@ -149,7 +134,7 @@ def _activate_skills(plugin_name: str, payload_dir: Path, skill_roots: List[str]
                 target = skills_base / target_name
                 if target.exists():
                     shutil.rmtree(target)
-                shutil.copytree(skill_dir, target)
+                shutil.copytree(skill_dir, target, ignore=shutil.ignore_patterns(".git", "__pycache__", "node_modules", ".venv"))
                 (target / _SKILL_MARKER).write_text(plugin_name, encoding="utf-8")
                 linked.append(target_name)
             except OSError as e:

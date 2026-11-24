@@ -1,8 +1,12 @@
 """插件管理工具（plugins 组）— AI 自主完成插件的安装/升级/移除与市场订阅。
 
-插件 = 清单 + skills/ + .mcp.json + tools.py 的目录包；
-市场 = marketplace.json 目录（本地路径或 git 仓库）。
-所有阻塞操作（git 克隆、文件拷贝）经 asyncio.to_thread 移出事件循环。
+支持 plugin.json 和 DeepSeek Harness bundle，发现来源包括 marketplace.json 和 GitHub Topic。
+阻塞安装操作经 asyncio.to_thread 移出事件循环。
+
+Model Experience:
+    管理工具提供来源开关、分页结果及各源错误；DSH 宿主包返回独立 profile 的 DSH_HOME。
+    仅调用时增加格式和操作结果字段的 token，空闲时不注入宿主配置。
+    工具声明变动随工具集缓存更新，操作状态沿用动态区。
 """
 
 from __future__ import annotations
@@ -12,7 +16,7 @@ import json
 from typing import Any
 
 from core.log import log
-from core.plugins import get_plugin_manager
+from core.plugins import PluginManager, get_plugin_manager
 from core.sanitizer import is_sanitize_enabled, sanitize_text
 from core.tool_errors import ErrorCause, error_from_exception, tool_error
 from entities._sdk import (
@@ -30,6 +34,7 @@ entity_manifest(
     icon="puzzle",
     description="插件包的安装、升级、移除与市场订阅管理",
     order=63,
+    show_in_tool_catalog=False,
     version="1.0.0",
     group="plugins",
 )
@@ -95,7 +100,7 @@ def _safe_json(payload: Any) -> str:
     return sanitize_text(text) if is_sanitize_enabled() else text
 
 
-def _manager():
+def _manager() -> PluginManager:
     manager = get_plugin_manager()
     wire_plugin_manager(manager)
     return manager
@@ -116,6 +121,7 @@ def list_plugins() -> str:
             "display_name": p.display_name,
             "description": p.description,
             "marketplace": p.marketplace,
+            "format": p.format,
             "enabled": p.enabled,
             "skills": p.skills,
             "tools": p.tools,
@@ -139,19 +145,26 @@ def plugin_info(name: str) -> str:
 
 
 @tool(name="search_plugins", group="plugins", concurrency_safe=True)
-def search_plugins(query: str = "") -> str:
-    """跨全部已订阅市场检索可安装的插件（名称/描述/分类匹配，空串列出全部）。
+async def search_plugins(query: str = "", marketplace: str = "", offset: int = 0, limit: int = 20) -> str:
+    """分页检索已订阅市场。count 为匹配总数，next_offset 为空表示已到末页。
 
     Args:
-        query: 检索关键词，留空列出全部市场插件
+        query: 检索关键词，留空列出目录条目。
+        marketplace: 已启用的市场标识名，留空查询全部启用来源。首次读取按需联网；errors 列出不可用来源。
+        offset: 起始位置，下一页使用结果中的 next_offset。
+        limit: 每页条目数，1 至 100，默认 20。
     """
-    results = _manager().search(query)
-    return _safe_json({"count": len(results), "plugins": results})
+    if type(offset) is not int or type(limit) is not int or offset < 0 or not 1 <= limit <= 100:
+        return tool_error("offset 须为非负整数，limit 须在 1 至 100 之间", cause=ErrorCause.PARAM, retryable=False)
+    try:
+        return _safe_json(await asyncio.to_thread(_manager().search_page, query, marketplace, offset, limit))
+    except Exception as exc:
+        return error_from_exception(exc, action="检索插件目录")
 
 
 @tool(name="install_plugin", group="plugins")
 async def install_plugin(name: str, marketplace: str = "") -> str:
-    """从已订阅市场安装插件（技能入库、MCP server 合并、工具注册自动完成）。
+    """按检索结果的 name 和 marketplace 安装。返回的 name 是后续管理使用的标识，format 表示运行方式。
 
     Args:
         name: 市场目录中的插件名
@@ -166,12 +179,12 @@ async def install_plugin(name: str, marketplace: str = "") -> str:
 
 @tool(name="install_plugin_from_source", group="plugins")
 async def install_plugin_from_source(source: str, ref: str = "", subdir: str = "") -> str:
-    """直接从 git URL 或本地路径安装插件（不经市场）。
+    """直接从 git URL 或本地路径安装插件，支持 plugin.json 和 DSH bundle。独立 MCP 直接注册；Cordis 包安装到返回的独立 DSH_HOME。
 
     Args:
         source: git 仓库地址（https://... / git@...）或本地插件目录路径
-        ref: git 分支/tag（可选）
-        subdir: 仓库内插件子目录（monorepo 场景，可选）
+        ref: Git 分支/tag/提交（可选）
+        subdir: 来源内插件子目录（monorepo 场景，可选）
     """
     try:
         record = await asyncio.to_thread(
@@ -208,8 +221,9 @@ async def upgrade_plugins(name: str = "") -> str:
         if name.strip():
             record, changed = await asyncio.to_thread(manager.upgrade, name.strip())
             return _safe_json({"name": record.name, "upgraded": changed, "version": record.version})
-        results = await asyncio.to_thread(manager.upgrade_all)
-        return _safe_json({"results": results})
+        errors: dict[str, str] = {}
+        results = await asyncio.to_thread(manager.upgrade_all, errors=errors)
+        return _safe_json({"results": results, "errors": errors})
     except Exception as e:
         return error_from_exception(e, action=f"升级插件 {name or '(全部)'}")
 
@@ -237,18 +251,18 @@ async def toggle_plugin(name: str, enabled: bool = True) -> str:
 
 @tool(name="list_marketplaces", group="plugins", concurrency_safe=True)
 def list_marketplaces() -> str:
-    """列出全部已订阅的插件市场（来源类型、地址、目录插件数）。"""
+    """列出所有内置和自定义来源。enabled 为启用状态，pending 表示目录尚待首次联网加载。"""
     return _safe_json(_manager().list_marketplaces())
 
 
 @tool(name="add_marketplace", group="plugins")
 async def add_marketplace(name: str, source: str, ref: str = "") -> str:
-    """订阅插件市场（marketplace.json 所在的 git 仓库或本地目录）。
+    """订阅插件市场（marketplace.json 所在的 Git 仓库、本地目录或 GitHub Topic 地址）。
 
     Args:
         name: 市场标识名（小写字母/数字，可含 - _ .）
-        source: git 仓库地址或本地目录路径（目录含 marketplace.json 或 .agents/plugins/marketplace.json）
-        ref: git 分支/tag（可选）
+        source: 提供 marketplace.json 的 Git 仓库、本地目录，或 https://github.com/topics/dsh-plugin 等 Topic 地址
+        ref: Git 分支/tag/提交（可选）
     """
     try:
         record = await asyncio.to_thread(
@@ -257,6 +271,22 @@ async def add_marketplace(name: str, source: str, ref: str = "") -> str:
         return _safe_json({"subscribed": True, **record.to_dict()})
     except Exception as e:
         return error_from_exception(e, action=f"订阅市场 {name}")
+
+
+@tool(name="toggle_marketplace", group="plugins")
+async def toggle_marketplace(name: str, enabled: bool) -> str:
+    """启停市场来源，已安装插件保持可用。
+
+    Args:
+        name: list_marketplaces 返回的来源标识名。
+        enabled: true 参与浏览、检索和新安装，false 暂停该来源。
+    """
+    try:
+        state = coerce_bool_arg(enabled, True)
+        record = await asyncio.to_thread(_manager().toggle_marketplace, name.strip(), state)
+        return _safe_json({"name": record.name, "enabled": record.enabled})
+    except Exception as exc:
+        return error_from_exception(exc, action="切换市场来源")
 
 
 @tool(name="remove_marketplace", group="plugins")
@@ -275,14 +305,15 @@ def remove_marketplace(name: str) -> str:
 
 @tool(name="refresh_marketplaces", group="plugins")
 async def refresh_marketplaces(name: str = "") -> str:
-    """刷新市场目录（git 市场执行 pull 拉取最新插件列表）。
+    """刷新订阅目录。results 是各市场条目数，-1 表示失败，errors 按市场提供原因。
 
     Args:
         name: 市场标识名；留空刷新全部
     """
     try:
-        results = await asyncio.to_thread(_manager().refresh_marketplaces, name.strip())
-        return _safe_json({"results": results})
+        errors: dict[str, str] = {}
+        results = await asyncio.to_thread(_manager().refresh_marketplaces, name.strip(), errors=errors)
+        return _safe_json({"results": results, "errors": errors})
     except Exception as e:
         return error_from_exception(e, action=f"刷新市场 {name or '(全部)'}")
 

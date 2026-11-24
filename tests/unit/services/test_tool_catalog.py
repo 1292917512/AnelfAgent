@@ -65,3 +65,11 @@ def test_grouped_and_flat_catalogs_preserve_mixed_members_and_registry_version()
     finally:
         for name in names:
             EntityRegistry.unregister(name)
+
+
+def test_plugin_management_keeps_its_ai_tools_on_an_independent_page():
+    from entities.plugins.tools import list_plugins
+
+    service = ToolService()
+    assert any(tool["name"] == list_plugins.__name__ for tool in service.list_tools())
+    assert all(group["group"] != "plugins" for group in service.list_grouped_tools())

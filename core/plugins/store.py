@@ -17,11 +17,14 @@ import threading
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TypeVar
 
 from core.file_utils import atomic_write_text
 from core.log import log
 from core.path import ConfigPaths
+from core.plugins.manifest import validate_plugin_name
+
+_Record = TypeVar("_Record")
 
 
 @dataclass
@@ -46,6 +49,9 @@ class InstalledPlugin:
     skills: List[str] = field(default_factory=list)
     tools: List[str] = field(default_factory=list)
     mcp_servers: List[str] = field(default_factory=list)
+    format: str = "plugin"
+    dsh_home: str = ""
+    marketplace_entry: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -53,7 +59,10 @@ class InstalledPlugin:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "InstalledPlugin":
         fields = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
-        return cls(**fields)
+        record = cls(**fields)
+        if record.format == "dsh-host" and record.dsh_home:
+            record.dsh_home = str(dsh_profile_home(record.name, record.dsh_home))
+        return record
 
 
 @dataclass
@@ -61,11 +70,12 @@ class MarketplaceSource:
     """已订阅的插件市场来源。"""
 
     name: str
-    source_type: str                # local | git
+    source_type: str                # local | git | github-topic
     url: str = ""                   # git：仓库地址
     path: str = ""                  # local：市场根目录（含 marketplace.json 或其父级）
     ref: str = ""
     added_at: float = 0.0
+    enabled: bool = True
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -79,11 +89,12 @@ class MarketplaceSource:
 class PluginRegistry:
     """plugins.json 注册表读写（线程安全，原子落盘）。"""
 
-    def __init__(self, path: Optional[Path] = None) -> None:
+    def __init__(self, path: Optional[Path] = None, *, defaults: tuple[MarketplaceSource, ...] = ()) -> None:
         self._path = Path(path) if path else Path(ConfigPaths.PLUGINS_REGISTRY)
         self._lock = threading.RLock()
         self._installed: Dict[str, InstalledPlugin] = {}
         self._marketplaces: Dict[str, MarketplaceSource] = {}
+        self._defaults = {source.name: source for source in defaults}
         self._version = 0
         self._load()
 
@@ -129,6 +140,19 @@ class PluginRegistry:
         """从磁盘重载注册表（外部途径改动后对齐内存视图）。"""
         self._load()
 
+    def _commit(self, records: dict[str, _Record], name: str, value: _Record | None) -> None:
+        """在调用方持锁时提交单条记录；磁盘写入失败即恢复内存视图。"""
+        previous = records.pop(name, None)
+        if value is not None:
+            records[name] = value
+        try:
+            self._save()
+        except Exception:
+            records.pop(name, None)
+            if previous is not None:
+                records[name] = previous
+            raise
+
     # ------------------------------------------------------------------
     # 已安装插件
     # ------------------------------------------------------------------
@@ -146,16 +170,15 @@ class PluginRegistry:
             if not record.installed_at:
                 record.installed_at = time.time()
             record.updated_at = time.time()
-            self._installed[record.name] = record
+            self._commit(self._installed, record.name, record)
             self._version += 1
-            self._save()
 
     def remove(self, name: str) -> Optional[InstalledPlugin]:
         with self._lock:
-            record = self._installed.pop(name, None)
+            record = self._installed.get(name)
             if record is not None:
+                self._commit(self._installed, name, None)
                 self._version += 1
-                self._save()
             return record
 
     # ------------------------------------------------------------------
@@ -164,24 +187,27 @@ class PluginRegistry:
 
     def get_marketplace(self, name: str) -> Optional[MarketplaceSource]:
         with self._lock:
-            return self._marketplaces.get(name)
+            return self._marketplaces.get(name) or self._defaults.get(name)
+
+    def is_builtin(self, source: MarketplaceSource) -> bool:
+        default = self._defaults.get(source.name)
+        return bool(default and (default.url, default.ref) == (source.url, source.ref))
 
     def list_marketplaces(self) -> List[MarketplaceSource]:
         with self._lock:
-            return sorted(self._marketplaces.values(), key=lambda m: m.name)
+            return list((self._defaults | self._marketplaces).values())
 
     def upsert_marketplace(self, source: MarketplaceSource) -> None:
         with self._lock:
             if not source.added_at:
                 source.added_at = time.time()
-            self._marketplaces[source.name] = source
-            self._save()
+            self._commit(self._marketplaces, source.name, source)
 
     def remove_marketplace(self, name: str) -> Optional[MarketplaceSource]:
         with self._lock:
-            source = self._marketplaces.pop(name, None)
+            source = self._marketplaces.get(name)
             if source is not None:
-                self._save()
+                self._commit(self._marketplaces, name, None)
             return source
 
 
@@ -191,16 +217,32 @@ class PluginRegistry:
 
 def plugins_dir() -> Path:
     """插件负载根目录（workspace/plugins/）。"""
-    root = Path(ConfigPaths.PLUGINS_DIR)
+    root = Path(ConfigPaths.PLUGINS_DIR).expanduser().resolve()
     root.mkdir(parents=True, exist_ok=True)
     return root
 
 
 def plugin_payload_dir(name: str) -> Path:
     """单个插件的负载目录。"""
-    return plugins_dir() / name
+    return plugins_dir() / validate_plugin_name(name)
 
 
 def marketplace_clone_dir(name: str) -> Path:
     """git 市场的本地克隆目录。"""
-    return plugins_dir() / "_marketplaces" / name
+    return plugins_dir() / "_marketplaces" / validate_plugin_name(name)
+
+
+def plugin_host_dir(name: str) -> Path:
+    """插件私有宿主根目录，卸载时统一回收。"""
+    return plugins_dir() / "_dsh" / validate_plugin_name(name)
+
+
+def dsh_profile_home(name: str, recorded: str = "") -> Path:
+    """为 CLI 与接口解析同一绝对路径，保留已有相对 DSH_HOME 创建的内层 profile。"""
+    root = plugin_host_dir(name)
+    if recorded:
+        # CLI 在 root 下执行，旧的相对 DSH_HOME 实际也由子进程相对 root 解析。
+        candidate = (root / recorded).resolve()
+        if candidate != root and candidate.is_relative_to(root) and (candidate / "profiles/web/package.json").is_file():
+            return candidate
+    return root

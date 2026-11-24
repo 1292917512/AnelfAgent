@@ -94,7 +94,8 @@ class ToolService:
             if e.enabled:
                 groups[g]["enabled_count"] += 1
 
-        result = list(groups.values())
+        result = [group for name, group in groups.items()
+                  if EntityRegistry.get_group_manifest(name).get("show_in_tool_catalog", True)]
         for group in result:
             group["all_enabled"] = group["enabled_count"] == group["total_count"] and group["total_count"] > 0
             group["any_enabled"] = group["enabled_count"] > 0

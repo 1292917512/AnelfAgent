@@ -231,6 +231,13 @@ class TestGitSource:
         assert record.marketplace == "gmart"
         # 刷新（pull 无变更也正常返回条目数）
         assert manager.refresh_marketplaces("gmart") == {"gmart": 1}
+        (mart_repo / "marketplace.json").write_text("{", encoding="utf-8")
+        _git(["add", "-A"], mart_repo)
+        _git(["-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "invalid catalog"], mart_repo)
+        errors = {}
+        assert manager.refresh_marketplaces("gmart", errors=errors) == {"gmart": -1}
+        assert "gmart" in errors
+        assert manager.search("", "gmart")[0]["name"] == "gitplug"
 
 
 class TestNameFallback:
@@ -243,20 +250,75 @@ class TestNameFallback:
 
 
 class TestMarketplaceFileDiscovery:
-    def test_dotdir_marketplace(self, manager, plugin_env):
-        """marketplace.json 位于 .claude-plugin/ 下时以仓库根为条目路径基准。"""
+    def test_lazy_defaults_keep_cached_results_and_persist_toggles(self, plugin_env, monkeypatch):
+        from core.plugins import PluginManager
+        from core.plugins.store import MarketplaceSource, PluginRegistry
+
+        defaults = tuple(MarketplaceSource(n, "github-topic", url=f"https://github.com/topics/{n}")
+                         for n in ("primary", "secondary"))
+        registry = PluginRegistry(defaults=defaults)
+        manager = PluginManager(registry)
+        calls = []
+
+        def refresh(name, url, directory):
+            calls.append(name)
+            if name == "secondary" or calls.count(name) > 1:
+                raise PluginError("offline")
+            directory.mkdir(parents=True, exist_ok=True)
+            (directory / "marketplace.json").write_text(json.dumps({
+                "name": name, "plugins": [{"name": "sample", "source": {"source": "github", "repo": "a/b"}}]
+            }), encoding="utf-8")
+
+        monkeypatch.setattr("core.plugins.catalog.refresh_topic", refresh)
+        assert [s["name"] for s in manager.list_marketplaces() if s["enabled"] and s["pending"]] == ["primary", "secondary"]
+        assert not calls
+        assert manager.search_page("", "primary", 0, 10)["count"] == 1
+        assert calls == ["primary"]
+        assert manager.search_page("", "", 0, 10)["errors"] == {"secondary": "offline"}
+        assert manager.refresh_marketplaces("primary") == {"primary": -1}
+        assert manager.search("", "primary")[0]["name"] == "sample"
+        manager.toggle_marketplace("primary", False)
+        fresh = PluginManager(PluginRegistry(defaults=defaults))
+        with pytest.raises(PluginError, match="停用"):
+            fresh.install("sample", "primary")
+        assert fresh.list_marketplaces()[0]["enabled"] is False
+        fresh.toggle_marketplace("primary", True)
+        assert fresh.search("", "primary")[0]["name"] == "sample"
+        assert calls.count("primary") == 2
+
+    def test_inline_skill_bundles_sharing_a_source(self, manager, plugin_env):
+        pkg = plugin_env.root / "bundles"
+        catalog = pkg / "marketplace.json"
+        entries = []
+        for name in ("alpha", "beta"):
+            skill = pkg / "skills" / name
+            skill.mkdir(parents=True)
+            (skill / "SKILL.md").write_text(f"---\nname: {name}\n---\n{name}", encoding="utf-8")
+            entries.append({"name": name, "strict": False, "source": "./", "skills": [f"./skills/{name}"]})
+        catalog.write_text(json.dumps({"name": "examples", "plugins": entries}), encoding="utf-8")
+        manager.add_marketplace("examples", str(catalog))
+        assert manager.install("alpha", "examples").skills == ["alpha"]
+        assert [entry["installed"] for entry in manager.search("", "examples")] == [True, False]
+        assert manager.upgrade("alpha")[1] is False
+        assert manager.install("beta", "examples").skills == ["beta"]
+
+    @pytest.mark.parametrize("layout", [".agents/plugins", ".claude-plugin", ".cursor-plugin", ".atomcode-plugin"])
+    @pytest.mark.parametrize("use_file", [False, True])
+    def test_dotdir_marketplace(self, manager, plugin_env, layout, use_file):
+        """订阅目录或直接订阅其中的市场清单，都从仓库根解析插件路径。"""
         root = plugin_env.root / "mart_dot"
-        (root / ".claude-plugin").mkdir(parents=True)
+        catalog = root / layout / "marketplace.json"
+        catalog.parent.mkdir(parents=True)
         pkg = plugin_env.make_plugin("dotplug")
         import shutil
         target = root / "plugins" / "dotplug"
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(pkg, target)
-        (root / ".claude-plugin" / "marketplace.json").write_text(json.dumps({
+        catalog.write_text(json.dumps({
             "name": "dot-mart",
             "plugins": [{"name": "dotplug", "source": "./plugins/dotplug"}],
         }), encoding="utf-8")
-        manager.add_marketplace("dotmart", str(root))
+        manager.add_marketplace("dotmart", str(catalog if use_file else root))
         assert manager.list_marketplaces()[0]["plugin_count"] == 1
         record = manager.install("dotplug")
         assert record.name == "dotplug"
