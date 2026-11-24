@@ -43,6 +43,8 @@
     "saving": "Saving…"
   },
   "schedule": {
+    "reloadConflicts": "Reload schedules",
+    "conflictHint": "Reloading replaces your schedule edits with the latest definitions. Other settings stay in your draft.",
     "triggerMode": "Trigger mode",
     "effort": "Reasoning effort",
     "removeTask": "Unbind {{name}}",

@@ -1,5 +1,5 @@
 import { PopoverContent } from "@/components/ui/PopoverContent";
-import { useRef, useState } from "react";
+import { useRef, useState, type AriaAttributes } from "react";
 import * as Popover from "@radix-ui/react-popover";
 import { Command } from "cmdk";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -38,7 +38,7 @@ function CapabilityIcons({ item }: { item: ModelPriorityItem }) {
   </span>;
 }
 
-export interface ModelSelectProps {
+export interface ModelSelectProps extends Pick<AriaAttributes, "aria-invalid" | "aria-describedby"> {
   modelType?: string;
   value?: string;
   onChange?: (modelId: string) => void;
@@ -59,7 +59,7 @@ const DEFAULT_OPTION = JSON.stringify(["default"]);
 /** Searchable model picker with explicit unavailable values and a separate default-model action. */
 export function ModelSelect({
   modelType = "chat", value, onChange, allowEmpty = false, allowPin = true, compact = false,
-  placeholder, showDefaultWhenEmpty = true, className, disabled = false, id, label,
+  placeholder, showDefaultWhenEmpty = true, className, disabled = false, id, label, ...fieldAria
 }: ModelSelectProps) {
   const { t } = useTranslation("models");
   const { t: tc } = useTranslation("common");
@@ -85,7 +85,7 @@ export function ModelSelect({
     if (next) setHighlighted(value ? optionValue(value) : allowEmpty ? DEFAULT_OPTION : selected ? optionValue(selected.id) : "");
   }}>
     <Popover.Trigger asChild>
-      <button ref={triggerRef} type="button" id={id} disabled={disabled || pin.isPending} aria-label={label ?? t("selectModel")}
+      <button {...fieldAria} ref={triggerRef} type="button" id={id} disabled={disabled || pin.isPending} aria-label={label ?? t("selectModel")}
         className={cn("form-control flex items-center gap-2 bg-elevated hover:bg-hover",
           unavailable ? "border-warn/60" : "border-border hover:border-border-strong",
           compact ? "h-8 max-w-52 px-2.5 text-xs" : "h-9 w-full px-3", className)}>

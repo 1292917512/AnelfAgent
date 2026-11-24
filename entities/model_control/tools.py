@@ -856,9 +856,9 @@ def update_sub_agent(
             blocked = [] if blocked_tools == "clear" else blocked_tools
         schema: Any = None
         if output_schema:
-            schema = None if output_schema == "clear" else output_schema
+            schema = output_schema
         ok, message = get_llm_manager().update_sub_agent(
-            name, model_id=model_id, models=pool, description=description,
+            name, model_id=model_id, models=pool, description=description or None,
             instructions=instructions or None,
             tool_tags=tags,
             blocked_tools=blocked,

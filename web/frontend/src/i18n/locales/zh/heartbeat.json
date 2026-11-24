@@ -43,6 +43,8 @@
     "saving": "保存中…"
   },
   "schedule": {
+    "reloadConflicts": "重新载入调度",
+    "conflictHint": "重新载入会用最新调度替换本页调度草稿，其他设置的修改会保留。",
     "triggerMode": "触发模式",
     "effort": "推理强度",
     "removeTask": "解除 {{name}} 的调度绑定",

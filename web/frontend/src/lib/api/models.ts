@@ -95,14 +95,14 @@ export interface ReloadSummary {
 export const subAgentsApi = {
   list: () => api.get<{ sub_agents: SubAgentProfile[] }>("/models/sub-agents"),
   create: (data: { name: string; model_id: string; description?: string } & SubAgentFacets) =>
-    api.post<{ status: string; message: string }>("/models/sub-agents", data),
+    api.post<{ status: string; message: string }>("/models/sub-agents", data, { errorFeedback: "local" }),
   update: (
     name: string,
     data: { model_id?: string; models?: string[]; description?: string } & SubAgentFacets,
   ) =>
-    api.put(`/models/sub-agents/${encodeURIComponent(name)}`, data),
+    api.put(`/models/sub-agents/${encodeURIComponent(name)}`, data, { errorFeedback: "local" }),
   remove: (name: string) =>
-    api.delete(`/models/sub-agents/${encodeURIComponent(name)}`),
+    api.delete(`/models/sub-agents/${encodeURIComponent(name)}`, { errorFeedback: "local" }),
 };
 
 // Tools

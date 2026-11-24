@@ -6,6 +6,9 @@ import { Select } from "@/components/ui/Select";
  * 前面的模型不可用时依次回退，本档全不可用降挡到低档。与自定义档案共用
  * 统一注册表与同一套 CRUD（update_sub_agent 的 models 整体替换）。
  */
+import { apiErrorMessage, subAgentsApi } from "@/lib/api";
+import { Button } from "@/components/ui/Button";
+import { useProfileWrite } from "./useProfileWrite";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { ChevronDown, ChevronUp, Plus, X } from "lucide-react";
@@ -81,11 +84,11 @@ function PoolRow({
 export function BuiltinTierSection({
   profile,
   chatItems,
-  onUpdate,
+  onChanged,
 }: {
   profile: SubAgentProfile;
   chatItems: ModelPriorityItem[];
-  onUpdate: (name: string, data: { models: string[]; description?: string }) => void;
+  onChanged: () => Promise<void>;
 }) {
   const { t } = useTranslation("models");
   const [pick, setPick] = useState("");
@@ -94,7 +97,11 @@ export function BuiltinTierSection({
   const candidates = chatItems.filter((i) => i.enabled !== false && !inPool.has(i.id));
   const detailOf = (id: string) => chatItems.find((i) => i.id === id);
 
-  const updatePool = (next: string[]) => onUpdate(profile.name, { models: next });
+  const save = useProfileWrite((models: string[]) => subAgentsApi.update(profile.name, { models }), async () => {
+    setPick("");
+    await onChanged();
+  });
+  const updatePool = save.submit;
   const move = (modelId: string, direction: -1 | 1) => {
     const cur = [...profile.models];
     const idx = cur.indexOf(modelId);
@@ -110,7 +117,7 @@ export function BuiltinTierSection({
   const labelKey = TIER_LABEL_KEY[profile.tier] ?? "tierCustom";
 
   return (
-    <div className="rounded-md border border-border bg-card p-3 md:p-4 space-y-2">
+    <fieldset disabled={save.pending} className="min-w-0 rounded-md border border-border bg-card p-3 md:p-4 space-y-2">
       <div className="flex items-center justify-between gap-2">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
@@ -126,6 +133,7 @@ export function BuiltinTierSection({
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
           <Select
+            aria-label={t("subagents.selectModel")}
             value={pick}
             onChange={(e) => setPick(e.target.value)}
             className="max-w-40"
@@ -139,7 +147,6 @@ export function BuiltinTierSection({
             disabled={!pick}
             onClick={() => {
               updatePool([...profile.models, pick]);
-              setPick("");
             }}
             className="p-1.5 rounded-md border border-border text-muted hover:text-accent hover:border-accent transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
             title={t("subagents.addToPool")}
@@ -166,6 +173,10 @@ export function BuiltinTierSection({
           ))}
         </div>
       )}
-    </div>
+      {save.error && <div className="flex flex-wrap items-center gap-2">
+        <p role="alert" className="text-sm text-danger">{apiErrorMessage(save.error, t("common:requestFailed"))}</p>
+        <Button size="sm" disabled={!save.submitted} onClick={() => { if (save.submitted) updatePool(save.submitted); }}>{t("common:retry")}</Button>
+      </div>}
+    </fieldset>
   );
 }

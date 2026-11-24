@@ -1,22 +1,29 @@
+import { isAxiosError } from "axios";
 import { useId, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
 import { apiErrorMessage, heartbeatApi, tasksApi } from "@/lib/api";
 import type { HeartbeatConfig, TaskSchedule } from "@/lib/types";
 import { useUnsavedChanges } from "@/components/common/UnsavedChanges";
-import { PageSkeleton } from "@/components/common/AsyncState";
+import { PageSkeleton, QueryError } from "@/components/common/AsyncState";
 import { Card } from "@/components/common/Card";
 import { Save, Plus } from "lucide-react";
 import { Button, Input, Switch } from "@/components/ui";
 import { ScheduleRow } from "./ScheduleRow";
+
+function definitionOf(schedule: TaskSchedule): TaskSchedule {
+  const definition = { ...schedule };
+  delete definition.beat_count;
+  return definition;
+}
 
 export function ConfigPanel() {
   const { t } = useTranslation("heartbeat");
   const queryClient = useQueryClient();
   const formId = useId();
 
-  const { data: config } = useQuery({
-    queryKey: ["heartbeat-config"],
+  const { data: config, refetch, isFetching, error: readError } = useQuery({
+    queryKey: ["heartbeat-config"], throwOnError: false,
     queryFn: () => heartbeatApi.getConfig().then((r) => r.data),
   });
 
@@ -26,6 +33,8 @@ export function ConfigPanel() {
   });
 
   const [draft, setDraft] = useState<Partial<HeartbeatConfig>>({});
+  const [scheduleBase, setScheduleBase] = useState<TaskSchedule[] | null>(null);
+  const [resets, setResets] = useState<string[]>([]);
   const form = { ...config, ...draft };
   const dirty = Object.keys(draft).length > 0;
   useUnsavedChanges(dirty);
@@ -35,19 +44,32 @@ export function ConfigPanel() {
 
   const saveMut = useMutation({
     mutationFn: heartbeatApi.saveConfig,
-    onSuccess: async (_response, changes) => {
-      queryClient.setQueryData<HeartbeatConfig>(["heartbeat-config"], (previous) => previous && { ...previous, ...changes });
-      setDraft({});
+    onSuccess: async (response, changes) => {
+      if (response.data.config) queryClient.setQueryData(["heartbeat-config"], response.data.config);
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["heartbeat-config"] }),
         queryClient.invalidateQueries({ queryKey: ["heartbeat-status"] }),
         ...(changes.interval_seconds !== undefined ? [queryClient.invalidateQueries({ queryKey: ["configMeta"] })] : []),
       ]);
+      setScheduleBase(null);
+      setResets([]);
+      setDraft({});
     },
   });
 
-  const setField = <K extends keyof HeartbeatConfig>(key: K, value: HeartbeatConfig[K]) => {
+  const conflict = isAxiosError(saveMut.error) && saveMut.error.response?.status === 409;
+  const reloadSchedules = async () => {
+    const latest = await refetch();
+    if (!latest.isSuccess) return;
+    setDraft((previous) => { const next = { ...previous }; delete next.task_schedules; return next; });
+    setScheduleBase(null);
+    setResets([]);
     saveMut.reset();
+  };
+
+  const setField = <K extends keyof HeartbeatConfig>(key: K, value: HeartbeatConfig[K]) => {
+    if (!conflict) saveMut.reset();
+    if (key === "task_schedules") setScheduleBase((base) => base ?? config?.task_schedules ?? []);
     setDraft((previous) => {
       const next = { ...previous, [key]: value };
       if (value === config?.[key]) delete next[key];
@@ -74,15 +96,24 @@ export function ConfigPanel() {
     (t) => !activeSchedules.some((s) => s.task_name === t.name),
   );
 
-  if (!config) return <PageSkeleton />;
+  if (!config) return readError ? <QueryError error={readError} retry={() => void refetch()} /> : <PageSkeleton />;
 
   return (
     <fieldset disabled={saveMut.isPending} className="min-w-0 space-y-4">
+      {readError && <QueryError compact error={readError} retry={() => void refetch()} />}
       {/* 基础配置 */}
       <Card title={t("config.title")} subtitle={t("config.subtitle")}>
         <form id={formId} className="space-y-4" onSubmit={(event) => {
           event.preventDefault();
-          if (dirty && !invalidIdle && !saveMut.isPending) saveMut.mutate(draft);
+          if (dirty && !invalidIdle && !conflict && !saveMut.isPending) saveMut.mutate({
+            ...draft,
+            ...(scheduleBase && {
+              base_task_schedules: scheduleBase.map(definitionOf),
+              task_schedules: activeSchedules.map(definitionOf),
+              reset_schedule_counters: resets.filter((name) => activeSchedules.some((s) =>
+                s.task_name === name && (s.mode === "heartbeat" || s.mode === "idle"))),
+            }),
+          });
         }}>
           <div className="flex items-center justify-between">
             <div>
@@ -137,6 +168,10 @@ export function ConfigPanel() {
               schedule={s}
               task={tasks.find((t) => t.name === s.task_name)}
               interval={Number.isFinite(interval) ? interval : config.interval_seconds}
+              onReset={() => {
+                setResets((previous) => [...new Set([...previous, s.task_name])]);
+                updateSchedule(idx, { beat_count: 0 });
+              }}
               onUpdate={(patch) => updateSchedule(idx, patch)}
               onRemove={() => removeSchedule(idx)}
             />
@@ -163,8 +198,10 @@ export function ConfigPanel() {
       <div className="flex flex-wrap items-center justify-end gap-3">
         {invalidIdle && <p role="alert" className="text-sm text-danger">{t("schedule.idleSingleError")}</p>}
         {saveMut.error && <p role="alert" className="text-sm text-danger">{apiErrorMessage(saveMut.error, t("common:requestFailed"))}</p>}
+        {conflict && <Button onClick={() => void reloadSchedules()} loading={isFetching}>{t("schedule.reloadConflicts")}</Button>}
+        {conflict && <span className="text-xs text-muted">{t("schedule.conflictHint")}</span>}
         {saveMut.isSuccess && <p role="status" className="text-sm text-ok">{t("common:saved")}</p>}
-        <Button variant="primary" type="submit" form={formId} disabled={!dirty || invalidIdle} loading={saveMut.isPending}>
+        <Button variant="primary" type="submit" form={formId} disabled={!dirty || invalidIdle || conflict} loading={saveMut.isPending}>
           <Save size={14} /> {saveMut.isPending ? t("config.saving") : t("config.save")}
         </Button>
       </div>

@@ -388,7 +388,7 @@ class LLMManager(BaseEntity):
         litellm.register_model(custom_models)
         info(f"已注册 {len(custom_models)} 个自定义模型到 litellm 模型信息表", tag="模型")
 
-    def save_config(self) -> bool:
+    def save_config(self, *, sub_agents: Optional[Dict[str, SubAgentProfile]] = None) -> bool:
         try:
             self._config_path.parent.mkdir(parents=True, exist_ok=True)
             providers_out: List[Dict[str, Any]] = []
@@ -414,7 +414,7 @@ class LLMManager(BaseEntity):
             # 自定义档案按需；legacy 键不再写出（迁移见 _load_config）
             out["sub_agents"] = {
                 profile.name: profile.to_dict()
-                for profile in self._sub_agents.values()
+                for profile in (self._sub_agents if sub_agents is None else sub_agents).values()
             }
             out = self._restore_env_refs(out)
             # 原子写盘：临时文件 + os.replace，进程中断不会留下半截 JSON
@@ -1652,6 +1652,18 @@ class LLMManager(BaseEntity):
             })
         return result
 
+    def _persist_sub_agent(self, name: str, profile: Optional[SubAgentProfile]) -> None:
+        """档案写盘成功后发布新注册表，写入失败保留可重试的原状态。"""
+        with self._reload_lock:
+            updated = self._sub_agents.copy()
+            if profile is None:
+                updated.pop(name, None)
+            else:
+                updated[name] = profile
+            if not self.save_config(sub_agents=updated):
+                raise OSError("子代理档案保存失败，请重试")
+            self._sub_agents = updated
+
     def create_sub_agent(
         self,
         name: str,
@@ -1685,7 +1697,7 @@ class LLMManager(BaseEntity):
         schema, schema_err = parse_output_schema(output_schema)
         if schema_err:
             return False, schema_err
-        self._sub_agents[name] = SubAgentProfile(
+        profile = SubAgentProfile(
             name=name, models=[model_id], description=description or "",
             facets=AgentFacets(
                 instructions=normalize_instructions(instructions),
@@ -1698,7 +1710,7 @@ class LLMManager(BaseEntity):
                 output_schema=schema,
             ),
         )
-        self.save_config()
+        self._persist_sub_agent(name, profile)
         info(f"子代理档案 '{name}' 已创建 (model={model_id})", tag="模型")
         return True, f"子代理档案 '{name}' 已创建，绑定模型 {model_id}"
 
@@ -1707,7 +1719,7 @@ class LLMManager(BaseEntity):
         name: str,
         model_id: str = "",
         models: Optional[List[str]] = None,
-        description: str = "",
+        description: Optional[str] = None,
         *,
         instructions: Optional[str] = None,
         tool_tags: Any = None,
@@ -1733,6 +1745,7 @@ class LLMManager(BaseEntity):
                 f"'{name}' 是内置难度档（纯模型池），不支持执行面配置；"
                 "专职守则/工具面/输出契约请建自定义档案"
             )
+        profile = replace(profile, facets=replace(profile.facets))
         next_pool: Optional[List[str]] = None
         if models is not None:
             next_pool = self._clean_pool(models)
@@ -1742,7 +1755,7 @@ class LLMManager(BaseEntity):
             if err := self._validate_pool(next_pool):
                 return False, err
             profile.models = next_pool
-        if description:
+        if description is not None:
             profile.description = description
         if facet_update:
             schema, schema_err = (
@@ -1768,7 +1781,7 @@ class LLMManager(BaseEntity):
                 profile.facets.output_schema = (
                     None if output_schema == "clear" else schema
                 )
-        self.save_config()
+        self._persist_sub_agent(profile.name, profile)
         return True, f"子代理档案 '{name}' 已更新"
 
     def remove_sub_agent(self, name: str) -> tuple[bool, str]:
@@ -1779,10 +1792,9 @@ class LLMManager(BaseEntity):
                 f"'{name}' 是内置难度档，不可删除；"
                 "如需停用可清空其模型池（update_sub_agent(models=[])）"
             )
-        removed = self._sub_agents.pop(name, None)
-        if removed is None:
+        if name not in self._sub_agents:
             return False, f"子代理档案 '{name}' 不存在"
-        self.save_config()
+        self._persist_sub_agent(name, None)
         info(f"子代理档案 '{name}' 已删除", tag="模型")
         return True, f"子代理档案 '{name}' 已删除"
 

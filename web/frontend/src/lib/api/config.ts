@@ -6,6 +6,7 @@ import type {
   ConfigValues,
   HeartbeatConfig,
   HeartbeatStatus,
+  HeartbeatUpdate,
   PersonaItem,
   PersonaData,
   TaskConfig,
@@ -38,7 +39,7 @@ export const configApi = {
 
 export const heartbeatApi = {
   getConfig: () => api.get<HeartbeatConfig>("/config/heartbeat"),
-  saveConfig: (data: Partial<HeartbeatConfig>) => api.put("/config/heartbeat", data, { errorFeedback: "local" }),
+  saveConfig: (data: HeartbeatUpdate) => api.put<{ status: string; config: HeartbeatConfig }>("/config/heartbeat", data, { errorFeedback: "local" }),
   getStatus: () => api.get<HeartbeatStatus>("/config/heartbeat/status"),
   trigger: () => api.post<{ status: string }>("/config/heartbeat/trigger"),
 };

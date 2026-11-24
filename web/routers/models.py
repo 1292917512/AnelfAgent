@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Annotated, Any, Dict, List, Literal, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -313,6 +315,15 @@ async def list_sub_agents() -> Dict[str, Any]:
     return {"sub_agents": _svc.list_sub_agents()}
 
 
+@contextmanager
+def _sub_agent_write() -> Iterator[None]:
+    """持久化失败可重试，字段校验仍由调用处映射为客户端错误。"""
+    try:
+        yield
+    except OSError as exc:
+        raise HTTPException(503, "子代理档案保存失败，请重试") from exc
+
+
 class SubAgentCreateReq(BaseModel):
     name: str
     model_id: str
@@ -325,13 +336,14 @@ class SubAgentCreateReq(BaseModel):
 
 @router.post("/sub-agents")
 async def create_sub_agent(req: SubAgentCreateReq) -> Dict[str, Any]:
-    ok, message = _svc.create_sub_agent(
-        req.name, req.model_id, req.description,
-        instructions=req.instructions,
-        tool_tags=req.tool_tags,
-        blocked_tools=req.blocked_tools,
-        output_schema=req.output_schema,
-    )
+    with _sub_agent_write():
+        ok, message = _svc.create_sub_agent(
+            req.name, req.model_id, req.description,
+            instructions=req.instructions,
+            tool_tags=req.tool_tags,
+            blocked_tools=req.blocked_tools,
+            output_schema=req.output_schema,
+        )
     if not ok:
         raise HTTPException(400, message)
     return {"status": "ok", "message": message}
@@ -349,16 +361,17 @@ class SubAgentUpdateReq(BaseModel):
 
 @router.put("/sub-agents/{name}")
 async def update_sub_agent(name: str, req: SubAgentUpdateReq) -> Dict[str, Any]:
-    ok, message = _svc.update_sub_agent(
-        name,
-        model_id=req.model_id or "",
-        models=req.models,
-        description=req.description or "",
-        instructions=req.instructions,
-        tool_tags=req.tool_tags,
-        blocked_tools=req.blocked_tools,
-        output_schema=req.output_schema,
-    )
+    with _sub_agent_write():
+        ok, message = _svc.update_sub_agent(
+            name,
+            model_id=req.model_id or "",
+            models=req.models,
+            description=req.description,
+            instructions=req.instructions,
+            tool_tags=req.tool_tags,
+            blocked_tools=req.blocked_tools,
+            output_schema="clear" if "output_schema" in req.model_fields_set and req.output_schema is None else req.output_schema,
+        )
     if not ok:
         raise HTTPException(404 if "不存在" in message else 400, message)
     return {"status": "ok", "message": message}
@@ -366,7 +379,8 @@ async def update_sub_agent(name: str, req: SubAgentUpdateReq) -> Dict[str, Any]:
 
 @router.delete("/sub-agents/{name}")
 async def delete_sub_agent(name: str) -> Dict[str, str]:
-    ok, message = _svc.remove_sub_agent(name)
+    with _sub_agent_write():
+        ok, message = _svc.remove_sub_agent(name)
     if not ok:
         raise HTTPException(404 if "不存在" in message else 400, message)
     return {"status": "ok", "message": message}

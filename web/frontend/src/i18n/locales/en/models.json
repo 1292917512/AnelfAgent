@@ -230,6 +230,10 @@
     "proxy_mode": "Network policy"
   },
   "subagents": {
+    "nameTaken": "This profile name is reserved or already in use.",
+    "modelRequired": "Choose a chat model.",
+    "fieldLimit": "Use at most {{count}} characters.",
+    "tagLimit": "Use at most {{count}} unique entries.",
     "desc": "Unified sub-agent profiles: model pool + execution facets (instructions / tool tags / blocked tools / output schema). delegate_task with agent_name uses the profile (pool order = priority, fallback on failure).",
     "usageHint": "Built-in tiers easy/medium/hard share the same registry (difficulty 1/2/3 is sugar). Custom profiles may carry execution facets. Changes apply immediately.",
     "builtinTitle": "Built-in Difficulty Tiers",

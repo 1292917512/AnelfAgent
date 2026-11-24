@@ -188,17 +188,19 @@ class HeartbeatConfigUpdate(BaseModel):
     analysis_temperature: Optional[float] = None
     min_conversations_for_analysis: Optional[int] = None
     task_schedules: Optional[List[Dict[str, Any]]] = None
+    base_task_schedules: Optional[List[Dict[str, Any]]] = None
+    reset_schedule_counters: Optional[List[str]] = None
 
 
 @router.put("/heartbeat")
-async def save_heartbeat_config(data: HeartbeatConfigUpdate) -> Dict[str, str]:
+async def save_heartbeat_config(data: HeartbeatConfigUpdate) -> Dict[str, Any]:
     """保存心跳配置并热重载。"""
     params = {k: v for k, v in data.model_dump().items() if v is not None}
     try:
         _heartbeat_svc.save_config(params)
     except HeartbeatServiceError as e:
         raise HTTPException(e.status_code, str(e)) from e
-    return {"status": "ok"}
+    return {"status": "ok", "config": _heartbeat_svc.get_config()}
 
 
 @router.get("/heartbeat/status")

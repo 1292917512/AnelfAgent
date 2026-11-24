@@ -13,6 +13,11 @@ export interface HeartbeatConfig {
   task_schedules: TaskSchedule[];
 }
 
+export type HeartbeatUpdate = Partial<HeartbeatConfig> & {
+  base_task_schedules?: TaskSchedule[];
+  reset_schedule_counters?: string[];
+};
+
 export interface TaskSchedule {
   task_name: string;
   mode: "heartbeat" | "scheduled" | "idle" | "manual";

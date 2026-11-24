@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from agent.llm.llm_manager import LLMManager
 
 
@@ -283,3 +285,28 @@ class TestFacets:
         # 模型池更新不受影响
         ok, _ = mgr.update_sub_agent("easy", models=["chat-a"])
         assert ok
+
+
+def test_profile_writes_can_be_retried_after_disk_failure(tmp_path, monkeypatch) -> None:
+    mgr = _make_manager(tmp_path)
+    with monkeypatch.context() as patch:
+        patch.setattr(mgr, "save_config", lambda **kwargs: False)
+        with pytest.raises(OSError):
+            mgr.create_sub_agent("retry", "chat-a")
+        assert mgr.get_sub_agent_profile("retry") is None
+    assert mgr.create_sub_agent("retry", "chat-a", description="old")[0]
+    path = tmp_path / "llm.json"
+    before = path.read_bytes()
+    assert not mgr.update_sub_agent("retry", model_id="chat-b", description="bad", output_schema=[])[0]
+    with monkeypatch.context() as patch:
+        patch.setattr(mgr, "save_config", lambda **kwargs: False)
+        with pytest.raises(OSError):
+            mgr.update_sub_agent("retry", model_id="chat-b", description="new")
+        with pytest.raises(OSError):
+            mgr.remove_sub_agent("retry")
+    profile = _profile(mgr, "retry")
+    assert profile["models"] == ["chat-a"] and profile["description"] == "old"
+    assert path.read_bytes() == before
+    assert mgr.update_sub_agent("retry", model_id="chat-b", description="")[0]
+    assert _profile(mgr, "retry")["description"] == ""
+    assert mgr.remove_sub_agent("retry")[0]

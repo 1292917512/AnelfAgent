@@ -8,6 +8,7 @@
 import { useCallback } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "react-i18next";
+import { PageSkeleton, QueryError } from "@/components/common/AsyncState";
 import { subAgentsApi } from "@/lib/api";
 import type { SubAgentProfile } from "@/lib/types";
 import { usePriorities } from "@/components/models/ModelSelect";
@@ -18,30 +19,26 @@ export function SubAgentsPanel() {
   const { t } = useTranslation("models");
   const qc = useQueryClient();
 
-  const { data: profiles = [] } = useQuery<SubAgentProfile[]>({
-    queryKey: ["subAgents"],
+  const { data: profiles = [], isPending, error, refetch } = useQuery<SubAgentProfile[]>({
+    queryKey: ["subAgents"], throwOnError: false,
     queryFn: () => subAgentsApi.list().then((r) => r.data.sub_agents),
   });
   const { data: priorities = {} } = usePriorities();
   const chatItems = priorities.chat ?? [];
 
   const invalidate = useCallback(() => {
-    qc.invalidateQueries({ queryKey: ["subAgents"] });
+    return qc.invalidateQueries({ queryKey: ["subAgents"] });
   }, [qc]);
-
-  const updateAgent = useCallback(
-    async (name: string, data: { models?: string[]; description?: string }) => {
-      await subAgentsApi.update(name, data);
-      invalidate();
-    },
-    [invalidate],
-  );
 
   const builtins = profiles.filter((p) => p.builtin);
   const customs = profiles.filter((p) => !p.builtin);
 
+  if (isPending) return <PageSkeleton />;
+  if (error && !profiles.length) return <QueryError error={error} retry={() => void refetch()} />;
+
   return (
     <div className="space-y-5">
+      {error && <QueryError compact error={error} retry={() => void refetch()} />}
       <div className="space-y-1">
         <p className="text-sm text-muted">{t("subagents.desc")}</p>
         <p className="text-xs text-muted">{t("subagents.usageHint")}</p>
@@ -57,7 +54,7 @@ export function SubAgentsPanel() {
             key={profile.name}
             profile={profile}
             chatItems={chatItems}
-            onUpdate={updateAgent}
+            onChanged={invalidate}
           />
         ))}
       </div>

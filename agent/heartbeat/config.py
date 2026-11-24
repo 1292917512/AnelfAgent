@@ -157,7 +157,7 @@ class HeartbeatConfig:
         重绑（同名替换）时继承既有条目的节拍计数：调度定义的调整（改时间/
         改间隔）不应抹掉运行态进度——计数被清零会让任务提前或延后触发。
         仅在新旧双方都是计数类模式（heartbeat/idle）时继承，其余归零。
-        Web 整表保存不走此路径（前端全量回传自带计数值，含显式清零）。
+        Web 批量编辑按任务核对基线，只有显式重置才清零仍在使用的计数。
         """
         schedules = [s for s in self.task_schedules if s.task_name != schedule.task_name]
         schedules.append(schedule)

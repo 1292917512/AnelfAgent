@@ -230,6 +230,10 @@
     "proxy_mode": "网络策略"
   },
   "subagents": {
+    "nameTaken": "该名称已被使用或属于内置档案。",
+    "modelRequired": "请选择对话模型。",
+    "fieldLimit": "最多支持 {{count}} 个字符。",
+    "tagLimit": "最多支持 {{count}} 个不同条目。",
     "desc": "子代理统一档案：模型面（有序候选池）+ 执行面（专职守则/工具面/输出契约），delegate_task 指定 agent_name 即使用对应档案（池内顺序即优先级，前者不可用依次回退）。",
     "usageHint": "内置难度档 easy/medium/hard 与自定义档案同套管理：difficulty 1/2/3 是内置档的语法糖，也可直接 agent_name=easy 等指定。自定义档案可携带执行面。增删改即时生效。",
     "builtinTitle": "内置难度档",

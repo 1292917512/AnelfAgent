@@ -1,4 +1,23 @@
 {
+  "connection": {
+    "title": "连接状态",
+    "offline": "已断网",
+    "unavailable": "服务不可用",
+    "reachable": "可访问",
+    "connecting": "连接中",
+    "ready": "已就绪",
+    "starting": "未就绪",
+    "unknown": "未知",
+    "connected": "已连接",
+    "reconnecting": "重连中",
+    "stalled": "长时间未收到事件",
+    "stopped": "已停止",
+    "http": "HTTP 服务",
+    "runtime": "智能体运行状态",
+    "live": "实时事件",
+    "lastSample": "最近服务响应",
+    "check": "检查连接"
+  },
   "save": "保存",
   "cancel": "取消",
   "delete": "删除",

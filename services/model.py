@@ -246,7 +246,7 @@ class ModelService:
         name: str,
         model_id: str = "",
         models: Optional[List[str]] = None,
-        description: str = "",
+        description: Optional[str] = None,
         *,
         instructions: Optional[str] = None,
         tool_tags: Any = None,

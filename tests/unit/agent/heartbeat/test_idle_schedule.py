@@ -104,6 +104,46 @@ def _make_engine(
     return engine, mind
 
 
+async def test_two_editors_merge_across_a_tick_and_reject_conflicts(monkeypatch) -> None:
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+
+    from web.routers.config import router
+
+    rows = [TaskSchedule(name, ScheduleMode.HEARTBEAT, every_n_beats=10) for name in ("a", "b")]
+    save = HeartbeatConfig.save
+    engine, mind = _make_engine(rows, {name: _task(name) for name in ("a", "b")}, monkeypatch)
+    monkeypatch.setattr(HeartbeatConfig, "save", save)
+    monkeypatch.setattr("agent.heartbeat.config._instance", engine.config)
+    monkeypatch.setattr("services.heartbeat.get_runtime", lambda: SimpleNamespace(mind=mind))
+    monkeypatch.setattr(engine, "_write_heartbeat_status", AsyncMock())
+    app = FastAPI()
+    app.include_router(router)
+    url = "/config/heartbeat"
+    transport = ASGITransport(app=app)
+    async with (AsyncClient(transport=transport, base_url="http://test") as alice,
+                AsyncClient(transport=transport, base_url="http://test") as bob):
+        first = (await alice.get(url)).json()["task_schedules"]
+        second = (await bob.get(url)).json()["task_schedules"]
+        await engine.tick()
+        assert engine.config.task_schedules[0].beat_count == 1
+        a_changes = [{**first[0], "every_n_beats": 11}, first[1]]
+        b_changes = [second[0], {**second[1], "every_n_beats": 12}]
+        for client, base, changed in ((alice, first, a_changes), (bob, second, b_changes)):
+            response = await client.put(url, json={"base_task_schedules": base, "task_schedules": changed})
+            assert response.status_code == 200, response.text
+        live = (await bob.get(url)).json()["task_schedules"]
+        assert [(s["every_n_beats"], s["beat_count"]) for s in live] == [(11, 1), (12, 1)]
+        rejected = await alice.put(url, json={"enabled": False, "base_task_schedules": first,
+                                             "task_schedules": [first[1]]})
+        assert rejected.status_code == 409 and engine.config.enabled
+        assert (await alice.put(url, json={"task_schedules": []})).status_code == 428
+        reset = await alice.put(url, json={"base_task_schedules": live, "task_schedules": live,
+                                          "reset_schedule_counters": ["b"]})
+        assert reset.status_code == 200
+        assert [(s.every_n_beats, s.beat_count) for s in HeartbeatConfig.load().task_schedules] == [(11, 1), (12, 0)]
+
+
 class TestIdleConfig:
     def test_validate_allows_single_idle(self) -> None:
         schedules = [

@@ -21,12 +21,14 @@ export function ScheduleRow({
   interval,
   onUpdate,
   onRemove,
+  onReset,
 }: {
   schedule: TaskSchedule;
   task: TaskConfig | undefined;
   interval: number;
   onUpdate: (patch: Partial<TaskSchedule>) => void;
   onRemove: () => void;
+  onReset: () => void;
 }) {
   const { t } = useTranslation("heartbeat");
   return (
@@ -72,7 +74,7 @@ export function ScheduleRow({
               <div className="flex items-center gap-1">
                 <span className="text-[11px] text-muted">{t("schedule.progress")}: {s.beat_count}/{s.every_n_beats ?? 10}</span>
                 <button
-                  onClick={() => onUpdate({ beat_count: 0 })}
+                  onClick={onReset}
                   className="p-0.5 text-muted hover:text-accent"
                   title={t("schedule.resetCounter")}
                 >

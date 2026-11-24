@@ -125,3 +125,29 @@ def test_api_schemas_reject_invalid_protocol_and_ranges() -> None:
         UpdateModelReq(timeout=0)
     with pytest.raises(ValidationError):
         UpdateModelReq(request_params={"model": "other"})
+
+
+async def test_sub_agent_partial_update_and_retryable_persistence_error(monkeypatch) -> None:
+    from fastapi import HTTPException
+
+    from web.routers import models
+
+    writes: list[dict[str, object]] = []
+
+    def update(_name: str, **fields: object) -> tuple[bool, str]:
+        writes.append(fields)
+        return True, "ok"
+
+    monkeypatch.setattr(models._svc, "update_sub_agent", update)
+    await models.update_sub_agent("helper", models.SubAgentUpdateReq(description=""))
+    await models.update_sub_agent("helper", models.SubAgentUpdateReq(output_schema=None))
+    assert writes[0]["description"] == "" and writes[0]["output_schema"] is None
+    assert writes[1]["description"] is None and writes[1]["output_schema"] == "clear"
+
+    def disk_failure(_name: str, **fields: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(models._svc, "update_sub_agent", disk_failure)
+    with pytest.raises(HTTPException) as failed:
+        await models.update_sub_agent("helper", models.SubAgentUpdateReq(description="draft"))
+    assert failed.value.status_code == 503

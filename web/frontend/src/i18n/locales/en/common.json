@@ -1,4 +1,23 @@
 {
+  "connection": {
+    "title": "Connection status",
+    "offline": "Offline",
+    "unavailable": "Unavailable",
+    "reachable": "Reachable",
+    "connecting": "Connecting",
+    "ready": "Ready",
+    "starting": "Not ready",
+    "unknown": "Unknown",
+    "connected": "Connected",
+    "reconnecting": "Reconnecting",
+    "stalled": "Stalled",
+    "stopped": "Stopped",
+    "http": "HTTP service",
+    "runtime": "Agent runtime",
+    "live": "Live events",
+    "lastSample": "Last service response",
+    "check": "Check connection"
+  },
   "save": "Save",
   "cancel": "Cancel",
   "delete": "Delete",

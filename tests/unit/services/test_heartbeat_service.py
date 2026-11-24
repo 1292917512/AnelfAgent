@@ -97,7 +97,7 @@ def test_web_reflection_schedule_modes(
     cfg = HeartbeatConfig()
     monkeypatch.setattr("agent.heartbeat.config.get_heartbeat_config", lambda: cfg)
     monkeypatch.setattr("services.heartbeat.get_runtime", lambda: None)
-    params = {"task_schedules": [{
+    params = {"base_task_schedules": [], "task_schedules": [{
         "task_name": "self_reflection", "mode": mode, "every_n_beats": 3,
         "schedule_times": ["09:00"], "model_id": "chosen", "reasoning_effort": "high",
     }]}
