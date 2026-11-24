@@ -147,6 +147,7 @@ jobs:
 
   # 测试按模块矩阵分腿：每条腿只跑自己的套件，UI 上按模块独立呈现
   tests:
+    name: ${{ matrix.python == '3.11' && 'coverage' || 'tests' }} (${{ matrix.suite.name }})
     needs: changes
     if: needs.changes.outputs.matrix != '[]'
     runs-on: ubuntu-latest
@@ -154,7 +155,10 @@ jobs:
     strategy:
       fail-fast: false  # 一个模块红不取消其余模块腿，保留完整失败面
       matrix:
-        include: ${{ fromJSON(needs.changes.outputs.matrix) }}
+        suite: ${{ fromJSON(needs.changes.outputs.matrix) }}
+        python: ['3.11', '3.12']
+    env:
+      UV_PYTHON: ${{ matrix.python }}
     steps:
       - uses: actions/checkout@v4
 
@@ -168,10 +172,13 @@ jobs:
       # paths 为空（all 腿）时走 pyproject testpaths 全量收集。
       # 失败行转 ::error 注解——注解经公开 API 可读（日志需登录），
       # 未登录也能定位失败用例。
-      - name: Pytest (${{ matrix.name }})
+      - name: Pytest (${{ matrix.suite.name }})
+        env:
+          # CPython 3.12 的分支追踪会显著拖慢大型字典模块的导入。
+          PYTEST_ADDOPTS: ${{ matrix.python == '3.11' && '--cov --cov-report=xml --cov-report=term' || '' }}
         run: |
           set +e
-          uv run pytest ${{ matrix.paths }} --cov --cov-report=xml --cov-report=term --junitxml=test-results.xml -n auto > pytest.log 2>&1
+          uv run pytest ${{ matrix.suite.paths }} --junitxml=test-results.xml -n auto > pytest.log 2>&1
           status=$?
           grep -E '^(FAILED|ERROR) ' pytest.log | head -30 \
             | sed 's/^/::error title=pytest::/' || true
@@ -182,7 +189,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pytest-linux-${{ matrix.name }}
+          name: pytest-linux-${{ matrix.suite.name }}-${{ matrix.python }}
           path: |
             pytest.log
             test-results.xml
@@ -190,10 +197,10 @@ jobs:
           if-no-files-found: ignore
 
       - name: Upload coverage report
-        if: always()  # pytest 失败时也上传，便于排查
+        if: always() && matrix.python == '3.11'
         uses: actions/upload-artifact@v4
         with:
-          name: coverage-${{ matrix.name }}
+          name: coverage-${{ matrix.suite.name }}
           path: coverage.xml
           retention-days: 7
           if-no-files-found: ignore

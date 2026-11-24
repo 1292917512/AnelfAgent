@@ -79,6 +79,7 @@ JSON 报告与截图保存在测试产物中。此测量隔离模型和网络延
 - `tests` 按模块生成矩阵。实体和频道运行所属模块测试，实体另跑跨实体共享套件。`core/`、
   `agent/`、`tests/`、根 `conftest.py`、依赖锁定等横切改动触发全量测试。services 和 web 后端各有专属任务。
   `acp/` 或 `channels/http_api/` 的 Python 改动运行 `tests/unit/acp`，召回评测脚本和语料改动运行对应回归。
+  Linux 在 Python 3.11 和 3.12 上运行相同用例，分支覆盖率报告由 3.11 生成。
 - `frontend` 覆盖 `web/frontend/`、`channels/*/frontend/`、实体面板及 `panels/locales/*.json`，
   以及根目录的 `eslint.config.mjs`、`.nvmrc`。
 - `docs`（AGENTS.md ≤500 行门禁——防止工作区指令再膨胀，长期指导迁移到 docs/）
