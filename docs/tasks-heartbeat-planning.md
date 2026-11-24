@@ -142,21 +142,20 @@ idle 模式及其空闲计数原样保留，仍可显式手动触发。任务定
   `GET /memory/goals` 通过 `include_archived=true` 显式纳入归档并标注时间与原因。
   归档目标不进入活动态势，更新/删除须先恢复，不因查询自动激活。记忆侧保护活动规划载体及其
   goal 标签关联材料，详见[记忆分册](memory-system.md)。
-  AI 与 Web 的终态收口和显式删除共用 tracker：按读取版本删除，原子写一行既有
-  `memory_audit`（goal_id、标题、completed/cancelled/deleted 状态、deleted 去向、actor 及最终目标快照）；
-  留痕失败回滚删除，版本冲突不报成功、不发移除事件。终态工具回执附 memory_id，可经
-  `memory_timeline` 或 Web timeline 查询；`get_goal` 及 Web 按 ID 查询也返回终态审计回执，保留最后
-  一次提交的步骤和备注。沿用审计的 30 天保留策略，不新建可召回记忆。
-  循环目标完成仍重置为 active，不产生删除记录。
-- 目标 CRUD（create_goal/update_goal/delete_goal）：**终态即清**——update_goal 终态即删、全部
-  步骤完成后自动收口、delete_goal 显式删除；目标关闭只由完成事实驱动，系统不做基于时间的自动
-  清理；update_goal 越界 step_index/非法 step_status 返回 PARAM 错误（不静默 no-op）；
-  not_found 错误附 `active_goals` 简报供 AI 一次自纠。步骤完成与下一步骤推进同次写入，
-  基于读取版本提交；版本冲突返回明确错误并要求重读，不报告已更新
-- **规划态势轮内注入**（`agent/planning/situation.py` 版本化快照 + provider `plan_ops`，priority 30）：
-  活跃目标/计划快照（goal_id/标题/目标描述/步骤进度，以及最多两条待处理步骤备注，当前
-  scope 的执行计划置顶）经 provider 层每轮注入。描述与备注有界且共用原字符预算；完整内容
-  经 get_goal 读取。系统呈现已保存状态，由 AI 根据执行证据更新，不推测完成或自动改写目标。
+  最后一次步骤/备注更新、版本校验、归档与审计在同一事务提交。归档原因为
+  `all_steps_completed`、`explicit_completed` 或 `explicit_cancelled`；审计另记触发者。
+  规划归档持续保留。用 `get_goal(goal_id)` 取回完整记录和 `memory_id`，用
+  `restore_memory(memory_id)` 恢复到活动库，再按当前版本设置 `goal_status=active` 继续推进。
+  Web 目标页的「全部」可查看归档原因和原步骤。「取回归档」按所见版本恢复记录，
+  「恢复进行」将取回的目标重新设为进行中。
+  显式 `delete_goal` 仍按版本校验并删除；此前已删除的目标在既有审计保留期内可按 ID 查询去向。
+- 更新单步只改变该步骤的状态或备注。非循环目标至少有一个步骤且所有步骤均为
+  `completed` 时自动归档；含 `skipped` 的目标由调用方显式决定是否完成。
+  会话结束或中断保留未完成计划，按原 ID 续办。显式取消会保存每一步的实际状态。
+  循环目标沿用周期语义，显式完成后步骤重置为 pending，目标进入下一周期。
+- **规划态势轮内注入**（`agent/planning/situation.py`，provider `plan_ops`，priority 30）。
+  当前会话计划与本轮问题匹配的目标优先展示步骤与相关备注。其他可见目标仅展示 ID、
+  标题和进度，完整描述与备注经 `get_goal` 读取。
   全部规划写路径变更后调 `situation.invalidate()`，快照按版本失配（+60s 再同步窗口兜底）单飞重建，
   稳态渲染零 I/O；reflect 前缀 scope（任务/子代理）不注入保持 lean 语义；配置
   `goals_inject_enabled`（planning/core 组），group=planning 随工具组启停联动

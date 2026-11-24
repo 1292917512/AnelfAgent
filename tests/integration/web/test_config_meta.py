@@ -116,9 +116,9 @@ class TestSaveMeta:
         groups = client.get("/api/config/meta").json()["groups"]
         fields = next(group["items"] for group in groups if group["group"] == "models/fallback")
         assert {field["tag"]: field["value"] for field in fields} == {
-            kind.value: kind is ModelType.CHAT for kind in ModelType
+            kind.value: kind in (ModelType.CHAT, ModelType.VISION) for kind in ModelType
         }
-        for kind in (ModelType.CHAT, ModelType.IMAGE_GEN):
+        for kind in (ModelType.CHAT, ModelType.VISION, ModelType.IMAGE_GEN):
             field = next(item for item in fields if item["tag"] == kind.value)
             response = client.put(f"/api/config/meta/{field['key']}", json={"value": not field["value"]})
             assert response.status_code == 200
@@ -127,6 +127,7 @@ class TestSaveMeta:
         monkeypatch.setattr(ConfigManager, "_initialized", False)
         assert ConfigManager.initialize()
         assert not fallback_enabled(ModelType.CHAT)
+        assert not fallback_enabled(ModelType.VISION)
         assert fallback_enabled(ModelType.IMAGE_GEN)
         assert not fallback_enabled(ModelType.VIDEO)
 

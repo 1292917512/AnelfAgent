@@ -1,7 +1,7 @@
 """上下文材料的分层、预算与文件缓存。
 
-模型可见：沿用人设、工具目录、召回来源；资料被裁剪时在动态区说明边界与取回入口。
-Token：画像和检索共享既有上限，省略提示约百字；不另起模型调用。
+模型可见：长状态块优先展示告警及本轮问题匹配的行，并附完整便签入口。
+Token：无关长状态仅留概览，相关状态摘录受字符预算约束；不另起模型调用。
 缓存：沿用各层指纹、缓存键与消息顺序，不改稳定前缀。
 """
 
@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from agent.context.inputs import RecollectionInputs
 from agent.context.prompt_layers import FileLayerCache
+from agent.judgment.evidence import latest_user_text
 from agent.llm.llm_client import LLMClient
 from agent.memory.notes import (
     build_dynamic_notes,
@@ -23,6 +24,7 @@ from agent.memory.notes import (
     get_memory_dir,
     get_notes_path,
 )
+from agent.memory.passages import PassageQuery
 from core.activity import EVENT_ACTIVITY_CONTEXT
 from core.config import get_config_int
 from core.event_bus import EVENT_THINKING_CONTEXT_BUILD, event_bus
@@ -167,6 +169,10 @@ class ContextPreparation:
         persona_text, tools_text, context_text, persona_hit, tools_hit, context_hit, status_text, heartbeat_text = (
             await self.build_layers(persona_parts, entity_scope, models_summary, permanent_text, lean=lean, direct_vision=direct_vision)
         )
+        if max(len(status_text), len(heartbeat_text)) > 200:
+            query = PassageQuery.from_text(latest_user_text(conversation_list))
+            status_text = _status_excerpt(status_text, query)
+            heartbeat_text = _status_excerpt(heartbeat_text, query)
 
         await event_bus.emit(EVENT_THINKING_CONTEXT_BUILD, {
             "memory_msgs_count": len(memory_msgs),
@@ -196,6 +202,23 @@ class ContextPreparation:
                 "status": "running", "recall": allocation.report(inputs.recall_level),
             })
         return messages
+
+
+def _status_excerpt(text: str, query: PassageQuery) -> str:
+    """保留状态概览、告警及相关明细；完整受管区块可从主便签取回。"""
+    if len(text) <= 200:
+        return text
+    header, _, body = text.partition("\n")
+    lines = body.splitlines()
+    if not lines:
+        return f"{query.excerpt(text, 140)}（全文 read_notes）"
+    ranked = sorted(((query.score(line), line) for line in dict.fromkeys(lines) if line.strip()),
+                    key=lambda item: item[0], reverse=True)
+    alerts = [line for _, line in ranked if "⚠" in line]
+    matches = [line for score, line in ranked if score]
+    selected = dict.fromkeys([*alerts[:1], *matches, *alerts, *lines[:1]])
+    detail = "\n".join(query.excerpt(line, 140) for line in list(selected)[:4])
+    return f"{header}（全文 read_notes）\n{detail}"
 
 
 def model_context(client: ChatModel, manager: LLMManager | None) -> tuple[str, bool]:

@@ -13,6 +13,17 @@ import agent.vision.gen_tools as gen_tools
 from agent.vision.gen_tools import recognize_image, recognize_video
 
 
+async def test_recognition_provider_policy_round_trip_rejects_invalid_timeout():
+    key = "understand_provider_policy.models"
+    result = json.loads(await gen_tools.vision_config("set", key, '{"timeout":12,"fallback":false}'))
+    assert result["success"] and result["value"] == {"timeout": 12, "fallback": False}
+    assert json.loads(await gen_tools.vision_config("set", key, '{"timeout":-1}'))["cause"] == "param"
+    config = json.loads(await gen_tools.vision_config("get"))["config"]
+    assert config["understand_provider_policy"]["models"] == result["value"]
+    assert json.loads(await gen_tools.vision_config("set", key, "{}"))["success"]
+    assert not json.loads(await gen_tools.vision_config("get"))["config"]["understand_provider_policy"]
+
+
 async def test_default_background_recognition_retains_scope_and_result(local_image, chain_spy, monkeypatch):
     from agent.mind.background.tasks import BackgroundTaskRegistry
     from agent.mind.tools.ports import mind_port

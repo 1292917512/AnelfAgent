@@ -319,7 +319,7 @@ async def test_context_reads_overlap_and_skills_only_wait_for_plan(monkeypatch, 
     mind.recollection.memory_store = object()
     mind.recollection.conversation_data = SN(get_conversation_summary=lambda anything: read("summary", {"summary": "摘要"}))
     monkeypatch.setattr("agent.memory.self_profile.load_self_profile", AsyncMock(return_value=None))
-    monkeypatch.setattr("agent.memory.self_profile.render_self_profile_block", lambda _: "自身")
+    monkeypatch.setattr("agent.memory.self_profile.render_self_profile_block", lambda _, focus: "自身")
     monkeypatch.setattr("agent.memory.reflection_lifecycle.load_confirmed_block", AsyncMock(return_value="确认"))
     monkeypatch.setattr("agent.memory.reflection_lifecycle.load_verification_block", AsyncMock(return_value="求证"))
     query = ("[channel:qq][group_id:100][uid:1]" if group else "") + "帮我查询之前记录的详细项目设计方案"
@@ -382,7 +382,7 @@ async def test_context_exit_drains_sibling_reads(monkeypatch, fail) -> None:
     monkeypatch.setattr(recall_inputs, "match_skills", lambda *args, **kwargs: wait("skills"))
     mind.recollection.memory_store = object()
     monkeypatch.setattr("agent.memory.self_profile.load_self_profile", AsyncMock(return_value=None))
-    monkeypatch.setattr("agent.memory.self_profile.render_self_profile_block", lambda _: "")
+    monkeypatch.setattr("agent.memory.self_profile.render_self_profile_block", lambda _, focus: "")
     monkeypatch.setattr("agent.memory.reflection_lifecycle.load_confirmed_block", AsyncMock(return_value=""))
     monkeypatch.setattr("agent.memory.reflection_lifecycle.load_verification_block", AsyncMock(return_value=""))
     task = asyncio.create_task(mind.recollection.collect(

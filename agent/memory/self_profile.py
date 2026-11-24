@@ -18,6 +18,8 @@ from core.log import log
 
 from .memory_store import MemoryStore
 from .memory_types import MemoryType
+from .passages import PassageQuery
+from .recall_format import render_profile_excerpt
 
 SELF_SCOPE = "agent:self"
 """自画像的保留身份（scope 记法；常量单点定义，全仓禁手工拼）。"""
@@ -47,7 +49,12 @@ async def load_self_profile(store: MemoryStore) -> str:
         return ""
 
 
-def render_self_profile_block(content: str) -> str:
+def render_self_profile_block(content: str, focus: str = "") -> str:
     """渲染注入块（空内容返回空串——无自画像时不占位）。"""
     content = (content or "").strip()
-    return f"{_INJECT_HEADER}：\n{content}" if content else ""
+    if not content:
+        return ""
+    excerpt = render_profile_excerpt(
+        content, PassageQuery.from_text(focus), 'get_entity_profile(scope_type="agent", scope_id="self")',
+    )
+    return f"{_INJECT_HEADER}：\n{excerpt}"

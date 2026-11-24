@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from agent.llm.config import LLMClientConfig
 
 
-async def collect_provider_messages(config: "LLMClientConfig | None", scope: str) -> List[Dict]:
+async def collect_provider_messages(config: "LLMClientConfig | None", scope: str, focus: str = "") -> List[Dict]:
     """收集上下文提供者的当前最新快照，封装为注入消息列表。
 
     注入位置在工具链之后、exec_context 之前（每轮组装点调用）：
@@ -35,7 +35,7 @@ async def collect_provider_messages(config: "LLMClientConfig | None", scope: str
     """
     try:
         from core.context_provider import ContextProviderRegistry
-        clips, _metrics = await ContextProviderRegistry.collect(scope, fresh=True)
+        clips, _metrics = await ContextProviderRegistry.collect(scope, fresh=True, focus=focus)
         vision = bool(config is not None and getattr(config, "supports_vision", False))
 
         messages: List[Dict] = []

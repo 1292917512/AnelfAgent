@@ -51,7 +51,7 @@ description: "AnelfAgent 工作区指令：稳定的开发规范、架构边界�
 | `agent/security/` | 安全防护（会话令牌 / 威胁扫描） | 脱敏核心在 `core/sanitizer.py` |
 | `agent/task/` | 独立任务系统（定义 / 注册表 / 执行器） | 纯内容定义，不含调度逻辑 |
 | `agent/heartbeat/` | 心跳调度（引擎 / 配置 / 日志 / 内置维护） | 管理何时执行任务 |
-| `agent/planning/` | 自主规划（终态即清，存续决策归 AI） | 依赖 memory |
+| `agent/planning/` | 自主规划（终态可恢复归档，单步独立更新） | 依赖 memory |
 | `agent/judgment/` | 结构化判断（Choice/Score/Noul 三原语） | 配置走 `judgment/core` 组 |
 | `channels/` | 频道适配器（自动发现 + 热插拔） | 继承 BaseChannel，display_order 自声明 |
 | `entities/` | 工具实体（自动发现 + 热插拔） | 经 `_sdk.py` 桥接 LLM |

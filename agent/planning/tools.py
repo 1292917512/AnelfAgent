@@ -10,7 +10,7 @@
   执行结果明确更新；用户通过浮窗"取消"按钮触发 ``EVENT_PLAN_CANCELLED``
   （cancel-plan 路由 → tracker.cancel_plan）。
 - 持久目标（create_goal → GOAL_KIND）：跨会话长期目标，AI 经 update_goal
-  手动推进步骤；关闭只由完成事实驱动——终态（completed/cancelled）即删、
+  手动推进步骤；关闭只由完成事实驱动——终态（completed/cancelled）归档、
   全部步骤完成后自动收口，长期停滞由心跳产出事实概况供 AI 决策，系统
   不做基于时间的自动清理。
 
@@ -28,13 +28,10 @@ Cache effect: 归档仅进入工具结果，清理留痕不写稳定前缀或新
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Optional
+from typing import Any
 
-from agent.memory.memory_store import MemoryStore
-from agent.memory.memory_types import MemoryEntry
 from agent.planning import goals as goal_ops
 from agent.planning import situation, tracker
-from agent.planning.tracker import planning_store_port
 from core.entity import EntityRegistry
 from core.tool_errors import ErrorCause, error_from_exception, tool_error
 from core.tool_registry import deferred_tool
@@ -42,10 +39,6 @@ from core.tool_registry import deferred_tool
 EntityRegistry.register_group_order("planning", 20)
 
 _GROUP = "planning"
-
-def _bound_store() -> Optional[MemoryStore]:
-    """取 MemoryStore（端口未施绑时返回 None，工具降级为未就绪错误）。"""
-    return planning_store_port.get() if planning_store_port.bound else None
 
 
 def _store_not_ready() -> str:
@@ -65,13 +58,6 @@ def _goal_cleanup_conflict() -> str:
     )
 
 
-async def _find_goal(
-    goal_id: str,
-) -> tuple[Optional[MemoryEntry], Optional[Dict[str, Any]]]:
-    """按 goal_id 定位记忆条目与目标数据（委托 tracker 统一实现）。"""
-    return await tracker.find_goal_by_id(goal_id)
-
-
 async def _goal_not_found(goal_id: str) -> str:
     """目标不存在的统一错误：附活跃目标简报供 AI 立即自纠（换用存在的
     goal_id），而非对着过期 id 反复重试。"""
@@ -82,7 +68,7 @@ async def _goal_not_found(goal_id: str) -> str:
             hint=f"先 get_goal 查看，再 restore_memory(memory_id={archived.id}) 恢复后操作",
             memory_id=archived.id, archive_reason=archived.archive_reason,
         )
-    store = _bound_store()
+    store = tracker.get_planning_store()
     receipt = await goal_ops.terminal_receipt(store, goal_id) if store is not None else None
     if receipt is not None:
         return tool_error(f"目标 '{goal_id}' 已结束", cause=ErrorCause.STATE, retryable=False,
@@ -91,7 +77,7 @@ async def _goal_not_found(goal_id: str) -> str:
     hint = (
         "目标可能已被删除或收敛；请改用活跃目标列表中的 goal_id，或 list_goals 确认全貌"
         if briefs
-        else "当前无活跃目标（可能已删除/完成）；如需新目标用 create_goal 创建"
+        else "当前无活跃目标；list_goals(include_archived=True) 可按标题查找历史目标，需要新目标时用 create_goal"
     )
     return tool_error(
         f"目标 '{goal_id}' 不存在",
@@ -109,7 +95,7 @@ async def _goal_not_found(goal_id: str) -> str:
     description=(
         "创建一个新的目标计划（可为长期目标，存续由你管理，系统不按时间自动清理）。"
         "创建后记住 goal_id，推进进度用 update_goal；"
-        "标记 completed/cancelled 时目标会自动清理，无需手动删除。"
+        "标记 completed/cancelled 时目标可恢复归档，无需手动删除。"
     ),
 )
 async def create_goal(title: str, description: str = "", steps: str = "", recurring: bool = False) -> str:
@@ -121,7 +107,7 @@ async def create_goal(title: str, description: str = "", steps: str = "", recurr
         steps: 执行步骤，用 | 分隔（如 "搜索资料|分析数据|总结报告"）
         recurring: 是否为循环计划，完成后自动重置步骤为 pending 并恢复 active
     """
-    store = _bound_store()
+    store = tracker.get_planning_store()
     if store is None:
         return _store_not_ready()
 
@@ -138,23 +124,24 @@ async def create_goal(title: str, description: str = "", steps: str = "", recurr
 
 @deferred_tool(
     group=_GROUP, tags=["planning", "heartbeat"],
-    description="列出目标计划。检查 active 状态的目标，废弃的用 delete_goal 删除。",
+    description="列出目标计划。默认展示活跃目标；找已结束目标可传 include_archived=True，再按 goal_id 查看全文。",
 )
-async def list_goals(status: str = "active", include_archived: bool = False, offset: int = 0) -> str:
+async def list_goals(status: str = "", include_archived: bool = False, offset: int = 0) -> str:
     """列出目标计划。
 
     Args:
         offset: 匹配目标的分页偏移，每页最多 50 条
-        status: 筛选状态，active（默认）/ all
+        status: active / completed / cancelled / all。省略时普通查询取 active，包含归档时取 all
         include_archived: 显式包含已归档目标并标注归档时间与原因，默认仅活跃库
     """
-    store = _bound_store()
+    store = tracker.get_planning_store()
     if store is None:
         return _store_not_ready()
 
     if offset < 0:
         return tool_error("offset 不能为负数", cause=ErrorCause.PARAM, retryable=False)
     goals: list[dict[str, Any]] = []
+    status = status or ("all" if include_archived else "active")
     matched = 0
     async for entry, goal in goal_ops.iter_goals(store, status=status, include_archived=include_archived):
         matched += 1
@@ -172,8 +159,8 @@ async def list_goals(status: str = "active", include_archived: bool = False, off
     group=_GROUP, tags=["planning", "heartbeat", "always"],
     description=(
         "更新目标计划：步骤状态、整体状态或文本（标题/描述），空参数不变。"
-        "标记 goal_status 为 completed/cancelled 时目标自动清理；"
-        "全部步骤标记完成后目标同样自动收口——均无需再调 delete_goal。"
+        "单步更新只影响指定步骤，skipped 仍须显式决定是否收口；"
+        "全部步骤 completed 或显式设置目标终态时归档，get_goal 可查看详情。"
     ),
 )
 async def update_goal(
@@ -181,7 +168,7 @@ async def update_goal(
     goal_status: str = "", title: str = "", description: str = "",
     step_id: str = "", step_name: str = "", expected_version: int = 0, note_mode: str = "replace",
 ) -> str:
-    """依据读取快照更新目标；终态结果保存到审计后清理活动条目。
+    """依据读取快照更新目标；终态结果和触发原因可在归档中查看。
 
     Args:
         goal_id: 目标 ID
@@ -196,10 +183,10 @@ async def update_goal(
         expected_version: 必须传入最近 get_goal/create_goal/update_goal 返回的 version
         note_mode: replace 替换备注，append 追加备注
     """
-    store = _bound_store()
+    store = tracker.get_planning_store()
     if store is None:
         return _store_not_ready()
-    target_entry, target_goal = await _find_goal(goal_id)
+    target_entry, target_goal = await tracker.find_goal_by_id(goal_id)
     if target_entry is None or target_goal is None:
         return await _goal_not_found(goal_id)
     if not (step_status or note or goal_status or title.strip() or description.strip()):
@@ -215,8 +202,8 @@ async def update_goal(
         )
         return json.dumps({"success": True, "goal": result, "goal_id": goal_id,
                            "memory_id": result["memory_id"], "title": result["title"],
-                           **({"message": f"目标 '{goal_id}' 已标记为 {result['status']}，自动收口并自动清理"}
-                              if result.get("deleted") else {})}, ensure_ascii=False)
+                           **({"message": f"目标 '{goal_id}' 已标记为 {result['status']}，已归档（{result['archive_reason']}），可用 get_goal 查看"}
+                              if result.get("archived") else {})}, ensure_ascii=False)
     except goal_ops.GoalConflict as exc:
         return tool_error(str(exc), cause=ErrorCause.STATE, retryable=False, hint="先 get_goal 重读后再决策")
     except ValueError as exc:
@@ -230,7 +217,7 @@ async def update_goal(
     group=_GROUP, tags=["planning", "heartbeat"],
     description=(
         "删除一个目标计划（用于废弃仍在进行的目标）。"
-        "已完成/取消的目标无需本工具：update_goal 标记终态时自动清理。"
+        "已完成/取消的目标无需本工具：update_goal 标记终态时自动归档。"
     ),
 )
 async def delete_goal(goal_id: str) -> str:
@@ -239,11 +226,11 @@ async def delete_goal(goal_id: str) -> str:
     Args:
         goal_id: 目标 ID
     """
-    store = _bound_store()
+    store = tracker.get_planning_store()
     if store is None:
         return _store_not_ready()
 
-    target_entry, target_goal = await _find_goal(goal_id)
+    target_entry, target_goal = await tracker.find_goal_by_id(goal_id)
     if target_entry is not None and target_goal is not None and target_entry.id:
         # 删除 + 前端卡片移除（EVENT_PLAN_DELETED）+ 态势同步统一走 tracker
         if not await tracker.remove_goal(target_entry, goal=target_goal):
@@ -264,7 +251,7 @@ async def get_goal(goal_id: str) -> str:
     Args:
         goal_id: 目标 ID
     """
-    store = _bound_store()
+    store = tracker.get_planning_store()
     if store is None:
         return _store_not_ready()
 
@@ -275,7 +262,7 @@ async def get_goal(goal_id: str) -> str:
             return json.dumps({
                 "success": True, "goal": target_goal, "archived": True,
                 "archived_at": target_entry.archived_at, "archive_reason": target_entry.archive_reason,
-                "hint": "目标已归档；先 restore_memory 恢复后才能更新，不会自动恢复",
+                "hint": "可用 restore_memory(memory_id) 取回原记录；要继续推进，再用当前版本设置 goal_status=active。",
             }, ensure_ascii=False)
         # 反查关联记忆（goal:{id} 标签双链），让 AI 看到目标下已沉淀的内容
         related = await store.search_by_tags([f"goal:{goal_id}"], limit=20)
@@ -327,14 +314,19 @@ async def present_plan(goal: str, steps: str, files: str = "", risks: str = "") 
         - 持久化与事件发射统一由 ``agent.planning.tracker.submit_plan`` 实现。
         - 同 scope 已有 active plan 时**复用**而非新建（防止 AI 重复规划产生重复卡片）。
     """
+    if tracker.get_planning_store() is None:
+        return _store_not_ready()
     scope = tracker.current_scope()
 
     # 复用：已有进行中计划时返回现有 plan，提示 AI 继续执行而非重新规划
-    existing = await tracker.get_active_plan(scope)
+    try:
+        existing = await tracker.get_active_plan(scope)
+    except Exception as exc:
+        return error_from_exception(exc, action="查询会话计划")
     if existing is not None:
         plan_id = existing.get("goal_id", "")
         steps_list = existing.get("steps", [])
-        remaining = [s for s in steps_list if s.get("status") in ("pending", "in_progress")]
+        remaining = [s for s in steps_list if s.get("status") != "completed"]
         done = len(steps_list) - len(remaining)
         lines = "\n".join(
             f"  - 步骤 {s.get('index', 0) + 1}: {s.get('content', '')} ({s.get('status', 'pending')})"
@@ -353,17 +345,24 @@ async def present_plan(goal: str, steps: str, files: str = "", risks: str = "") 
         }, ensure_ascii=False)
 
     step_objs = tracker.parse_steps(steps)
-    plan_id = await tracker.submit_plan(scope, goal, step_objs, files=files, risks=risks)
-    entry, stored_goal = await _find_goal(plan_id)
+    if not goal.strip() or not step_objs:
+        return tool_error("计划目标和步骤不能为空", cause=ErrorCause.PARAM, retryable=False)
+    try:
+        plan_id = await tracker.submit_plan(scope, goal.strip(), step_objs, files=files, risks=risks)
+        entry, stored_goal = await tracker.find_goal_by_id(plan_id, include_archived=True)
+    except Exception as exc:
+        return error_from_exception(exc, action="提交会话计划")
+    if entry is None or stored_goal is None:
+        return await _goal_not_found(plan_id)
 
     return json.dumps({
         "ok": True,
         "plan_id": plan_id,
         "status": "executing",
-        "goal": goal_ops.goal_view(entry, stored_goal) if entry is not None and stored_goal is not None else None,
+        "goal": goal_ops.goal_view(entry, stored_goal),
         "message": (
             f"计划已公告 (plan_id={plan_id})，立即开始执行即可。"
             "步骤完成后用 update_goal 标记并记录结果证据；"
-            "查询或失败不算完成，未确认完成的计划在会话结束时按取消收束。"
+            "会话结束后保留未完成步骤，下次可继续。"
         ),
     }, ensure_ascii=False)

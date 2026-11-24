@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from agent.messages import build_entity_scope
 from agent.messages.media import MediaMessage
 from core.log import log
 from core.path import ConfigPaths
@@ -312,8 +313,7 @@ class ChatService:
     @staticmethod
     def scope_for_chat(chat_id: str) -> str:
         """chat_id → entity scope（webui 频道固定用户维度的构造规则）。"""
-        from agent.planning.tracker import make_scope
-        return make_scope("webui:web_user", "" if chat_id == "default" else chat_id)
+        return build_entity_scope("user", "webui", "web_user", "" if chat_id == "default" else chat_id)
 
     async def cancel_plan(self, chat_id: str, plan_id: str) -> bool:
         """取消计划：标记 cancelled + interrupt scope + 发射事件。
@@ -322,9 +322,7 @@ class ChatService:
         本方法只做参数组装（chat_id → scope）。
         """
         from agent.planning import tracker as plan_tracker
-        scope = plan_tracker.make_scope(
-            "webui:web_user", "" if chat_id == "default" else chat_id,
-        )
+        scope = self.scope_for_chat(chat_id)
         return await plan_tracker.cancel_plan(scope, plan_id, reason="用户取消")
 
     async def interrupt_chat(self, chat_id: str) -> Dict[str, Any]:

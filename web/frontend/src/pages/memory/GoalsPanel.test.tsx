@@ -34,3 +34,33 @@ it("preserves step content, identity and notes while submitting the displayed ve
     update.mockRestore();
   }
 });
+
+it("shows archived goals under All and restores the viewed version with its steps read-only", async () => {
+  await i18n.changeLanguage("zh");
+  const goal: GoalData = {
+    goal_id: "archived", title: "已归档目标", status: "completed", version: 7,
+    archived: true, archive_reason: "all_steps_completed", created_at: "2026-01-01", updated_at: "2026-01-02",
+    steps: [{ step_id: "check", content: "核实资料", status: "completed", note: "已核验" }],
+  };
+  const response = { status: 200, statusText: "OK", headers: {}, config: { headers: new AxiosHeaders() } };
+  const list = vi.spyOn(memoryApi.goals, "list").mockImplementation(async (_status, includeArchived) =>
+    ({ ...response, data: { goals: includeArchived ? [goal] : [] } }));
+  const restore = vi.spyOn(memoryApi.goals, "restore").mockResolvedValue({ ...response, data: { ok: true } });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const user = userEvent.setup();
+  const view = render(<QueryClientProvider client={client}><GoalsPanel /></QueryClientProvider>);
+  try {
+    await user.selectOptions(screen.getByRole("combobox"), "all");
+    await user.click(await screen.findByText(goal.title));
+    expect(list).toHaveBeenCalledWith("all", true);
+    expect(screen.getByText("归档原因：所有步骤已完成")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /核实资料/ })).toHaveProperty("disabled", true);
+    await user.click(screen.getByRole("button", { name: "取回归档" }));
+    await waitFor(() => expect(restore).toHaveBeenCalledWith(goal.goal_id, goal.version));
+  } finally {
+    view.unmount();
+    client.clear();
+    list.mockRestore();
+    restore.mockRestore();
+  }
+});

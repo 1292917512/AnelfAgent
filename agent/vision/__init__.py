@@ -57,6 +57,10 @@ register_configs_safe({
             "value_type": "json",
             "advanced": True,
         },
+        "vision_understand_provider_policy": {
+            "description": "辅助识别按提供者配置总时限（秒）及失败后是否尝试下一提供者，例如 {\"models\": {\"timeout\": 90, \"fallback\": true}}；顺序由 understand 优先级链决定。",
+            "default": {}, "value_type": "json", "advanced": True,
+        },
         "vision_default_image_size": {
             "description": "图片生成默认尺寸（像素 1024x1024 或比例 1:1/16:9/9:16）",
             "default": "1024x1024",

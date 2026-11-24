@@ -1,28 +1,10 @@
-"""tracker plan 收敛测试：finalize_plan 双 outcome / cancel_plan 步骤收敛 / 生命周期隔离。
-
-覆盖「全退出路径收敛」语义：
-- completed：仅已确认的步骤保持完成，未完成计划收束为 cancelled
-- cancelled：in_progress / pending → skipped，plan → cancelled
-- cancel_plan 取消时步骤同步收敛，前端不残留 in_progress
-
-生命周期隔离（回归 2026-09-15 ebafea16 事故）：
-- create_goal 持久目标（GOAL_KIND，跨会话）不被任何 scope 的自动
-  推进/会话收敛触碰——目标只由 AI 显式标记或 delete_goal 终结
-- 会话计划收敛严格按 scope 匹配，跨 scope 不误伤
-"""
+"""会话计划按确认的步骤归档，跨轮及中断保留尚未完成的计划。"""
 
 from __future__ import annotations
 
-import asyncio
 import json
 
 from helpers.planning import update_goal
-
-from core.event_bus import (
-    EVENT_PLAN_STATUS_CHANGED,
-    EVENT_PLAN_STEP_UPDATED,
-    event_bus,
-)
 
 SCOPE = "user_webui:test#chat1"
 
@@ -43,217 +25,37 @@ async def _teardown(store) -> None:
     tracker.planning_store_port.unbind()
 
 
-class TestFinalizePlan:
-    async def test_failed_commit_does_not_publish_step_events(self, tmp_path, monkeypatch):
-        from unittest.mock import AsyncMock
+async def test_step_writes_archive_once_and_preserve_other_goals(tmp_path):
+    from agent.planning import tools
 
-        store, tracker = await _setup(tmp_path)
-        try:
-            await tracker.submit_plan(SCOPE, "目标", tracker.parse_steps("执行"))
-            emit = AsyncMock()
-            monkeypatch.setattr(tracker, "_emit_step", emit)
-            monkeypatch.setattr(store, "update", AsyncMock(return_value=False))
-            await tracker.finalize_plan(SCOPE)
-            emit.assert_not_awaited()
-            current = await tracker.get_active_plan(SCOPE)
-            assert current["steps"][0]["status"] == "in_progress"
-        finally:
-            await _teardown(store)
-
-    async def test_explicitly_completed_steps_remain_completed(self, tmp_path):
-        store, tracker = await _setup(tmp_path)
-        try:
-            steps = tracker.parse_steps("制作|核验")
-            for step in steps:
-                step.update(status="completed", note="已查询实际产物")
-            plan_id = await tracker.submit_plan(SCOPE, "目标", steps)
-            await tracker.finalize_plan(SCOPE)
-            _, goal = await tracker.find_goal_by_id(plan_id)
-            assert goal["status"] == "completed"
-            assert [s["status"] for s in goal["steps"]] == ["completed", "completed"]
-        finally:
-            await _teardown(store)
-
-    async def test_unconfirmed_steps_do_not_become_completed(self, tmp_path):
-        """正常结束也不能把仍在执行的步骤伪装成已完成。"""
-        store, tracker = await _setup(tmp_path)
-        try:
-            plan_id = await tracker.submit_plan(
-                SCOPE, "目标", tracker.parse_steps("a|b|c"),
-            )
-            await tracker.finalize_plan(SCOPE, "completed")
-
-            # 收敛后不再是 active plan
-            assert await tracker.get_active_plan(SCOPE) is None
-            _, goal = await tracker.find_goal_by_id(plan_id)
-            assert goal["status"] == "cancelled"
-            assert [s["status"] for s in goal["steps"]] == [
-                "skipped", "skipped", "skipped",
-            ]
-        finally:
-            await _teardown(store)
-
-    async def test_cancelled_convergence(self, tmp_path):
-        """中断收敛：in_progress/pending→skipped，plan→cancelled + 状态事件。"""
-        store, tracker = await _setup(tmp_path)
-        captured: list[dict] = []
-
-        async def _capture(payload):
-            captured.append(payload)
-
-        event_bus.on(EVENT_PLAN_STATUS_CHANGED, _capture, owner="test.tracker")
-        try:
-            plan_id = await tracker.submit_plan(
-                SCOPE, "目标", tracker.parse_steps("a|b|c"),
-            )
-            await tracker.finalize_plan(SCOPE, "cancelled")
-            await asyncio.sleep(0.05)
-
-            _, goal = await tracker.find_goal_by_id(plan_id)
-            assert goal["status"] == "cancelled"
-            assert [s["status"] for s in goal["steps"]] == ["skipped"] * 3
-            assert captured[-1]["goal_status"] == "cancelled"
-            assert captured[-1]["plan_id"] == plan_id
-        finally:
-            event_bus.off_by_owner("test.tracker")
-            await _teardown(store)
-
-    async def test_finalize_without_plan_is_noop(self, tmp_path):
-        """无 active plan 时收敛零成本返回（finally 兜底安全）。"""
-        store, tracker = await _setup(tmp_path)
-        try:
-            await tracker.finalize_plan(SCOPE)
-            await tracker.finalize_plan(SCOPE, "cancelled")
-        finally:
-            await _teardown(store)
-
-    async def test_finalize_is_idempotent(self, tmp_path):
-        """重复收敛不重复发射状态事件（状态机幂等）。"""
-        store, tracker = await _setup(tmp_path)
-        captured: list[dict] = []
-
-        async def _capture(payload):
-            captured.append(payload)
-
-        event_bus.on(EVENT_PLAN_STATUS_CHANGED, _capture, owner="test.tracker")
-        try:
-            await tracker.submit_plan(SCOPE, "目标", tracker.parse_steps("a"))
-            await tracker.finalize_plan(SCOPE)
-            await tracker.finalize_plan(SCOPE)
-            await asyncio.sleep(0.05)
-            assert len([c for c in captured if c["goal_status"] == "cancelled"]) == 1
-        finally:
-            event_bus.off_by_owner("test.tracker")
-            await _teardown(store)
-
-
-class TestLifecycleIsolation:
-    """会话计划状态机与持久目标（GOAL_KIND）的生命周期隔离。"""
-
-    async def test_finalize_never_converges_goals(self, tmp_path):
-        """create_goal 持久目标不被任何 scope 的退出收敛触碰（连带收口回归）。"""
-        store, tracker = await _setup(tmp_path)
-        try:
-            from agent.planning import tools as planning_tools
-            raw = await planning_tools.create_goal("夜间目标", steps="a|b|c")
-            goal_id = json.loads(raw)["goal"]["goal_id"]
-
-            await tracker.finalize_plan(SCOPE, "completed")
-            await tracker.finalize_plan("reflect:task001", "completed")
-
-            _, goal = await tracker.find_goal_by_id(goal_id)
-            assert goal["status"] == "active"
-            assert [s["status"] for s in goal["steps"]] == ["pending"] * 3
-        finally:
-            await _teardown(store)
-
-    async def test_finalize_preserves_explicit_goal_progress(self, tmp_path):
-        """会话收束保留持久目标通过 update_goal 明确更新的进度。"""
-        store, tracker = await _setup(tmp_path)
-        try:
-            from agent.planning import tools as planning_tools
-            raw = await planning_tools.create_goal("夜间目标", steps="a|b|c")
-            goal_id = json.loads(raw)["goal"]["goal_id"]
-            await update_goal(
-                goal_id, step_index=0, step_status="completed",
-            )
-
-            await tracker.finalize_plan(SCOPE)
-
-            _, goal = await tracker.find_goal_by_id(goal_id)
-            # step0 completed（AI 标记）+ step1 in_progress（update_goal 自动推进），
-            # 其余保持 pending——没有程序级连带推进
-            assert [s["status"] for s in goal["steps"]] == [
-                "completed", "in_progress", "pending",
-            ]
-        finally:
-            await _teardown(store)
-
-    async def test_finalize_scope_strict_match(self, tmp_path):
-        """会话收敛只作用于同 scope 的计划，无关 scope 退出不误伤。"""
-        store, tracker = await _setup(tmp_path)
-        try:
-            plan_id = await tracker.submit_plan(
-                SCOPE, "目标", tracker.parse_steps("a|b"),
-            )
-            await tracker.finalize_plan("user_other:1", "completed")
-
-            _, goal = await tracker.find_goal_by_id(plan_id)
-            assert goal["status"] == "active"
-
-            await tracker.finalize_plan(SCOPE, "completed")
-            _, goal = await tracker.find_goal_by_id(plan_id)
-            assert goal["status"] == "cancelled"
-        finally:
-            await _teardown(store)
-
-    async def test_goal_does_not_block_plan_machinery(self, tmp_path):
-        """存在活跃目标时不影响会话计划的提交/收敛/复用判定。"""
-        store, tracker = await _setup(tmp_path)
-        try:
-            from agent.planning import tools as planning_tools
-            await planning_tools.create_goal("长期目标", steps="x|y")
-
-            plan_id = await tracker.submit_plan(
-                SCOPE, "会话计划", tracker.parse_steps("a"),
-            )
-            await tracker.finalize_plan(SCOPE, "completed")
-
-            # 计划已收敛，且不因目标存在而被 get_active_plan 误复用
-            assert await tracker.get_active_plan(SCOPE) is None
-            _, plan = await tracker.find_goal_by_id(plan_id)
-            assert plan["status"] == "cancelled"
-        finally:
-            await _teardown(store)
+    store, tracker = await _setup(tmp_path)
+    try:
+        other = json.loads(await tools.create_goal("独立目标", steps="a|b"))["goal"]
+        plan_id = await tracker.submit_plan(SCOPE, "会话计划", tracker.parse_steps("制作|核验"))
+        partial = json.loads(await update_goal(plan_id, step_index=0, step_status="completed", note="已制作"))["goal"]
+        assert [s["status"] for s in partial["steps"]] == ["completed", "pending"]
+        await update_goal(plan_id, step_index=1, step_status="completed", note="已核验")
+        archived = json.loads(await tools.get_goal(plan_id))["goal"]
+        assert archived["archive_reason"] == "all_steps_completed"
+        assert [s["note"] for s in archived["steps"]] == ["已制作", "已核验"]
+        assert len([r for r in await store.list_audit(memory_id=archived["memory_id"]) if r["action"] == "archive"]) == 1
+        assert json.loads(await tools.get_goal(other["goal_id"]))["goal"] == other
+    finally:
+        await _teardown(store)
 
 
 class TestCancelPlan:
-    async def test_cancel_converges_steps(self, tmp_path):
-        """cancel_plan 标记 cancelled 的同时把 in_progress 步骤收敛为 skipped。"""
+    async def test_explicit_cancel_archives_original_steps(self, tmp_path):
         store, tracker = await _setup(tmp_path)
-        captured: list[dict] = []
-
-        async def _capture(payload):
-            captured.append(payload)
-
-        event_bus.on(EVENT_PLAN_STEP_UPDATED, _capture, owner="test.tracker")
         try:
-            plan_id = await tracker.submit_plan(
-                SCOPE, "目标", tracker.parse_steps("a|b"),
-            )
-            assert await tracker.cancel_plan(SCOPE, plan_id) is True
-            await asyncio.sleep(0.05)
-
-            _, goal = await tracker.find_goal_by_id(plan_id)
-            assert goal["status"] == "cancelled"
-            assert [s["status"] for s in goal["steps"]] == ["skipped", "skipped"]
-            # in_progress → skipped 的步骤事件已发射
-            assert any(
-                c["plan_id"] == plan_id and c["step_status"] == "skipped"
-                for c in captured
-            )
+            gid = await tracker.submit_plan(SCOPE, "目标", tracker.parse_steps("a|b"))
+            active = await tracker.get_active_plan(SCOPE)
+            assert await tracker.cancel_plan(SCOPE, gid)
+            entry, archived = await tracker.find_goal_by_id(gid, include_archived=True)
+            assert entry.archive_reason == "explicit_cancelled"
+            assert archived["status"] == "cancelled" and archived["steps"] == active["steps"]
+            assert await tracker.get_active_plan(SCOPE) is None
         finally:
-            event_bus.off_by_owner("test.tracker")
             await _teardown(store)
 
     async def test_cancel_unknown_plan_returns_false(self, tmp_path):
@@ -290,41 +92,3 @@ class TestUpdateGoalMetadata:
         assert not _is_user_facing("reflect")
         assert not _is_user_facing("reflect:abc12345")
         assert _is_user_facing("user_webui:u1")
-
-
-class TestPersistDebounce:
-    async def test_persist_skips_when_only_timestamp_changes(self, tmp_path):
-        """_persist 去抖：语义内容未变（仅 updated_at 漂移）时不落库。"""
-        store, tracker = await _setup(tmp_path)
-        try:
-            plan_id = await tracker.submit_plan(SCOPE, "目标", tracker.parse_steps("a"))
-            entry, goal = await tracker.find_goal_by_id(plan_id)
-            assert entry is not None and goal is not None
-            version_before = entry.version
-
-            await tracker._persist(entry, goal)
-
-            reloaded, _ = await tracker.find_goal_by_id(plan_id)
-            assert reloaded is not None
-            assert reloaded.version == version_before
-        finally:
-            await _teardown(store)
-
-    async def test_persist_writes_on_real_change(self, tmp_path):
-        """_persist 真实变更：步骤状态推进正常落库并刷新 updated_at。"""
-        store, tracker = await _setup(tmp_path)
-        try:
-            plan_id = await tracker.submit_plan(SCOPE, "目标", tracker.parse_steps("a|b"))
-            entry, goal = await tracker.find_goal_by_id(plan_id)
-            assert entry is not None and goal is not None
-            version_before = entry.version
-
-            goal["steps"][0]["status"] = "completed"
-            await tracker._persist(entry, goal)
-
-            reloaded, reloaded_goal = await tracker.find_goal_by_id(plan_id)
-            assert reloaded is not None and reloaded_goal is not None
-            assert reloaded.version == version_before + 1
-            assert reloaded_goal["steps"][0]["status"] == "completed"
-        finally:
-            await _teardown(store)

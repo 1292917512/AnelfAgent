@@ -254,6 +254,15 @@
   "goalDescPlaceholder": "Goal description (optional)",
   "createGoal": "Create Goal",
   "goalStatusActive": "Active",
+  "goalStatusCompleted": "Completed",
+  "goalStatusCancelled": "Cancelled",
+  "restoreArchivedGoal": "Restore from archive",
+  "goalArchived": "Archive reason: {{reason}}",
+  "goalArchiveReason": {
+    "all_steps_completed": "All steps completed",
+    "explicit_completed": "Explicitly marked complete",
+    "explicit_cancelled": "Explicitly cancelled"
+  },
   "goalStatusAll": "All",
   "stepPending": "Pending",
   "stepInProgress": "In Progress",

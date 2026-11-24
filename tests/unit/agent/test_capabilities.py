@@ -99,6 +99,7 @@ class TestChainRouting:
         else:
             monkeypatch.setattr(sound, "_router", None)
             router = sound.get_sound_router()
+        ConfigManager.set(f"model_fallback_{kind}", False)
         caps = frozenset({capability})
         # 内置模型链抛异常，组件也可返回含诊断的失败结果。
         primary = _FakeProvider("models", caps, error=ProviderChainError("offline", {"primary": "HTTP 503"}))
@@ -115,6 +116,42 @@ class TestChainRouting:
         ConfigManager.set(f"model_fallback_{kind}", True)
         result = await router.run(capability, "test")
         assert result["provider"] == "component" and result["fallback_from"] == ["models"]
+        router.register(primary)
+        result = await router.run(capability, "test")
+        assert result["fallback_from"] == ["models"]
+        assert result["provider_model_errors"] == {"models": {"primary": "HTTP 503"}}
+
+    @pytest.mark.parametrize("fallback", [True, False])
+    async def test_vision_timeout_uses_provider_policy_and_reports_actual_route(self, monkeypatch, fallback):
+        import asyncio
+
+        from agent.vision import capabilities as visual
+        from core.config import ConfigManager
+
+        monkeypatch.setattr(visual, "_router", None)
+        router = visual.get_visual_router()
+        slow = _FakeProvider("slow", frozenset({"understand"}))
+        backup = _FakeProvider("backup", slow.capabilities, result={"model": "ocr-v2", "description": "文字"})
+        stopped = asyncio.Event()
+
+        async def delayed(*args, **kwargs):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                stopped.set()
+
+        monkeypatch.setattr(slow, "run", delayed)
+        router.register(slow)
+        router.register(backup)
+        ConfigManager.set("vision_provider_priority", {"understand": ["slow", "backup"]})
+        ConfigManager.set("vision_understand_provider_policy", {"slow": {"timeout": 0.02, "fallback": fallback}})
+        result = await router.run("understand", "识图")
+        assert stopped.is_set() and result["success"] is fallback
+        if fallback:
+            assert result["provider"] == "backup" and result["model"] == "ocr-v2"
+            assert result["fallback_from"] == ["slow"] and "TimeoutError" in result["primary_error"]
+        else:
+            assert result["cause"] == "timeout" and not backup.calls
 
     async def test_failure_payload_falls_back_without_claiming_success(self, router):
         router.register(_FakeProvider("models", frozenset({"tts"}), result={"error": "HTTP 503"}))

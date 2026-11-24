@@ -62,7 +62,7 @@ class TestRender:
         content = await _render()
         assert "1/2 步" in content
         assert "✓a" in content
-        assert "▶b" in content  # 自动推进：下一步 in_progress
+        assert "○b" in content
 
     async def test_terminal_goals_vanish(self, store):
         """完成/删除后的目标不再注入（快照与存储严格同步）。"""
@@ -201,7 +201,7 @@ class TestUpdateGoalValidation:
         assert "completed" in result["hint"]
 
     async def test_goal_status_only_update_still_works(self, store):
-        """仅更新整体状态（step_index=-1）不受校验影响；终态即清删除条目。"""
+        """仅更新整体状态可归档目标，查询活动目标时不再返回。"""
         from agent.planning import tracker as _tracker
 
         raw = await planning_tools.create_goal("目标", steps="a")
@@ -234,6 +234,18 @@ async def test_description_and_pending_step_note_refresh_together(store):
     assert "先实证登录态" not in text
 
 
+async def test_focus_surfaces_old_goal_and_matching_note_within_budget(store):
+    goal = json.loads(await planning_tools.create_goal("测量", steps="校验"))["goal"]
+    note = "旧背景。" * 800 + "光谱校准只在周三进行。" + "其他条件。" * 300
+    await update_goal(goal["goal_id"], step_index=0, note=note)
+    for index in range(7):
+        await planning_tools.create_goal(f"其他项目{index}", description="无关长备注" * 100)
+    text = await situation._provide("user_qq:1", focus="光谱校准有什么条件？")
+    assert text is not None
+    assert "光谱校准只在周三进行" in text and "get_goal" in text
+    assert "无关长备注" not in text and len(text) <= 1400
+
+
 async def test_goal_write_conflict_does_not_report_success_or_advance(store, monkeypatch):
     from unittest.mock import AsyncMock
     goal = json.loads(await planning_tools.create_goal("目标", steps="第一步|第二步"))["goal"]
@@ -242,3 +254,20 @@ async def test_goal_write_conflict_does_not_report_success_or_advance(store, mon
     assert not result.get("success") and result.get("error")
     stored = json.loads((await tracker.find_goal_by_id(goal["goal_id"]))[0].content)
     assert [step["status"] for step in stored["steps"]] == ["pending", "pending"]
+
+
+async def test_detail_budget_reserves_the_visible_goal_ids_and_history_pointer(store):
+    ids = []
+    for index in range(4):
+        ids.append(json.loads(await planning_tools.create_goal(f"周报{index}"))["goal"]["goal_id"])
+    for index in range(2):
+        steps = "|".join("资料核验" * 8 + str(i) for i in range(8))
+        title = "资料" * 50 + f"光谱{index}" + "项目" * 50
+        goal = json.loads(await planning_tools.create_goal(title, description="光谱校准" * 150, steps=steps))["goal"]
+        ids.append(goal["goal_id"])
+        for step in (0, 1):
+            await update_goal(goal["goal_id"], step_index=step, note="光谱测量" * 100)
+    visible = await situation._provide("user_qq:1", "光谱")
+    assert visible and len(visible) <= 1400
+    assert sum(goal_id in visible for goal_id in ids) == 5 and "list_goals" in visible
+    assert "光谱0" in visible and "光谱1" in visible

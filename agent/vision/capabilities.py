@@ -9,23 +9,31 @@
 内部模型利用：内置 ``models`` 提供者桥接模型配置（llm_clients.json）中
 vision/image_gen/image_edit/video 类型的模型优先级链；第三方组件经
 entities._sdk.register_visual_provider 挂入同一路由（即插即用）。
+
+模型可见：辅助识别回执包含实际模型与降级前的错误。
+Token：只有降级时增加逐次诊断；缓存：仅影响动态工具结果。
 """
 
 from __future__ import annotations
 
-from typing import Any, Awaitable, Callable, Dict, Optional
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, Optional
 
 from agent.capabilities import (
     CapabilityNotSupported,
     CapabilityRouter,
     ProviderChainError,
+    ProviderPolicy,
     ProviderUnavailable,
     run_media_capability,
 )
 from agent.llm.config import ModelType
 from agent.llm.fallback import fallback_enabled
 from agent.llm.image_adapters import ImageResults
+from core.config import ConfigManager
 from core.log import log
+
+if TYPE_CHECKING:
+    from agent.llm.model_execution import ModelResult
 
 CAP_UNDERSTAND = "understand"
 CAP_IMAGE_GEN = "image_gen"
@@ -47,6 +55,20 @@ _LOG_TAG = "视觉"
 def _mgr() -> Any:
     from agent.llm import get_llm_manager
     return get_llm_manager()
+
+
+async def _recognition_result(call: Awaitable[ModelResult[str]]) -> dict[str, Any]:
+    """将模型识别结果映射为提供者回执，保留本地配置 ID、请求模型和失败明细。"""
+    from agent.llm.llm_client import LLMNotConfiguredError
+    from agent.llm.model_execution import ModelCallError
+
+    try:
+        result = await call
+    except LLMNotConfiguredError as exc:
+        raise ProviderUnavailable(str(exc)) from exc
+    except ModelCallError as exc:
+        raise ProviderChainError(str(exc), exc.errors) from exc
+    return {**result.details, "model": result.model_id, "upstream_model": result.model, "description": result.value}
 
 
 class ModelsVisualProvider:
@@ -103,27 +125,18 @@ class ModelsVisualProvider:
         if is_video_path(image_path):
             return await self._run_video_understand(image_path, prompt)
 
-        from agent.llm.llm_client import LLMNotConfiguredError
         from agent.llm.model_api import ModelAPI
-        from agent.llm.model_execution import ModelCallError
         from agent.llm.types import ImageContent
 
         models = ModelAPI(_mgr())
         if not models.list_models("vision"):
             raise ProviderUnavailable("未配置视觉模型")
         img = ImageContent(data=image_path, is_url=image_path.startswith(("http://", "https://")))
-        try:
-            result = await models.describe_images([img], prompt=prompt)
-        except LLMNotConfiguredError as exc:
-            raise ProviderUnavailable(str(exc)) from exc
-        except ModelCallError as exc:
-            raise ProviderChainError(str(exc), exc.errors) from exc
-        return {"description": result.value, "model": result.model_id}
+        return await _recognition_result(models.describe_images([img], prompt=prompt))
 
     async def _run_video_understand(self, video_path: str, prompt: str) -> Dict[str, Any]:
         """下载或读取视频后交给统一模型接口，仅使用支持视频理解的视觉候选。"""
         from agent.llm.image_utils import download_video_to_base64, load_video_from_path
-        from agent.llm.llm_client import LLMNotConfiguredError
         from agent.llm.model_api import ModelAPI
 
         manager = _mgr()
@@ -135,11 +148,7 @@ class ModelsVisualProvider:
                 raise RuntimeError(f"无法下载视频（链接可能已过期）: {video_path[:100]}")
         else:
             video = load_video_from_path(video_path)
-        try:
-            result = await ModelAPI(manager).describe_video(video, prompt=prompt)
-        except LLMNotConfiguredError as exc:
-            raise ProviderUnavailable(str(exc)) from exc
-        return {"description": result.value, "model": result.model_id}
+        return await _recognition_result(ModelAPI(manager).describe_video(video, prompt=prompt))
 
     # ------------------------------------------------------------------
     # 图像生成 / 编辑 / 视频生成
@@ -225,6 +234,16 @@ class ModelsVisualProvider:
 _router: Optional[CapabilityRouter] = None
 
 
+def _recognition_policy(capability: str, provider: str) -> ProviderPolicy:
+    """读取识别提供者的总时限与失败处理；链顺序由已有优先级配置决定。"""
+    if capability != CAP_UNDERSTAND:
+        return ProviderPolicy()
+    policies = ConfigManager.get("vision_understand_provider_policy", {})
+    if not isinstance(policies, dict):
+        raise ValueError("vision_understand_provider_policy 必须是按提供者名称索引的 JSON 对象")
+    return ProviderPolicy.model_validate(policies.get(provider, {}))
+
+
 def get_visual_router() -> CapabilityRouter:
     """视觉能力路由器单例（内部 models 提供者随首次获取注册）。"""
     global _router
@@ -234,6 +253,7 @@ def get_visual_router() -> CapabilityRouter:
             default_chain=["models"],
             log_tag=_LOG_TAG,
             allow_fallback=lambda cap: cap in _CAPABILITY_MODEL_TYPE and fallback_enabled(_CAPABILITY_MODEL_TYPE[cap]),
+            provider_policy=_recognition_policy,
         )
         _router.register(ModelsVisualProvider())
     return _router

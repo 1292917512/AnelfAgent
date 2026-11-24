@@ -153,12 +153,15 @@ export const memoryApi = {
     delete: (path: string) => api.delete("/memory/documents", { params: { path } }),
   },
   goals: {
-    list: (status = "all") => api.get<{ goals: GoalData[] }>("/memory/goals", { params: { status } }),
+    list: (status = "all", includeArchived = false) =>
+      api.get<{ goals: GoalData[] }>("/memory/goals", { params: { status, include_archived: includeArchived } }),
     get: (goalId: string) => api.get(`/memory/goals/${encodeURIComponent(goalId)}`),
     create: (title: string, description = "", steps?: string[], due_time?: string, recurring?: boolean) =>
       api.post("/memory/goals", { title, description, steps, ...(due_time ? { due_time } : {}), ...(recurring ? { recurring } : {}) }),
     update: (goalId: string, data: GoalUpdate) =>
       api.put(`/memory/goals/${encodeURIComponent(goalId)}`, data),
+    restore: (goalId: string, version: number) =>
+      api.post<{ ok: boolean }>(`/memory/goals/${encodeURIComponent(goalId)}/restore`, { expected_version: version }),
     delete: (goalId: string) => api.delete(`/memory/goals/${encodeURIComponent(goalId)}`),
   },
 };

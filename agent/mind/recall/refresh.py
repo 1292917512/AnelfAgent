@@ -12,7 +12,7 @@ import hashlib
 from typing import TYPE_CHECKING, Any
 
 from agent.context.observation import context_skills
-from agent.judgment.evidence import conversation_evidence, dialogue_messages
+from agent.judgment.evidence import conversation_evidence, dialogue_messages, latest_user_text
 from agent.judgment.gate import assess_optional_work
 from agent.memory.memory_retriever import MemoryRetriever
 from agent.memory.probe import deep_probe_hub
@@ -45,7 +45,7 @@ class DialogueRecollection:
 
     @staticmethod
     def _key(conversation: list[dict[str, Any]]) -> str:
-        text = next((message["content"] for message in reversed(dialogue_messages(conversation)) if message["role"] == "user"), "")
+        text = latest_user_text(conversation)
         return hashlib.sha256(" ".join(text.split()).casefold().encode()).hexdigest()
 
     def offer(self, conversation: list[dict[str, Any]], *, watermark: tuple[int, int]) -> None:

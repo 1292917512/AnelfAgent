@@ -22,12 +22,20 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from core.tags import tag_label
 
 from .memory_types import MemorySearchResult, excerpt
+from .passages import PassageQuery
 from .provenance import origins_from, visible_provenance
 from .store._shared import temporal_is_past
 from .store.tag_intel import ENTITY_PREFIXES
 
 if TYPE_CHECKING:
     from .graph.store import GraphStore
+
+
+def render_profile_excerpt(text: str, query: PassageQuery, pointer: str) -> str:
+    """相关画像展开至 360 字，其他画像保留 96 字概览；省略时提供原文入口。"""
+    limit = 360 if query.score(text) else 96
+    passage = query.excerpt(text, limit)
+    return f"{passage}（全文 {pointer}）" if len(text) > limit else passage
 
 
 async def load_entity_nodes(

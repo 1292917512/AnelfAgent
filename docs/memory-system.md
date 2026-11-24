@@ -807,6 +807,6 @@ user、group 和 agent:self；`profile_history` 按需查看来源、理由、�
 | 机制 | 位置 | 说明 |
 |------|------|------|
 | temporal_scope 时间语义 | `store/_shared.py::temporal_is_past/temporal_weight` + 检索评分 + 行尾注 | event 提取输出 temporal_scope（episode/state/pattern 白名单）+ `activity_date`。读时判定超期（state 7 天 / episode 3 天，pattern 永不）→ 注入行追加「过去时·可能已变」尾注 + 检索整体降权（`memory_temporal_expired_weight` 0.5，聊往事仍可低权命中，淘汰仍归遗忘曲线）；memorize 工具补 temporal_scope 参数 |
-| 防复读 | `agent/memory/anti_repeat.py` + freshness 块（VOL_SESSION+2） | 生成侧软提示：近期 AI 回复 df≥3 的高频 ngram top5 引导全部回复周期换角度；出站侧的重复内容由「出站事实」provider 动态注入覆盖（见[频道分册](channels-and-scopes.md)） |
+| 防复读 | `agent/memory/anti_repeat.py` + freshness 块（VOL_SESSION+2） | 从当前会话的助手回复中按词性和 TF-IDF 提取关键词。每条回复对同一词计一次，先按覆盖回复数、再按累计权重排序，默认至少 3 条、最多展示 5 词。只在重复逗号开场中出现的独立称呼不计入正文。 |
 | importance 校准 | `auto_capture._EXTRACT_PROMPT` 校准表 + memorize 工具描述 + `self_profile.PROFILE_MEMORY_IMPORTANCE` | 提取侧锚点表（0.9+ 身份级/明确「记住这个」，0.8 长期偏好与承诺，0.7 阶段动态，0.6 线索，0.5 弱线索不预过滤）；画像 ENTITY 镜像 importance 统一 0.9（身份级事实，由 ProfileWriter 统一维护） |
 | 事件时间本体 | `agent/memory/auto_capture.py` | event 提取输出 temporal_scope（白名单校验，未提供则留空）落 metadata；date 落 `activity_date` |

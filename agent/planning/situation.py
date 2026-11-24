@@ -10,7 +10,7 @@
 
 Model Experience:
 - 模型看到什么：当前会话可见的活跃目标/计划快照（goal_id/标题/步骤进度/
-  步骤状态、描述与待办备注，当前执行计划置顶），每轮刷新；reflect（任务/子代理）scope
+  当前计划和命中本轮问题的目标附步骤、描述与待办备注，其余留查询指针），每轮刷新；reflect（任务/子代理）scope
   不注入，保持 lean 精简语义
 - token 影响：无活跃目标时零注入；有目标时受渲染上限约束（数百字符，
   provider 预算再兜底）
@@ -25,8 +25,9 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
+from agent.memory.passages import PassageQuery
 from agent.planning.goals import iter_goals
-from agent.planning.tracker import PLAN_KIND, planning_store_port
+from agent.planning.tracker import PLAN_KIND, get_planning_store
 from core.config import register_configs_safe
 from core.context_provider import ContextProviderRegistry, ProviderMeta
 from core.log import log
@@ -136,14 +137,14 @@ def _parse_goal(entry: Any, data: dict[str, Any] | None = None) -> Optional[_Goa
         updated_days = 0.0
     return _GoalView(
         goal_id=goal_id,
-        title=sanitize_for_context(str(data.get("title", "")), max_chars=_TITLE_CHARS),
-        description=sanitize_for_context(str(data.get("description", "")), max_chars=200),
+        title=str(data.get("title", "")),
+        description=str(data.get("description") or ""),
         step_notes=[
-            sanitize_for_context(f"{step.get('content', '')}: {step['note']}", max_chars=180)
+            f"{step.get('content', '')}: {step['note']}"
             for step in (raw_steps if isinstance(raw_steps, list) else [])
             if isinstance(step, dict) and step.get("note")
             and step.get("status") in ("pending", "in_progress")
-        ][:2],
+        ],
         is_plan=is_plan,
         plan_scope=str(metadata.get("scope", "")) if is_plan else "",
         steps=steps,
@@ -155,14 +156,15 @@ def _parse_goal(entry: Any, data: dict[str, Any] | None = None) -> Optional[_Goa
 
 async def _rebuild() -> _Snapshot:
     """从存储重建全局快照（查询失败原样上抛，由调用方降级）。"""
-    store = planning_store_port.get() if planning_store_port.bound else None
+    version = _version
+    store = get_planning_store()
     goals: List[_GoalView] = []
     if store is not None:
         async for entry, goal in iter_goals(store, status="active"):
             view = _parse_goal(entry, goal)
             if view is not None:
                 goals.append(view)
-    return _Snapshot(version=_version, built_at=time.monotonic(), goals=goals)
+    return _Snapshot(version=version, built_at=time.monotonic(), goals=goals)
 
 
 async def ensure_snapshot() -> _Snapshot:
@@ -180,22 +182,31 @@ async def ensure_snapshot() -> _Snapshot:
 # 渲染（纯内存）
 # ------------------------------------------------------------------
 
-def _goal_line(goal: _GoalView) -> str:
-    kind = "执行计划" if goal.is_plan else "目标"
-    progress = f"（{goal.done}/{goal.total} 步）" if goal.total else ""
-    line = f"[{goal.goal_id}] {kind} · {goal.title}{progress}"
-    if not goal.steps:
-        return line
+def _goal_details(goal: _GoalView, query: PassageQuery) -> str:
+    """渲染相关步骤、描述和待办备注，保留步骤的原有顺序。"""
+    steps = goal.steps
+    if len(steps) > _MAX_STEPS:
+        def priority(index: int) -> tuple[bool, int, bool]:
+            status, content = goal.steps[index]
+            return status == "in_progress", query.score(content), status == "pending"
+
+        selected = sorted(range(len(steps)), key=priority, reverse=True)[:_MAX_STEPS]
+        steps = [steps[i] for i in sorted(selected)]
     marks = " ".join(
-        f"{_STEP_MARKS.get(status, '·')}{sanitize_for_context(content, max_chars=_STEP_CHARS)}"
-        for status, content in goal.steps[:_MAX_STEPS]
+        f"{_STEP_MARKS.get(status, '·')}{query.excerpt(content, _STEP_CHARS)}"
+        for status, content in steps
     )
     if len(goal.steps) > _MAX_STEPS:
         marks += f" …（余 {len(goal.steps) - _MAX_STEPS} 步）"
-    return f"{line}: {marks}"
+    details = [f"  步骤: {marks}"] if marks else []
+    if goal.description:
+        details.append(f"  描述: {query.excerpt(goal.description, 200)}")
+    notes = sorted(goal.step_notes, key=query.score, reverse=True)
+    details.extend(f"  步骤备注: {query.excerpt(note, 180)}" for note in notes[:2])
+    return "\n".join(details)
 
 
-def render(scope: str) -> str:
+def render(scope: str, focus: str = "") -> str:
     """渲染指定会话可见的规划态势（无目标或非用户会话 scope 返回空）。
 
     当前 scope 的执行计划（present_plan）置顶，长期目标随后；
@@ -207,26 +218,44 @@ def render(scope: str) -> str:
     visible = [g for g in snap.goals if not (g.plan_scope and g.plan_scope != scope)]
     if not visible:
         return ""
-    ordered = [g for g in visible if g.is_plan] + [g for g in visible if not g.is_plan]
+    query = PassageQuery.from_text(focus)
+
+    def priority(goal: _GoalView) -> tuple[bool, bool, int, int]:
+        body = " ".join([goal.description, *goal.step_notes, *(step for _, step in goal.steps)])
+        return bool(query.score(goal.goal_id)), goal.is_plan, query.score(goal.title), query.score(body)
+
+    ranked = sorted(((priority(g), g) for g in visible), key=lambda item: item[0], reverse=True)
     lines = [
         f"[规划态势] 进行中的目标 {len(visible)} 个（每轮刷新，goal_id 以此为准；"
         "备注中的等待条件须先核实；get_goal 查看全文，update_goal 记录实际结果）：",
     ]
-    for goal in ordered[:_MAX_GOALS]:
-        lines.append(("▸ " if goal.is_plan else "• ") + _goal_line(goal))
-        if goal.description:
-            lines.append(f"  描述: {goal.description}")
-        lines.extend(f"  步骤备注: {note}" for note in goal.step_notes)
-    if len(ordered) > _MAX_GOALS:
-        lines.append(f"…另有 {len(ordered) - _MAX_GOALS} 个目标（list_goals 查看全部）")
-    return "\n".join(lines)[:_MAX_RENDER_CHARS]
+    details_by_line: dict[int, str] = {}
+    for index, (rank, goal) in enumerate(ranked[:_MAX_GOALS]):
+        kind = "▸ 执行计划" if goal.is_plan else "• 目标"
+        progress = f"（{goal.done}/{goal.total} 步）" if goal.total else ""
+        lines.append(f"{kind} [{goal.goal_id}] {query.excerpt(goal.title, _TITLE_CHARS)}{progress}")
+        if goal.is_plan or (index < 2 and any(rank)) or (not focus and len(visible) == 1):
+            details = _goal_details(goal, query)
+            if details:
+                details_by_line[len(lines) - 1] = details
+    if len(ranked) > _MAX_GOALS:
+        lines.append(f"…另有 {len(ranked) - _MAX_GOALS} 个目标（list_goals 查看全部）")
+    # 先预留每条目标的身份与进度，再由相关目标共享剩余的明细预算。
+    remaining = _MAX_RENDER_CHARS - len("\n".join(lines))
+    for index, (line, detail) in enumerate(details_by_line.items()):
+        limit = remaining // (len(details_by_line) - index) - 1
+        if limit >= 3:
+            excerpt = query.excerpt(detail, limit)
+            lines[line] += "\n" + excerpt
+            remaining -= len(excerpt) + 1
+    return "\n".join(lines)
 
 
 # ------------------------------------------------------------------
 # 消费面（provider 注入 / 错误简报 / 态势收集）
 # ------------------------------------------------------------------
 
-async def _provide(scope: str) -> Optional[str]:
+async def _provide(scope: str, focus: str = "") -> Optional[str]:
     """provider 注入口：确保快照新鲜后按 scope 渲染（失败降级为不注入）。"""
     if not scope or scope.startswith("reflect"):
         return None
@@ -235,7 +264,7 @@ async def _provide(scope: str) -> Optional[str]:
     except Exception as exc:
         log(f"规划态势快照重建失败（本轮不注入）: {exc}", "DEBUG", tag="规划")
         return None
-    return render(scope) or None
+    return render(scope, focus) or None
 
 
 async def active_goal_briefs() -> List[Dict[str, str]]:
@@ -248,7 +277,7 @@ async def active_goal_briefs() -> List[Dict[str, str]]:
     return [
         {
             "goal_id": g.goal_id,
-            "title": g.title,
+            "title": sanitize_for_context(g.title, max_chars=_TITLE_CHARS),
             "progress": f"{g.done}/{g.total} 步",
         }
         for g in snap.goals[:8]
@@ -262,7 +291,8 @@ async def active_goal_lines() -> List[str]:
     except Exception as exc:
         log(f"活跃目标摘要构建失败: {exc}", "DEBUG", tag="规划")
         return []
-    return [f"{g.goal_id}: {g.title} ({g.done}/{g.total} 步)" for g in snap.goals[:10]]
+    return [f"{g.goal_id}: {sanitize_for_context(g.title, max_chars=_TITLE_CHARS)} ({g.done}/{g.total} 步)"
+            for g in snap.goals[:10]]
 
 
 async def stale_goal_line() -> str:
@@ -306,6 +336,7 @@ def _register_provider() -> None:
         group="planning",
         inject_key="goals_inject_enabled",
         provide_fn=_provide,
+        accepts_focus=True,
         description="规划态势：活跃目标/计划快照（goal_id + 步骤进度，每轮刷新）",
     ))
 

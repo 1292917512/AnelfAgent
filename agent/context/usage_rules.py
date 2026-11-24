@@ -27,8 +27,8 @@ PLAN_USAGE_RULES = (
     "2. 需要计划时用 present_plan 保存可追踪步骤，避免另写重复的计划正文。\n"
     "3. present_plan(goal, steps, files, risks) 调用后立即返回 plan_id，无需等待用户批准，直接开始执行。\n"
     "4. 工具调用次数不代表计划进度。查状态、准备材料、调用失败都不能把目标步骤标成完成。\n"
-    "5. 根据执行结果调用 update_goal(goal_id=plan_id, step_index=i, step_status='completed', note='实际完成证据') 标记已完成步骤。\n"
-    "6. 全部步骤确认完成后才可结束；会话结束时尚未确认的步骤标记为 skipped，计划按未完成取消收束，不报告成功。\n"
+    "5. 用最近一次目标回执的 version 和 step_id 调用 update_goal，传入 expected_version、step_status 和实际完成证据。\n"
+    "6. 按实际证据只更新对应步骤，未完成或中断时保留原进度。全部步骤 completed 后自动归档；提前结束须显式设置目标状态。\n"
     "7. 用户可在浮窗中取消计划，你会收到中断信号，需立即停止后续步骤。\n"
     "8. 已有计划或已有独立任务状态时沿用原记录，不重复建计划。"
 )

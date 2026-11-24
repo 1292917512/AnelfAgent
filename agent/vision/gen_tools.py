@@ -17,6 +17,7 @@ import json
 import os
 from typing import Any, Dict, Optional
 
+from agent.capabilities import ProviderPolicy
 from agent.utils import workspace as ws
 from agent.vision.capabilities import (
     VISUAL_CAPABILITIES,
@@ -113,6 +114,9 @@ async def _recognize_visual(media_path: str, prompt: str, provider: str, kwargs:
             image_path=media_path, prompt=desc_prompt,
         )
         if out.get("success"):
+            # 长 OCR 结果在后台通知中可能被截断，先展示实际路由与失败原因。
+            if "description" in out:
+                out["description"] = out.pop("description")
             out["image_path"] = media_path
         return _dumps(out)
 
@@ -433,7 +437,8 @@ async def vision_config(action: str = "capabilities", key: str = "", value: str 
         key: set 时必填。可选：default_image_size / default_video_resolution /
             default_video_duration / style_presets.<预设名> /
             provider_priority.<能力名>（value 为 JSON 数组如 '["models"]'，
-            能力名: understand/image_gen/image_edit/video）
+            能力名: understand/image_gen/image_edit/video）/
+            understand_provider_policy.<提供者名>（JSON 对象，可设 timeout 秒数、fallback 布尔值，{} 恢复默认）
         value: set 时必填，配置值（provider_priority 用 JSON 数组字符串）
     """
     from agent.config import save_config_value
@@ -445,6 +450,7 @@ async def vision_config(action: str = "capabilities", key: str = "", value: str 
     if action == "get":
         return _dumps({"success": True, "config": {
             "provider_priority": ConfigManager.get("vision_provider_priority", {}),
+            "understand_provider_policy": ConfigManager.get("vision_understand_provider_policy", {}),
             "default_image_size": get_default_param("image_size", "1024x1024"),
             "default_video_resolution": get_default_param("video_resolution", ""),
             "default_video_duration": get_default_param("video_duration", 0),
@@ -484,6 +490,28 @@ async def vision_config(action: str = "capabilities", key: str = "", value: str 
     if not key.strip():
         return tool_error("set 操作必须提供 key", cause=ErrorCause.PARAM, retryable=False)
     key = key.strip()
+
+    if key.startswith("understand_provider_policy."):
+        name = key.split(".", 1)[1].strip()
+        impl = router.get(name)
+        if impl is None or "understand" not in impl.capabilities:
+            return tool_error(f"未知识别提供者：{name}", cause=ErrorCause.PARAM, retryable=False)
+        try:
+            options = ProviderPolicy.model_validate_json(value).model_dump(exclude_unset=True)
+        except ValueError:
+            return tool_error("策略须为 JSON 对象，timeout 为有限正秒数，fallback 为布尔值",
+                              cause=ErrorCause.PARAM, retryable=False)
+        current = ConfigManager.get("vision_understand_provider_policy", {})
+        if not isinstance(current, dict):
+            return tool_error("识别路由策略必须是按提供者名称索引的 JSON 对象",
+                              cause=ErrorCause.CONFIG, retryable=False)
+        policies = current.copy()
+        if options:
+            policies[name] = options
+        else:
+            policies.pop(name, None)
+        save_config_value("vision_understand_provider_policy", policies)
+        return _dumps({"success": True, "key": key, "value": options})
 
     if key in _SCALAR_KEYS:
         config_key = _SCALAR_KEYS[key]
@@ -528,4 +556,4 @@ async def vision_config(action: str = "capabilities", key: str = "", value: str 
 
     return tool_error(f"不支持的配置键: {key}", cause=ErrorCause.PARAM, retryable=False,
                       hint="可选: default_image_size / default_video_resolution / "
-                           "default_video_duration / style_presets.<名> / provider_priority.<能力>")
+                           "default_video_duration / style_presets.<名> / provider_priority.<能力> / understand_provider_policy.<提供者>")

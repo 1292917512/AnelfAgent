@@ -22,7 +22,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Coroutine, Dict, List, Optional, Tuple, TypeVar
 
-from agent.judgment.evidence import dialogue_messages
+from agent.judgment.evidence import dialogue_messages, iter_dialogue
 from core.config import get_config_bool
 from core.log import log
 from core.sanitizer import truncate_middle
@@ -37,9 +37,10 @@ from .memory_types import (
     MemoryType,
     RetrievalPlan,
 )
+from .passages import PassageQuery
 from .probe import deep_probe_hub
 from .probe_render import RecallDelta
-from .recall_format import format_recall_line, load_entity_nodes
+from .recall_format import format_recall_line, load_entity_nodes, render_profile_excerpt
 from .store.tag_intel import ASSOC_PREFIXES
 
 if TYPE_CHECKING:
@@ -195,7 +196,8 @@ class MemoryRetriever:
             return task
 
         try:
-            profiles_task = track(self._load_entity_profiles(all_scopes))
+            focus_query = self._extract_focus_query(conversation)
+            profiles_task = track(self._load_entity_profiles(all_scopes, focus_query))
 
             query = self._extract_query(conversation)
             if not query:
@@ -269,8 +271,6 @@ class MemoryRetriever:
                     self.plan_retrieval(query, timeout=plan_budget))
                 # 提及识别是本地 FTS 查询（毫秒级），先完成供全部 lane 共享标签
                 mention_tags = await _mentions()
-                focus_query = self._extract_focus_query(conversation)
-
                 partial_lanes: dict[asyncio.Future, List[MemorySearchResult]] = {}
 
                 async def _query_search(
@@ -498,7 +498,7 @@ class MemoryRetriever:
             log("_resolve_scope_alias 异常已忽略", "DEBUG")
         return scope
 
-    async def _load_entity_profiles(self, scopes: List[str]) -> List[Dict]:
+    async def _load_entity_profiles(self, scopes: List[str], focus: str = "") -> List[Dict]:
         """加载多个实体的画像记忆，按 scope 分组标注。
 
         多个 alias 指向同一 primary 时自动去重，仅加载一次；
@@ -528,17 +528,23 @@ class MemoryRetriever:
 
         loaded = await asyncio.gather(*(_load_one(p) for p in resolved_map))
 
-        # 每实体一条独立消息、按 scope 排序：实体间字节互不干扰，
-        # 参与人不变时整块画像字节稳定（缓存/快照 diff 友好）
         from core.sanitizer import sanitize_for_context
+        from core.tags import tag_label
+
+        query = PassageQuery.from_text(focus)
+
+        def profile_order(item: tuple[str, str, list[MemoryEntry]]) -> tuple[int, str]:
+            scope, _, entries = item
+            return -query.score("\n".join([scope, *(entry.content for entry in entries)])), scope
+
         messages: List[Dict] = []
         loaded_count = 0
-        for primary_scope, source, entries in sorted(loaded, key=lambda item: item[0]):
+        for primary_scope, source, entries in sorted(loaded, key=profile_order):
             if not entries:
                 continue
             entity_id = primary_scope.split("_", 1)[1] if "_" in primary_scope else primary_scope
-            scope_label = f"[uid:{entity_id}]" if primary_scope.startswith("user_") else f"[group_id:{entity_id}]"
-            body = "\n---\n".join(e.content for e in entries)
+            scope_label = tag_label("uid" if primary_scope.startswith("user_") else "group_id", entity_id)
+            body = "\n---\n".join(render_profile_excerpt(e.content, query, f"get_memory(memory_id={e.id})") for e in entries)
             messages.append({
                 "role": "system",
                 "content": sanitize_for_context(
@@ -627,17 +633,11 @@ class MemoryRetriever:
             return ""
         texts: list[str] = []
         remaining = max_chars
-        for msg in reversed(dialogue_messages(conversation)):
-            role = msg.get("role", "")
-            if role not in ("user", "assistant"):
-                continue
-            content = msg.get("content", "")
-            if not isinstance(content, str) or not content.strip():
-                continue
-            cleaned = _strip_tags(content)
+        for msg in iter_dialogue(reversed(conversation)):
+            cleaned = _strip_tags(msg["content"])
             if not cleaned:
                 continue
-            if role == "assistant":
+            if msg["role"] == "assistant":
                 cleaned = cleaned[:100]
             texts.append(truncate_middle(cleaned, remaining))
             remaining -= len(texts[-1]) + 1
@@ -650,15 +650,12 @@ class MemoryRetriever:
     @staticmethod
     def _extract_focus_query(conversation: List[Dict], max_chars: int = 200) -> str:
         """提取焦点查询：最近一条用户消息（即时窗口，捕捉当前话题）。"""
-        for msg in reversed(dialogue_messages(conversation)):
-            if msg.get("role") != "user":
+        for msg in iter_dialogue(reversed(conversation)):
+            if msg["role"] != "user":
                 continue
-            content = msg.get("content", "")
-            if not isinstance(content, str):
-                continue
-            cleaned = _strip_tags(content)
+            cleaned = _strip_tags(msg["content"])
             if cleaned:
-                return cleaned[:max_chars]
+                return truncate_middle(cleaned, max_chars)
         return ""
 
     async def plan_retrieval(

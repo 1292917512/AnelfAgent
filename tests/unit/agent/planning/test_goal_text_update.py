@@ -71,9 +71,9 @@ class TestGoalTextUpdate:
                 gid, expected_version=first["version"], step_id=sid, note="最终验证", note_mode="append",
                 goal_status="completed",
             ))
-            assert result["goal"]["deleted"] is True
+            assert result["goal"]["archived"] is True
             receipt = json.loads(await tools.get_goal(gid))["goal"]
-            assert receipt["deleted"] is True
+            assert receipt["archived"] is True
             assert receipt["steps"][1]["step_id"] == sid
             assert receipt["steps"][1]["note"] == "第一条\n最终验证"
             assert await goals.find_goal(store, gid) == (None, None)

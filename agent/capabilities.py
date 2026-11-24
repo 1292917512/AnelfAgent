@@ -19,8 +19,11 @@ Model Experience：能力状态区分自动链与显式配置，失败结果保�
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Protocol, Tuple, runtime_checkable
+
+from pydantic import BaseModel, ConfigDict, Field
 
 from agent.llm.adapter_base import MediaOutcomeUnknown
 from core.log import log
@@ -36,6 +39,14 @@ if TYPE_CHECKING:
 
 class ProviderUnavailable(Exception):
     """提供者未配置/不可用，路由器跳过并尝试下一提供者。"""
+
+
+class ProviderPolicy(BaseModel):
+    """单个提供者的尝试时限及失败后是否继续优先级链。"""
+
+    model_config = ConfigDict(frozen=True, strict=True, extra="forbid", allow_inf_nan=False)
+    timeout: float | None = Field(default=None, gt=0)
+    fallback: bool = True
 
 
 class CapabilityNotSupported(Exception):
@@ -144,12 +155,14 @@ class CapabilityRouter:
     def __init__(
         self, *, config_key: str, default_chain: List[str], log_tag: str,
         allow_fallback: Callable[[str], bool],
+        provider_policy: Callable[[str, str], ProviderPolicy] | None = None,
     ) -> None:
         self._providers: Dict[str, CapabilityProvider] = {}
         self._config_key = config_key
         self._default_chain = list(default_chain)
         self._log_tag = log_tag
         self._allow_fallback = allow_fallback
+        self._provider_policy = provider_policy
 
     # ------------------------------------------------------------------
     # 注册表
@@ -273,8 +286,9 @@ class CapabilityRouter:
         else:
             chain = self.chain(capability)
 
-        allow_fallback = not explicit and self._allow_fallback(capability)
+        chain_fallback = not explicit and self._allow_fallback(capability)
         errors: Dict[str, str] = {}
+        provider_model_errors: dict[str, dict[str, str]] = {}
         skipped: Dict[str, str] = {}
 
         for name in chain:
@@ -293,7 +307,14 @@ class CapabilityRouter:
                 skipped[name] = "可用性检查失败"
                 continue
             try:
-                result = await impl.run(capability, **kwargs)
+                policy = self._provider_policy(capability, name) if self._provider_policy else ProviderPolicy()
+            except ValueError as exc:
+                return error_payload(f"{name} 的路由配置无效：{sanitize_text(str(exc))[:200]}",
+                                     cause=ErrorCause.CONFIG, retryable=False, provider=name)
+            allow_fallback = chain_fallback and policy.fallback
+            try:
+                async with asyncio.timeout(policy.timeout):
+                    result = await impl.run(capability, **kwargs)
                 if result.get("error") or result.get("success") is False:
                     detail = sanitize_text(str(result.get("error") or "提供者返回失败，但未说明原因"))[:200]
                     errors[name] = detail
@@ -309,6 +330,8 @@ class CapabilityRouter:
                     result["primary_error"] = "; ".join(
                         f"{k}: {v}" for k, v in errors.items()
                     )[:200]
+                    if provider_model_errors:
+                        result["provider_model_errors"] = provider_model_errors
                 return result
             except MediaOutcomeUnknown as exc:
                 return error_payload(
@@ -326,7 +349,7 @@ class CapabilityRouter:
                 detail = sanitize_text(str(exc).strip() or type(exc).__name__)
                 errors[name] = detail[:200]
                 if isinstance(exc, ProviderChainError):
-                    errors.update({key: sanitize_text(value)[:200] for key, value in exc.model_errors.items()})
+                    provider_model_errors[name] = {key: sanitize_text(value)[:200] for key, value in exc.model_errors.items()}
                 log(f"{label} 提供者 '{name}' 调用失败: {detail}",
                     "WARNING", tag=self._log_tag)
                 if not allow_fallback:
@@ -339,9 +362,11 @@ class CapabilityRouter:
                 hint="请调整该能力的提供者优先级配置，或补齐对应凭据/模型配置",
                 skipped=skipped,
             )
-        cause, retryable, hint = classify_provider_errors(errors)
+        # 失败回执兼容原有 errors[model] 查询，路由顺序只记录实际调用的提供者。
+        diagnostics = {key: value for models in provider_model_errors.values() for key, value in models.items()} | errors
+        cause, retryable, hint = classify_provider_errors(diagnostics)
         return error_payload(
             f"{label}失败：已尝试的提供者均调用失败",
             cause=cause, retryable=retryable, hint=hint,
-            errors=errors, skipped=skipped,
+            errors=diagnostics, skipped=skipped, provider_model_errors=provider_model_errors or None,
         )

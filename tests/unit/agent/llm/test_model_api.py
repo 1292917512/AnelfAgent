@@ -88,6 +88,8 @@ async def test_vision_prepares_once_off_loop_and_falls_back_after_stall_and_trun
     ))
     result = await ModelAPI(manager).describe_images([ImageContent(str(path))], prompt="分析图片")
     assert result.value == "完整识别结果" and result.model_id == "complete"
+    assert list(result.details["model_fallback_errors"]) == ["stalled", "truncated"]
+    assert "超时" in result.details["model_fallback_errors"]["stalled"]
     assert attempts == ["stalled", "truncated", "complete"] and closed.is_set()
     assert len(threads) == 1 and threads[0] != threading.get_ident()
     assert payloads[0] == payloads[1] == payloads[2]
@@ -143,6 +145,7 @@ async def test_vision_chat_does_not_escape_its_model_pool(manager: LLMManager) -
     first.chat = AsyncMock(side_effect=RuntimeError("offline"))
     second.chat = AsyncMock(return_value=ChatResult(content="image"))
     api = ModelAPI(manager)
+    ConfigManager.set("model_fallback_vision", False)
     with pytest.raises(RuntimeError, match="offline"):
         await api.chat([], model_type="vision", max_retries=0)
     second.chat.assert_not_awaited()

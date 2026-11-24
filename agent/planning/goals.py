@@ -1,6 +1,6 @@
 """目标的统一查询、步骤契约与写入操作，供工具、Web 和计划追踪共用。
 
-Model Experience: 目标返回版本及稳定步骤 ID；写入校验读取版本，终态结果可按 ID 查询。
+Model Experience: 单步只更新指定步骤；终态按 ID 可查，归档回执包含原因与恢复所需的 memory_id。
 Token effect: 每步增加一个短 ID，目标增加版本；不新增模型调用。
 Cache effect: 只影响工具回执及动态规划态势，不修改稳定前缀。
 """
@@ -144,6 +144,27 @@ def select_step(steps: list[dict[str, Any]], *, step_id: str, step_name: str, st
     return matches[0]
 
 
+def all_steps_completed(steps: list[dict[str, Any]]) -> bool:
+    return bool(steps) and all(step["status"] == "completed" for step in steps)
+
+
+def _apply_goal_status(goal: dict[str, Any], requested: str | None, *, steps_changed: bool) -> str | None:
+    """应用目标级状态转换；仅实际进入终态时返回持久化的归档原因。"""
+    if requested is None:
+        if (steps_changed and goal["status"] == "active" and not goal.get("recurring")
+                and all_steps_completed(goal["steps"])):
+            goal["status"] = "completed"
+            return "all_steps_completed"
+        return None
+    if requested == "completed" and goal.get("recurring"):
+        goal["status"] = "active"
+        for step in goal["steps"]:
+            step.update(status="pending", note="")
+        return None
+    goal["status"] = requested
+    return None if requested == "active" else f"explicit_{requested}"
+
+
 async def update_goal(
     store: MemoryStore, entry: MemoryEntry, goal: dict[str, Any], *, expected_version: int,
     title: str | None = None, description: str | None = None, status: str | None = None,
@@ -182,38 +203,28 @@ async def update_goal(
         goal.pop("due_time", None)
     if not str(goal["title"]).strip():
         raise ValueError("目标标题不能为空")
-    if status is not None:
-        goal["status"] = status
-    auto_close = (status is None and (steps is not None or bool(step_status)) and goal["steps"]
-                  and not goal.get("recurring") and goal["status"] == "active"
-                  and all(s["status"] in ("completed", "skipped") for s in goal["steps"]))
-    if auto_close:
-        goal["status"] = "completed"
-    if goal["status"] == "completed" and goal.get("recurring"):
-        goal["status"] = "active"
-        for step in goal["steps"]:
-            step.update(status="pending", note="")
+    reason = _apply_goal_status(goal, status, steps_changed=steps is not None or bool(step_status))
     goal["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-    if goal["status"] in ("completed", "cancelled"):
-        if not await tracker.remove_goal(entry, store=store, goal=goal, status=goal["status"], actor=actor):
-            raise GoalConflict("目标已发生变更，本次清理未执行")
-        return {**goal_view(entry, goal), "deleted": True}
-    advance = (changed_index >= 0 and step_status == "completed" and status != "completed"
-               and changed_index + 1 < len(goal["steps"]) and goal["steps"][changed_index + 1]["status"] == "pending")
-    if advance:
-        goal["steps"][changed_index + 1]["status"] = "in_progress"
-    entry.content = json.dumps(goal, ensure_ascii=False)
-    entry.metadata = {**entry.metadata, "status": goal["status"], "goal_id": goal["goal_id"]}
-    entry.importance = 0.8
-    if not await store.update(entry, actor=actor, expected_version=expected_version):
+    entry = entry.model_copy(update={
+        "content": json.dumps(goal, ensure_ascii=False), "importance": 0.8,
+        "metadata": {**entry.metadata, "status": goal["status"], "goal_id": goal["goal_id"]},
+    })
+    if reason:
+        archived = await store.archive_revision(
+            entry, reason, actor=actor,
+            audit_data={"goal_id": goal["goal_id"], "status": goal["status"], "destination": "archived",
+                        "reason": reason},
+        )
+        if archived is None:
+            raise GoalConflict("目标已发生变更，本次归档未写入")
+        entry = archived
+    elif not await store.update(entry, actor=actor, expected_version=expected_version):
         raise GoalConflict("目标已发生变更，本次更新未写入")
     situation.invalidate()
     scope = str(entry.metadata.get("scope") or tracker.current_scope())
     if changed_index >= 0:
         step = goal["steps"][changed_index]
         await tracker._emit_step(scope, goal["goal_id"], changed_index, step["status"], note=step["note"])
-        if advance:
-            await tracker._emit_step(scope, goal["goal_id"], changed_index + 1, "in_progress", note="自动推进")
-    if status is not None:
+    if status is not None or reason:
         await tracker._emit_status(scope, goal["goal_id"], goal["status"])
     return goal_view(entry, goal)

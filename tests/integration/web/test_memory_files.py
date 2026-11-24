@@ -76,16 +76,25 @@ def test_goal_terminal_cleanup_exposes_auditable_destination(
         goal = edited.json()
         response = client.put(f"/api/memory/goals/{goal['goal_id']}", json={"status": "completed", "expected_version": goal["version"]})
         assert response.status_code == 200 and response.json()["status"] == "completed"
-        assert client.get("/api/memory/goals", params={"include_archived": True}).json()["total"] == 0
+        assert client.get("/api/memory/goals").json()["total"] == 0
+        archived = client.get("/api/memory/goals", params={"include_archived": True}).json()["goals"]
+        assert archived == [response.json()] and archived[0]["archive_reason"] == "explicit_completed"
         timeline = client.get("/api/memory/timeline", params={"memory_id": goal["memory_id"]})
         assert timeline.status_code == 200
         events = timeline.json()["items"]
-        deletion = next(item for item in events if item["action"] == "delete")
-        assert deletion["data"]["goal_id"] == goal["goal_id"]
-        assert deletion["data"]["destination"] == "deleted"
-        assert deletion["data"]["status"] == "completed"
+        archive = next(item for item in events if item["action"] == "archive")
+        assert archive["data"]["goal_id"] == goal["goal_id"]
+        assert archive["data"]["destination"] == "archived"
+        assert archive["data"]["reason"] == "explicit_completed"
         receipt = client.get(path)
-        assert receipt.status_code == 200 and receipt.json()["deleted"]
-        assert receipt.json()["steps"][0]["note"] == "已准备"
+        assert receipt.status_code == 200 and receipt.json()["archived"]
+        assert receipt.json()["steps"] == edited_steps
+        assert client.post(path + "/restore", json={"expected_version": goal["version"]}).status_code == 409
+        assert client.post(path + "/restore", json={"expected_version": archived[0]["version"]}).status_code == 200
+        restored = client.get(path).json()
+        assert not restored["archived"] and restored["steps"] == edited_steps
+        assert client.delete(path).json()["ok"]
+        deletion = client.get(path).json()
+        assert deletion["deleted"] and deletion["destination"] == "deleted"
     finally:
         client.portal.call(store.close)

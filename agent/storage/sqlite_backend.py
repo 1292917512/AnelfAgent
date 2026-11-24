@@ -617,18 +617,20 @@ class SqliteBackend:
         ]
 
     async def fetch_conversation(
-        self, *, scope_type: str, scope_id: str, limit: int
+        self, *, scope_type: str, scope_id: str, limit: int, role: str | None = None,
     ) -> list[dict]:
         db = await self._get_db()
+        role_filter = "AND role=?" if role is not None else ""
+        params = (scope_type, scope_id, role, int(limit)) if role is not None else (scope_type, scope_id, int(limit))
         cursor = await db.execute(
-            """
+            f"""
             SELECT id, role, content, ts_ns
             FROM conversation_messages
-            WHERE scope_type=? AND scope_id=?
+            WHERE scope_type=? AND scope_id=? {role_filter}
             ORDER BY ts_ns DESC, id DESC
             LIMIT ?
             """,
-            (scope_type, scope_id, int(limit)),
+            params,
         )
         rows = list(await cursor.fetchall())
         rows.reverse()

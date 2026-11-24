@@ -177,6 +177,8 @@ class ProviderMeta:
     provide_fn: Optional[Callable] = None
     description: str = ""
     retention_priority: int = 50
+    accepts_focus: bool = False
+    """提供者显式声明接受第二个参数，即当前问题的文本。"""
 
 
 # ======================================================================
@@ -260,6 +262,7 @@ class ContextProviderRegistry:
         budget: int = DEFAULT_COLLECT_BUDGET,
         *,
         fresh: bool = False,
+        focus: str = "",
     ) -> Tuple[List[VolatileClip], List[ProviderMetric]]:
         """返回当前最新快照；缓存超过新鲜度阈值时内联并发重收。
 
@@ -271,18 +274,19 @@ class ContextProviderRegistry:
             scope: 当前对话 scope（用于过滤）。
             budget: token 预算上限，收集超限日志警告并截断。
             fresh: 本次调用独立采集，避免复用其他轮次的上下文变量与快照。
+            focus: 仅传给声明 accepts_focus 的提供者，按本次问题独立采集。
 
         Returns:
             (clips, metrics) — clips 是注入单元（文本+可选媒体附件）列表，metrics 是监督指标。
         """
-        if fresh:
-            clips, metrics = await cls._collect_background(scope, budget)
+        if fresh or focus:
+            clips, metrics = await cls._collect_background(scope, budget, focus)
             return list(clips), list(metrics)
         last = cls._last_collect.get(scope, {})
         stale = (
             time.time() - float(last.get("collected_at", 0))
             >= _COLLECT_FRESH_SECONDS
-        ) or last.get("total_budget") != budget
+        ) or last.get("total_budget") != budget or last.get("focused", False)
         if stale:
             key = (scope, budget)
             task = cls._inflight.get(key)
@@ -311,7 +315,7 @@ class ContextProviderRegistry:
             store.popitem(last=False)
 
     @classmethod
-    async def _collect_background(cls, scope: str, budget: int) -> Tuple[List[VolatileClip], List[ProviderMetric]]:
+    async def _collect_background(cls, scope: str, budget: int, focus: str = "") -> Tuple[List[VolatileClip], List[ProviderMetric]]:
         """收集一轮所有匹配 scope 的 provider 快照并写入缓存。
 
         全部 provider 并发采集（各自 1s 硬超时，总耗时有界 ≈1s），
@@ -323,7 +327,7 @@ class ContextProviderRegistry:
                 if cls.is_active(meta) and cls._match_scope(meta.scope_filter, scope)
             ]
             results = await asyncio.gather(
-                *(cls._safe_provide(meta, scope) for meta in metas)
+                *(cls._safe_provide(meta, scope, focus) for meta in metas)
             )
 
             clips: List[VolatileClip] = []
@@ -396,6 +400,7 @@ class ContextProviderRegistry:
                 "used_tokens": used_tokens,
                 "used_bytes": used_bytes,
                 "total_budget": budget,
+                "focused": bool(focus),
                 "providers_count": len(metrics),
                 "omitted_providers": omitted,
                 "collected_at": time.time(),
@@ -413,6 +418,7 @@ class ContextProviderRegistry:
         cls,
         meta: ProviderMeta,
         scope: str,
+        focus: str = "",
     ) -> Optional[Tuple[ProviderSnapshot, float]]:
         """安全调用 provider 的 provide()，超时/异常静默跳过。
 
@@ -432,12 +438,13 @@ class ContextProviderRegistry:
             else:
                 return None
 
+            args = (scope, focus) if meta.accepts_focus else (scope,)
             if asyncio.iscoroutinefunction(provide):
-                result = await asyncio.wait_for(provide(scope), timeout=_PROVIDE_TIMEOUT_SECONDS)
+                result = await asyncio.wait_for(provide(*args), timeout=_PROVIDE_TIMEOUT_SECONDS)
             else:
                 # 同步 provider 在线程中执行，避免阻塞事件循环
                 result = await asyncio.wait_for(
-                    asyncio.to_thread(provide, scope), timeout=_PROVIDE_TIMEOUT_SECONDS,
+                    asyncio.to_thread(provide, *args), timeout=_PROVIDE_TIMEOUT_SECONDS,
                 )
                 if inspect.isawaitable(result):
                     result = await asyncio.wait_for(result, timeout=_PROVIDE_TIMEOUT_SECONDS)

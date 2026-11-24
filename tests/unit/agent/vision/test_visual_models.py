@@ -79,11 +79,14 @@ class TestVisionContentPolicy:
         """审核拒绝是同模型确定性拒绝，但不同供应商尺度不同，回退须保留。"""
         mini = _FakeVisionClient("MiniMax-M3", error=_sensitive_error())
         k3 = _FakeVisionClient("k3-1m")
+        k3.config.model = "vendor/vision-v2"
         _patch_common(monkeypatch, [mini, k3])
 
         out = await ModelsVisualProvider()._run_understand(_LOCAL, "描述")
         assert out["description"] == "desc-by-k3-1m"
         assert out["model"] == "k3-1m"
+        assert out["upstream_model"] == "vendor/vision-v2"
+        assert list(out["model_fallback_errors"]) == ["MiniMax-M3"]
         assert mini.calls == 1 and k3.calls == 1
 
     @pytest.mark.asyncio

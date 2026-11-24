@@ -13,7 +13,7 @@ import pytest
 
 from agent.memory.memory_store import MemoryStore
 from agent.memory.memory_types import MemoryEntry, MemoryType
-from services.memory import MemoryService
+from services.memory import GoalConflict, MemoryService
 
 
 @pytest.fixture
@@ -83,12 +83,22 @@ class TestUpdateGoal:
         assert updated is not None
         assert updated["status"] == status
 
-        # 终态即清（与 AI 工具面同步语义）：条目不保留
+        # 终态归档后可按原 ID 查询。
+        assert (await svc.get_goal("g1"))["archive_reason"] == f"explicit_{status}"
         assert await svc.list_goals() == []
         audit = await store.list_audit(memory_id=updated["memory_id"])
         assert audit[0]["actor"] == "web"
         assert audit[0]["data"]["goal_id"] == "g1"
         assert audit[0]["data"]["status"] == status
+        with pytest.raises(GoalConflict):
+            await svc.restore_goal("g1", expected_version=updated["version"] - 1)
+        assert (await svc.get_goal("g1"))["archived"]
+        assert await svc.restore_goal("g1", expected_version=updated["version"])
+        restored = await svc.get_goal("g1")
+        assert not restored["archived"] and restored["status"] == status
+        assert restored["steps"] == updated["steps"]
+        resumed = await svc.update_goal("g1", expected_version=restored["version"], status="active")
+        assert resumed["status"] == "active"
 
     async def test_update_steps_all_done_autocloses(self, svc: MemoryService, store: MemoryStore) -> None:
         """全部步骤 done 的 steps 替换触发自动收口（与 AI 工具面同步语义）。"""

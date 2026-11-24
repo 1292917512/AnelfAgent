@@ -107,12 +107,6 @@ async def _finish_round(ctx: ExecutionContext, state: RoundState, *, explicit_en
         state.consecutive_empty_calls = 0
         state.iteration += 1
         return RoundOutcome.CONTINUE
-    try:
-        from agent.planning import tracker as _plan_tracker
-        await _plan_tracker.finalize_plan(ctx.current_scope, "completed" if state.completion_reason == "completed" else "cancelled")
-        state.plan_finalized = True
-    except Exception:
-        pass  # 收敛失败不影响主流程，finally 兜底重试
     if ctx.mode == ThinkMode.REPLY and ctx.anything:
         # 正常结束的唯一收口点：消息链已是终态，先写入 completion 再发完成事件
         # （complete_reply 读取该字段组装 EVENT_AFTER_REPLY 的 messages 快照；

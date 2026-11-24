@@ -254,6 +254,15 @@
   "goalDescPlaceholder": "目标描述（可选）",
   "createGoal": "创建目标",
   "goalStatusActive": "进行中",
+  "goalStatusCompleted": "已完成",
+  "goalStatusCancelled": "已取消",
+  "restoreArchivedGoal": "取回归档",
+  "goalArchived": "归档原因：{{reason}}",
+  "goalArchiveReason": {
+    "all_steps_completed": "所有步骤已完成",
+    "explicit_completed": "显式标记完成",
+    "explicit_cancelled": "显式取消"
+  },
   "goalStatusAll": "全部",
   "stepPending": "待办",
   "stepInProgress": "进行中",

@@ -382,6 +382,8 @@ export interface GoalStep {
 
 export interface GoalData {
   version: number;
+  archived?: boolean;
+  archive_reason?: string;
   goal_id: string;
   title: string;
   description?: string;

@@ -1260,7 +1260,7 @@ async def forget(memory_id: int) -> str:
     tags=["always"],
     source="mind.memory",
     description="把一条已遗忘（归档）的记忆恢复到活跃记忆库，恢复后正常参与召回。"
-    "仅当 recall 返回的 forgotten 列表中 kind=archived 且确认内容确有需要时使用。",
+    "可用 get_goal 返回的归档 memory_id 或 recall 中 kind=archived 的记忆 ID 恢复。",
 )
 async def restore_memory(memory_id: int) -> str:
     """从归档恢复记忆（向量与访问记录原样回填，无需重新嵌入）。

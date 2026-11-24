@@ -93,10 +93,13 @@ async def execute_candidates(
         try:
             async with asyncio.timeout(timeout):
                 value = await invoke(client)
-            details = getattr(value, "details", None)
+            media_details = getattr(value, "details", None)
+            details = dict(media_details) if isinstance(media_details, dict) else {}
+            if errors and model_type is ModelType.VISION:
+                details["model_fallback_errors"] = dict(errors)
             return ModelResult(
                 value, client.config.name, client.config.model,
-                details=dict(details) if isinstance(details, dict) else {},
+                details=details,
             )
         except MediaOutcomeUnknown:
             raise

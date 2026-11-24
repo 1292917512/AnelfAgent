@@ -136,9 +136,13 @@ class Recollection:
                 result.memories = await self.retriever._format_unified_results(pinned, scope=scope) if pinned else []
 
         async def repeat_hint() -> None:
+            if anything is None:
+                return
             try:
                 from agent.memory.anti_repeat import build_repeat_hint
-                result.repeat_hint = await build_repeat_hint(scope)
+                result.repeat_hint = await build_repeat_hint(
+                    self.conversation_data.router.sqlite, scope_type=anything.scope_type, scope_id=anything.scope_id,
+                )
             except Exception as exc:
                 log(f"复读提示获取失败: {exc}", "DEBUG", tag="思维")
 
@@ -162,7 +166,7 @@ class Recollection:
             from agent.memory.self_profile import load_self_profile, render_self_profile_block
 
             async def self_profile() -> str:
-                return render_self_profile_block(await load_self_profile(store))
+                return render_self_profile_block(await load_self_profile(store), MemoryRetriever._extract_focus_query(tail))
 
             tags = scope_tags_from_entity_scopes(scopes)
             # 独立失败只损失当前块，结果按固定位置装配，不按返回顺序装配。

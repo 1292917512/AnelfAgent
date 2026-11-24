@@ -76,6 +76,11 @@ class TestFocusQuery:
         conv = [{"role": "user", "content": "[uid:123] 嗯"}]
         assert MemoryRetriever._extract_focus_query(conv) == "嗯"
 
+    def test_keeps_the_question_at_the_end_of_long_background(self) -> None:
+        message = "项目背景。" * 200 + "请核对光谱校准时间。"
+        focus = MemoryRetriever._extract_focus_query([{"role": "user", "content": message}], max_chars=80)
+        assert len(focus) <= 80 and focus.endswith("请核对光谱校准时间。")
+
     def test_empty_conversation(self) -> None:
         assert MemoryRetriever._extract_focus_query([]) == ""
 

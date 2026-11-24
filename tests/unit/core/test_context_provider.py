@@ -355,6 +355,23 @@ class TestFreshCollect:
         assert [c.text for c in clips] == ["[fresh] 第1次"]
         assert counter[0] == 1
 
+    async def test_same_scope_keeps_concurrent_questions_and_neutral_reads_separate(self) -> None:
+        import asyncio
+
+        async def provide(scope: str, focus: str) -> ProviderSnapshot:
+            return ProviderSnapshot(content=focus or "概览")
+
+        ContextProviderRegistry.register(ProviderMeta(name="plan", provide_fn=provide, accepts_focus=True))
+        self._register_counter()
+        first, second = await asyncio.gather(
+            ContextProviderRegistry.collect("s1", focus="甲"),
+            ContextProviderRegistry.collect("s1", focus="乙"),
+        )
+        neutral = await ContextProviderRegistry.collect("s1")
+        for (clips, _), expected in zip((first, second, neutral), ("甲", "乙", "概览"), strict=True):
+            by_source = {clip.source: clip.text for clip in clips}
+            assert by_source["plan"] == expected and "fresh" in by_source
+
     async def test_stale_cache_refreshes_inline(
         self, monkeypatch: pytest.MonkeyPatch,
     ) -> None:

@@ -24,7 +24,7 @@
 | `agent/security/` | 安全防护（会话令牌 / 威胁扫描） | 脱敏核心在 `core/sanitizer.py` |
 | `agent/task/` | 独立任务系统（定义 / 注册表 / 执行器） | 纯内容定义，不含调度逻辑 |
 | `agent/heartbeat/` | 心跳调度（引擎 / 配置 / 日志 / 内置维护） | 管理何时执行任务，持久化计数器 |
-| `agent/planning/` | 自主规划（目标 CRUD / 执行追踪 / 终态即清，存续决策归 AI） | 依赖 memory |
+| `agent/planning/` | 自主规划（目标 CRUD / 执行追踪 / 终态可恢复归档，单步独立更新） | 依赖 memory |
 | `agent/judgment/` | 结构化判断（Choice/Score/Noul 三原语；Jev 原生通道 + 普通模型回退） | 配置走 `judgment/core` 组；引擎无构造期依赖 |
 | `channels/` | 频道适配器（目录自动发现 + 热插拔 sync_channels） | 继承 BaseChannel，display_order 自声明排序 |
 | `entities/` | 工具实体（目录自动发现 + 热插拔 sync_entities） | 通过 `@tool`/`entity()` 注册，经 `_sdk.py` 桥接 LLM |

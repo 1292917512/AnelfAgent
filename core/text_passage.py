@@ -52,10 +52,17 @@ def select_passage(text: str, terms: Iterable[str], *, max_chars: int = 500) -> 
     if not words:
         return passage_around(text, 0, 0, max_chars=max_chars)
     pattern = re.compile("|".join(re.escape(word) for word in words), re.IGNORECASE)
+    return select_matching_passage(text, pattern.finditer(text), max_chars=max_chars)
+
+
+def select_matching_passage(text: str, matches: Iterable[re.Match[str]], *, max_chars: int) -> TextPassage:
+    """在同一原文上的有序匹配中选择覆盖不同词最多的窗口，保持原文偏移。"""
+    if len(text) <= max_chars:
+        return passage_around(text, 0, len(text), max_chars=max_chars)
     window: deque[tuple[int, int, str]] = deque()
     counts: Counter[str] = Counter()
     best_count, start, end = 0, 0, 0
-    for match in pattern.finditer(text):
+    for match in matches:
         key = match.group().casefold()
         window.append((match.start(), match.end(), key))
         counts[key] += 1

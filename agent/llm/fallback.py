@@ -14,15 +14,15 @@ def _key(kind: ModelType) -> str:
 
 
 def fallback_enabled(kind: ModelType) -> bool:
-    """读取当前类型的跨模型切换策略，只有对话默认开启。"""
-    return get_config_bool(_key(kind), kind is ModelType.CHAT)
+    """读取当前类型的跨模型切换策略，对话和视觉识别默认开启。"""
+    return get_config_bool(_key(kind), kind in (ModelType.CHAT, ModelType.VISION))
 
 
 register_configs_safe({
     "models/fallback": {
         _key(kind): {
             "description": f"{kind.value} 首选模型调用失败后，按优先级尝试下一候选",
-            "default": kind is ModelType.CHAT,
+            "default": kind in (ModelType.CHAT, ModelType.VISION),
             "tag": kind.value,
         }
         for kind in ModelType

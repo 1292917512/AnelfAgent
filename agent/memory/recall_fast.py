@@ -52,7 +52,8 @@ async def recall_local(retriever: MemoryRetriever, conversation: list[dict], *, 
 
     async def load_profiles() -> None:
         nonlocal profiles
-        profiles = await retriever._load_entity_profiles([scope, *related_scopes])
+        profiles = await retriever._load_entity_profiles(
+            [scope, *related_scopes], retriever._extract_focus_query(conversation))
 
     async def load_tags() -> None:
         entries = await store.search_by_tags(list(policy.tags), limit=k)

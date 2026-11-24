@@ -460,13 +460,32 @@ class MemoryStore(BaseEntity):
     async def archive_memory(
         self, memory_id: int, reason: str = "manual_forget", *, actor: str = "", expected_version: int | None = None,
     ) -> bool:
-        """软归档；活动目标保护或快照失效时返回 False，可 restore_memory 恢复归档。"""
+        """软归档当前版本；记忆治理仍需满足活动目标保护条件。"""
         db = await self._get_db()
         async with self._tx(db):
             entry = await self._fetch_entry(db, memory_id)
             if entry is None or (expected_version is not None and entry.version != expected_version):
                 return False
-            return await self._archive_entry(db, entry, reason, actor=actor)
+            return await self._move_to_archive(db, entry, reason, actor=actor)
+
+    async def archive_revision(
+        self, revision: MemoryEntry, reason: str, *, actor: str, audit_data: dict[str, Any],
+    ) -> MemoryEntry | None:
+        """原子归档最终修订和审计，返回已提交的快照；版本冲突及受保护条目返回 None。"""
+        if revision.id is None:
+            return None
+        db = await self._get_db()
+        async with self._tx(db):
+            current = await self._fetch_entry(db, revision.id)
+            if current is None or current.version != revision.version:
+                return None
+            final = current.model_copy(update={
+                "content": revision.content, "metadata": revision.metadata, "importance": revision.importance,
+                "tags": revision.tags, "embedding": None, "version": current.version + 1,
+            })
+            if not await self._move_to_archive(db, final, reason, actor=actor, audit_data=audit_data):
+                return None
+        return final
 
     async def clear(
         self,
@@ -791,10 +810,18 @@ class MemoryStore(BaseEntity):
             or current.last_accessed != entry.last_accessed
         ):
             return False
-        if await self._goal_archive_blockers(db, current):
+        return await self._move_to_archive(db, current, reason, actor=actor)
+
+    async def _move_to_archive(
+        self, db: aiosqlite.Connection, entry: MemoryEntry, reason: str, *, actor: str,
+        audit_data: dict[str, Any] | None = None,
+    ) -> bool:
+        """在调用者的写事务内转移快照，撤销活动索引并写入审计。"""
+        memory_id = entry.id
+        assert memory_id is not None
+        if await self._goal_archive_blockers(db, entry):
             return False
-        entry = current
-        memory_id = current.id
+        archived_at_ns = time.time_ns()
         await db.execute(
             "INSERT OR REPLACE INTO memories_archive "
             "(id, type, content, source, importance, ts_ns, metadata_json, "
@@ -811,7 +838,7 @@ class MemoryStore(BaseEntity):
                 json.dumps(entry.metadata, ensure_ascii=False),
                 json.dumps(entry.tags, ensure_ascii=False),
                 entry.access_count,
-                int(time.time() * 1e9),
+                archived_at_ns,
                 reason,
                 pack_embedding(entry.embedding) if entry.embedding else None,
                 int(entry.last_accessed * 1e9),
@@ -821,24 +848,31 @@ class MemoryStore(BaseEntity):
         await db.execute("DELETE FROM memories WHERE id = ?", (entry.id,))
         await self._conn.vec_delete_memories(db, [memory_id])
         await self._conn.fts_delete_memories(db, [memory_id])
-        await self._record_audit(db, memory_id, "archive", reason, actor=actor)
+        await self._record_audit(db, memory_id, "archive", reason, actor=actor,
+                                 data=audit_data, required=audit_data is not None)
         await self._cognee.enqueue_sync(db, memory_id, "delete")
+        entry.archived_at = archived_at_ns / 1e9
+        entry.archive_reason = reason
         return True
 
-    async def restore_memory(self, memory_id: int, *, actor: str = "") -> bool:
+    async def restore_memory(
+        self, memory_id: int, *, actor: str = "", expected_version: int | None = None,
+    ) -> bool:
         """从归档恢复记忆（回到活跃记忆库，向量与最近访问时间原样回填）。"""
         db = await self._get_db()
-        cursor = await db.execute(
-            "SELECT * FROM memories_archive WHERE id = ?",
-            (memory_id,),
-        )
-        row = await cursor.fetchone()
-        if not row:
-            return False
-        blob: Optional[bytes] = row["embedding_blob"] if "embedding_blob" in row.keys() else None
-        last_accessed_ns = row["last_accessed_ns"] if "last_accessed_ns" in row.keys() else 0
-        version = int(row["version"]) if "version" in row.keys() and row["version"] else 1
         async with self._tx(db):
+            cursor = await db.execute(
+                "SELECT * FROM memories_archive WHERE id = ?",
+                (memory_id,),
+            )
+            row = await cursor.fetchone()
+            if not row:
+                return False
+            blob: Optional[bytes] = row["embedding_blob"] if "embedding_blob" in row.keys() else None
+            last_accessed_ns = row["last_accessed_ns"] if "last_accessed_ns" in row.keys() else 0
+            version = int(row["version"]) if "version" in row.keys() and row["version"] else 1
+            if expected_version is not None and version != expected_version:
+                return False
             await db.execute(
                 "INSERT OR REPLACE INTO memories "
                 "(id, type, content, source, importance, ts_ns, metadata_json, "
@@ -916,7 +950,7 @@ class MemoryStore(BaseEntity):
         *,
         tombstone_max_rows: Optional[int] = None,
     ) -> int:
-        """物理删除超过保留期的归档记忆，防止归档表无限增长。
+        """物理删除超过保留期的普通归档记忆，规划记录保留供恢复。
 
         删除前把每条记忆的 gist（截断梗概 + 标签）留入墓碑表 memories_tombstone
         ——实体虽删，"曾经知道什么"的元记忆仍在，召回无果时以最低权重兜底。
@@ -935,9 +969,9 @@ class MemoryStore(BaseEntity):
         cutoff_ns = int((time.time() - older_than_days * 86400) * 1e9)
         cursor = await db.execute(
             "SELECT id, type, content, source, tags_json, metadata_json, archived_at_ns, archive_reason "
-            "FROM memories_archive WHERE archived_at_ns < ? "
+            "FROM memories_archive WHERE archived_at_ns < ? AND source != ? "
             "ORDER BY archived_at_ns LIMIT ?",
-            (cutoff_ns, limit),
+            (cutoff_ns, GOAL_SOURCE, limit),
         )
         rows = list(await cursor.fetchall())
         if not rows:

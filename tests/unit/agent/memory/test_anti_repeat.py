@@ -1,26 +1,10 @@
-"""防复读（anti_repeat.py）单元测试：分词 / 话题提示 / 重叠评分。"""
+"""话题新鲜度按独立回复计数，保留短回复并识别重复开场。"""
 
 from __future__ import annotations
 
 import pytest
 
-from agent.memory.anti_repeat import (
-    compute_hint_terms,
-    overlap_ratio,
-    repeat_score,
-    tokenize,
-)
-
-
-class TestTokenize:
-    def test_cjk_bigrams(self):
-        tokens = tokenize("今晚吃什么")
-        assert "今晚" in tokens and "吃什" in tokens
-
-    def test_latin_words_lowered(self):
-        tokens = tokenize("Play some Minecraft today")
-        assert "minecraft" in tokens and "play" in tokens
-        assert "a" not in tokens  # 单字符词不入集
+from agent.memory.anti_repeat import build_repeat_hint, compute_hint_terms
 
 
 class TestHintTerms:
@@ -33,6 +17,13 @@ class TestHintTerms:
         terms = compute_hint_terms(texts, top_k=3, min_df=3)
         assert "天气" in terms or "不错" in terms
 
+    @pytest.mark.parametrize("name", ["馆长", "主人", "Captain"])
+    def test_topic_depends_on_use_in_the_reply(self, name):
+        replies = [f"{name}——，我试了一次缓存。", f"{name}，我看了一次缓存。", f"{name}，我查了一次缓存。"]
+        assert compute_hint_terms(replies, top_k=8, min_df=3) == ["缓存"]
+        replies = [f"故事里的{name}找到了钥匙。", f"他们正在寻找{name}。", f"请讨论{name}的动机。"]
+        assert compute_hint_terms(replies, top_k=8, min_df=3) == [name.casefold()]
+
     def test_below_min_df_empty(self):
         texts = ["聊了一次的话题", "完全不同的内容", "第三段无关文本"]
         assert compute_hint_terms(texts, top_k=3, min_df=3) == []
@@ -40,29 +31,30 @@ class TestHintTerms:
     def test_short_history_empty(self):
         assert compute_hint_terms(["只有一条"], top_k=3, min_df=3) == []
 
+    def test_standalone_terms_in_answers_and_headings_are_topics(self) -> None:
+        replies = ["缓存。", "缓存：容量已调整。", "已查明原因。缓存！"]
+        assert "缓存" in compute_hint_terms(replies, top_k=5, min_df=3)
 
-class TestOverlap:
-    def test_identical_text_full_overlap(self):
-        a = "主人今天早点休息，明天还要早起开会"
-        assert repeat_score(a, [a]) == pytest.approx(1.0)
+    def test_many_occurrences_in_one_reply_are_one_vote(self) -> None:
+        replies = ["数据库 " * 100, "明天去野餐", "园艺工具已收好"]
+        assert compute_hint_terms(replies, top_k=2, min_df=2) == []
 
-    def test_disjoint_text_low_overlap(self):
-        draft = "我们周末去看电影吧，最近有部新片上映"
-        recent = ["今天的股市行情不太妙，注意风险"]
-        assert repeat_score(draft, recent) < 0.2
+    def test_repeated_opening_sentence_keeps_its_topics(self) -> None:
+        replies = [f"缓存容量有变化，{body}。" for body in ("继续检查", "已经记录", "明天复核")]
+        assert "缓存" in compute_hint_terms(replies, top_k=5, min_df=3)
 
-    def test_window_selection_is_caller_responsibility(self):
-        """repeat_score 对调用方给定的整个窗口取最大重叠：窗口选择（按时间/条数）
-        由调用方（出站事实面的近期窗口）负责，函数本身不切片。"""
-        draft = "记得多喝水，早点休息，注意身体"
-        old_duplicate = "记得多喝水，早点休息，注意身体"
-        fresh = ["周末的露营计划", "新出的电影上映", "股市行情不妙", "猫咪又拆家了", "健身后的酸痛"]
-        # 调用方把重复消息切出窗口 → 低分
-        assert repeat_score(draft, fresh) < 0.5
-        # 调用方窗口内包含重复消息 → 高分
-        assert repeat_score(draft, fresh + [old_duplicate]) > 0.5
 
-    def test_empty_inputs(self):
-        assert repeat_score("", ["任何"]) == 0.0
-        assert repeat_score("草稿", []) == 0.0
-        assert overlap_ratio(set(), {"a"}) == 0.0
+async def test_hint_counts_latest_assistant_rows_in_the_requested_scope(sqlite) -> None:
+    from core.config import ConfigManager
+
+    ConfigManager.set("memory_repeat_window", 3)
+    ConfigManager.set("memory_repeat_hint_min_df", 3)
+    for _ in range(3):
+        await sqlite.append_conversation(scope_type="user", scope_id="123", role="assistant", content="缓存。")
+        await sqlite.append_conversation(scope_type="group", scope_id="123", role="assistant", content="园艺。")
+    for _ in range(10):
+        await sqlite.append_conversation(scope_type="user", scope_id="123", role="user", content="无关背景")
+    hint = await build_repeat_hint(sqlite, scope_type="user", scope_id="123")
+    assert "缓存" in hint and "园艺" not in hint and "背景" not in hint
+    ConfigManager.set("memory_repeat_hint_min_df", 4)
+    assert not await build_repeat_hint(sqlite, scope_type="user", scope_id="123")

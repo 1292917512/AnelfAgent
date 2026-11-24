@@ -81,9 +81,7 @@ class RoundState:
     push_watermark: int = 0
     observed_cross_messages: dict[str, int] = field(default_factory=dict)
     observed_recollection: str = ""
-    # plan 收敛标记：正常结束路径（_finish_round）已收敛时置位，finally 不重复收敛
-    plan_finalized: bool = False
-    # 本次会话是否被协作式中断终止（决定 finally 收敛 outcome）
+    # 本次会话是否被协作式中断终止
     interrupted: bool = False
     # 中止时存在"已启动未完成"的工具调用（收束元消息提示可能已部分执行）
     partial_tool_abort: bool = False

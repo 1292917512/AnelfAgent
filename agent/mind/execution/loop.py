@@ -125,16 +125,6 @@ async def think_loop(
                 # （是否可续跑由 messages 是否存在决定，收束路径恒有值）。
                 ctx.completion["messages"] = ctx.base_messages + ctx.tool_chain
                 ctx.completion["tools"] = ctx.active_tools
-            # 正常结束由 _finish_round 收敛；未走正常出口的中断、异常和预算耗尽只可取消。
-            if not state.plan_finalized:
-                try:
-                    from agent.planning import tracker as _plan_tracker
-                    await _plan_tracker.finalize_plan(
-                        ctx.current_scope,
-                        "cancelled",
-                    )
-                except Exception:
-                    pass  # 收敛失败不影响主流程
 
 
 async def _run_think_rounds(

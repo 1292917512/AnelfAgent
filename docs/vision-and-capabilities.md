@@ -77,6 +77,17 @@ URL 共用异步准备流程，读取与压缩放工作线程，同次调用的�
 空结果、输出截断和缺失结束标记均按失败处理，是否换模型由视觉识别的切换开关决定。
 日志分别记录图片准备、首响应及模型完成耗时。
 
+辅助识别默认按视觉模型与提供者优先级切换，显式关闭 `model_fallback_vision` 后首选失败即返回。
+`vision_provider_priority.understand` 决定提供者顺序。`vision_understand_provider_policy`
+按提供者名称保存选项，例如 `{"models":{"timeout":60,"fallback":true}}` 表示给整个内置模型链
+60 秒，超时或失败后允许尝试下一提供者。单模型仍遵循其首响应与流式空闲时限。
+`fallback=false` 会在该提供者尝试失败后停止跨提供者回退。显式指定提供者时只调用该提供者。
+AI 可用 `vision_config(action="set", key="understand_provider_policy.models", value='{"timeout":60}')`
+调整。成功回执包含实际提供者与模型标识。内置链的 `model` 是本地配置 ID，
+`upstream_model` 是选中配置向供应商请求的模型名。模型内回退的按次原因在 `model_fallback_errors`，
+跨提供者回退的来源与首选错误在 `fallback_from` 和 `primary_error`。提供者内部的模型链耗尽时，
+`provider_model_errors` 将失败模型及其原因归在所属提供者下。
+
 ## 视频理解链路
 
 - **supports_video 能力声明**（`LLMClientConfig.supports_video` + `vision/capabilities._run_video_understand`

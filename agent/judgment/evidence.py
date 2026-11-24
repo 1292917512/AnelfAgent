@@ -8,7 +8,7 @@ Token：沿用共享字符预算，短消息不因固定条数被丢弃；排除
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from typing import Any
 
 from agent.judgment.types import JsonValue
@@ -42,9 +42,8 @@ def _content_text(content: Any) -> str:
     return ""
 
 
-def dialogue_messages(messages: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """提取按原顺序排列的对话正文及归属，排除注入、工具执行和内部思考。"""
-    result: list[dict[str, Any]] = []
+def iter_dialogue(messages: Iterable[Mapping[str, Any]]) -> Iterator[dict[str, Any]]:
+    """按输入顺序读取真实对话正文及归属，排除注入、工具执行和内部思考。"""
     for message in messages:
         if (message.get("role") not in {"user", "assistant"}
                 or message.get("_layer") not in {None, "", "conversation"}
@@ -53,9 +52,17 @@ def dialogue_messages(messages: Sequence[Mapping[str, Any]]) -> list[dict[str, A
             continue
         content = _content_text(message.get("content")).strip()
         if content:
-            result.append({"role": message["role"], "content": content,
-                           **{key: message[key] for key in ("_layer", "_source") if key in message}})
-    return result
+            yield {"role": message["role"], "content": content,
+                   **{key: message[key] for key in ("_layer", "_source") if key in message}}
+
+
+def dialogue_messages(messages: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    return list(iter_dialogue(messages))
+
+
+def latest_user_text(messages: Sequence[Mapping[str, Any]]) -> str:
+    """取最近一条真实用户正文，复用对话层的归属与多模态文本规则。"""
+    return next((m["content"] for m in iter_dialogue(reversed(messages)) if m["role"] == "user"), "")
 
 
 def _text(message: Mapping[str, Any], limit: int) -> tuple[str, bool]:

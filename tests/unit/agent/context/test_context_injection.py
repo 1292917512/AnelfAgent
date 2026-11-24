@@ -41,6 +41,30 @@ def test_profile_and_retrieval_keep_space_without_changing_originals(profile_cha
         assert "不代表完整历史" in allocation.omission_notice()
 
 
+def test_passage_ranking_and_excerpt_use_the_same_query_words():
+    from agent.memory.passages import PassageQuery
+
+    query = PassageQuery.from_text("量子纠缠 ART")
+    unrelated = "孔子纠正了 cartography 的拼写。"
+    relevant = "量子纠缠与 art 的关系"
+    assert query.score(unrelated) == 0
+    assert query.score(relevant) == 3
+    assert relevant in query.excerpt(unrelated * 20 + relevant, 30)
+    assert PassageQuery.from_text("猫").score("黑猫") == 1
+    assert PassageQuery.from_text("——，").score("——，") == 0
+
+
+def test_status_excerpt_retains_alerts_and_question_specific_schedule():
+    from agent.context.preparation import _status_excerpt
+    from agent.memory.passages import PassageQuery
+
+    text = "[心跳与任务态势]\n- 心跳正常\n" + "- 上传任务\n" * 90 + "- 校验发票：每天十点\n- ⚠️ 备份失败"
+    casual = _status_excerpt(text, PassageQuery.from_text("天气"))
+    focused = _status_excerpt(text, PassageQuery.from_text("发票"))
+    assert "十点" not in casual and "备份失败" in casual and "read_notes" in casual
+    assert "十点" in focused and len(focused) < len(text)
+
+
 @pytest.mark.parametrize("budget", [0, 1, 200, 201, 499, 6000])
 def test_budget_includes_partial_marker_and_preserves_source_order(budget):
     from agent.context.preparation import allocate_recollection

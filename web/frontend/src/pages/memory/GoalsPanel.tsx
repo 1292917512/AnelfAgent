@@ -32,13 +32,14 @@ export function GoalsPanel() {
   const [editDueTime, setEditDueTime] = useState("");
   const [editRecurring, setEditRecurring] = useState(false);
 
-  const { data: goalsResp } = useQuery({
+  const { data: goalsResp, error: listError } = useQuery({
     queryKey: ["goals", filter],
-    queryFn: () => memoryApi.goals.list(filter).then((r) => r.data),
+    queryFn: () => memoryApi.goals.list(filter, filter === "all").then((r) => r.data),
     refetchInterval: 5000,
   });
   const goals: GoalData[] = goalsResp?.goals || [];
   const selectedGoal = goals.find((g) => g.goal_id === selectedGoalId) || null;
+  const isEditing = editing && !selectedGoal?.archived;
 
   const enterEdit = (goal: GoalData) => {
     setEditVersion(goal.version);
@@ -73,6 +74,11 @@ export function GoalsPanel() {
       memoryApi.goals.update(goalId, { steps, expected_version: version }),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["goals"] }),
   });
+  const restoreMutation = useMutation({
+    mutationFn: (goal: GoalData) => memoryApi.goals.restore(goal.goal_id, goal.version),
+    onSuccess: () => { setEditing(false); return queryClient.invalidateQueries({ queryKey: ["goals"] }); },
+  });
+  const error = listError || createMutation.error || deleteMutation.error || updateMutation.error || updateStepMutation.error || restoreMutation.error;
 
   const stepStatusIcon = (status: string) => {
     switch (status) {
@@ -144,7 +150,7 @@ export function GoalsPanel() {
 
       {/* Right: detail / edit / create */}
       <div className="flex-1 min-w-0">
-        {(updateMutation.error || updateStepMutation.error) && <QueryError error={updateMutation.error || updateStepMutation.error} compact />}
+        {error && <QueryError error={error} compact />}
         {showCreate ? (
           <Card title={t("createGoal")}>
             <div className="space-y-3">
@@ -181,7 +187,9 @@ export function GoalsPanel() {
             </div>
           </Card>
         ) : selectedGoal ? (
-          <Card title={editing ? undefined : selectedGoal.title} subtitle={editing ? undefined : selectedGoal.description} actions={
+          <Card title={isEditing ? undefined : selectedGoal.title} subtitle={isEditing ? undefined : selectedGoal.description} actions={selectedGoal.archived ? (
+            <Button loading={restoreMutation.isPending} onClick={() => restoreMutation.mutate(selectedGoal)}>{t("restoreArchivedGoal")}</Button>
+          ) : (
             <div className="flex gap-1">
               {!editing && (
                 <button onClick={() => enterEdit(selectedGoal)} title={t("common:edit")}
@@ -191,7 +199,7 @@ export function GoalsPanel() {
                 <button onClick={() => updateMutation.mutate({ goalId: selectedGoal.goal_id, expected_version: selectedGoal.version, status: "completed" })} title={t("markComplete")}
                   className="p-1.5 text-muted hover:text-ok transition-colors"><CheckCircle2 size={16} /></button>
               )}
-              {selectedGoal.status === "completed" && !editing && (
+              {selectedGoal.status !== "active" && !editing && (
                 <button onClick={() => updateMutation.mutate({ goalId: selectedGoal.goal_id, expected_version: selectedGoal.version, status: "active" })} title={t("markActive")}
                   className="p-1.5 text-muted hover:text-accent transition-colors"><RefreshCw size={16} /></button>
               )}
@@ -200,8 +208,8 @@ export function GoalsPanel() {
                   className="p-1.5 text-muted hover:text-danger transition-colors"><Trash2 size={16} /></button>
               )}
             </div>
-          }>
-            {editing ? (
+          )}>
+            {isEditing ? (
               <div className="space-y-3">
                 <Input value={editTitle} onChange={(e) => setEditTitle(e.target.value)} className="w-full" />
                 <Textarea value={editDesc} onChange={(e) => setEditDesc(e.target.value)} rows={2} className="w-full" />
@@ -228,6 +236,9 @@ export function GoalsPanel() {
               </div>
             ) : (
               <div className="space-y-4">
+                {selectedGoal.archived && <p className="text-xs text-muted">{t("goalArchived", {
+                  reason: t(`goalArchiveReason.${selectedGoal.archive_reason}`, { defaultValue: selectedGoal.archive_reason || t("common:noData") }),
+                })}</p>}
                 <div className="flex flex-wrap gap-3 text-xs text-muted">
                   <span className={cn("px-2 py-0.5 rounded-full font-medium",
                     selectedGoal.status === "completed" ? "bg-ok-subtle text-ok"
@@ -245,14 +256,15 @@ export function GoalsPanel() {
                   <div className="space-y-1.5">
                     <span className="text-xs font-medium text-heading">{t("stepsLabel")} ({selectedGoal.steps.filter(s => s.status === "completed").length}/{selectedGoal.steps.length})</span>
                     {selectedGoal.steps.map((step, i) => (
-                      <div key={step.index ?? i} className="flex items-center gap-2.5 p-2 rounded-md bg-elevated border border-border cursor-pointer hover:border-border-strong transition-[color,background-color,border-color,box-shadow,opacity]"
+                      <button type="button" key={step.step_id ?? i} disabled={selectedGoal.archived || updateStepMutation.isPending}
+                        className="flex w-full items-center gap-2.5 p-2 text-left rounded-md bg-elevated border border-border enabled:hover:border-border-strong"
                         onClick={() => cycleStepStatus(selectedGoal, i)}>
                         {stepStatusIcon(step.status)}
                         <span className={cn("flex-1 text-sm", step.status === "completed" || step.status === "skipped" ? "text-muted line-through" : "text-foreground")}>
                           {step.content || step.step}
                         </span>
                         {step.note && <span className="text-[10px] text-muted">({step.note})</span>}
-                      </div>
+                      </button>
                     ))}
                   </div>
                 ) : (

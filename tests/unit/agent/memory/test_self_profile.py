@@ -26,6 +26,14 @@ class TestSelfProfileStore:
         assert "[系统注入·自我画像]" in block
         assert "啰嗦" in block
 
+    def test_focus_selects_middle_evidence_and_points_to_full_profile(self):
+        text = "周末喜欢看电影。" * 60 + "调试数据库时先核对备份。" + "平时喜欢晨跑。" * 60
+        focused = render_self_profile_block(text, "数据库维护")
+        unrelated = render_self_profile_block(text, "早餐")
+        assert "先核对备份" in focused and "先核对备份" not in unrelated
+        assert "get_entity_profile" in focused and "get_entity_profile" in unrelated
+        assert len(unrelated) < len(focused) < len(text)
+
     async def test_loads_entity_mirror(self, store):
         """ENTITY 镜像条目可被读取（晋升写入路径的读侧）。"""
         entry = MemoryEntry(

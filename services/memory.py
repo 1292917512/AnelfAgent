@@ -935,6 +935,24 @@ class MemoryService:
                                           title=title, description=description, status=status, steps=steps,
                                           due_time=due_time, recurring=recurring, actor="web")
 
+    async def restore_goal(self, goal_id: str, *, expected_version: int) -> bool:
+        """按所见版本取回归档，保留原目标状态、步骤和备注。"""
+        from agent.planning import situation
+
+        store = require_runtime().memory_store
+        if store is None:
+            return False
+        entry, _ = await goal_ops.find_goal(store, goal_id, include_archived=True)
+        if entry is None or entry.id is None:
+            return False
+        if entry.version != expected_version:
+            raise GoalConflict("目标版本已变化，请刷新后重试")
+        if entry.archived_at:
+            if not await store.restore_memory(entry.id, actor="web", expected_version=expected_version):
+                raise GoalConflict("归档已变化，请刷新后重试")
+            situation.invalidate()
+        return True
+
     async def delete_goal(self, goal_id: str) -> bool:
         from agent.planning.tracker import remove_goal
 

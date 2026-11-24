@@ -423,7 +423,7 @@ class TestCompletionReason:
         assert completion["reason"] == "budget_exhausted"
         deliver_mock.assert_not_awaited()
 
-    async def test_tool_rounds_cannot_complete_plan_and_budget_cancels(self, store) -> None:
+    async def test_budget_exhaustion_preserves_unconfirmed_steps(self, store) -> None:
         from agent.planning import tracker
         from core.conversation_scope import bind_scope, reset_scope
 
@@ -436,8 +436,8 @@ class TestCompletionReason:
             await run_think_loop(mind, mode=ThinkMode.REFLECT, safety_limit=3, base_messages=_base())
             _, goal = await tracker.find_goal_by_id(plan_id)
             assert goal is not None
-            assert goal["status"] == "cancelled"
-            assert [step["status"] for step in goal["steps"]] == ["skipped"] * 3
+            assert goal["status"] == "active"
+            assert [step["status"] for step in goal["steps"]] == ["in_progress", "pending", "pending"]
         finally:
             reset_scope(token)
             tracker.planning_store_port.unbind()
@@ -450,6 +450,28 @@ class TestCompletionReason:
             completion=completion,
         )
         assert completion["reason"] == "completed"
+
+    async def test_normal_exit_keeps_an_explicitly_reopened_plan(self, store) -> None:
+        from agent.planning import tracker
+        from core.conversation_scope import bind_scope, reset_scope
+        from tests.helpers.planning import update_goal
+
+        scope = "reflect:reopened-plan"
+        tracker.planning_store_port.set(store)
+        token = bind_scope(scope)
+        try:
+            plan_id = await tracker.submit_plan(scope, "复查", tracker.parse_steps("核对"))
+            await update_goal(plan_id, step_index=0, step_status="completed")
+            entry, _ = await tracker.find_goal_by_id(plan_id, include_archived=True)
+            assert entry is not None and await store.restore_memory(entry.id)
+            await update_goal(plan_id, goal_status="active")
+            reopened = await tracker.get_active_plan(scope)
+            assert reopened and reopened["steps"][0]["status"] == "completed"
+            await run_think_loop(_reflect_mind([end_reply_result()]), mode=ThinkMode.REFLECT, base_messages=_base())
+            assert await tracker.get_active_plan(scope) == reopened
+        finally:
+            reset_scope(token)
+            tracker.planning_store_port.unbind()
 
     async def test_budget_exhausted(self) -> None:
         """轮次预算用尽：产出可能是中途状态，原因标记为 budget_exhausted。"""

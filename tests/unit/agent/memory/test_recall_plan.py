@@ -84,7 +84,7 @@ async def test_memory_postprocessing_does_not_wait_for_profiles(store, monkeypat
     release_profile, processed = asyncio.Event(), asyncio.Event()
     format_results = retriever._format_unified_results
 
-    async def profile(scopes):
+    async def profile(scopes, focus):
         await release_profile.wait()
         return [{"content": "当前会话画像"}]
 

@@ -670,7 +670,7 @@ async def delete_memory_file(path: str = Query(...)) -> Dict[str, str]:
 @router.get("/goals")
 @_runtime_fallback(lambda status="all", include_archived=False: {"goals": [], "total": 0, "filter": status})
 async def list_goals(
-    status: str = Query("all", description="筛选状态: active / all（终态目标即删不保留）"),
+    status: str = Query("all", description="目标状态：active / completed / cancelled / all"),
     include_archived: bool = Query(False, description="显式包含归档目标并标注归档状态"),
 ) -> Dict[str, Any]:
     goals = await _mem_svc.list_goals(status=status, include_archived=include_archived)
@@ -705,8 +705,11 @@ async def create_goal(req: CreateGoalRequest) -> Dict[str, Any]:
         raise HTTPException(400, str(exc)) from exc
 
 
-class UpdateGoalRequest(BaseModel):
+class GoalVersionRequest(BaseModel):
     expected_version: int
+
+
+class UpdateGoalRequest(GoalVersionRequest):
     title: Optional[str] = None
     description: Optional[str] = None
     status: Optional[str] = None
@@ -730,6 +733,19 @@ async def update_goal(goal_id: str, req: UpdateGoalRequest) -> Dict[str, Any]:
     if result is None:
         raise HTTPException(404, "目标不存在")
     return result
+
+
+@router.post("/goals/{goal_id}/restore")
+async def restore_goal(goal_id: str, req: GoalVersionRequest) -> Dict[str, bool]:
+    from services.memory import GoalConflict
+
+    try:
+        restored = await _mem_svc.restore_goal(goal_id, expected_version=req.expected_version)
+    except GoalConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    if not restored:
+        raise HTTPException(404, "目标不存在")
+    return {"ok": True}
 
 
 @router.delete("/goals/{goal_id}")

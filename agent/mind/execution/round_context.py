@@ -11,7 +11,7 @@ from agent.channel.delivery import observe_delivery_context
 from agent.context.compressor import ContextCompressor
 from agent.context.dynamic import append_execution_status, format_delivery_status
 from agent.context.providers import collect_provider_messages
-from agent.judgment.evidence import dialogue_messages
+from agent.judgment.evidence import latest_user_text
 from agent.mind.background.context import background_context
 from agent.mind.execution.compression import _compress_context, _precompact_flush
 from agent.mind.execution.messages import _merge_new_messages, _merge_pushes, _merge_steered_messages
@@ -70,7 +70,8 @@ async def prepare_round_context(
             state.last_input_tokens = 0
             execution_steps.append(f"→ 第{state.iteration + 1}轮前: 上下文已压缩")
 
-    provider_msgs = await collect_provider_messages(getattr(mind.models.llm, "config", None), ctx.current_scope)
+    latest_input = latest_user_text(ctx.base_messages + ctx.tool_chain)
+    provider_msgs = await collect_provider_messages(getattr(mind.models.llm, "config", None), ctx.current_scope, latest_input)
     from agent.memory.probe import deep_probe_hub
     for message in provider_msgs:
         if message.get("_source", {}).get("provider") == "memory_deep_probe":
@@ -84,8 +85,7 @@ async def prepare_round_context(
     _merge_steered_messages(ctx, state)
 
     if ctx.skill_context is not None:
-        latest_input = next((message["content"] for message in reversed(dialogue_messages(ctx.base_messages))
-                             if message.get("role") == "user"), "")
+        latest_input = latest_user_text(ctx.base_messages + ctx.tool_chain)
         provider_texts = [message["content"] for message in provider_msgs
                           if message.get("_source", {}).get("origin") == "context_provider"
                           and isinstance(message.get("content"), str)]
