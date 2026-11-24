@@ -10,7 +10,7 @@ from __future__ import annotations
 import functools
 import inspect
 import json
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, cast
 
 from core.entity import EntityRegistry, ToolParam
 from core.log import log
@@ -258,7 +258,7 @@ def mcp_tool_call(require_bridge: bool = False) -> Callable[[Callable[..., Any]]
                 public_params = [
                     param for param in signature.parameters.values() if param.name != "bridge"
                 ]
-                setattr(wrapper, "__signature__", signature.replace(parameters=public_params))
+                cast(Any, wrapper).__signature__ = signature.replace(parameters=public_params)
             return wrapper
 
         if inspect.iscoroutinefunction(func):
