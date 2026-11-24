@@ -162,6 +162,7 @@ class HeartbeatEngine:
         self.skills = skills
         self.everything_data = everything_data
         self.config = get_heartbeat_config()
+        self.reload_pending = False
         self.task_registry = TaskRegistry()
         # 定义文件调度种子必须在启动时执行：reload 仅 Web API 触发，
         # 随仓库分发的任务（如 graph_curation）不经过 Web 就永远没有调度
@@ -318,6 +319,7 @@ class HeartbeatEngine:
 
     def reload(self) -> None:
         """热重载任务注册表和心跳配置。"""
+        self.reload_pending = True
         self.task_registry.reload()
         self._warned_missing_tasks.clear()
         from .config import reload_heartbeat_config
@@ -333,6 +335,7 @@ class HeartbeatEngine:
             asyncio.create_task(self._write_heartbeat_status())
         except RuntimeError:
             pass  # 无运行事件循环（测试/构造期）：等下个 tick 兜底
+        self.reload_pending = False
 
     def _sync_event_triggers(self) -> None:
         """装配任务事件触发钩子（带 trigger_event 的任务经 LLM 钩子面注册）。

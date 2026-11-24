@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import functools
+from collections.abc import Awaitable
 from typing import Any, Callable, Dict, List, Optional
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
@@ -291,10 +292,23 @@ async def merge_ltm(req: MergeLTMRequest) -> Dict[str, Any]:
     return await _mem_svc.merge_ltm(req.ids, req.content)
 
 
+async def _delete_result(operation: Awaitable[bool]) -> Dict[str, bool]:
+    from services.memory import GoalConflict, GoalVersionRequired
+
+    try:
+        deleted = await operation
+    except GoalVersionRequired as exc:
+        raise HTTPException(428, str(exc)) from exc
+    except GoalConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    if not deleted:
+        raise HTTPException(404, "记录不存在或已归档")
+    return {"ok": True}
+
+
 @router.delete("/ltm/{mem_id}")
-async def delete_ltm(mem_id: int) -> Dict[str, Any]:
-    ok = await _mem_svc.delete_ltm(mem_id)
-    return {"ok": ok}
+async def delete_ltm(mem_id: int, expected_version: int | None = Query(None, ge=1)) -> Dict[str, bool]:
+    return await _delete_result(_mem_svc.delete_ltm(mem_id, expected_version=expected_version))
 
 
 @router.delete("/ltm")
@@ -749,9 +763,8 @@ async def restore_goal(goal_id: str, req: GoalVersionRequest) -> Dict[str, bool]
 
 
 @router.delete("/goals/{goal_id}")
-async def delete_goal(goal_id: str) -> Dict[str, Any]:
-    ok = await _mem_svc.delete_goal(goal_id)
-    return {"ok": ok}
+async def delete_goal(goal_id: str, expected_version: int | None = Query(None, ge=1)) -> Dict[str, bool]:
+    return await _delete_result(_mem_svc.delete_goal(goal_id, expected_version=expected_version))
 
 # ── 文件索引 ─────────────────────────────────────────────────────────
 

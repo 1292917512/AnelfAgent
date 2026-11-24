@@ -120,11 +120,14 @@ class CreateProviderReq(BaseModel):
 
 @router.post("/providers")
 async def create_provider(req: CreateProviderReq) -> Dict[str, Any]:
-    ok = _svc.add_provider(
-        req.id, name=req.name, base_url=req.base_url,
-        api_key=req.api_key, api_type=req.api_type, proxy_mode=req.proxy_mode,
-        media_protocol=req.media_protocol,
-    )
+    try:
+        ok = _svc.add_provider(
+            req.id, name=req.name, base_url=req.base_url,
+            api_key=req.api_key, api_type=req.api_type, proxy_mode=req.proxy_mode,
+            media_protocol=req.media_protocol,
+        )
+    except OSError as exc:
+        raise HTTPException(503, "模型配置保存失败，请重试") from exc
     if not ok:
         raise HTTPException(409, f"供应商 '{req.id}' 已存在")
     return {"status": "ok", "id": req.id}
@@ -261,7 +264,10 @@ class CreateModelReq(BaseModel):
 async def create_model(pid: str, req: CreateModelReq) -> Dict[str, Any]:
     params = _normalize_model_params(req)
     mid = params.pop("id")
-    ok = _svc.add_model(pid, mid, **params)
+    try:
+        ok = _svc.add_model(pid, mid, **params)
+    except OSError as exc:
+        raise HTTPException(503, "模型配置保存失败，请重试") from exc
     if not ok:
         raise HTTPException(409, f"模型 '{mid}' 已存在或供应商不存在")
     return {"status": "ok", "id": mid}
@@ -556,7 +562,10 @@ class RenameModelReq(BaseModel):
 
 @router.put("/{model_id}/rename")
 async def rename_model(model_id: str, req: RenameModelReq) -> Dict[str, Any]:
-    ok = _svc.rename_model(model_id, req.new_id)
+    try:
+        ok = _svc.rename_model(model_id, req.new_id)
+    except OSError as exc:
+        raise HTTPException(503, "模型配置保存失败，请重试") from exc
     return {"ok": ok}
 
 

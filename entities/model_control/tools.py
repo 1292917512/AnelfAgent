@@ -460,9 +460,6 @@ def add_provider(provider_id: str, base_url: str, api_key: str = "", api_type: s
         pid = provider_id.strip()
         if not pid:
             return tool_error("provider_id 不能为空", cause=ErrorCause.PARAM, retryable=False)
-        if manager.get_provider(pid) is not None:
-            return tool_error(f"供应商 '{pid}' 已存在，修改连接信息请用 update_provider",
-                              cause=ErrorCause.PARAM, retryable=False)
         if api_type not in valid_api_types():
             return tool_error(f"不支持的 api_type: {api_type!r}，可选值: {valid_api_types()}",
                               cause=ErrorCause.PARAM, retryable=False)
@@ -473,19 +470,10 @@ def add_provider(provider_id: str, base_url: str, api_key: str = "", api_type: s
             warnings.append(f"环境变量引用 {api_key.strip()} 当前未设置（展开为空），"
                             "设置该环境变量后重载配置或重启生效")
 
-        if is_ref:
-            # 两步写盘保留引用语法：先以引用串建档落盘，再写入展开值——
-            # save_config 的引用恢复机制比对后磁盘保留 ${VAR}、内存持有真值
-            manager.create_provider(pid, name=name, base_url=base_url, api_key=api_key.strip(),
-                                    api_type=api_type, proxy_mode=proxy_mode,
-                                    media_protocol=media_protocol)
-            manager.save_config()
-            manager.update_provider(pid, api_key=resolved_key)
-        else:
-            manager.create_provider(pid, name=name, base_url=base_url, api_key=resolved_key,
-                                    api_type=api_type, proxy_mode=proxy_mode,
-                                    media_protocol=media_protocol)
-            manager.save_config()
+        if not manager.add_provider(pid, name=name, base_url=base_url, api_key=api_key.strip() if is_ref else api_key,
+                                    api_type=api_type, proxy_mode=proxy_mode, media_protocol=media_protocol):
+            return tool_error(f"供应商 '{pid}' 已存在，修改连接信息请用 update_provider",
+                              cause=ErrorCause.PARAM, retryable=False)
 
         result: dict = {
             "ok": True,
@@ -675,12 +663,12 @@ def add_model(provider_id: str, model_id: str, model: str = "", model_types: str
             kwargs["extra_body"] = extra_body
 
         try:
-            client = manager.create_model(pid, mid, **kwargs)
+            added = manager.add_model(pid, mid, **kwargs)
         except ValueError as exc:
             return tool_error(f"模型参数无效: {exc}", cause=ErrorCause.PARAM, retryable=False)
-        if client is None:
-            return tool_error(f"模型 '{mid}' 创建失败", cause=ErrorCause.INTERNAL, retryable=False)
-        manager.save_config()
+        if not added:
+            return tool_error(f"模型 '{mid}' 已存在或供应商已移除，请重新读取配置",
+                              cause=ErrorCause.STATE, retryable=False)
 
         became_default = manager.default_name == mid
         result: dict = {

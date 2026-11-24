@@ -8,6 +8,9 @@
 from __future__ import annotations
 
 import json
+import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -15,6 +18,7 @@ from typing import Any, Dict, List, Optional
 
 from agent.llm.reasoning import CANONICAL_EFFORTS
 from agent.task.reflection import SELF_REFLECTION_TASK
+from core.file_utils import file_write_lock
 from core.log import log
 from core.path import ConfigPaths
 
@@ -189,21 +193,79 @@ class HeartbeatConfig:
         from core.file_utils import atomic_write_text
 
         p = path or _config_path()
-        content = json.dumps(self.to_dict(), ensure_ascii=False, indent=2)
-        atomic_write_text(p, content)
+        with file_write_lock(p):
+            atomic_write_text(p, json.dumps(self.to_dict(), ensure_ascii=False, indent=2))
+
+    def save_with_interval(self, previous: HeartbeatConfig, seconds: float) -> None:
+        """先持久化两份调度候选，再由 Mind 文件的原子替换决定生效版本。"""
+        from agent.config import get_config_provider
+        from core.file_utils import atomic_write_text
+
+        path = _config_path()
+        revision = uuid.uuid4().hex
+        with file_write_lock(path):
+            document = previous.to_dict()
+            document["_pending_schedule"] = {"revision": revision, "config": self.to_dict()}
+            atomic_write_text(path, json.dumps(document, ensure_ascii=False, indent=2))
+            try:
+                get_config_provider().commit_heartbeat_interval(seconds, revision, lambda: previous.apply(self))
+            except (OSError, ValueError):
+                previous._compact(path)
+                raise
+            self._compact(path)
+
+    def apply(self, candidate: HeartbeatConfig) -> None:
+        """向持有此配置对象的引擎发布已持久化的调度快照。"""
+        self.enabled = candidate.enabled
+        self.analysis_temperature = candidate.analysis_temperature
+        self.min_conversations_for_analysis = candidate.min_conversations_for_analysis
+        self.task_schedules = candidate.task_schedules
+
+    def _compact(self, path: Path) -> None:
+        """收起已经确定的候选；文件占用时保留可恢复的双版本文件。"""
+        try:
+            self.save(path)
+        except OSError as exc:
+            log(f"心跳调度修订将在下次读取时整理: {exc}", "WARNING", tag="心跳")
 
     @classmethod
-    def load(cls, path: Optional[Path] = None) -> HeartbeatConfig:
+    def load(cls, path: Optional[Path] = None, *, strict: bool = False) -> HeartbeatConfig:
         p = path or _config_path()
-        if not p.exists():
-            return _try_migrate()
+        with file_write_lock(p):
+            return cls._load_locked(p, strict=strict)
+
+    @classmethod
+    def _load_locked(cls, p: Path, *, strict: bool) -> HeartbeatConfig:
         try:
             raw = json.loads(p.read_text("utf-8"))
-            cfg = _parse_config(raw)
-        except Exception as exc:
+        except FileNotFoundError:
+            return _try_migrate()
+        except (ValueError, OSError) as exc:
+            if strict:
+                raise
             log(f"心跳配置加载失败，使用默认值: {exc}", "WARNING", tag="心跳")
             return cls()
-        if any(s.get("task_name") == SELF_REFLECTION_TASK and s.get("mode", "manual") not in ("manual", "idle")
+        pending = raw.get("_pending_schedule") if isinstance(raw, dict) else None
+        recoverable = (
+            isinstance(pending, dict)
+            and isinstance(pending.get("revision"), str) and bool(pending["revision"])
+            and isinstance(pending.get("config"), dict)
+        )
+        if recoverable:
+            from agent.config import get_config_provider
+
+            if get_config_provider().has_heartbeat_revision(pending["revision"]):
+                raw = pending["config"]
+        try:
+            cfg = _parse_config(raw)
+        except Exception as exc:
+            if strict:
+                raise
+            log(f"心跳配置加载失败，使用默认值: {exc}", "WARNING", tag="心跳")
+            return cls()
+        if recoverable:
+            cfg._compact(p)
+        elif any(s.get("task_name") == SELF_REFLECTION_TASK and s.get("mode", "manual") not in ("manual", "idle")
                for s in raw.get("task_schedules", [])):
             try:
                 cfg.save(p)
@@ -301,17 +363,27 @@ def _try_migrate() -> HeartbeatConfig:
 _instance: Optional[HeartbeatConfig] = None
 
 
+@contextmanager
+def locked_heartbeat_config() -> Iterator[HeartbeatConfig]:
+    """在同一临界区读写心跳配置与对应的 Mind 间隔。"""
+    with file_write_lock(_config_path()):
+        yield get_heartbeat_config()
+
+
 def get_heartbeat_config() -> HeartbeatConfig:
     global _instance
     if _instance is None:
-        _instance = HeartbeatConfig.load()
+        with file_write_lock(_config_path()):
+            if _instance is None:
+                _instance = HeartbeatConfig.load()
     return _instance
 
 
 def reload_heartbeat_config() -> HeartbeatConfig:
     global _instance
-    _instance = HeartbeatConfig.load()
-    return _instance
+    with file_write_lock(_config_path()):
+        _instance = HeartbeatConfig.load(strict=True)
+        return _instance
 
 
 def current_interval_seconds() -> int:

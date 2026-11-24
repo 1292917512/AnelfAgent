@@ -1,5 +1,5 @@
 import { test, expect, task } from "./fixtures";
-import type { HeartbeatConfig } from "../src/lib/types";
+import type { HeartbeatConfig, HeartbeatConfigView } from "../src/lib/types";
 
 test("heartbeat preserves a zero-temperature draft, retries and saves only the edited field", async ({ page }) => {
   const config: HeartbeatConfig = { enabled: true, interval_seconds: 600, analysis_temperature: 0.7, min_conversations_for_analysis: 3, task_schedules: [] };
@@ -29,6 +29,43 @@ test("heartbeat preserves a zero-temperature draft, retries and saves only the e
   await expect(save).toBeDisabled();
   await expect(page.getByText("Saved", { exact: true })).toBeVisible();
   expect(writes).toEqual([{ analysis_temperature: 0 }, { analysis_temperature: 0 }]);
+});
+
+test("heartbeat retries applying a saved configuration after navigating back to the page", async ({ page }) => {
+  const config: HeartbeatConfigView = { enabled: true, interval_seconds: 600, analysis_temperature: 0.7,
+    min_conversations_for_analysis: 3, task_schedules: [], reload_pending: false };
+  const changes: Partial<HeartbeatConfig>[] = [];
+  let reloads = 0;
+  await page.route("**/api/config/heartbeat", (route) => {
+    if (route.request().method() === "GET") return route.fulfill({ json: config });
+    expect(route.request().method()).toBe("PUT");
+    const patch: Partial<HeartbeatConfig> = route.request().postDataJSON();
+    changes.push(patch);
+    Object.assign(config, patch, { reload_pending: true });
+    return route.fulfill({ json: { status: "saved_reload_pending", config } });
+  });
+  await page.route("**/api/config/heartbeat/reload", (route) => {
+    expect(route.request().method()).toBe("POST");
+    if (++reloads === 1) return route.fulfill({ status: 503, json: { detail: "Scheduler busy" } });
+    config.reload_pending = false;
+    return route.fulfill({ json: { status: "ok" } });
+  });
+  await page.goto("/webui/heartbeat?tab=config");
+  const save = page.getByRole("button", { name: "Save Config" });
+  const retry = page.getByRole("button", { name: "Retry applying configuration" });
+  await page.getByRole("spinbutton", { name: "Analysis Temperature" }).fill("0");
+  await save.click();
+  await expect(retry).toBeVisible();
+  await expect(save).toBeDisabled();
+  await page.reload();
+  await expect(page.getByRole("spinbutton", { name: "Analysis Temperature" })).toHaveValue("0");
+  await retry.click();
+  await expect(page.getByRole("alert")).toHaveText("Scheduler busy");
+  await retry.click();
+  await expect(retry).toHaveCount(0);
+  await expect(save).toBeDisabled();
+  expect(changes).toEqual([{ analysis_temperature: 0 }]);
+  expect(reloads).toBe(2);
 });
 
 test("task history keeps uncertain progress distinct from successful work", async ({ page }) => {

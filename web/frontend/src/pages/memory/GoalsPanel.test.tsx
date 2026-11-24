@@ -35,6 +35,37 @@ it("preserves step content, identity and notes while submitting the displayed ve
   }
 });
 
+it("refreshes a stale delete and waits for another decision on the new version", async () => {
+  await i18n.changeLanguage("zh");
+  const goal: GoalData = {
+    goal_id: "review", title: "初稿", status: "active", version: 3,
+    created_at: "2026-01-01", updated_at: "2026-01-01", steps: [],
+  };
+  const response = { status: 200, statusText: "OK", headers: {}, config: { headers: new AxiosHeaders() } };
+  const list = vi.spyOn(memoryApi.goals, "list")
+    .mockResolvedValueOnce({ ...response, data: { goals: [goal] } })
+    .mockResolvedValue({ ...response, data: { goals: [{ ...goal, title: "新进展", version: 4 }] } });
+  const remove = vi.spyOn(memoryApi.goals, "delete")
+    .mockRejectedValueOnce(new Error("目标已变化"))
+    .mockResolvedValue({ ...response, data: { ok: true } });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const user = userEvent.setup();
+  const view = render(<QueryClientProvider client={client}><GoalsPanel /></QueryClientProvider>);
+  try {
+    await user.click(await screen.findByText(goal.title));
+    await user.click(screen.getByRole("button", { name: "删除" }));
+    await screen.findAllByText("新进展");
+    expect(remove.mock.calls).toEqual([["review", 3]]);
+    await user.click(screen.getByRole("button", { name: "删除" }));
+    await waitFor(() => expect(remove.mock.calls).toEqual([["review", 3], ["review", 4]]));
+  } finally {
+    view.unmount();
+    client.clear();
+    list.mockRestore();
+    remove.mockRestore();
+  }
+});
+
 it("shows archived goals under All and restores the viewed version with its steps read-only", async () => {
   await i18n.changeLanguage("zh");
   const goal: GoalData = {

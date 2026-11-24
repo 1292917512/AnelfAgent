@@ -40,6 +40,44 @@ test("profile edits preserve drafts on conflict and expose recoverable history",
   expect(overflow).toBe(false);
 });
 
+test("deleting a local search result uses its displayed version and leaves external results read-only", async ({ page }) => {
+  const versions: string[] = [];
+  let version = 6;
+  let deleted = false;
+  await page.route("**/api/memory/ltm/**", route => {
+    const url = new URL(route.request().url());
+    if (url.pathname.endsWith("/search")) return route.fulfill({ json: [
+      ...(!deleted ? [{ id: "mem:12", source: "memory", memory_type: "semantic", version, snippet: `Local revision ${version}` }] : []),
+      { id: "chunk:12", source: "file", snippet: "File excerpt" },
+    ] });
+    if (url.pathname.endsWith("/12") && route.request().method() === "DELETE") {
+      versions.push(url.searchParams.get("expected_version") ?? "");
+      if (versions.length === 1) {
+        version++;
+        return route.fulfill({ status: 409, json: { detail: "Memory changed" } });
+      }
+      deleted = true;
+      return route.fulfill({ json: { ok: true } });
+    }
+    return route.fulfill({ json: { items: [], total: 0, pages: 1 } });
+  });
+  await page.goto("/webui/memory?tab=ltm");
+  const search = page.getByPlaceholder("Search memories...");
+  await search.fill("revision");
+  await search.press("Enter");
+  const buttons = page.getByRole("button", { name: "Delete", exact: true });
+  await expect(buttons).toHaveCount(2);
+  await expect(buttons.nth(1)).toBeDisabled();
+  await buttons.first().click();
+  await expect(page.getByText("Memory changed")).toBeVisible();
+  await expect(page.getByText("Local revision 7")).toBeVisible();
+  expect(versions).toEqual(["6"]);
+  await buttons.first().click();
+  await expect(buttons).toHaveCount(1);
+  await expect(buttons.first()).toBeDisabled();
+  expect(versions).toEqual(["6", "7"]);
+});
+
 test("memory editing loads full text and refreshes operation history after saving", async ({ page }) => {
   const fullText = "A complete fact with conditions. ".repeat(100);
   let submitted: { content: string; expected_version: number } | undefined;

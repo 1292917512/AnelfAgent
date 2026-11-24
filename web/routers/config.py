@@ -197,10 +197,21 @@ async def save_heartbeat_config(data: HeartbeatConfigUpdate) -> Dict[str, Any]:
     """保存心跳配置并热重载。"""
     params = {k: v for k, v in data.model_dump().items() if v is not None}
     try:
-        _heartbeat_svc.save_config(params)
+        applied = _heartbeat_svc.save_config(params)
     except HeartbeatServiceError as e:
         raise HTTPException(e.status_code, str(e)) from e
-    return {"status": "ok", "config": _heartbeat_svc.get_config()}
+    config = _heartbeat_svc.get_config()
+    pending = not applied or config["reload_pending"]
+    return {"status": "saved_reload_pending" if pending else "ok", "config": config}
+
+
+@router.post("/heartbeat/reload")
+async def reload_heartbeat_config() -> Dict[str, str]:
+    try:
+        _heartbeat_svc.reload_engine()
+    except HeartbeatServiceError as exc:
+        raise HTTPException(exc.status_code, str(exc)) from exc
+    return {"status": "ok"}
 
 
 @router.get("/heartbeat/status")

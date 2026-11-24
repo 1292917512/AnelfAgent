@@ -59,8 +59,12 @@ export function GoalsPanel() {
     },
   });
   const deleteMutation = useMutation({
-    mutationFn: (goalId: string) => memoryApi.goals.delete(goalId),
-    onSuccess: (_data, goalId) => { queryClient.invalidateQueries({ queryKey: ["goals"] }); if (selectedGoalId === goalId) setSelectedGoalId(null); },
+    mutationFn: (goal: GoalData) => memoryApi.goals.delete(goal.goal_id, goal.version),
+    onSuccess: (_data, goal) => {
+      if (selectedGoalId === goal.goal_id) setSelectedGoalId(null);
+      for (const key of ["ltmPaginated", "ltmSearch", "memoryTimeline"]) queryClient.invalidateQueries({ queryKey: [key] });
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: ["goals"] }),
   });
   const updateMutation = useMutation({
     mutationFn: (data: { goalId: string } & GoalUpdate) => {
@@ -204,7 +208,7 @@ export function GoalsPanel() {
                   className="p-1.5 text-muted hover:text-accent transition-colors"><RefreshCw size={16} /></button>
               )}
               {!editing && (
-                <button onClick={() => deleteMutation.mutate(selectedGoal.goal_id)}
+                <button aria-label={t("common:delete")} disabled={deleteMutation.isPending} onClick={() => deleteMutation.mutate(selectedGoal)}
                   className="p-1.5 text-muted hover:text-danger transition-colors"><Trash2 size={16} /></button>
               )}
             </div>

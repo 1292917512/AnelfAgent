@@ -10,12 +10,12 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import threading
 import time
 from dataclasses import dataclass, replace
+from functools import wraps
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, NamedTuple, Optional
+from typing import TYPE_CHECKING, Any, Callable, Concatenate, Dict, List, NamedTuple, Optional, ParamSpec, TypeVar
 
 import litellm
 
@@ -44,6 +44,7 @@ from agent.llm.llm_client import (
 )
 from agent.llm.types import ChatResult
 from core.entity import BaseEntity, EntityType
+from core.file_utils import atomic_write_text
 from core.log import error, info, log, warning
 from core.network import ProxyMode
 from core.path import ConfigPaths
@@ -52,7 +53,18 @@ if TYPE_CHECKING:
     from agent.llm.media_client import MediaClient
 
 _CONFIG_PATH = ConfigPaths.LLM_CLIENTS
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
 
+
+def _config_write(method: Callable[Concatenate[LLMManager, _P], _R]) -> Callable[Concatenate[LLMManager, _P], _R]:
+    """串行化同一管理器的配置读改写，与磁盘热重载共用临界区。"""
+    @wraps(method)
+    def locked(manager: LLMManager, /, *args: _P.args, **kwargs: _P.kwargs) -> _R:
+        with manager._config_lock:
+            return method(manager, *args, **kwargs)
+
+    return locked
 
 
 @dataclass
@@ -134,8 +146,8 @@ class LLMManager(BaseEntity):
         # 子代理统一注册表：内置难度档 + 自定义档案（_apply_config 填充；
         # 空配置首存时 save_config 也依赖此初始值）
         self._sub_agents: Dict[str, SubAgentProfile] = {}
-        # 热重载串行化（ConfigWatcher 轮询与 Web/AI 显式 reload 可能并发触发）
-        self._reload_lock = threading.Lock()
+        # Web、同步实体工具与配置观察器共享同一个配置提交边界。
+        self._config_lock = threading.RLock()
         self._load_config()
         super().__init__()
 
@@ -388,46 +400,30 @@ class LLMManager(BaseEntity):
         litellm.register_model(custom_models)
         info(f"已注册 {len(custom_models)} 个自定义模型到 litellm 模型信息表", tag="模型")
 
+    @_config_write
     def save_config(self, *, sub_agents: Optional[Dict[str, SubAgentProfile]] = None) -> bool:
         try:
-            self._config_path.parent.mkdir(parents=True, exist_ok=True)
-            providers_out: List[Dict[str, Any]] = []
-            for pid in self._provider_order:
-                prov = self._providers.get(pid)
-                if not prov:
-                    continue
-                models_out: List[Dict[str, Any]] = []
-                for client in self._clients.values():
-                    if client.config.provider_id != pid:
-                        continue
-                    models_out.append(client.config.to_model_dict())
-                pd = prov.to_dict()
-                pd["models"] = models_out
-                providers_out.append(pd)
-
-            out = {
-                "providers": providers_out,
-                "type_priorities": self._type_priorities,
-                "default_chat": self._default_chat,
-            }
-            # 子代理统一注册表：内置难度档始终写出（空池也保留条目，注册表视图稳定），
-            # 自定义档案按需；legacy 键不再写出（迁移见 _load_config）
-            out["sub_agents"] = {
-                profile.name: profile.to_dict()
-                for profile in (self._sub_agents if sub_agents is None else sub_agents).values()
-            }
-            out = self._restore_env_refs(out)
-            # 原子写盘：临时文件 + os.replace，进程中断不会留下半截 JSON
-            tmp_path = self._config_path.with_name(self._config_path.name + ".tmp")
-            tmp_path.write_text(
-                json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8",
-            )
-            os.replace(tmp_path, self._config_path)
-            info("LLM 配置已保存", tag="模型")
+            self._write_config(self._config_document(self._sub_agents if sub_agents is None else sub_agents))
             return True
         except Exception as exc:
             error(f"保存 LLM 配置失败: {exc}", tag="模型")
             return False
+
+    def _config_document(self, profiles: dict[str, SubAgentProfile]) -> dict[str, Any]:
+        providers = []
+        for pid in self._provider_order:
+            provider = self._providers.get(pid)
+            if provider is not None:
+                models = [c.config.to_model_dict() for c in self._clients.values() if c.config.provider_id == pid]
+                providers.append({**provider.to_dict(), "models": models})
+        return self._restore_env_refs({
+            "providers": providers, "type_priorities": self._type_priorities, "default_chat": self._default_chat,
+            "sub_agents": {name: profile.to_dict() for name, profile in profiles.items()},
+        })
+
+    def _write_config(self, document: dict[str, Any]) -> None:
+        atomic_write_text(self._config_path, json.dumps(document, ensure_ascii=False, indent=2))
+        info("LLM 配置已保存", tag="模型")
 
     def _restore_env_refs(self, out: Dict[str, Any]) -> Dict[str, Any]:
         """回写配置时恢复磁盘上的 ${ENV_VAR} 引用。
@@ -435,13 +431,16 @@ class LLMManager(BaseEntity):
         内存中的 api_key 是引用展开后的值；若与磁盘引用的展开结果一致
         （即用户未修改该字段），则保留磁盘上的引用语法，避免明文密钥落盘。
         """
+        from core.config import expand_env_refs
+
         try:
-            if not self._config_path.exists():
-                return out
-            from core.config import expand_env_refs
             disk = json.loads(self._config_path.read_text(encoding="utf-8"))
-        except Exception:
+        except FileNotFoundError:
             return out
+        except (ValueError, OSError) as exc:
+            raise OSError("无法读取现有模型配置中的环境变量引用") from exc
+        if not isinstance(disk, dict):
+            raise OSError("现有模型配置格式无效")
 
         def _restore(out_item: Dict[str, Any], disk_item: Dict[str, Any], field: str) -> None:
             ref = disk_item.get(field)
@@ -477,7 +476,7 @@ class LLMManager(BaseEntity):
         新增构造、删除弹出并修正默认模型。文件是真相源，本方法不写盘。
         解析失败保留当前运行配置（不改名备份——用户可能正在编辑中）。
         """
-        with self._reload_lock:
+        with self._config_lock:
             return self._reload_from_disk_locked()
 
     def _reload_from_disk_locked(self) -> Dict[str, Any]:
@@ -1165,6 +1164,24 @@ class LLMManager(BaseEntity):
     def get_provider(self, pid: str) -> Optional[ProviderConfig]:
         return self._providers.get(pid)
 
+    @_config_write
+    def add_provider(self, pid: str, **settings: Any) -> bool:
+        """只新增供应商，持久化输入的密钥引用，再发布展开后的运行配置。"""
+        from core.config import expand_env_refs
+
+        if pid in self._providers:
+            return False
+        provider = ProviderConfig(id=pid, **settings)
+        provider.name = provider.name or pid
+        document = self._config_document(self._sub_agents)
+        document["providers"].append({**provider.to_dict(), "models": []})
+        provider.api_key = expand_env_refs(provider.api_key)
+        self._write_config(document)
+        self._providers[pid] = provider
+        self._provider_order.append(pid)
+        return True
+
+    @_config_write
     def create_provider(
         self,
         pid: str,
@@ -1187,6 +1204,7 @@ class LLMManager(BaseEntity):
             self._provider_order.append(pid)
         return prov
 
+    @_config_write
     def update_provider(self, pid: str, **kwargs: Any) -> bool:
         prov = self._providers.get(pid)
         if prov is None:
@@ -1207,6 +1225,7 @@ class LLMManager(BaseEntity):
         self.save_config()
         return True
 
+    @_config_write
     def remove_provider(self, pid: str) -> bool:
         if pid not in self._providers:
             return False
@@ -1226,8 +1245,9 @@ class LLMManager(BaseEntity):
     # 模型 CRUD
     # ------------------------------------------------------------------
 
+    @staticmethod
     def _sync_priority_delta(
-        self,
+        priorities: dict[str, list[str]],
         model_id: str,
         old_types: set[str],
         old_supports_vision: bool,
@@ -1236,15 +1256,15 @@ class LLMManager(BaseEntity):
         """按模型能力变化增量同步类型/vision 优先级列表成员。"""
         new_types = set(cfg.model_types)
         for mt in old_types - new_types:
-            plist = self._type_priorities.get(mt, [])
+            plist = priorities.get(mt, [])
             if model_id in plist:
                 plist.remove(model_id)
         for mt in new_types - old_types:
-            plist = self._type_priorities.setdefault(mt, [])
+            plist = priorities.setdefault(mt, [])
             if model_id not in plist:
                 plist.append(model_id)
         # 同步 vision 优先级列表（supports_vision 的 chat 模型供视觉任务使用）
-        vision_list = self._type_priorities.setdefault("vision", [])
+        vision_list = priorities.setdefault("vision", [])
         if cfg.supports_vision and "chat" in cfg.model_types:
             if model_id not in vision_list:
                 vision_list.append(model_id)
@@ -1258,12 +1278,25 @@ class LLMManager(BaseEntity):
         model: str = "",
         **kwargs: Any,
     ) -> Optional[LLMClient]:
+        """在内存中构造或替换模型，供调用方组合配置。"""
+        return self._create_model(provider_id, model_id, model, kwargs, persist_new=False)
+
+    def add_model(self, provider_id: str, model_id: str, model: str = "", **settings: Any) -> bool:
+        """新增且持久化模型、优先级和默认模型，已有模型保留原配置。"""
+        return self._create_model(provider_id, model_id, model, settings, persist_new=True) is not None
+
+    @_config_write
+    def _create_model(
+        self, provider_id: str, model_id: str, model: str, kwargs: dict[str, Any], *, persist_new: bool,
+    ) -> Optional[LLMClient]:
         prov = self._providers.get(provider_id)
         if prov is None:
             warning(f"供应商 '{provider_id}' 不存在", tag="模型")
             return None
         old = self._clients.get(model_id)
         if old is not None:
+            if persist_new:
+                return None
             warning(f"模型 '{model_id}' 已存在，将被覆盖", tag="模型")
         old_types = set(old.config.model_types) if old is not None else set()
         old_supports_vision = old.config.supports_vision if old is not None else False
@@ -1282,11 +1315,21 @@ class LLMManager(BaseEntity):
                 if k in LLMClientConfig.__dataclass_fields__
             },
         )
+        priorities = {kind: ids.copy() for kind, ids in self._type_priorities.items()}
+        self._sync_priority_delta(priorities, model_id, old_types, old_supports_vision, cfg)
+        default = self._default_chat
+        if not default and "chat" in cfg.model_types and cfg.supports_tools:
+            default = model_id
+        if persist_new:
+            document = self._config_document(self._sub_agents)
+            provider_row = next(row for row in document["providers"] if row["id"] == provider_id)
+            provider_row["models"].append(cfg.to_model_dict())
+            document.update(type_priorities=priorities, default_chat=default)
+            self._write_config(document)
         client = LLMClient(config=cfg)
         self._clients[model_id] = client
-        self._sync_priority_delta(model_id, old_types, old_supports_vision, cfg)
-        if not self._default_chat and "chat" in cfg.model_types and cfg.supports_tools:
-            self._default_chat = model_id
+        self._type_priorities = priorities
+        self._default_chat = default
         if "chat" in cfg.model_types and not cfg.supports_tools:
             warning(f"对话模型 '{model_id}' 未启用工具调用（supports_tools=False），不能作为默认对话模型", tag="模型")
         return client
@@ -1366,6 +1409,7 @@ class LLMManager(BaseEntity):
             self._empty_client = LLMClient(config=LLMClientConfig(name="_empty", base_url=""))
         return self._empty_client
 
+    @_config_write
     def set_default(self, name: str) -> bool:
         """将模型移到 chat 优先级列表首位，使其成为默认对话模型。"""
         client = self._clients.get(name)
@@ -1387,6 +1431,7 @@ class LLMManager(BaseEntity):
         info(f"默认对话模型已设为: {name}（已移至 chat 优先级首位）", tag="模型")
         return True
 
+    @_config_write
     def remove_model(self, model_id: str) -> bool:
         if model_id not in self._clients:
             return False
@@ -1404,6 +1449,7 @@ class LLMManager(BaseEntity):
             chat_prio = self._type_priorities.get("chat", [])
             self._default_chat = chat_prio[0] if chat_prio else ""
 
+    @_config_write
     def update_model(self, model_id: str, **kwargs: Any) -> bool:
         client = self._clients.get(model_id)
         if client is None:
@@ -1414,28 +1460,37 @@ class LLMManager(BaseEntity):
             "provider_id", "base_url", "api_key", "api_type", "proxy_mode",
         }
         client.update_config(**{k: v for k, v in kwargs.items() if k in allowed})
-        self._sync_priority_delta(model_id, old_types, old_supports_vision, client.config)
+        self._sync_priority_delta(self._type_priorities, model_id, old_types, old_supports_vision, client.config)
         self.save_config()
         if not client.config.enabled:
             self._hot_switch_if_disabled(model_id)
         return True
 
+    @_config_write
     def rename_model(self, old_id: str, new_id: str) -> bool:
         if old_id not in self._clients or new_id in self._clients:
             return False
+
+        def remap(ids: list[str]) -> list[str]:
+            return [new_id if mid == old_id else mid for mid in ids]
+
+        profiles = {name: replace(p, models=remap(p.models)) if old_id in p.models else p
+                    for name, p in self._sub_agents.items()}
+        priorities = {kind: remap(ids) for kind, ids in self._type_priorities.items()}
+        default = new_id if self._default_chat == old_id else self._default_chat
+        document = self._config_document(profiles)
+        for provider in document["providers"]:
+            for model in provider["models"]:
+                if model["id"] == old_id:
+                    model.update(id=new_id, name=new_id)
+        document.update(type_priorities=priorities, default_chat=default)
+        self._write_config(document)
         client = self._clients.pop(old_id)
         client.config.name = new_id
         self._clients[new_id] = client
-        for plist in self._type_priorities.values():
-            for i, mid in enumerate(plist):
-                if mid == old_id:
-                    plist[i] = new_id
-        if self._default_chat == old_id:
-            self._default_chat = new_id
-        # 子代理档案候选池同步重映射（防止重命名打断绑定）
-        for profile in self._sub_agents.values():
-            profile.models = [new_id if mid == old_id else mid for mid in profile.models]
-        self.save_config()
+        self._type_priorities = priorities
+        self._default_chat = default
+        self._sub_agents = profiles
         return True
 
     # ------------------------------------------------------------------
@@ -1512,6 +1567,7 @@ class LLMManager(BaseEntity):
             **cost_cache[mid],
         }
 
+    @_config_write
     def set_type_priority(self, model_type: str, model_ids: List[str]) -> None:
         """设置某类型的完整优先级顺序。"""
         old_first = self._chat_first()
@@ -1525,6 +1581,7 @@ class LLMManager(BaseEntity):
         if model_type == "chat":
             self._auto_switch_chat(old_first)
 
+    @_config_write
     def move_model_priority(self, model_type: str, model_id: str, direction: int) -> bool:
         """在类型优先级列表中上移(-1)/下移(+1)。"""
         old_first = self._chat_first() if model_type == "chat" else None
@@ -1654,16 +1711,16 @@ class LLMManager(BaseEntity):
 
     def _persist_sub_agent(self, name: str, profile: Optional[SubAgentProfile]) -> None:
         """档案写盘成功后发布新注册表，写入失败保留可重试的原状态。"""
-        with self._reload_lock:
-            updated = self._sub_agents.copy()
-            if profile is None:
-                updated.pop(name, None)
-            else:
-                updated[name] = profile
-            if not self.save_config(sub_agents=updated):
-                raise OSError("子代理档案保存失败，请重试")
-            self._sub_agents = updated
+        updated = self._sub_agents.copy()
+        if profile is None:
+            updated.pop(name, None)
+        else:
+            updated[name] = profile
+        if not self.save_config(sub_agents=updated):
+            raise OSError("子代理档案保存失败，请重试")
+        self._sub_agents = updated
 
+    @_config_write
     def create_sub_agent(
         self,
         name: str,
@@ -1714,6 +1771,7 @@ class LLMManager(BaseEntity):
         info(f"子代理档案 '{name}' 已创建 (model={model_id})", tag="模型")
         return True, f"子代理档案 '{name}' 已创建，绑定模型 {model_id}"
 
+    @_config_write
     def update_sub_agent(
         self,
         name: str,
@@ -1784,6 +1842,7 @@ class LLMManager(BaseEntity):
         self._persist_sub_agent(profile.name, profile)
         return True, f"子代理档案 '{name}' 已更新"
 
+    @_config_write
     def remove_sub_agent(self, name: str) -> tuple[bool, str]:
         """删除自定义子代理档案（内置难度档受保护）。"""
         name = (name or "").strip()

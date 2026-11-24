@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from dataclasses import fields as dataclass_fields
 from pathlib import Path
@@ -526,6 +527,35 @@ class BotConfigProvider:
 
     def save_mind_config(self, **overrides: Any) -> None:
         """保存 Mind 配置（未知字段拒绝）。"""
+        self._commit_mind_config(overrides)
+
+    def commit_heartbeat_interval(self, seconds: float, revision: str, publish_schedule: Callable[[], None]) -> None:
+        """在同一原子替换中提交心跳间隔和配套调度修订。"""
+        self._commit_mind_config({"heartbeat_interval": seconds}, heartbeat_revision=revision, publish=publish_schedule)
+
+    def has_heartbeat_revision(self, revision: str) -> bool:
+        """读取两份配置共同的持久提交点，用于恢复未整理的调度文件。"""
+        path = Path(self.mind_config_path)
+        try:
+            stored = json.loads(path.read_text("utf-8"))
+        except FileNotFoundError:
+            return False
+        return stored.get("_heartbeat_revision") == revision
+
+    def _commit_mind_config(
+        self, overrides: dict[str, Any], *, heartbeat_revision: str | None = None, publish: Callable[[], None] | None = None,
+    ) -> None:
+        from core.file_utils import file_write_lock
+
+        path = Path(self.mind_config_path)
+        with file_write_lock(path):
+            self._write_mind_config(path, overrides, heartbeat_revision)
+            if publish is not None:
+                publish()
+            self._sync_mind_to_config_manager()
+            log(f"Mind 配置已保存: {path}")
+
+    def _write_mind_config(self, path: Path, overrides: dict[str, Any], heartbeat_revision: str | None) -> None:
         unknown = sorted(set(overrides) - set(MIND_CONFIG_FIELDS))
         if unknown:
             raise ValueError(
@@ -544,20 +574,20 @@ class BotConfigProvider:
                 setattr(mc, k, str(v))
             else:
                 setattr(mc, k, type(current)(v))
-        p = Path(self.mind_config_path)
-        p.parent.mkdir(parents=True, exist_ok=True)
         data = {key: getattr(mc, key) for key in MIND_CONFIG_FIELDS}
-        previous = json.loads(p.read_text("utf-8")) if p.exists() else {}
+        previous = json.loads(path.read_text("utf-8")) if path.exists() else {}
         for key in data:
             if ConfigManager.environment_override(key):
                 data[key] = previous.get(key, getattr(MindConfig(), key))
         from core.file_utils import atomic_write_text
-        atomic_write_text(p, json.dumps(data, ensure_ascii=False, indent=2))
+        document = dict(data)
+        revision = heartbeat_revision or previous.get("_heartbeat_revision")
+        if revision:
+            document["_heartbeat_revision"] = revision
+        atomic_write_text(path, json.dumps(document, ensure_ascii=False, indent=2))
         # 保留消费者持有的 MindConfig 引用，仅在持久化后发布新值。
         for key, value in data.items():
             setattr(self._config.mind, key, value)
-        self._sync_mind_to_config_manager()
-        log(f"Mind 配置已保存: {p}")
 
     def reload(self) -> None:
         self._load_from_cm()

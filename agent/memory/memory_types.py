@@ -82,6 +82,8 @@ class MemorySearchResult(BaseModel):
     """来源类型：本地记忆、文件块或 Cognee 图/向量结果。"""
     memory_type: Optional[str] = None
     """原始 MemoryType 值（仅 memory 来源有值）。"""
+    version: int | None = Field(default=None, exclude=True)
+    """本地记忆搜索命中时的版本，供管理界面提交所见修订。"""
     tags: List[str] = Field(default_factory=list)
     timestamp: float = 0.0
     """记忆写入时间（Unix 秒，仅 memory 来源有值）。"""
@@ -99,7 +101,7 @@ class MemorySearchResult(BaseModel):
 
         return cls(
             id=f"mem:{entry.id}", snippet=excerpt(entry.content, max_chars), score=score,
-            memory_type=entry.memory_type.value, tags=list(entry.tags), timestamp=entry.timestamp,
+            memory_type=entry.memory_type.value, version=entry.version, tags=list(entry.tags), timestamp=entry.timestamp,
             sensitivity=str(entry.metadata.get("sensitivity", "normal")),
             provenance={**recall_provenance(entry.metadata, source=entry.source), **(flags or {})},
         )

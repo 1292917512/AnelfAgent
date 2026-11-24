@@ -40,7 +40,9 @@
     "temperature": "分析温度",
     "minConversations": "最少对话数",
     "save": "保存配置",
-    "saving": "保存中…"
+    "saving": "保存中…",
+    "reloadPending": "配置已保存，调度引擎应用失败。",
+    "retryReload": "重新应用已保存的配置"
   },
   "schedule": {
     "reloadConflicts": "重新载入调度",

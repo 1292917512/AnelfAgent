@@ -107,9 +107,11 @@ audio_bytes = audio.value
   审批面，返回脱敏摘要、密钥永不回显），update_model_config 白名单含 enabled/model、
   model_types（JSON 数组）和 extra_body（JSON 对象，整体替换，{} 清空）；
   list_models(model_name=...) 按需回读可更新配置，更新前后均可核对。add_model 支持 extra_body 初始值。
-  Web 经模型页，双路径同 LLMManager 内存态 + 原子落盘即热生效
-- **api_key 支持 `${ENV_VAR}` 引用**（两步写盘：引用串建档落盘后再写展开值，`_restore_env_refs`
-  比对使磁盘保引用、内存持真值）
+  Web 经模型页，双路径同 LLMManager 内存态 + 原子落盘即热生效。
+  每次修改档案都在管理器的配置写锁内读取现值、校验并提交。磁盘热重载使用同一把锁。
+  模型改名同时持久化优先级、默认模型与档案引用，写入成功后在原客户端对象上生效。
+- 新增供应商或模型在同一管理器内完成重名检查与持久化。供应商的 `api_key` 支持 `${ENV_VAR}`，
+  建档时将引用写入磁盘，运行时使用展开值。后续保存经 `_restore_env_refs` 保留匹配的引用。
 - **热重载 reconcile**（`LLMManager.reload_from_disk` + `_parse_config_data` 启动/重载共用解析）：
   ConfigWatcher mtime 轮询自动 / Web 接口 / AI 工具 reload_model_config 三路径共用——不变模型
   客户端零触碰（保运行时学习状态与连接池），变化经 `update_config` 原地变异（对象身份不变），

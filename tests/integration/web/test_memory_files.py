@@ -93,7 +93,8 @@ def test_goal_terminal_cleanup_exposes_auditable_destination(
         assert client.post(path + "/restore", json={"expected_version": archived[0]["version"]}).status_code == 200
         restored = client.get(path).json()
         assert not restored["archived"] and restored["steps"] == edited_steps
-        assert client.delete(path).json()["ok"]
+        assert client.delete(path).status_code == 428
+        assert client.delete(path, params={"expected_version": restored["version"]}).json()["ok"]
         deletion = client.get(path).json()
         assert deletion["deleted"] and deletion["destination"] == "deleted"
     finally:

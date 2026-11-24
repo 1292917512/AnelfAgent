@@ -10,7 +10,7 @@ from core.log import log
 from services._runtime import get_runtime
 
 if TYPE_CHECKING:
-    from agent.heartbeat.config import TaskSchedule
+    from agent.heartbeat.config import HeartbeatConfig, TaskSchedule
 
 
 class HeartbeatServiceError(Exception):
@@ -93,20 +93,20 @@ class HeartbeatService:
         interval_seconds 为单一真源 mind.heartbeat_interval 的派生视图
         （heartbeat.json 不存间隔副本），与配置中心展示恒一致。
         """
-        from agent.heartbeat.config import current_interval_seconds, get_heartbeat_config
-        return {
-            **get_heartbeat_config().to_dict(),
-            "interval_seconds": current_interval_seconds(),
-        }
+        from agent.heartbeat.config import current_interval_seconds, locked_heartbeat_config
+
+        rt = get_runtime()
+        engine = getattr(getattr(rt, "mind", None), "heartbeat_engine", None)
+        with locked_heartbeat_config() as cfg:
+            return {
+                **cfg.to_dict(),
+                "interval_seconds": current_interval_seconds(),
+                "reload_pending": getattr(engine, "reload_pending", False) is True,
+            }
 
     @staticmethod
-    def _save_interval_seconds(value: Any) -> None:
-        """心跳间隔写入单一真源 mind.heartbeat_interval（双轨同步 + 即时热更）。
-
-        与 PUT /config/meta 同纪律：经注册项 coerce + clamp 收敛后再保存；
-        保存触发的 ConfigManager 变更通知会唤醒心跳循环按新间隔重排。
-        """
-        from agent.config import get_config_provider
+    def _parse_interval_seconds(value: Any) -> float:
+        """按配置中心的注册项转换与限制心跳间隔。"""
         from core.config import ConfigRegistry
 
         item = ConfigRegistry.get_item("heartbeat_interval")
@@ -114,10 +114,10 @@ class HeartbeatService:
             parsed = item.clamp(item.coerce_value(value)) if item else max(60.0, float(value))
         except (TypeError, ValueError):
             raise HeartbeatServiceError(f"心跳间隔取值非法: {value}", status_code=400) from None
-        get_config_provider().save_mind_config(heartbeat_interval=float(parsed))
+        return float(parsed)
 
     @staticmethod
-    def save_config(params: Dict[str, Any]) -> None:
+    def save_config(params: Dict[str, Any]) -> bool:
         """保存心跳配置并热重载引擎。
 
         Args:
@@ -126,17 +126,40 @@ class HeartbeatService:
                 interval_seconds 路由到 mind.heartbeat_interval（单一真源），
                 其余字段落 heartbeat.json。
 
-        Raises:
-            HeartbeatServiceError: 参数非法（400）、调度存在并发冲突（409）或缺少编辑基线（428）。
-        """
-        from agent.heartbeat.config import get_heartbeat_config
+        Returns:
+            配置已保存且引擎无需重试时为 True，已保存但应用失败时为 False。
 
-        cfg = get_heartbeat_config()
+        Raises:
+            HeartbeatServiceError: 参数非法（400）、调度冲突（409）、缺少基线（428）或写入失败（503）。
+        """
+        from agent.config import get_config_provider
+        from agent.heartbeat.config import locked_heartbeat_config
+
+        interval = HeartbeatService._parse_interval_seconds(params["interval_seconds"]) if "interval_seconds" in params else None
+        try:
+            if params.keys() <= {"interval_seconds"}:
+                if interval is not None:
+                    get_config_provider().save_mind_config(heartbeat_interval=interval)
+                return True
+            with locked_heartbeat_config() as cfg:
+                changed = HeartbeatService._commit_config(cfg, params, interval)
+        except ValueError as exc:
+            raise HeartbeatServiceError(str(exc)) from exc
+        except OSError as exc:
+            raise HeartbeatServiceError("心跳配置写入失败，请重试", status_code=503) from exc
+        if changed:
+            try:
+                HeartbeatService.reload_engine()
+            except HeartbeatServiceError:
+                return False
+        return True
+
+    @staticmethod
+    def _commit_config(cfg: HeartbeatConfig, params: dict[str, Any], interval: float | None) -> bool:
+        from agent.config import get_config_provider
+
         schedule_keys = {"task_schedules", "base_task_schedules", "reset_schedule_counters"}
         schedules = _merge_schedules(cfg.task_schedules, params) if schedule_keys.intersection(params) else None
-
-        if "interval_seconds" in params:
-            HeartbeatService._save_interval_seconds(params["interval_seconds"])
 
         updated = replace(
             cfg,
@@ -145,15 +168,28 @@ class HeartbeatService:
             min_conversations_for_analysis=params.get("min_conversations_for_analysis", cfg.min_conversations_for_analysis),
             task_schedules=cfg.task_schedules if schedules is None else schedules,
         )
-        updated.save()
-        cfg.enabled = updated.enabled
-        cfg.analysis_temperature = updated.analysis_temperature
-        cfg.min_conversations_for_analysis = updated.min_conversations_for_analysis
-        cfg.task_schedules = updated.task_schedules
+        if updated == cfg:
+            if interval is not None:
+                get_config_provider().save_mind_config(heartbeat_interval=interval)
+            return False
+        if interval is None:
+            updated.save()
+            cfg.apply(updated)
+        else:
+            updated.save_with_interval(cfg, interval)
 
-        rt = get_runtime()
-        if rt is not None:
-            rt.mind.heartbeat_engine.reload()
+        return True
+
+    @staticmethod
+    def reload_engine() -> None:
+        """重试应用磁盘上的调度配置，已提交的编辑和计数重置无需重放。"""
+        engine = getattr(getattr(get_runtime(), "mind", None), "heartbeat_engine", None)
+        if engine is not None:
+            try:
+                engine.reload()
+            except Exception as exc:
+                log(f"心跳配置已保存，引擎热重载失败: {exc}", "WARNING", tag="心跳")
+                raise HeartbeatServiceError("心跳配置已保存，热重载失败，可重试应用", status_code=503) from exc
 
     @staticmethod
     def get_status() -> Dict[str, Any]:

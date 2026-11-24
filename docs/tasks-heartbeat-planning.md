@@ -23,9 +23,10 @@ tick() 单次心跳：
   实际按其休眠，且 sleep 可被 ConfigManager 变更监听唤醒——间隔热更后立即按新值重排休眠。
   heartbeat.json 不存间隔副本（双源写读分离曾是「配置改了不生效 + 两处显示分裂」的根因）；
   引擎态势文案/调度节奏折算/scheduled 跨午夜窗口与 Web 心跳页展示统一读
-  `heartbeat/config.current_interval_seconds()`；Web 保存 interval_seconds 经
-  `HeartbeatService._save_interval_seconds` 路由 `save_mind_config`（与 PUT /config/meta 同
-  coerce+clamp 纪律，下限 60s）
+  `heartbeat/config.current_interval_seconds()`。Web 保存间隔使用与 `PUT /api/config/meta` 相同的类型转换与下限（60s）。
+  仅改间隔时写 Mind 文件。同时修改间隔和调度时，先在 heartbeat.json 暂存候选配置，
+  再以 Mind 文件的原子替换提交修订。进程中断后按持久化修订恢复对应的调度和计数。
+  已保存但引擎应用失败时，调用 `POST /api/config/heartbeat/reload` 单独重试应用。
 - **任务过期生命周期**（tick 维护段两级处理）：`_disable_expired_tasks` 过期即停（enabled=false
   写回 + 摘除调度；手动禁用先于过期的存量同样摘除——过期调度必然失效；定义文件保留供改期恢复）→
   `_delete_expired_tasks` 宽限期届满整体删除（定义文件+调度+执行历史+交接）。宽限期
@@ -148,7 +149,8 @@ idle 模式及其空闲计数原样保留，仍可显式手动触发。任务定
   `restore_memory(memory_id)` 恢复到活动库，再按当前版本设置 `goal_status=active` 继续推进。
   Web 目标页的「全部」可查看归档原因和原步骤。「取回归档」按所见版本恢复记录，
   「恢复进行」将取回的目标重新设为进行中。
-  显式 `delete_goal` 仍按版本校验并删除；此前已删除的目标在既有审计保留期内可按 ID 查询去向。
+  显式 `delete_goal` 携带调用方所见的 `expected_version`。目标页和长期记忆页对目标的单条删除
+  通过查询参数传入版本。缺版本返回 428，版本冲突返回 409，重读后再决策。删除审计保留期内可按目标 ID 查询去向。
 - 更新单步只改变该步骤的状态或备注。非循环目标至少有一个步骤且所有步骤均为
   `completed` 时自动归档；含 `skipped` 的目标由调用方显式决定是否完成。
   会话结束或中断保留未完成计划，按原 ID 续办。显式取消会保存每一步的实际状态。

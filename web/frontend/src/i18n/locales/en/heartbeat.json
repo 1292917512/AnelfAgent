@@ -40,7 +40,9 @@
     "temperature": "Analysis Temperature",
     "minConversations": "Min Conversations",
     "save": "Save Config",
-    "saving": "Saving…"
+    "saving": "Saving…",
+    "reloadPending": "Configuration saved. Applying it to the scheduler failed.",
+    "retryReload": "Retry applying configuration"
   },
   "schedule": {
     "reloadConflicts": "Reload schedules",

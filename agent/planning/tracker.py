@@ -13,7 +13,15 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from agent.memory.memory_store import MemoryStore
 from agent.memory.memory_types import GOAL_SOURCE, MemoryEntry, MemoryType
-from agent.planning.goals import find_goal, goal_view, iter_goals, normalize_steps, update_goal
+from agent.planning.goals import (
+    GoalConflict,
+    GoalVersionRequired,
+    find_goal,
+    goal_view,
+    iter_goals,
+    normalize_steps,
+    update_goal,
+)
 from core.conversation_scope import current_scope as current_scope
 from core.event_bus import (
     EVENT_PLAN_CANCELLED,
@@ -261,7 +269,7 @@ async def find_goal_by_id(
 # ------------------------------------------------------------------
 
 async def remove_goal(
-    entry: MemoryEntry, *, store: MemoryStore | None = None,
+    entry: MemoryEntry, *, expected_version: int | None, store: MemoryStore | None = None,
     goal: Dict[str, Any] | None = None, actor: str = "planning",
 ) -> bool:
     """删除目标条目并同步前端（EVENT_PLAN_DELETED 移除卡片）与态势快照。
@@ -275,21 +283,30 @@ async def remove_goal(
     store = store if store is not None else get_planning_store()
     if store is None or not entry.id or entry.archived_at:
         return False
+    if expected_version is None:
+        raise GoalVersionRequired("删除目标需要所见版本 expected_version，请先读取目标")
+    if entry.version != expected_version:
+        raise GoalConflict("目标已变化，请重新读取后决定是否删除")
     if goal is None:
-        parsed = json.loads(entry.content)
+        try:
+            parsed = json.loads(entry.content)
+        except ValueError:
+            parsed = {}
         goal = parsed if isinstance(parsed, dict) else {}
     goal_id = str(goal.get("goal_id") or entry.metadata.get("goal_id") or "")
     title = str(goal.get("title") or "")
     deleted = await store.delete(
-        entry.id, actor=actor, expected_version=entry.version,
+        entry.id, actor=actor, expected_version=expected_version,
         detail=f"goal:{goal_id} → deleted: {title}",
         audit_data={"goal_id": goal_id, "title": title, "status": "deleted", "destination": "deleted",
-                    "goal": {**goal, "status": "deleted"}},
+                    "goal": {**goal, "goal_id": goal_id, "title": title, "status": "deleted"}},
     )
     if not deleted:
-        return False
+        raise GoalConflict("目标已变化或已移除，请重新读取后决定是否删除")
     from agent.planning import situation
     situation.invalidate()
+    if not goal_id:
+        return True
     scope = str(entry.metadata.get("scope") or current_scope())
     _, chat_id = parse_scope_chat_id(scope)
     try:

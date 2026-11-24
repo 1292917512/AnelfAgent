@@ -58,6 +58,13 @@ export function ConfigPanel() {
   });
 
   const conflict = isAxiosError(saveMut.error) && saveMut.error.response?.status === 409;
+  const reloadMut = useMutation({
+    mutationFn: heartbeatApi.reload,
+    onSuccess: () => Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["heartbeat-config"] }),
+      queryClient.invalidateQueries({ queryKey: ["heartbeat-status"] }),
+    ]),
+  });
   const reloadSchedules = async () => {
     const latest = await refetch();
     if (!latest.isSuccess) return;
@@ -200,7 +207,11 @@ export function ConfigPanel() {
         {saveMut.error && <p role="alert" className="text-sm text-danger">{apiErrorMessage(saveMut.error, t("common:requestFailed"))}</p>}
         {conflict && <Button onClick={() => void reloadSchedules()} loading={isFetching}>{t("schedule.reloadConflicts")}</Button>}
         {conflict && <span className="text-xs text-muted">{t("schedule.conflictHint")}</span>}
-        {saveMut.isSuccess && <p role="status" className="text-sm text-ok">{t("common:saved")}</p>}
+        {config.reload_pending && <>
+          <p role="alert" className="text-sm text-danger">{apiErrorMessage(reloadMut.error, t("config.reloadPending"))}</p>
+          <Button onClick={() => reloadMut.mutate()} loading={reloadMut.isPending}>{t("config.retryReload")}</Button>
+        </>}
+        {saveMut.isSuccess && !config.reload_pending && <p role="status" className="text-sm text-ok">{t("common:saved")}</p>}
         <Button variant="primary" type="submit" form={formId} disabled={!dirty || invalidIdle || conflict} loading={saveMut.isPending}>
           <Save size={14} /> {saveMut.isPending ? t("config.saving") : t("config.save")}
         </Button>

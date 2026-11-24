@@ -8,10 +8,12 @@ from difflib import unified_diff
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
+from agent.memory.memory_types import GOAL_SOURCE
 from agent.memory.profiles import ProfileWriter
 from agent.memory.provenance import visible_provenance
 from agent.planning import goals as goal_ops
 from agent.planning.goals import GoalConflict as GoalConflict
+from agent.planning.goals import GoalVersionRequired as GoalVersionRequired
 from agent.storage.profile_store import ProfileConflict as ProfileConflict
 from core.log import log
 from services._runtime import require_runtime
@@ -107,12 +109,22 @@ class MemoryService:
         entry = await store.get(mem_id)
         return entry.model_dump(mode="json") if entry is not None else None
 
-    async def delete_ltm(self, mem_id: int) -> bool:
+    async def delete_ltm(self, mem_id: int, *, expected_version: int | None = None) -> bool:
         rt = require_runtime()
         store = rt.memory_store
         if not store:
             return False
-        return await store.delete(mem_id, actor="web")
+        entry = await store.get(mem_id)
+        if entry is None:
+            return False
+        if entry.source == GOAL_SOURCE:
+            from agent.planning.tracker import remove_goal
+
+            return await remove_goal(entry, store=store, actor="web", expected_version=expected_version)
+        deleted = await store.delete(mem_id, actor="web", expected_version=expected_version)
+        if not deleted and expected_version is not None:
+            raise GoalConflict("记忆已变化，请重新读取后决定是否删除")
+        return deleted
 
     async def update_ltm(
         self, mem_id: int, content: str, importance: float = 0.5, tags: Optional[List[str]] = None,
@@ -237,6 +249,7 @@ class MemoryService:
             {
                 "id": r.id, "snippet": r.snippet[:300], "score": round(r.score, 3),
                 "source": r.source, "memory_type": r.memory_type or "",
+                **({"version": r.version} if r.version is not None else {}),
                 "tags": r.tags, "path": r.path, "dataset": r.dataset_name,
                 "provenance": {**r.provenance, "origins": [], **visible_provenance(r.provenance)},
             }
@@ -953,11 +966,13 @@ class MemoryService:
             situation.invalidate()
         return True
 
-    async def delete_goal(self, goal_id: str) -> bool:
+    async def delete_goal(self, goal_id: str, *, expected_version: int | None = None) -> bool:
         from agent.planning.tracker import remove_goal
 
         store = require_runtime().memory_store
         if store is None:
             return False
         entry, goal = await goal_ops.find_goal(store, goal_id)
-        return (await remove_goal(entry, store=store, goal=goal, actor="web")) if entry is not None else False
+        if entry is None:
+            return False
+        return await remove_goal(entry, store=store, goal=goal, actor="web", expected_version=expected_version)

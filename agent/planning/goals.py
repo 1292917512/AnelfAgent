@@ -24,6 +24,10 @@ class GoalConflict(ValueError):
     """目标读取版本已过期，调用方必须重读后决策。"""
 
 
+class GoalVersionRequired(GoalConflict):
+    """删除命令缺少调用方观察到的版本。"""
+
+
 def normalize_steps(goal_id: str, steps: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """兼容历史 step 字段，稳定派生旧步骤 ID；不回写只读查询。"""
     if not isinstance(steps, list) or any(not isinstance(step, dict) for step in steps):

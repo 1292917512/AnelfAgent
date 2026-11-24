@@ -58,7 +58,8 @@ export const memoryApi = {
       api.post("/memory/ltm", { content, memory_type: memoryType, importance, tags }),
     update: (id: number, content: string, importance: number, expectedVersion: number, tags?: string[]) =>
       api.put(`/memory/ltm/${id}`, { content, importance, tags, expected_version: expectedVersion }),
-    delete: (id: number) => api.delete(`/memory/ltm/${id}`),
+    delete: (id: number, expectedVersion: number) =>
+      api.delete(`/memory/ltm/${id}`, { params: { expected_version: expectedVersion }, errorFeedback: "local" }),
     clear: (memoryType?: string) => api.delete("/memory/ltm", { params: { memory_type: memoryType } }),
     stats: () => api.get("/memory/ltm/stats"),
     search: (query: string, tags?: string, limit = 20) =>
@@ -162,7 +163,8 @@ export const memoryApi = {
       api.put(`/memory/goals/${encodeURIComponent(goalId)}`, data),
     restore: (goalId: string, version: number) =>
       api.post<{ ok: boolean }>(`/memory/goals/${encodeURIComponent(goalId)}/restore`, { expected_version: version }),
-    delete: (goalId: string) => api.delete(`/memory/goals/${encodeURIComponent(goalId)}`),
+    delete: (goalId: string, expectedVersion: number) =>
+      api.delete(`/memory/goals/${encodeURIComponent(goalId)}`, { params: { expected_version: expectedVersion }, errorFeedback: "local" }),
   },
 };
 

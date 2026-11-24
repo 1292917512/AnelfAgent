@@ -4,7 +4,7 @@ import { api } from "./client";
 import type {
   ConfigMetaGroup,
   ConfigValues,
-  HeartbeatConfig,
+  HeartbeatConfigView,
   HeartbeatStatus,
   HeartbeatUpdate,
   PersonaItem,
@@ -38,8 +38,9 @@ export const configApi = {
 // Heartbeat
 
 export const heartbeatApi = {
-  getConfig: () => api.get<HeartbeatConfig>("/config/heartbeat"),
-  saveConfig: (data: HeartbeatUpdate) => api.put<{ status: string; config: HeartbeatConfig }>("/config/heartbeat", data, { errorFeedback: "local" }),
+  getConfig: () => api.get<HeartbeatConfigView>("/config/heartbeat"),
+  saveConfig: (data: HeartbeatUpdate) => api.put<{ status: "ok" | "saved_reload_pending"; config: HeartbeatConfigView }>("/config/heartbeat", data, { errorFeedback: "local" }),
+  reload: () => api.post("/config/heartbeat/reload", null, { errorFeedback: "local" }),
   getStatus: () => api.get<HeartbeatStatus>("/config/heartbeat/status"),
   trigger: () => api.post<{ status: string }>("/config/heartbeat/trigger"),
 };

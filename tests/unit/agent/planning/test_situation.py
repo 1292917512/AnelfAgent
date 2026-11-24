@@ -67,9 +67,9 @@ class TestRender:
     async def test_terminal_goals_vanish(self, store):
         """完成/删除后的目标不再注入（快照与存储严格同步）。"""
         raw = await planning_tools.create_goal("一次性目标")
-        goal_id = json.loads(raw)["goal"]["goal_id"]
+        goal = json.loads(raw)["goal"]
 
-        await planning_tools.delete_goal(goal_id)
+        await planning_tools.delete_goal(goal["goal_id"], expected_version=goal["version"])
         assert await _render() == ""
 
     async def test_no_active_goals_renders_empty(self, store):

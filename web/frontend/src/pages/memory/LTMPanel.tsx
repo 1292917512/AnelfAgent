@@ -4,6 +4,7 @@ import { useTranslation } from "react-i18next";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { memoryApi } from "@/lib/api";
 import { Card } from "@/components/common/Card";
+import { QueryError } from "@/components/common/AsyncState";
 import { cn } from "@/lib/utils";
 import { Trash2, Save, Plus, Pencil, X, Search, Merge, Check, ThumbsDown } from "lucide-react";
 import { MemoryTimeline } from "./MemoryTimeline";
@@ -48,7 +49,11 @@ export function LTMPanel() {
       queryClient.invalidateQueries({ queryKey: [key] });
     }
   };
-  const deleteMutation = useMutation({ mutationFn: (id: number) => memoryApi.ltm.delete(id), onSuccess: refresh });
+  const deleteMutation = useMutation({
+    mutationFn: ({ id, version }: { id: number; version: number }) => memoryApi.ltm.delete(id, version),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["goals"] }),
+    onSettled: refresh,
+  });
   const updateMutation = useMutation({
     mutationFn: ({ id, content, importance }: { id: number; content: string; importance: number }) => memoryApi.ltm.update(id, content, importance, editVersion),
     onSuccess: () => { refresh(); setEditingId(null); },
@@ -148,26 +153,30 @@ export function LTMPanel() {
 
         {/* Memory list */}
         <div className="space-y-2 max-h-[500px] overflow-y-auto">
+          {deleteMutation.error && <QueryError compact error={deleteMutation.error} />}
           {items.length === 0 && <p className="text-sm text-muted">{t("noMemory")}</p>}
           {items.map((item) => {
-            const id = Number(item.id);
+            const localId = item.source === "memory" ? /^mem:(\d+)$/.exec(String(item.id))?.[1] : undefined;
+            const id = Number(isSearching ? localId : item.id);
+            const version = Number(item.version);
+            const memoryType = String(item.type ?? item.memory_type ?? "unknown");
             const isEditing = editingId === id;
             const isSelected = selectedIds.has(id);
             const tags = (item.tags as string[]) || [];
             const accessCount = Number(item.access_count || 0);
             return (
-              <div key={id} className={cn("p-3 rounded-md border transition-[color,background-color,border-color,box-shadow,opacity]", isSelected ? "bg-ok-subtle border-[var(--ok)]" : "bg-elevated border-border")}>
+              <div key={String(item.id)} className={cn("p-3 rounded-md border transition-[color,background-color,border-color,box-shadow,opacity]", isSelected ? "bg-ok-subtle border-[var(--ok)]" : "bg-elevated border-border")}>
                 <div className="flex items-start justify-between gap-2 mb-1">
                   <div className="flex items-center gap-2 flex-wrap">
-                    <input type="checkbox" checked={isSelected} onChange={() => toggleSelect(id)} className="rounded" />
-                    <span className="text-[11px] px-2 py-0.5 rounded-full border border-border text-muted">{String(item.type ?? "unknown")}</span>
-                    <span className="text-[11px] text-muted">#{id}</span>
+                    <input type="checkbox" disabled={!Number.isSafeInteger(id)} checked={isSelected} onChange={() => toggleSelect(id)} className="rounded" />
+                    <span className="text-[11px] px-2 py-0.5 rounded-full border border-border text-muted">{memoryType}</span>
+                    <span className="text-[11px] text-muted">#{String(item.id)}</span>
                     <span className="text-[11px] text-muted">{t("importanceLabel")}: {String(item.importance ?? "—")}</span>
                     {accessCount > 0 && <span className="text-[11px] text-muted">{t("accessLabel")}: {accessCount}</span>}
                     {!!item.source && <span className="text-[10px] px-1.5 py-0.5 rounded bg-secondary text-muted">{String(item.source)}</span>}
                   </div>
                   <div className="flex gap-1">
-                    {tags.includes("type:reflection") && (
+                    {Number.isSafeInteger(id) && tags.includes("type:reflection") && (
                       <>
                         <button
                           onClick={() => evidenceMutation.mutate({ id, signal: "confirm" })}
@@ -183,11 +192,12 @@ export function LTMPanel() {
                         </button>
                       </>
                     )}
-                    <button disabled={readForEdit.isPending || !Number.isInteger(id) || String(item.type) === "entity"}
+                    <button disabled={readForEdit.isPending || !Number.isSafeInteger(id) || memoryType === "entity"}
                       aria-label={t(isEditing ? "common:cancel" : "common:edit")}
                       onClick={() => { if (isEditing) { setEditingId(null); } else { readForEdit.mutate(id); } }}
                       className="p-1 text-muted hover:text-accent transition-colors">{isEditing ? <X size={14} /> : <Pencil size={14} />}</button>
-                    <button aria-label={t("common:delete")} onClick={() => deleteMutation.mutate(id)} className="p-1 text-muted hover:text-danger transition-colors"><Trash2 size={14} /></button>
+                    <button aria-label={t("common:delete")} disabled={deleteMutation.isPending || !Number.isSafeInteger(id) || !Number.isSafeInteger(version) || version < 1}
+                      onClick={() => deleteMutation.mutate({ id, version })} className="p-1 text-muted hover:text-danger transition-colors"><Trash2 size={14} /></button>
                   </div>
                 </div>
                 {tags.length > 0 && (

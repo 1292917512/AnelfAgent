@@ -13,6 +13,8 @@ export interface HeartbeatConfig {
   task_schedules: TaskSchedule[];
 }
 
+export type HeartbeatConfigView = HeartbeatConfig & { reload_pending?: boolean };
+
 export type HeartbeatUpdate = Partial<HeartbeatConfig> & {
   base_task_schedules?: TaskSchedule[];
   reset_schedule_counters?: string[];

@@ -20,9 +20,9 @@
 Model Experience: update_goal 永驻，计划步骤须依据结果显式更新；调用次数不代表进度。
 Token effect: 未召回规划工具的会话增加一个工具 schema，约数百 token。
 Cache effect: 常驻 schema 在会话内冻结，不向稳定消息前缀注入实时进度。
-Model Experience: 显式查询可查看归档与终态结果；更新必须携带版本，步骤按稳定 ID 或完整名称校验。
-Token effect: 归档目标按需增加时间与原因字段，不新增模型调用。
-Cache effect: 归档仅进入工具结果，清理留痕不写稳定前缀或新增记忆。
+Model Experience: 查询返回目标版本；更新和删除携带所见版本，冲突后由模型重读并决定。
+Token effect: 删除请求多传一个版本整数，归档查询按需返回时间与原因。
+Cache effect: 版本随工具参数和结果传递，目标状态与清理留痕位于稳定前缀之外。
 """
 
 from __future__ import annotations
@@ -47,14 +47,6 @@ def _store_not_ready() -> str:
         "记忆存储组件未初始化",
         cause=ErrorCause.STATE, retryable=False,
         hint="MemoryStore 不可用，请检查服务启动状态",
-    )
-
-
-def _goal_cleanup_conflict() -> str:
-    """基于旧目标快照的删除未提交，要求重读再决策。"""
-    return tool_error(
-        "目标已发生变更或不再存在，本次清理未执行", cause=ErrorCause.STATE, retryable=False,
-        hint="先用 get_goal 读取当前目标，再按实际结果更新",
     )
 
 
@@ -216,15 +208,16 @@ async def update_goal(
 @deferred_tool(
     group=_GROUP, tags=["planning", "heartbeat"],
     description=(
-        "删除一个目标计划（用于废弃仍在进行的目标）。"
+        "废弃仍在进行的目标时，提交最近读取的 version 作为 expected_version。"
         "已完成/取消的目标无需本工具：update_goal 标记终态时自动归档。"
     ),
 )
-async def delete_goal(goal_id: str) -> str:
+async def delete_goal(goal_id: str, expected_version: int | None = None) -> str:
     """删除一个目标计划。
 
     Args:
         goal_id: 目标 ID
+        expected_version: 最近读取的目标 version，发生冲突后须重读再决策
     """
     store = tracker.get_planning_store()
     if store is None:
@@ -233,8 +226,14 @@ async def delete_goal(goal_id: str) -> str:
     target_entry, target_goal = await tracker.find_goal_by_id(goal_id)
     if target_entry is not None and target_goal is not None and target_entry.id:
         # 删除 + 前端卡片移除（EVENT_PLAN_DELETED）+ 态势同步统一走 tracker
-        if not await tracker.remove_goal(target_entry, goal=target_goal):
-            return _goal_cleanup_conflict()
+        try:
+            deleted = await tracker.remove_goal(target_entry, store=store, goal=target_goal, expected_version=expected_version)
+        except goal_ops.GoalConflict as exc:
+            return tool_error(str(exc), cause=ErrorCause.STATE, retryable=False, hint="先 get_goal 重读后再决策")
+        except Exception as exc:
+            return error_from_exception(exc, action="删除目标")
+        if not deleted:
+            return await _goal_not_found(goal_id)
         return json.dumps({
             "success": True,
             "message": f"目标 '{goal_id}' 已删除",

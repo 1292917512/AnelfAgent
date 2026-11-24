@@ -7,6 +7,10 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from threading import Event
+from typing import Any
 
 import pytest
 
@@ -46,6 +50,115 @@ def _make_manager(tmp_path) -> LLMManager:
 
 def _profile(mgr: LLMManager, name: str) -> dict:
     return next(p for p in mgr.list_sub_agents() if p["name"] == name)
+
+
+@pytest.mark.parametrize("change", ["edit", "create", "delete", "rename", "add_model", "add_provider"])
+def test_concurrent_profile_changes_survive_reload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, change: str,
+) -> None:
+    mgr = _make_manager(tmp_path)
+    if change != "create":
+        assert mgr.create_sub_agent("worker", "chat-b")[0]
+    entered, resume, competing = Event(), Event(), Event()
+    write = mgr._write_config
+    lock = mgr._config_lock
+
+    class ObservedLock:
+        def __enter__(self) -> None:
+            if not lock.acquire(blocking=False):
+                competing.set()
+                lock.acquire()
+
+        def __exit__(self, *args: object) -> None:
+            lock.release()
+
+    def slow_first_write(document: dict[str, Any]) -> None:
+        if not entered.is_set():
+            entered.set()
+            assert resume.wait(5)
+        write(document)
+
+    def first() -> bool:
+        if change == "add_provider":
+            return mgr.add_provider("extra", name="Extra")
+        if change == "add_model":
+            return mgr.add_model("prov", "extra", model="extra")
+        if change == "rename":
+            return mgr.rename_model("chat-b", "renamed")
+        if change == "delete":
+            return mgr.remove_sub_agent("worker")[0]
+        if change == "create":
+            return mgr.create_sub_agent("worker", "chat-b")[0]
+        return mgr.update_sub_agent("worker", description="updated")[0]
+
+    def second() -> bool:
+        if change in {"add_model", "add_provider"}:
+            return mgr.reload_from_disk()["ok"]
+        if change == "create":
+            return mgr.create_sub_agent("worker", "chat-a")[0]
+        return mgr.update_sub_agent("worker", instructions="check")[0]
+
+    monkeypatch.setattr(mgr, "_write_config", slow_first_write)
+    monkeypatch.setattr(mgr, "_config_lock", ObservedLock())
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        initial = pool.submit(first)
+        assert entered.wait(5)
+        competitor = pool.submit(second)
+        try:
+            assert competing.wait(5)
+        finally:
+            resume.set()
+        assert initial.result()
+        assert competitor.result() == (change in {"edit", "rename", "add_model", "add_provider"})
+
+    loaded = LLMManager(str(tmp_path / "llm.json"))
+    assert mgr.list_sub_agents() == loaded.list_sub_agents()
+    if change == "add_provider":
+        assert loaded.get_provider("extra") is not None and mgr.get_provider("extra") is not None
+    if change == "add_model":
+        assert loaded.get_client("extra") is not None and mgr.get_client("extra") is not None
+    profile = loaded.get_sub_agent_profile("worker")
+    if change == "delete":
+        assert profile is None
+    else:
+        assert profile is not None
+        assert profile.models == (["renamed"] if change == "rename" else ["chat-b"])
+        if change in {"edit", "rename"}:
+            assert profile.facets.instructions == "check"
+        if change == "edit":
+            assert profile.description == "updated"
+
+
+def test_failed_model_writes_preserve_registry_and_pool(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    mgr = _make_manager(tmp_path)
+    assert mgr.create_sub_agent("worker", "chat-b")[0]
+    client = mgr.get_client("chat-b")
+    before = (tmp_path / "llm.json").read_bytes()
+
+    def fail(document: dict[str, Any]) -> None:
+        raise OSError("disk unavailable")
+
+    monkeypatch.setattr(mgr, "_write_config", fail)
+    with pytest.raises(OSError):
+        mgr.rename_model("chat-b", "new")
+    with pytest.raises(OSError):
+        mgr.add_provider("extra")
+    with pytest.raises(OSError):
+        mgr.add_model("prov", "extra")
+    assert mgr.get_provider("extra") is None and mgr.get_client("extra") is None
+    assert mgr.get_client("chat-b") is client and mgr.get_client("new") is None
+    assert mgr.resolve_sub_agent_model("worker") == "chat-b"
+    assert (tmp_path / "llm.json").read_bytes() == before
+
+
+def test_profile_save_preserves_temporarily_unreadable_config(tmp_path: Path) -> None:
+    mgr = _make_manager(tmp_path)
+    path = tmp_path / "llm.json"
+    path.write_text("{", encoding="utf-8")
+    with pytest.raises(OSError):
+        mgr.create_sub_agent("worker", "chat-b")
+    assert path.read_text("utf-8") == "{"
+    assert mgr.get_sub_agent_profile("worker") is None
 
 
 class TestBuiltinTiers:

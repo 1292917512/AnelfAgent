@@ -78,12 +78,7 @@ class ModelService:
         return result
 
     def add_provider(self, pid: str, **kwargs: Any) -> bool:
-        mgr = self._manager()
-        if mgr.get_provider(pid):
-            return False
-        mgr.create_provider(pid, **kwargs)
-        mgr.save_config()
-        return True
+        return self._manager().add_provider(pid, **kwargs)
 
     def update_provider(self, pid: str, **kwargs: Any) -> bool:
         api_key = kwargs.get("api_key")
@@ -134,14 +129,7 @@ class ModelService:
         return d
 
     def add_model(self, provider_id: str, model_id: str, **kwargs: Any) -> bool:
-        mgr = self._manager()
-        if mgr.get_client(model_id):
-            return False
-        client = mgr.create_model(provider_id, model_id, **kwargs)
-        if client is None:
-            return False
-        mgr.save_config()
-        return True
+        return self._manager().add_model(provider_id, model_id, **kwargs)
 
     def update_model(self, model_id: str, **kwargs: Any) -> bool:
         return self._manager().update_model(model_id, **kwargs)

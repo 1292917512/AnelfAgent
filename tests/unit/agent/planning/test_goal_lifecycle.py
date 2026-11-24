@@ -279,7 +279,7 @@ class TestGoalIntegrity:
                 )
             with pytest.raises(Exception, match="audit unavailable"):
                 if action == "delete":
-                    await tracker.remove_goal(entry, goal=data)
+                    await tracker.remove_goal(entry, goal=data, expected_version=goal["version"])
                 else:
                     await goals.update_goal(store, entry, data, expected_version=entry.version,
                                             step_id=goal["steps"][0]["step_id"], step_status="completed")

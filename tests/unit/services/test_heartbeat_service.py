@@ -39,21 +39,21 @@ class TestIntervalWriteRouting:
     def test_routes_to_mind_config(self, monkeypatch, mind_item) -> None:
         saved: dict = {}
         _stub_provider(monkeypatch, saved)
-        HeartbeatService._save_interval_seconds(30000)
+        HeartbeatService.save_config({"interval_seconds": 30000})
         assert saved == {"heartbeat_interval": 30000.0}
-        HeartbeatService._save_interval_seconds("600")
+        HeartbeatService.save_config({"interval_seconds": "600"})
         assert saved["heartbeat_interval"] == 600.0
 
     def test_clamps_to_registered_floor(self, monkeypatch, mind_item) -> None:
         saved: dict = {}
         _stub_provider(monkeypatch, saved)
-        HeartbeatService._save_interval_seconds(10)
+        HeartbeatService.save_config({"interval_seconds": 10})
         assert saved["heartbeat_interval"] == 60.0
 
     def test_rejects_invalid_value(self, monkeypatch, mind_item) -> None:
         _stub_provider(monkeypatch, {})
         with pytest.raises(HeartbeatServiceError):
-            HeartbeatService._save_interval_seconds("abc")
+            HeartbeatService.save_config({"interval_seconds": "abc"})
 
     def test_save_config_interval_only_leaves_no_dead_field(self, monkeypatch, mind_item) -> None:
         """只改间隔时：值进 mind 真源，heartbeat.json 不再持有间隔字段。"""
