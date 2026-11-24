@@ -77,7 +77,10 @@
   进度消息只经 SSE/回调。含媒体的整条出站消息仅经回调，无有效接收端则报告失败。
 
 SSE 示例：`GET /api/chat/stream?user_id=my_app:alice&session_id=support-1`。
-群聊改传 `group_id`；省略 `session_id` 才订阅该身份的全部子会话。
+群聊改传 `group_id`。普通订阅省略 `session_id` 时包含该身份的全部子会话。
+需要单轮回执时，先携带 `message_id` 建立 SSE 订阅，再以相同 ID 提交异步消息。
+响应头 `X-Anelf-Stream-Scope: message` 确认精确订阅已就绪。`turn_started.turn_id` 可用于停止该次执行，
+`turn_end` 报告该轮结果。消息级订阅只覆盖指定会话，启动阶段的失败也会发送终帧。
 30 秒无帧发送 `ping`；`turn_end` 包含 `turn_id/reason/error`。流不持久化，断线后重新订阅并用历史校准最终内容。
 不能设置请求头的 SSE/WS 客户端可用 `?token=`，一般优先使用认证头。
 
@@ -91,14 +94,16 @@ SSE 示例：`GET /api/chat/stream?user_id=my_app:alice&session_id=support-1`。
 ```
 
 停止复用 SDK 协作式中断，覆盖该会话回复、子代理和所属后台工作。可附 `run_id` 精确停止，
-但必须与会话目标一致。`ok` 表示受理，`idle` 表示没有目标工作；以 `turn_end.reason=interrupted` 核对本轮收束。
+目标会话须与该轮一致。对于先订阅再异步投递的消息，也可单独指定 `message_id`。
+排队期间返回 `pending`，频道在该消息开始执行时请求中断；已登记的请求在订阅断开后继续有效，频道关闭时清空。
+`ok` 表示受理，`idle` 表示没有匹配目标。以 `turn_end.reason=interrupted` 核对本轮收束。
 
 ```json
 {"user_id":"my_app:alice","session_id":"support-1","action":"resume","request_id":"resume-001"}
 ```
 
 等待上一轮收束后再继续；可用 `message` 自定义续接指令。继续是原会话的新输入，不恢复调用栈、
-不自动重放工具；`resume` 不接受 `run_id`，重试复用同一 `request_id`。
+重试复用同一 `request_id`。`run_id` 和 `message_id` 仅用于精确停止。
 
 历史查询同样传 `user_id/group_id/session_id`，返回 `{status, scope, messages}`，记录含 `id/role/content/ts_ns`。
 `limit` 默认 50、上限 200；`before_id` 加载更早消息，`after_id` 按 ID 增量读取，两者互斥。

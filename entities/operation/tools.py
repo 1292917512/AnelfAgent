@@ -39,7 +39,7 @@ def _runtime_gate() -> str:
 @tool(
     group="operation", tags=["always"],
     description="执行桌面操控动作（click/double_click/right_click/move/drag/scroll/type/"
-                "hotkey/key），成功后默认自动看屏验证（结果附最新画面）。先 vision_look 定位坐标。",
+                "hotkey/key），成功后默认自动看屏。按截图定位时传 vision_look 返回的 frame_ref 和原图像素坐标。",
 )
 async def desktop_act(
     action: str,
@@ -54,6 +54,7 @@ async def desktop_act(
     duration: float = 0.0,
     interval: float = 0.0,
     verify: str = "auto",
+    frame_ref: str = "",
 ) -> str:
     """执行一个桌面操控动作（看屏 → 操作 → 验证闭环的操作端）。
 
@@ -61,6 +62,7 @@ async def desktop_act(
         action: click/double_click/right_click/move/drag/scroll/type/hotkey/key
         x/y: 目标坐标（click/dblclick/rightclick/move/drag 起点）
         x2/y2: drag 终点坐标
+        frame_ref: 截图的引用，坐标按返回的原图尺寸计；省略时使用绝对桌面坐标
         text: type 动作的文本（仅 ASCII，中文走剪贴板+hotkey 粘贴）
         keys: hotkey 组合（"ctrl+s"）或 key 单键（"enter"）
         amount: scroll 滚动格数（正上负下）
@@ -85,6 +87,7 @@ async def desktop_act(
     outcome = await executor.execute(f"desktop.{action}", {
         "x": x, "y": y, "x2": x2, "y2": y2, "text": text, "keys": keys,
         "amount": amount, "button": button, "duration": duration, "interval": interval,
+        **({"frame_ref": frame_ref} if frame_ref else {}),
     }, observer=_with_screen_verify if _should_verify(verify) else None)
     return json.dumps(outcome, ensure_ascii=False)
 
@@ -111,7 +114,8 @@ async def _with_screen_verify(outcome: dict) -> dict:
         if isinstance(frame, dict) and frame.get("_multimodal"):
             return {**outcome, "verification": "captured", "_multimodal": True,
                     "images": frame.get("images", []),
-                    "text": "输入已发出，以下是后续画面。请核对实际结果，不要仅凭输入回执认定目标完成。"}
+                    **({"frame_ref": frame["frame_ref"]} if frame.get("frame_ref") else {}),
+                    "text": f"输入已发出，请核对后续画面。{frame.get('text', '')}"}
     except Exception as exc:
         log(f"看屏验证失败（回退纯结果）: {exc}", "DEBUG", tag=_LOG_TAG)
     return {**outcome, "verification": "unavailable"}

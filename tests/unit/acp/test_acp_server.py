@@ -24,6 +24,7 @@ class _FakeDaemon:
     def __init__(self, frames: Optional[List[Dict[str, Any]]] = None) -> None:
         self.frames = frames or []
         self.sent: List[Tuple[str, str]] = []
+        self.subscriptions: list[str] = []
 
     @property
     def config(self) -> Any:
@@ -34,10 +35,12 @@ class _FakeDaemon:
     async def health(self) -> Dict[str, Any]:
         return {"url": self.config.base_url}
 
-    async def send_message(self, user_id: str, text: str, images: Any = None) -> None:
+    async def send_message(self, user_id: str, text: str, images: Any = None, *, message_id: str) -> None:
+        assert message_id == self.subscriptions[-1]
         self.sent.append((user_id, text))
 
-    async def stream_frames(self, user_id: str) -> AsyncIterator[Dict[str, Any]]:
+    async def stream_frames(self, user_id: str, *, message_id: str) -> AsyncIterator[Dict[str, Any]]:
+        self.subscriptions.append(message_id)
         yield {"type": "open"}
         for frame in self.frames:
             yield frame
@@ -49,11 +52,20 @@ class _HangingDaemon(_FakeDaemon):
     def __init__(self) -> None:
         super().__init__()
         self.release = asyncio.Event()
+        self.started = asyncio.Event()
+        self.stops: list[tuple[str, str]] = []
 
-    async def stream_frames(self, user_id: str) -> AsyncIterator[Dict[str, Any]]:
+    async def stop_message(self, user_id: str, message_id: str) -> None:
+        self.stops.append((user_id, message_id))
+        self.release.set()
+
+    async def stream_frames(self, user_id: str, *, message_id: str) -> AsyncIterator[Dict[str, Any]]:
+        self.subscriptions.append(message_id)
         yield {"type": "open"}
+        self.started.set()
+        yield {"type": "turn_started", "turn_id": "active-run"}
         await self.release.wait()
-        yield {"type": "turn_end"}
+        yield {"type": "turn_end", "reason": "interrupted"}
 
 
 class _Out(io.StringIO):
@@ -202,6 +214,7 @@ class TestPromptFlow:
             await asyncio.gather(*list(server._prompt_tasks.values()), return_exceptions=True)
 
         asyncio.run(scenario())
+        assert daemon.sent == [] and daemon.stops == []
         rejected = [m for m in _messages(out) if m.get("id") == 3][0]
         assert "already in progress" in rejected["error"]["message"]
 
@@ -216,17 +229,18 @@ class TestPromptFlow:
                 "jsonrpc": "2.0", "id": 2, "method": "session/prompt",
                 "params": {"sessionId": session_id, "prompt": [{"type": "text", "text": "长任务"}]},
             })
-            await asyncio.sleep(0.05)
+            await asyncio.wait_for(daemon.started.wait(), 1)
             server._session_cancel({"sessionId": session_id})
             await asyncio.gather(*list(server._prompt_tasks.values()), return_exceptions=True)
 
         asyncio.run(scenario())
         final = _messages(out)[-1]
+        assert daemon.stops == [(f"acp_{session_id}", daemon.subscriptions[0])]
         assert final["id"] == 2 and final["result"] == {"stopReason": "cancelled"}
 
     def test_daemon_failure_maps_to_jsonrpc_error(self) -> None:
         class _BrokenDaemon(_FakeDaemon):
-            async def stream_frames(self, user_id: str) -> AsyncIterator[Dict[str, Any]]:
+            async def stream_frames(self, user_id: str, *, message_id: str) -> AsyncIterator[Dict[str, Any]]:
                 raise RuntimeError("connection refused")
                 yield {"type": "open"}  # pragma: no cover - 生成器签名需要
 
@@ -240,6 +254,86 @@ class TestPromptFlow:
         error = _messages(out)[-1]["error"]
         assert error["code"] == -32603
         assert "connection refused" in error["message"]
+
+    @pytest.mark.parametrize(("terminal", "expected"), [
+        ({"reason": "interrupted"}, "cancelled"), ({"reason": "budget_exhausted"}, "max_turn_requests"),
+        ({"reason": "failed"}, None), ({"reason": "completed", "error": True}, None),
+        ({"reason": "unexpected"}, None), (None, None),
+    ])
+    def test_only_terminal_frame_confirms_outcome(self, terminal, expected) -> None:
+        frames = [{"type": "delta", "delta": chunk} for chunk in ["one", "two"]]
+        if terminal is not None:
+            frames.append({"type": "turn_end", **terminal})
+        server, out = _make_server(_FakeDaemon(frames))
+        session = server._session_new({})
+        _dispatch_and_drain(server, {"id": 2, "method": "session/prompt", "params": {**session, "prompt": "go"}})
+        *updates, response = _messages(out)
+        assert "".join(m["params"]["update"]["content"]["text"] for m in updates) == "onetwo"
+        if expected is None:
+            assert response["error"]["code"] == -32603
+        else:
+            assert response["result"]["stopReason"] == expected
+
+    async def test_cancel_while_queued_requires_terminal_confirmation(self, monkeypatch) -> None:
+        class Queued(_HangingDaemon):
+            async def stream_frames(self, user_id, *, message_id):
+                self.subscriptions.append(message_id)
+                yield {"type": "open"}
+                self.started.set()
+                await asyncio.Event().wait()
+
+        daemon = Queued()
+        server, out = _make_server(daemon)
+        session = server._session_new({})
+        monkeypatch.setattr("acp.server._CANCEL_CONFIRM_TIMEOUT", .1)
+        server._spawn_prompt(2, {**session, "prompt": "first"})
+        await asyncio.wait_for(daemon.started.wait(), 1)
+        server._session_cancel(session)
+        await asyncio.gather(*list(server._prompt_tasks.values()))
+        assert daemon.stops == [(f"acp_{session['sessionId']}", daemon.subscriptions[0])]
+        assert "not confirmed" in _messages(out)[-1]["error"]["message"]
+
+    async def test_matching_terminal_finishes_while_stop_ack_is_delayed(self, monkeypatch) -> None:
+        class SlowAck(_HangingDaemon):
+            async def stop_message(self, user_id: str, message_id: str) -> None:
+                await super().stop_message(user_id, message_id)
+                await asyncio.Event().wait()
+
+        daemon = SlowAck()
+        server, out = _make_server(daemon)
+        session = server._session_new({})
+        monkeypatch.setattr("acp.server._CANCEL_CONFIRM_TIMEOUT", .2)
+        server._spawn_prompt(2, {**session, "prompt": "first"})
+        await asyncio.wait_for(daemon.started.wait(), 1)
+        server._session_cancel(session)
+        await asyncio.gather(*list(server._prompt_tasks.values()))
+        assert _messages(out)[-1]["result"] == {"stopReason": "cancelled"}
+
+    async def test_queued_stop_waits_for_its_terminal(self) -> None:
+        class Queued(_HangingDaemon):
+            async def stream_frames(self, user_id, *, message_id):
+                self.subscriptions.append(message_id)
+                yield {"type": "open"}
+                self.started.set()
+                await allow_start.wait()
+                yield {"type": "turn_started", "turn_id": "late"}
+                await self.release.wait()
+                yield {"type": "turn_end", "reason": "interrupted"}
+
+        allow_start = asyncio.Event()
+        daemon = Queued()
+        server, out = _make_server(daemon)
+        session = server._session_new({})
+        server._spawn_prompt(1, {**session, "prompt": "queued"})
+        task = server._prompt_tasks[session["sessionId"]]
+        await asyncio.wait_for(daemon.started.wait(), 1)
+        server._session_cancel(session)
+        await asyncio.wait_for(daemon.release.wait(), 1)
+        assert not task.done()
+        allow_start.set()
+        await asyncio.wait_for(task, 2)
+        assert daemon.stops == [(f"acp_{session['sessionId']}", daemon.subscriptions[0])]
+        assert _messages(out)[-1]["result"] == {"stopReason": "cancelled"}
 
     def test_unknown_session_rejected(self) -> None:
         server, out = _make_server(_FakeDaemon())

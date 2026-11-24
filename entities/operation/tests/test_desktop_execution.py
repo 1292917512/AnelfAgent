@@ -60,6 +60,110 @@ def write(char):
     return controller, log
 
 
+@pytest.fixture
+def framed_worker(isolated_worker, tmp_path, monkeypatch):
+    import runpy
+    from types import SimpleNamespace
+
+    import mss
+
+    from agent.vision import buffer as vision_buffer
+    from agent.vision import framework as vision_framework
+    from entities.screen.capture import _capture_sync
+
+    display = {
+        "monitors": [
+            {"left": -200, "top": -20, "width": 520, "height": 220},
+            {"left": 0, "top": 0, "width": 320, "height": 200, "scale_percent": 100},
+            {"left": -200, "top": -20, "width": 200, "height": 120, "scale_percent": 200},
+        ],
+        "monitor": 2, "size": [400, 240],
+    }
+    state = tmp_path / "display.json"
+    state.write_text(json.dumps(display))
+    module = tmp_path / "mss.py"
+    module.write_text('''
+import json
+from pathlib import Path
+from types import SimpleNamespace
+class MSS:
+    def __enter__(self):
+        self.display = json.loads(Path(__file__).with_name("display.json").read_text())
+        self.monitors = self.display["monitors"]
+        return self
+    def __exit__(self, *args): pass
+    def grab(self, bounds):
+        w, h = self.display["size"]
+        return SimpleNamespace(size=(w, h), bgra=bytes(w*h*4))
+''', encoding="utf-8")
+    monkeypatch.setattr(mss, "MSS", runpy.run_path(str(module))["MSS"])
+    monkeypatch.setattr(vision_buffer, "_buffer", vision_buffer.VisionBuffer(ring_size=2))
+
+    async def capture():
+        return _capture_sync(display["monitor"], tmp_path / "screens")
+    source = SimpleNamespace(can_capture=True, display_name="test screen", capture=capture)
+    monkeypatch.setitem(vision_framework._SOURCES, "screen", source)
+    return isolated_worker[1], display, state
+
+
+async def test_framed_drag_maps_both_endpoints_and_verification_returns_new_frame(framed_worker):
+    log, _, _ = framed_worker
+    frame = json.loads(await tools.vision_look())
+    assert "400x240" in frame["text"]
+    receipt = json.loads(await tools.desktop_act("drag", x=0, y=0, x2=398, y2=238,
+                                                frame_ref=frame["frame_ref"], verify="on"))
+    assert receipt["ok"] and receipt["verification"] == "captured"
+    assert receipt["frame_ref"] != frame["frame_ref"] and "400x240" in receipt["text"]
+    moves = [entry for line in log.read_text().splitlines() if (entry := json.loads(line))[0] == "move"]
+    assert moves[0] == ["move", -200, -20]
+    assert moves[-1] == ["move", -1, 99]
+    scroll = await executor.execute("desktop.scroll", {"frame_ref": receipt["frame_ref"], "x": 200, "y": 120, "amount": 1})
+    assert scroll["ok"]
+    assert [json.loads(s) for s in log.read_text().splitlines()[-2:]] == [["move", -100, 40], ["scroll", 1]]
+
+
+@pytest.mark.parametrize("change", ["unplug", "scale", "dpi_only", "out_of_bounds", "gap"])
+async def test_invalid_frame_never_emits_input(framed_worker, change):
+    log, display, state = framed_worker
+    if change == "gap":
+        display.update(monitor=0, size=[520, 220])
+        state.write_text(json.dumps(display))
+    ref = json.loads(await tools.vision_look())["frame_ref"]
+    if change == "unplug":
+        display["monitors"].pop()
+    if change == "scale":
+        display["size"] = [200, 120]
+    if change == "dpi_only":
+        display["monitors"][2]["scale_percent"] = 150
+    state.write_text(json.dumps(display))
+    x, y = (30, 200) if change == "gap" else (200, 120)
+    receipt = await executor.execute("desktop.drag", {"frame_ref": ref, "x": x, "y": y,
+                                                      "x2": 400 if change == "out_of_bounds" else x, "y2": y})
+    assert not receipt["ok"] and receipt["input_outcome"] == "not_started"
+    assert receipt["completed"] == 0 and not log.exists()
+
+
+async def test_disabled_screen_source_rejects_earlier_frame(framed_worker, monkeypatch):
+    from agent.vision import framework as vision_framework
+    log, _, _ = framed_worker
+    ref = json.loads(await tools.vision_look())["frame_ref"]
+    monkeypatch.setattr(vision_framework, "is_enabled", lambda _: False)
+    receipt = await executor.execute("desktop.click", {"frame_ref": ref})
+    assert receipt["input_outcome"] == "not_started" and not log.exists()
+
+
+async def test_expired_frame_and_legacy_absolute_keyboard_paths(framed_worker):
+    log, _, _ = framed_worker
+    ref = json.loads(await tools.vision_look())["frame_ref"]
+    for _ in range(2):
+        await tools.vision_look()
+    denied = await executor.execute("desktop.click", {"frame_ref": ref, "_screen_frame": {}})
+    assert denied["status"] == "not_started" and not log.exists()
+    assert (await executor.execute("desktop.click", {"x": -50, "y": 21, "_screen_frame": {}}))["ok"]
+    assert json.loads(log.read_text().splitlines()[0]) == ["move", -50, 21]
+    assert (await executor.execute("desktop.key", {"keys": "enter", "frame_ref": ref}))["ok"]
+
+
 async def until(predicate, timeout=5):
     async with asyncio.timeout(timeout):
         while not predicate():

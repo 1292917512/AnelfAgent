@@ -27,19 +27,17 @@ async def recover_interrupted_workflows(mind: Any, engine: WorkflowEngine) -> Li
     本进程新启动的工作流。
     """
     journal = engine.journal
-    live_ids = set(engine.running_ids())
-    started_at = engine._started_at
-    stale = [
-        run for run in await journal.list_non_terminal_runs()
-        if run["id"] not in live_ids and float(run.get("created_at") or 0.0) < started_at
-    ]
-    for run in stale:
-        await journal.settle_run(
-            run["id"], wf_journal.STOPPED, stop_reason="interrupted",
-            failure={"message": "进程中断（已完成步骤保留，可续跑）"},
-        )
-        await journal.append_event(run["id"], "run-settled", {
-            "status": wf_journal.STOPPED, "stop_reason": "interrupted"})
+    stale = []
+    async with engine._lifecycle_lock:
+        live_ids = set(engine.running_ids())
+        for run in await journal.list_non_terminal_runs():
+            if run["id"] in live_ids or float(run.get("created_at") or 0.0) >= engine._started_at:
+                continue
+            if await journal.settle_run(
+                run["id"], wf_journal.STOPPED, stop_reason="interrupted",
+                failure={"message": "进程中断（已完成步骤保留，可续跑）"},
+            ):
+                stale.append(run)
     if stale:
         summary = "、".join(f"{r['id']}[{r.get('name', '')}]" for r in stale)
         log(f"检测到上次进程退出时在飞的工作流 {len(stale)} 个（{summary}），"

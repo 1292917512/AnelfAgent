@@ -21,6 +21,7 @@ from core.cancellation import ToolCancelled, get_execution_signal
 from core.config import get_config_bool, get_config_int
 from core.tool_context import request_trace
 from core.tool_errors import ErrorCause, tool_error
+from entities._sdk import resolve_screen_frame
 
 from .desktop_process import run_worker
 
@@ -136,6 +137,15 @@ class DesktopController:
                            status="not_started", control=self.state())
         if not runtime_ready():
             return failure(install_hint(), status="not_started", missing_runtime=True)
+        params = dict(params)
+        params.pop("_screen_frame", None)
+        if params.get("frame_ref") and action not in {"key", "hotkey", "type"}:
+            frame = resolve_screen_frame(params["frame_ref"])
+            if frame is None:
+                return failure("截图引用已失效，请重新调用 vision_look", status="not_started",
+                               input_outcome="not_started", completed=0)
+            params["_screen_frame"] = {"monitors": frame.monitors, "monitor": frame.monitor,
+                                       "width": frame.width, "height": frame.height}
         active = ActiveAction(uuid.uuid4().hex, signal.scope if signal else request_trace().get("scope", ""),
                               signal.run_id if signal else "")
         self.active = active

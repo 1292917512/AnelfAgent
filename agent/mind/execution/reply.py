@@ -91,11 +91,11 @@ async def reply_loop(
     with think_session(mind.tool_assembly, scope), tool_request(
         scope, str(getattr(anything, "uid", "") or ""),
         message_id=str(getattr(anything, "_trace_message_id", "") or getattr(anything, "adapter_message_id", "") or ""),
-    ), interrupts.execution(turn_id, scope) if interrupts is not None else nullcontext():
+    ) as request, interrupts.execution(turn_id, scope) if interrupts is not None else nullcontext():
         label = anything.get_text_content() or anything._trace_input_preview
         async with activity_scope(
             turn_id, scope, label=label, kind="conversation", can_stop=True,
-            trigger=anything.message_kind,
+            trigger=anything.message_kind, message_id=request.message_id,
             initiator={"id": str(anything.uid or ""), "name": str(getattr(anything, "user_name", "") or "")},
         ) as activity, \
                 recall_turn(scope, anything.recall_policy, default_policy=channel_policy.recall_policy):

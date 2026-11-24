@@ -18,7 +18,14 @@ follow_up_agent 无损续跑）。非会话 scope（reflect: 等一次性域）�
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Callable
+from typing import TYPE_CHECKING
+
 from core.log import log
+
+if TYPE_CHECKING:
+    from agent.mind.mind import Mind
 
 INTERRUPTED_NOTICE = (
     "[系统] 上一次运行中有后台委托被进程中断（未正常收尾），"
@@ -27,19 +34,19 @@ INTERRUPTED_NOTICE = (
 )
 
 
-async def recover_interrupted_delegations(mind) -> int:
+async def recover_interrupted_delegations(mind: Mind, *, is_live: Callable[[str], bool] | None = None) -> int:
     """扫描未闭合委托，注入中断元消息并闭合账本。返回处理的 scope 数。"""
     try:
-        return await _do_recover(mind)
+        return await _do_recover(mind, is_live)
     except Exception as exc:
         log(f"委托崩溃恢复失败（已忽略）: {exc}", "WARNING", tag="启动")
         return 0
 
 
-async def _do_recover(mind) -> int:
+async def _do_recover(mind: Mind, is_live: Callable[[str], bool] | None) -> int:
     from agent.delegation import journal
 
-    unclosed = journal.unclosed_delegations()
+    unclosed = await asyncio.to_thread(journal.unclosed_delegations, is_live)
     if not unclosed:
         return 0
 

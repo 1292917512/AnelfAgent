@@ -36,7 +36,8 @@ async def test_run_lifecycle_one_write(journal: WorkflowJournal):
     assert run["result_json"] == '{"steps": {}}'
     assert run["finished_at"] is not None
 
-    # 再次结算覆盖前值（重试语义），未知 run 返回 False
+    assert not await journal.settle_run("r1", wf_journal.FAILED)
+    assert [e["payload"] for e in await journal.list_events("r1")] == [{"status": "completed"}]
     assert await journal.settle_run("ghost", wf_journal.FAILED) is False
 
 
@@ -51,6 +52,61 @@ async def test_reopen_clears_settlement(journal: WorkflowJournal):
     assert run["failure_json"] is None
     assert run["result_json"] is None
     assert run["finished_at"] is None
+
+
+async def test_settlement_failure_rolls_back_and_legacy_terminal_is_repaired_once(tmp_path):
+    import sqlite3
+    from contextlib import closing
+
+    path = str(tmp_path / "workflow.db")
+    journal = WorkflowJournal(path)
+    try:
+        await journal.create_run("r", "example", "{}", "hash", "")
+        await journal.append_event("r", "run-started")
+        with closing(sqlite3.connect(path)) as db:
+            db.execute("CREATE TRIGGER reject_event BEFORE INSERT ON workflow_event"
+                       " BEGIN SELECT RAISE(ABORT, 'event failed'); END")
+        with pytest.raises(sqlite3.IntegrityError, match="event failed"):
+            await journal.settle_run("r", wf_journal.COMPLETED, result={"value": 1})
+        assert (await journal.get_run("r"))["status"] == wf_journal.RUNNING
+    finally:
+        await journal.aclose()
+    with closing(sqlite3.connect(path)) as db:
+        assert db.execute("SELECT status, result_json FROM workflow_run").fetchone() == ("running", None)
+        db.execute("DROP TRIGGER reject_event")
+        db.execute("UPDATE workflow_run SET status='stopped', stop_reason='user', finished_at=100")
+        db.commit()
+    for _ in range(2):
+        journal = WorkflowJournal(path)
+        try:
+            events = await journal.list_events("r")
+            assert [e["type"] for e in events] == ["run-started", "run-settled"]
+            assert events[-1]["ts"] == 100
+            assert events[-1]["payload"] == {"status": "stopped", "stop_reason": "user"}
+        finally:
+            await journal.aclose()
+
+
+async def test_legacy_previous_attempt_terminal_does_not_hide_missing_settlement(tmp_path):
+    import sqlite3
+    from contextlib import closing
+
+    path = str(tmp_path / "resumed.db")
+    journal = WorkflowJournal(path)
+    try:
+        await journal.create_run("r", "resume", "{}", "hash", "")
+        await journal.settle_run("r", wf_journal.STOPPED, stop_reason="user")
+        assert await journal.reopen_run("r")
+    finally:
+        await journal.aclose()
+    with closing(sqlite3.connect(path)) as db:
+        db.execute("UPDATE workflow_run SET status='stopped', stop_reason='interrupted', finished_at=updated_at")
+        db.commit()
+    journal = WorkflowJournal(path)
+    try:
+        assert [e["payload"]["stop_reason"] for e in await journal.list_events("r")] == ["user", "interrupted"]
+    finally:
+        await journal.aclose()
 
 
 async def test_node_admit_settle_and_latest(journal: WorkflowJournal):
@@ -236,4 +292,4 @@ async def test_run_delete_rolls_back_all_three_tables_on_failure(journal: Workfl
         await journal.delete_run("r")
     assert await journal.get_run("r") is not None
     assert len(await journal.nodes_of_run("r")) == 1
-    assert len(await journal.list_events("r", -1)) == 1
+    assert [e["type"] for e in await journal.list_events("r")] == ["run-started", "run-settled"]

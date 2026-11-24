@@ -12,6 +12,7 @@ import time
 import uuid
 from pathlib import Path
 
+from core.display_layout import display_layout
 from entities._sdk import CapturedFrame
 
 
@@ -20,8 +21,8 @@ def _capture_sync(monitor: int, out_dir: Path) -> CapturedFrame:
     from PIL import Image
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    with mss.mss() as sct:
-        monitors = sct.monitors  # [0]=全部合并，1..N=各显示器
+    with mss.MSS() as sct:
+        monitors = display_layout(sct.monitors)  # [0]=全部合并，1..N=各显示器
         if monitor < 0 or monitor >= len(monitors):
             monitor = 1 if len(monitors) > 1 else 0
         shot = sct.grab(monitors[monitor])
@@ -31,7 +32,7 @@ def _capture_sync(monitor: int, out_dir: Path) -> CapturedFrame:
     img.save(dest, "JPEG", quality=80)
     return CapturedFrame(
         path=str(dest), width=img.width, height=img.height,
-        captured_at=time.time(), monitor=monitor,
+        captured_at=time.time(), monitor=monitor, monitors=monitors,
     )
 
 

@@ -1493,7 +1493,7 @@ _DELEGATION_CONFIGS = {
             "advanced": True,
         },
         "delegation_journal_retention_days": {
-            "description": "委托运行日志（进度流/transcript）保留天数",
+            "description": "委托进度流、transcript 与已闭合账本的保留天数（0 关闭清理，未结账本始终保留）",
             "default": 7,
             "advanced": True,
             "unit": "天",

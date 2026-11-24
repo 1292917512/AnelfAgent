@@ -91,7 +91,7 @@ async def activity_step(name: str) -> AsyncIterator[ActivityStep]:
 async def activity_scope(
     turn_id: str, scope: str, *, label: str = "", kind: str = "reflection",
     trigger: str = "", initiator: ActivityInitiator | None = None,
-    can_stop: bool = False,
+    can_stop: bool = False, message_id: str = "",
 ) -> AsyncIterator[ActivityHandle]:
     """为并行及嵌套执行绑定独立轮次，并在所有退出路径发出终态。"""
     parent_id = current_activity_id.get()
@@ -103,7 +103,7 @@ async def activity_scope(
             "origin_scope": request_trace().get("scope", scope),
             "parent_id": parent_id, "actor": current_log_actor(),
             "trigger": trigger, "initiator": initiator,
-            "can_stop": can_stop,
+            "can_stop": can_stop, **({"message_id": message_id} if message_id else {}),
             "label": label, "kind": kind, **(current_activity_owner.get() or {}),
         })
         yield handle

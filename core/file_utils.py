@@ -5,9 +5,11 @@ import os
 import stat
 import tempfile
 from _thread import RLock
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from threading import Lock
-from typing import List, Tuple
+from typing import BinaryIO, List, Tuple
 from weakref import WeakValueDictionary
 
 from core.log import log
@@ -33,14 +35,21 @@ def atomic_write_text(target: Path, content: str) -> None:
 
 
 def atomic_write_bytes(target: Path, content: bytes) -> None:
-    """锁定目标并通过同目录临时文件原子替换，保留既有权限。"""
+    """原子写入二进制内容并保留目标权限。"""
+    with atomic_binary_writer(target) as file:
+        file.write(content)
+
+
+@contextmanager
+def atomic_binary_writer(target: Path) -> Iterator[BinaryIO]:
+    """锁定目标，在调用方完成写入后原子发布同目录临时文件。"""
     with file_write_lock(target):
         target.parent.mkdir(parents=True, exist_ok=True)
         mode = stat.S_IMODE(target.stat().st_mode) if target.exists() else None
         fd, tmp_path = tempfile.mkstemp(dir=str(target.parent), suffix=".tmp", prefix=".atomic_")
         try:
             with os.fdopen(fd, "wb") as file:
-                file.write(content)
+                yield file
                 file.flush()
                 os.fsync(file.fileno())
             if mode is not None:

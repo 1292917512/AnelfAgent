@@ -27,7 +27,7 @@
 1. **Node.js ≥ 22**（acpx 要求；`node --version` 确认）
 2. **AnelfAgent 守护进程运行中**，且 `http_api` 频道已启用
    （面板频道页确认；配置文件 `channels/http_api/channel_config.json`）
-3. 守护进程加载了本仓库当前版本代码（SSE 流端点为本次新增，旧进程需重启）
+3. ACP 适配器与守护进程配套更新并重启，守护进程须支持按 `message_id` 订阅 SSE
 4. 项目 venv 已同步（`.venv/bin/python` 存在；`uv sync`）
 
 ## 就绪自检
@@ -74,6 +74,11 @@ scripts/anelf-acp doctor --json
 ```
 
 然后在飞书任务侧边栏把一个任务委派给该 Bot，观察任务评论区的执行进度。
+
+正常结束返回 `end_turn`，达到轮次上限返回 `max_turn_requests`，守护进程确认中断返回 `cancelled`。
+投递前取消可立即结束。受理后按消息 ID 请求停止，守护进程在该消息对应的轮次上执行协作中断。
+取消后最多等待 30 秒确认，排队期间已登记的请求在 ACP 断开后仍由当前守护进程处理。
+执行失败、终帧缺失或停止确认超时会返回 JSON-RPC 错误。重新提交前应按原会话核对执行记录。
 
 ## 排障
 

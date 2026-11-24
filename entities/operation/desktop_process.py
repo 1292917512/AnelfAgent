@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from collections.abc import Callable
 from pathlib import Path
@@ -22,8 +23,13 @@ async def run_worker(
     result: dict[str, Any] = {"status": "unknown", "input_released": False}
     if stop.is_set():
         return {"status": "not_started", "input_released": True}
+    env = None
+    if "_screen_frame" in params:
+        # 脚本子进程仅需导入轻量的 core.display_layout，不经过实体发现。
+        roots = [str(Path(__file__).resolve().parents[2]), os.environ.get("PYTHONPATH", "")]
+        env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, roots))}
     async with managed_process(
-        sys.executable, "-u", str(WORKER), stdin=asyncio.subprocess.PIPE,
+        sys.executable, "-u", str(WORKER), stdin=asyncio.subprocess.PIPE, env=env,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, limit=65536,
     ) as proc:
         assert proc.stdin is not None and proc.stdout is not None

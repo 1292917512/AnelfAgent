@@ -19,7 +19,7 @@ import sys
 import threading
 import time
 import uuid
-from typing import Any, AsyncIterator, Dict, List, Optional, TextIO
+from typing import Any, Dict, List, Optional, TextIO
 
 from .daemon import DaemonClient, resolve_config
 
@@ -42,6 +42,7 @@ are executed by the local AnelfAgent daemon via its http_api channel."""
 _ERR_METHOD_NOT_FOUND = -32601
 # 内部错误（守护进程不可达 / 执行失败）
 _ERR_INTERNAL = -32603
+_CANCEL_CONFIRM_TIMEOUT = 30.0
 
 
 class _Session:
@@ -200,7 +201,12 @@ class AcpServer:
             session.cancel_event.clear()
         task = asyncio.ensure_future(self._session_prompt(request_id, params))
         self._prompt_tasks[session_id] = task
-        task.add_done_callback(lambda _t, key=session_id: self._prompt_tasks.pop(key, None))
+
+        def forget(finished: asyncio.Task[None]) -> None:
+            if self._prompt_tasks.get(session_id) is finished:
+                del self._prompt_tasks[session_id]
+
+        task.add_done_callback(forget)
 
     async def _session_prompt(self, request_id: Any, params: Dict[str, Any]) -> None:
         session_id = str(params.get("sessionId") or "")
@@ -213,44 +219,52 @@ class AcpServer:
             self._respond_error(request_id, _ERR_INTERNAL, "empty prompt")
             return
 
-        stop_reason = "end_turn"
         try:
-            await self._run_turn(session, prompt_text)
-        except _CancelledPrompt:
-            stop_reason = "cancelled"
+            stop_reason = await self._run_turn(session, prompt_text)
         except Exception as exc:  # noqa: BLE001 — 守护进程链路失败归因为 JSON-RPC 错误
             self._respond_error(request_id, _ERR_INTERNAL, f"daemon execution failed: {exc}")
             return
         self._respond(request_id, {"stopReason": stop_reason})
 
-    async def _next_frame(
-        self, frames: AsyncIterator[Dict[str, Any]], session: _Session
-    ) -> Optional[Dict[str, Any]]:
-        """取下一帧；会话取消时立即返回 None（不等下一帧到达）。"""
-        anext = asyncio.ensure_future(frames.__anext__())
-        cancel_wait = asyncio.ensure_future(session.cancel_event.wait())
+    async def _run_turn(self, session: _Session, prompt_text: str) -> str:
+        if session.cancel_event.is_set():
+            return "cancelled"
+        message_id = uuid.uuid4().hex
+        submitted = asyncio.Event()
+        accepted: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        exchange = asyncio.create_task(self._exchange(session, prompt_text, message_id, submitted, accepted))
+        cancel = asyncio.create_task(session.cancel_event.wait())
+        stop: asyncio.Task[None] | None = None
         try:
-            done, _pending = await asyncio.wait(
-                {anext, cancel_wait}, return_when=asyncio.FIRST_COMPLETED
-            )
-            if anext not in done:
-                # 取消先于下一帧：作废在途取帧任务（CancelledError 传入生成器）
-                anext.cancel()
-                try:
-                    await anext
-                except (asyncio.CancelledError, StopAsyncIteration, RuntimeError):
-                    pass
-                return None
-            return anext.result()
+            await asyncio.wait((exchange, cancel), return_when=asyncio.FIRST_COMPLETED)
+            if exchange.done():
+                return exchange.result()
+            if not submitted.is_set():
+                return "cancelled"
+            try:
+                async with asyncio.timeout(_CANCEL_CONFIRM_TIMEOUT):
+                    await asyncio.wait((exchange, accepted), return_when=asyncio.FIRST_COMPLETED)
+                    if exchange.done():
+                        return exchange.result()
+                    stop = asyncio.create_task(self._daemon.stop_message(session.user_id, message_id))
+                    await asyncio.wait((exchange, stop), return_when=asyncio.FIRST_COMPLETED)
+                    if exchange.done():
+                        return exchange.result()
+                    stop.result()
+                    return await exchange
+            except TimeoutError as exc:
+                raise RuntimeError("daemon cancellation not confirmed by turn_end") from exc
         finally:
-            cancel_wait.cancel()
+            tasks = (cancel, exchange, stop) if stop is not None else (cancel, exchange)
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def _run_turn(self, session: _Session, prompt_text: str) -> None:
-        """驱动守护进程一轮执行：订阅流 → 投递消息 → 消费帧至 turn_end。
-
-        delta 增量合帧流出；未流出过正文增量时由 reply 帧补发最终文本。
-        """
-        emitted_any = False
+    async def _exchange(
+        self, session: _Session, prompt_text: str, message_id: str, submitted: asyncio.Event,
+        accepted: asyncio.Future[None],
+    ) -> str:
+        """订阅单条入站消息，再投递并流出增量，只有对应终帧可以结算。"""
         emitted_message_text = False
         reply_text: Optional[str] = None
         buffer_text: List[str] = []
@@ -271,26 +285,22 @@ class AcpServer:
                 buffer_thought.clear()
             last_flush = now
 
-        frames = self._daemon.stream_frames(session.user_id)
+        frames = self._daemon.stream_frames(session.user_id, message_id=message_id)
         try:
             # 先等待订阅通道建立（open 哨兵帧）再投递消息，避免竞态丢帧
             open_frame = await frames.__anext__()
             if open_frame.get("type") != "open":
                 raise RuntimeError("unexpected first stream frame")
-            await self._daemon.send_message(session.user_id, prompt_text)
-            turn_done = False
-            while True:
-                try:
-                    frame = await self._next_frame(frames, session)
-                except StopAsyncIteration:
-                    break  # 流正常关闭（未见 turn_end，走下方中断容忍判定）
-                if frame is None:
-                    raise _CancelledPrompt()
+            if session.cancel_event.is_set():
+                return "cancelled"
+            submitted.set()
+            await self._daemon.send_message(session.user_id, prompt_text, message_id=message_id)
+            accepted.set_result(None)
+            async for frame in frames:
                 ftype = str(frame.get("type") or "")
                 if ftype == "delta":
                     target = buffer_thought if frame.get("reasoning") else buffer_text
                     target.append(str(frame.get("delta") or ""))
-                    emitted_any = True
                     _flush(force=False)
                 elif ftype == "tool_call":
                     _flush(force=True)
@@ -298,21 +308,24 @@ class AcpServer:
                 elif ftype == "reply":
                     reply_text = str(frame.get("content") or "")
                 elif ftype == "turn_end":
-                    turn_done = True
-                    break
-            _flush(force=True)
-            if not turn_done and not session.cancel_event.is_set():
-                # 流中断且未见终帧：若有最终文本或已流出增量则视为完成，否则上抛
-                if reply_text is None and not emitted_any:
-                    raise RuntimeError("stream closed before turn_end")
-            # 静默轮次（无正文增量流出）由 reply 帧补发最终文本
-            if reply_text is not None and not emitted_message_text:
-                self._emit_chunk(session.session_id, reply_text, thought=False)
+                    reason = frame.get("reason", "completed")
+                    if frame.get("error") or reason == "failed":
+                        raise RuntimeError(f"daemon turn failed ({reason})")
+                    if reason == "interrupted":
+                        return "cancelled"
+                    if reason == "budget_exhausted":
+                        return "max_turn_requests"
+                    if reason == "completed":
+                        return "end_turn"
+                    raise RuntimeError(f"unknown daemon turn_end reason: {reason}")
+            raise RuntimeError("stream closed before turn_end")
         finally:
             try:
+                _flush(force=True)
+                if reply_text and not emitted_message_text:
+                    self._emit_chunk(session.session_id, reply_text, thought=False)
+            finally:
                 await frames.aclose()
-            except (RuntimeError, StopAsyncIteration):
-                pass
 
     def _session_cancel(self, params: Dict[str, Any]) -> None:
         session = self._sessions.get(str(params.get("sessionId") or ""))
@@ -361,10 +374,6 @@ class AcpServer:
             if isinstance(block, dict) and block.get("type") == "text":
                 parts.append(str(block.get("text") or ""))
         return "\n".join(p for p in parts if p).strip()
-
-
-class _CancelledPrompt(Exception):
-    """客户端取消当前 prompt。"""
 
 
 # ------------------------------------------------------------------

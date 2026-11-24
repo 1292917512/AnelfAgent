@@ -49,8 +49,8 @@ jobs:
             changed=$(git ls-files)
           fi
           py=$(grep -E '\.py$|^pyproject\.toml$|^uv\.lock$|^\.github/workflows/ci\.yml$' <<<"$changed" || true)
-          # 模块前端（频道 frontend/ 与实体面板 tsx）软链进 web/frontend 参与构建，同属前端改动面
-          fe=$(grep -E '^web/frontend/|^channels/[^/]+/frontend/|^entities/.+\.(tsx|ts|mts|css)$|^\.github/workflows/ci\.yml$' <<<"$changed" || true)
+          # 根级工具链、频道前端和生成器载入的实体面板与文案均参与前端验证。
+          fe=$(grep -E '^web/frontend/|^channels/[^/]+/frontend/|^entities/.+\.(tsx|ts|mts|css)$|^entities/[^/]+/panels/locales/[^/]+\.json$|^(eslint\.config\.mjs|\.nvmrc|\.github/workflows/ci\.yml)$' <<<"$changed" || true)
           desktop=$(grep -E '^app/|^\.github/workflows/(ci|launcher-release)\.yml$' <<<"$changed" || true)
 
           # 模块测试腿只跟随 Python 改动面（纯前端/文档改动不触发后端测试）
@@ -80,6 +80,9 @@ jobs:
               done
             fi
             grep -qE '^services/' <<<"$changed_py" && add "services" "tests/unit/services"
+            grep -qE '^(acp|channels/http_api)/' <<<"$changed_py" && add "acp" "tests/unit/acp"
+            grep -qE '^scripts/(eval_memory_recall\.py|eval_recall_cases(\.example)?\.json)$' <<<"$changed" && \
+              add "memory-recall-eval" "tests/unit/agent/memory/test_eval_memory_recall.py"
             grep -qE '^app/' <<<"$changed_py" && add "app" "app/tests"
             web_backend=$(grep -E '^web/' <<<"$changed_py" | grep -vE '^web/frontend/' || true)
             [ -n "$web_backend" ] && add "web" "tests/unit/web tests/integration/web"

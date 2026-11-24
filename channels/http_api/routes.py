@@ -37,7 +37,9 @@ def build_router(adapter: HttpApiChannel) -> APIRouter:
             return ChatResponse(request_id=req.request_id, status="error", error=error)
         message_id = req.message_id or req.request_id
         dedup_key = json.dumps([req.scope, message_id])
-        if adapter._dedup.is_duplicate(dedup_key):
+        key = (req.scope, message_id)
+        subs = adapter._message_subs(*key) if req.async_mode else []
+        if key in adapter._queued_stops or any(sub.submitted for sub in subs) or adapter._dedup.is_duplicate(dedup_key):
             return ChatResponse(request_id=req.request_id, status="duplicate", error="消息已受理或正在受理")
         kind = MessageKind(req.kind)
         notification = kind == MessageKind.NOTIFICATION
@@ -66,6 +68,9 @@ def build_router(adapter: HttpApiChannel) -> APIRouter:
                 session_id="" if notification else req.session_id,
             )
             from agent.channel.manager import get_channel_manager
+            for sub in subs:
+                if not sub.turn_id and not notification:
+                    sub.submitted = True
             await get_channel_manager().dispatch_inbound(adapter, inbound)
             accepted = True
             if fut is None:
@@ -85,6 +90,9 @@ def build_router(adapter: HttpApiChannel) -> APIRouter:
         finally:
             if not accepted:
                 adapter._dedup.discard(dedup_key)
+                adapter._queued_stops.pop(key, None)
+                for sub in subs:
+                    sub.submitted = False
                 if req.callback_url and adapter._callbacks.get(req.scope) == req.callback_url:
                     if previous_callback is None:
                         adapter._callbacks.pop(req.scope, None)
@@ -102,8 +110,8 @@ def build_router(adapter: HttpApiChannel) -> APIRouter:
     async def control(req: ExecutionRequest, request: Request) -> dict[str, Any]:
         """停止只发出协作式取消请求；继续是一条经标准入站提交的新消息。"""
         if req.action == "resume":
-            if req.run_id:
-                raise HTTPException(422, "resume 使用会话目标和 request_id；run_id 仅用于精确停止")
+            if req.run_id or req.message_id:
+                raise HTTPException(422, "resume 使用会话目标和 request_id；run_id 和 message_id 仅用于精确停止")
             response = await chat(ChatRequest(
                 user_id=req.user_id, group_id=req.group_id, session_id=req.session_id,
                 message=req.message, message_id=f"resume-{req.request_id}",
@@ -112,11 +120,28 @@ def build_router(adapter: HttpApiChannel) -> APIRouter:
             return {**response.model_dump(), "scope": req.scope}
         from agent.execution_control import request_execution_stop
         from core.latebind import WireError
+        run_id = req.run_id
+        if req.message_id:
+            if run_id:
+                raise HTTPException(422, "message_id 与 run_id 只能指定一个")
+            key = (req.scope, req.message_id)
+            receipt = {"scope": req.scope, "message_id": req.message_id}
+            if key in adapter._queued_stops:
+                return {**receipt, "status": "pending"}
+            sub = next((s for s in adapter._message_subs(*key) if s.submitted), None)
+            if sub is None:
+                return {**receipt, "status": "idle"}
+            run_id = sub.turn_id
+            if not run_id:
+                if len(adapter._queued_stops) >= adapter.config.max_stream_subscribers:
+                    raise HTTPException(503, "排队消息的停止请求已达上限")
+                adapter._queued_stops[key] = req.reason
+                return {**receipt, "status": "pending"}
         try:
-            result = await request_execution_stop(scope=req.scope, run_id=req.run_id, reason=req.reason)
+            result = await request_execution_stop(scope=req.scope, run_id=run_id, reason=req.reason)
         except WireError as exc:
             raise HTTPException(503, "执行控制尚未就绪") from exc
-        return {**result, "scope": req.scope, "run_id": req.run_id}
+        return {**result, "scope": req.scope, "run_id": run_id}
 
     @router.get("/api/sessions/history", tags=["conversation"], dependencies=portal_dependencies())
     async def history(
@@ -139,7 +164,8 @@ def build_router(adapter: HttpApiChannel) -> APIRouter:
         return {"status": "ok", "scope": target.scope, "messages": rows}
 
     @router.get("/api/chat/stream", dependencies=portal_dependencies())
-    async def chat_stream(request: Request, user_id: str = "", group_id: str = "", session_id: str = ""):
+    async def chat_stream(request: Request, user_id: str = "", group_id: str = "", session_id: str = "",
+                          message_id: str = Query(default="", max_length=128)):
         """SSE 流端点：推送该 user 的 delta / tool_call / reply / turn_end 帧。"""
         from fastapi.responses import JSONResponse
         if not adapter._check_auth(request):
@@ -158,7 +184,7 @@ def build_router(adapter: HttpApiChannel) -> APIRouter:
         except ValueError as exc:
             raise HTTPException(422, "非法会话标识") from exc
         sub = _StreamSub(target.scope, include_children=not bool(session_id),
-                         maxsize=adapter.config.stream_queue_size)
+                         maxsize=adapter.config.stream_queue_size, message_id=message_id)
         adapter._stream_subs.append(sub)
 
         async def event_generator():
@@ -178,7 +204,8 @@ def build_router(adapter: HttpApiChannel) -> APIRouter:
                 if sub in adapter._stream_subs:
                     adapter._stream_subs.remove(sub)
 
-        return EventSourceResponse(event_generator(), send_timeout=30.0)
+        headers = {"X-Anelf-Stream-Scope": "message"} if message_id else None
+        return EventSourceResponse(event_generator(), send_timeout=30.0, headers=headers)
 
     @router.post("/api/vision/push", dependencies=portal_dependencies())
     async def vision_push(req: VisionPushRequest, request: Request) -> Dict[str, Any]:

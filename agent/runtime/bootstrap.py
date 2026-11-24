@@ -730,7 +730,7 @@ def create_bootstrap() -> FlowMachine:
             crash_context = collect_crash_context()
             recovered = await recover_interrupted_replies(mind.conversation_data.router, crash_context)
             # 委托崩溃恢复同范式：账本未闭合条目 → 中断元消息（独立于回复检查点）
-            await recover_interrupted_delegations(mind)
+            await recover_interrupted_delegations(mind, is_live=require_runtime().delegation_manager.is_running)
             # 工作流崩溃收敛同范式：running 残留 → stopped(interrupted)，可续跑
             from agent.workflow.recovery import recover_interrupted_workflows
             await recover_interrupted_workflows(mind, require_runtime().workflow_engine)

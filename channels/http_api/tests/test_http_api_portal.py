@@ -1095,6 +1095,35 @@ class TestSdkPortal:
         assert len(fake_agent_app) == 1
         assert fake_agent_app[0]["group_id"] == "room" and fake_agent_app[0]["session_id"] == "topic"
 
+    def test_message_stop_requires_admission_and_preserves_queued_intent(self, fake_agent_app) -> None:
+        from channels.http_api.adapter import _StreamSub
+
+        channel = HttpApiChannel()
+        channel._config = HttpApiConfig(max_stream_subscribers=1)
+        scope = channel._delivery_key("alice")
+        client = _client(channel)
+        control = "/api/sessions/control"
+        target = {"user_id": "alice", "message_id": "first"}
+        sub = _StreamSub(scope, message_id="first")
+        channel._stream_subs.append(sub)
+        assert client.post(control, json=target).json()["status"] == "idle"
+        assert client.post(control, json={**target, "action": "resume"}).status_code == 422
+        assert client.post(control, json={**target, "run_id": "other"}).status_code == 422
+        chat = {**target, "message": "hello", "async_mode": True}
+        assert client.post("/api/chat", json=chat).json()["status"] == "accepted"
+        assert client.post(control, json=target).json()["status"] == "pending"
+        channel._stream_subs.remove(sub)
+        assert client.post(control, json=target).json()["status"] == "pending"
+        assert client.post("/api/chat", json=chat).json()["status"] == "duplicate"
+
+        channel._stream_subs.append(_StreamSub(scope, message_id="second"))
+        assert client.post("/api/chat", json={**chat, "message_id": "second"}).json()["status"] == "accepted"
+        second = {**target, "message_id": "second"}
+        assert client.post(control, json=second).status_code == 503
+        asyncio.run(channel._on_after_reply({"scope": scope, "message_id": "first", "reason": "failed"}))
+        assert client.post(control, json=second).json()["status"] == "pending"
+        assert len(fake_agent_app) == 2
+
     async def test_history_paginates_persisted_messages_without_crossing_scopes(self, tmp_path, monkeypatch) -> None:
         import httpx
 

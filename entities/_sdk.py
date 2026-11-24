@@ -143,7 +143,7 @@ __all__ = [
     "PreprocessError", "probe", "ensure_16k_mono_wav", "mean_volume_db",
     "detect_silences", "split_wav", "merge_to_wav",
     "register_vision_source", "unregister_vision_source", "vision_ingest_frame",
-    "vision_look",
+    "vision_look", "resolve_screen_frame",
     "VisualSource", "CapturedFrame",
     "register_visual_provider", "unregister_visual_provider",
     "register_sound_provider", "unregister_sound_provider",
@@ -720,6 +720,15 @@ async def vision_ingest_frame(
     from agent.vision.buffer import get_vision_buffer
     return await get_vision_buffer().ingest(
         path, source, width=width, height=height, captured_at=captured_at)
+
+
+def resolve_screen_frame(frame_ref: str) -> CapturedFrame | None:
+    """按本机截屏工具返回的引用取得仍可用于输入定位的原帧。"""
+    from agent.vision.buffer import get_vision_buffer
+    from agent.vision.framework import get_source, is_enabled
+    if get_source("screen") is None or not is_enabled("screen"):
+        return None
+    return get_vision_buffer().screen_capture_for(frame_ref)
 
 
 async def vision_look(source: str = "screen") -> str:

@@ -35,7 +35,7 @@ _BUDGET_OPERATIONS = 1400
 _BUDGET_RECENT = 420
 
 _DESKTOP_GUIDE = (
-    "桌面操控纪律：先 vision_look 看屏定位坐标 → desktop_act 执行（默认自动回看验证）"
+    "桌面操控纪律：先 vision_look 看屏，按原图像素定位并带 frame_ref 调用 desktop_act（默认回看验证）"
     " → 小步推进不盲操作；执行遵循统一权限与审批规则；"
     "desktop.type 仅 ASCII（中文经剪贴板+hotkey 粘贴）；"
     "停止/接管后先看屏核实，输入进度不代表目标应用完成，不重放已发出的输入。"

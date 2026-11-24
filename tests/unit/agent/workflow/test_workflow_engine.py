@@ -91,15 +91,15 @@ async def test_saved_definition_is_durable_and_runs_use_independent_snapshots(en
 
 async def test_cleanup_and_delete_protect_run_until_final_event_is_written(engine, monkeypatch):
     entered, release = asyncio.Event(), asyncio.Event()
-    append = engine.journal.append_event
+    settle = engine.journal.settle_run
 
-    async def delayed_append(run_id, event_type, payload=None):
-        if event_type == "run-settled":
-            entered.set()
-            await release.wait()
-        return await append(run_id, event_type, payload)
+    async def delayed_settle(*args, **kwargs):
+        result = await settle(*args, **kwargs)
+        entered.set()
+        await release.wait()
+        return result
 
-    monkeypatch.setattr(engine.journal, "append_event", delayed_append)
+    monkeypatch.setattr(engine.journal, "settle_run", delayed_settle)
     run = await engine.start({"name": "settling", "steps": [{"key": "a", "goal": "work"}]})
     await asyncio.wait_for(entered.wait(), 5)
     with pytest.raises(ValueError, match="结算"):

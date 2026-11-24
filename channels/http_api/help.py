@@ -60,12 +60,13 @@ def build_portal_spec(config: HttpApiConfig) -> dict[str, Any]:
             },
             "sse": {
                 "method": "GET", "path": f"{base}/api/chat/stream?user_id=<id>",
-                "note": "user_id 或 group_id 选择会话；session_id 非空时精确订阅，否则订阅该身份全部子会话",
+                "note": "user_id 或 group_id 选择会话；session_id 指定子会话。可先带 message_id 订阅，"
+                        "再以相同 ID 投递，按 turn_started.turn_id 精确停止并等待 turn_end",
             },
             "execution": {
                 "method": "POST", "path": f"{base}/api/sessions/control",
-                "fields": "{user_id, group_id?, session_id?, action: stop|resume, run_id?, request_id?}",
-                "note": "stop 复用 SDK 协作式中断；resume 提交新续接消息，不重放工具；run_id 仅用于精确停止",
+                "fields": "{user_id, group_id?, session_id?, action: stop|resume, run_id?|message_id?, request_id?}",
+                "note": "stop 可按 run_id 或按已订阅并投递的 message_id 精确中断；resume 提交新续接消息",
             },
             "history": {
                 "method": "GET", "path": f"{base}/api/sessions/history",
@@ -121,7 +122,7 @@ def build_portal_spec(config: HttpApiConfig) -> dict[str, Any]:
         "reliability": {
             "idempotency": "消息和工具 request_id 在进程内去重：300 秒、共享容量 2000 条；重启或容量淘汰后不保证去重，非持久化 exactly-once",
             "stream": "SSE 是实时流，无断线重放；慢客户端队列溢出关闭连接，用 history 校准最终消息",
-            "stop": "status=ok 表示停止请求受理；turn_end.reason=interrupted 才代表该轮收束；resume 是新输入，不重放工具",
+            "stop": "ok 表示停止请求受理，pending 表示已登记排队消息的停止请求；以 turn_end.reason=interrupted 确认收束",
             "retry": "timeout 不表示未执行；先查历史/执行回执。副作用工具无自动重试；同一 request_id 的 duplicate 不包含旧结果",
             "compatibility": "api_version=1；/api 路径保持兼容，客户端忽略未知字段；HTTP 401/403/404/413/422/502/503 表示传输或接口错误，/api/chat 保留业务 status",
         },

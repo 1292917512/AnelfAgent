@@ -48,6 +48,7 @@ from agent.channel.schemas import (
 )
 from agent.channel.tool_bridge import channel_tool
 from agent.messages import build_entity_scope
+from core.activity import EVENT_ACTIVITY_STARTED, current_activity_id
 from core.log import log
 
 from .config import CHANNEL_DISPLAY_NAME, HttpApiConfig
@@ -64,15 +65,25 @@ from .schemas import MediaItem as MediaItem
 class _StreamSub:
     """有界 SSE 订阅；子会话精确匹配，慢客户端溢出后关闭。"""
 
-    __slots__ = ("prefix", "queue", "include_children", "closed")
+    __slots__ = ("prefix", "queue", "include_children", "closed", "message_id", "turn_id", "submitted")
 
-    def __init__(self, prefix: str, *, include_children: bool = True, maxsize: int = 256) -> None:
+    def __init__(self, prefix: str, *, include_children: bool = True, maxsize: int = 256,
+                 message_id: str = "") -> None:
         self.prefix = prefix
-        self.include_children = include_children
+        self.message_id = message_id
+        self.turn_id = ""
+        self.submitted = False
+        self.include_children = include_children and not message_id
         self.closed = False
         self.queue: asyncio.Queue[str] = asyncio.Queue(maxsize=maxsize)
 
-    def matches(self, scope: str) -> bool:
+    def matches(self, scope: str, turn_id: str = "", message_id: str = "") -> bool:
+        if self.message_id:
+            if scope != self.prefix:
+                return False
+            if self.turn_id and turn_id:
+                return self.turn_id == turn_id
+            return self.message_id == message_id
         return scope == self.prefix or (self.include_children and scope.startswith(self.prefix + "#"))
 
     def push(self, data: str) -> bool:
@@ -145,6 +156,7 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
         self._bound_base_url = ""
         self._requires_token = False
         self._stream_subs: List[_StreamSub] = []
+        self._queued_stops: dict[tuple[str, str], str] = {}
         self._callbacks: Dict[str, str] = {}
         # message_id 去重：客户端重试/网络重发不重复入管道（全频道共用去重器）
         self._dedup = MessageDedup()
@@ -261,6 +273,7 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
         for sub in self._stream_subs:
             sub.close()
         self._stream_subs.clear()
+        self._queued_stops.clear()
         for fut in self._pending_replies.values():
             if not fut.done():
                 fut.set_exception(RuntimeError(f"{self.display_name} 频道已停止"))
@@ -298,19 +311,44 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
             event_bus,
         )
         from core.stream_events import EVENT_ASSISTANT_DELTA
+        event_bus.on(EVENT_ACTIVITY_STARTED, self._on_activity_started, owner="channel:http_api")
         event_bus.on(EVENT_ASSISTANT_DELTA, self._on_assistant_delta, owner="channel:http_api")
         event_bus.on(EVENT_THINKING_TOOL_START, self._on_tool_start, owner="channel:http_api")
         event_bus.on(EVENT_THINKING_TOOL_END, self._on_tool_end, owner="channel:http_api")
         event_bus.on(EVENT_AFTER_REPLY, self._on_after_reply, owner="channel:http_api")
 
-    def _push_frame(self, frame: Dict[str, Any], scope: str) -> None:
-        """按 scope 前缀过滤推送帧到订阅者队列（无订阅者零开销）。"""
-        if not self._stream_subs or not scope:
+    def _message_subs(self, scope: str, message_id: str) -> list[_StreamSub]:
+        return [sub for sub in self._stream_subs
+                if sub.prefix == scope and sub.message_id == message_id and not sub.closed]
+
+    async def _on_activity_started(self, payload: dict) -> None:
+        message_id = str(payload.get("message_id") or "")
+        turn_id = str(payload.get("turn_id") or "")
+        if not message_id or not turn_id:
             return
+        scope = str(payload.get("scope") or "")
+        for sub in self._message_subs(scope, message_id):
+            if not sub.turn_id:
+                sub.turn_id = turn_id
+                sub.push(json.dumps({"type": "turn_started", "turn_id": turn_id}))
+        reason = self._queued_stops.pop((scope, message_id), None)
+        if reason is not None:
+            from agent.execution_control import request_execution_stop
+            await request_execution_stop(scope=scope, run_id=turn_id, reason=reason)
+
+    def _push_frame(self, frame: Dict[str, Any], scope: str, *, message_id: str = "") -> bool:
+        """普通订阅按会话投递，指定入站消息的订阅只接收该轮执行。"""
+        if not self._stream_subs or not scope:
+            return False
         data = json.dumps(frame, ensure_ascii=False)
+        turn_id = str(frame.get("turn_id") or current_activity_id.get())
+        delivered = False
         for sub in self._stream_subs:
-            if sub.matches(scope):
-                sub.push(data)
+            if sub.matches(scope, turn_id, message_id):
+                if frame["type"] == "turn_end":
+                    sub.submitted = False
+                delivered = sub.push(data) or delivered
+        return delivered
 
     async def _on_assistant_delta(self, payload: dict) -> None:
         self._push_frame({
@@ -344,6 +382,9 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
 
     async def _on_after_reply(self, payload: dict) -> None:
         scope = str(payload.get("scope", ""))
+        message_id = str(payload.get("message_id") or "")
+        turn_id = str(payload.get("turn_id") or "")
+        self._queued_stops.pop((scope, message_id), None)
         reason = str(payload.get("reason", "completed"))
         if reason in {"interrupted", "failed"}:
             fut = self._pending_replies.pop(scope, None)
@@ -352,10 +393,10 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
         self._push_frame({
             "type": "turn_end",
             "scope": scope,
-            "turn_id": str(payload.get("turn_id", "")),
+            "turn_id": turn_id,
             "reason": reason,
             "error": bool(payload.get("error")),
-        }, scope)
+        }, scope, message_id=message_id)
 
     async def send_text(self, chat_id: str, text: str, **kwargs: Any) -> str:
         """回复门户调用方（pending future → SSE 订阅者 → webhook 回调级联）。"""
@@ -384,12 +425,7 @@ class HttpApiChannel(BaseChannel[HttpApiConfig]):
     ) -> bool:
         """向匹配该 chat 的 SSE 订阅者推送一帧，返回是否有订阅者送达。"""
         scope = self._delivery_key(chat_id, session_id, channel_type)
-        data = json.dumps(payload, ensure_ascii=False)
-        delivered = False
-        for sub in list(self._stream_subs):
-            if sub.matches(scope):
-                delivered = sub.push(data) or delivered
-        return delivered
+        return self._push_frame(payload, scope)
 
     # ------------------------------------------------------------------
     # 出站 webhook 回调（AI → 外部系统）

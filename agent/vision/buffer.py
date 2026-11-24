@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+import uuid
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Deque, Dict, Optional
@@ -17,7 +18,7 @@ from typing import Deque, Dict, Optional
 from core.config import get_config_float, get_config_int
 from core.log import log
 
-from .capture import grid_change_ratio, grid_dhash
+from .capture import CapturedFrame, grid_change_ratio, grid_dhash
 
 _LOG_TAG = "视觉"
 
@@ -33,6 +34,8 @@ class VisionFrame:
     width: int = 0
     height: int = 0
     cells: list = field(default_factory=list)
+    frame_ref: str = ""
+    screen_capture: CapturedFrame | None = None
 
 
 class VisionBuffer:
@@ -54,6 +57,7 @@ class VisionBuffer:
         width: int = 0,
         height: int = 0,
         captured_at: Optional[float] = None,
+        screen_capture: CapturedFrame | None = None,
     ) -> tuple[VisionFrame, bool]:
         """汇入一帧：按来源判变，返回 (帧, 是否内容级变化)。
 
@@ -67,7 +71,8 @@ class VisionBuffer:
             cells = []
         frame = VisionFrame(
             path=path, captured_at=captured_at or time.time(), source=source,
-            width=width, height=height, cells=cells,
+            width=width, height=height, cells=cells, screen_capture=screen_capture,
+            frame_ref=uuid.uuid4().hex if screen_capture is not None else "",
         )
         changed = self._is_changed(source, cells)
         self.rings.setdefault(source, deque(maxlen=self._ring_size)).append(frame)
@@ -83,6 +88,11 @@ class VisionBuffer:
             except Exception:
                 log("人脸旁路投递异常已忽略", "DEBUG", tag=_LOG_TAG)
         return frame, changed
+
+    def screen_capture_for(self, frame_ref: str) -> CapturedFrame | None:
+        """仅解析本机截屏环中仍在保留的帧，外部推送帧没有桌面坐标。"""
+        return next((f.screen_capture for f in self.rings.get("screen", ())
+                     if f.frame_ref and f.frame_ref == frame_ref), None)
 
     def _is_changed(self, source: str, cells: list) -> bool:
         latest = self.latest_by_source.get(source)

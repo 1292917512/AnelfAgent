@@ -7,8 +7,7 @@
 - **终态一笔写**：run 的终态与结算袋（stop_reason/failure/result/
   finished_at）一条 UPDATE 写完——分两条会开出「completed 但无 result」
   的崩溃窗口；翻回非终态（resume）同笔清空结算袋。
-- **事件单调序**：sequence 在写锁内 max+1 分配；run-settled 必须是
-  事件流最后一条。
+- **事件单调序**：sequence 在写锁内从 0 起递增；run-settled 与运行终态在同一事务提交。
 
 恢复语义（engine 消费）：
 
@@ -29,6 +28,7 @@ import aiosqlite
 
 from core.log import log
 from core.path import ConfigPaths
+from core.sqlite_utils import required_row
 
 RUNNING = "running"
 COMPLETED = "completed"
@@ -132,12 +132,30 @@ class WorkflowJournal:
                 db.row_factory = aiosqlite.Row
                 await db.executescript(_SCHEMA)
                 await self._migrate_nodes(db)
+                await self._repair_settlement_events(db)
                 await db.commit()
             except BaseException:
                 await db.close()
                 raise
             self._conn = db
             return db
+
+    @staticmethod
+    async def _repair_settlement_events(db: aiosqlite.Connection) -> None:
+        """按已落盘的终态和时间补齐旧运行缺失的末事件，不触发执行或通知。"""
+        await db.execute(
+            "INSERT INTO workflow_event (run_id, sequence, type, payload_json, ts)"
+            " SELECT r.id, COALESCE(e.sequence, -1) + 1, 'run-settled',"
+            " CASE WHEN r.stop_reason IS NULL THEN json_object('status', r.status)"
+            " ELSE json_object('status', r.status, 'stop_reason', r.stop_reason) END,"
+            " COALESCE(r.finished_at, r.updated_at)"
+            " FROM workflow_run r LEFT JOIN workflow_event e ON e.id = ("
+            " SELECT id FROM workflow_event WHERE run_id = r.id ORDER BY sequence DESC LIMIT 1)"
+            " WHERE r.status != 'running' AND (e.type IS NOT 'run-settled' OR e.ts < r.finished_at"
+            " OR CASE WHEN json_valid(e.payload_json) THEN"
+            " json_extract(e.payload_json, '$.status') IS NOT r.status OR"
+            " NULLIF(json_extract(e.payload_json, '$.stop_reason'), '') IS NOT NULLIF(r.stop_reason, '')"
+            " ELSE 1 END)")
 
     @staticmethod
     async def _migrate_nodes(db: aiosqlite.Connection) -> None:
@@ -239,7 +257,7 @@ class WorkflowJournal:
 
     async def get_run(self, run_id: str) -> Optional[Dict[str, Any]]:
         db = await self._get_db()
-        async with db.execute("SELECT * FROM workflow_run WHERE id = ?", (run_id,)) as cur:
+        async with self._write_lock, db.execute("SELECT * FROM workflow_run WHERE id = ?", (run_id,)) as cur:
             row = await cur.fetchone()
         return _row_to_dict(row) if row is not None else None
 
@@ -247,22 +265,32 @@ class WorkflowJournal:
             self, run_id: str, status: str, *, stop_reason: str = "",
             failure: Optional[Dict[str, Any]] = None,
             result: Optional[Dict[str, Any]] = None,
+            event_detail: Optional[Dict[str, Any]] = None,
     ) -> bool:
-        """run 终态一笔写（status/stop_reason/failure/result/finished_at 同笔）。"""
+        """仅结算仍在运行的 run；运行表与末事件在同一事务提交。"""
         if status not in TERMINAL_RUN_STATUSES:
             raise ValueError(f"非法 run 终态: {status}")
         db = await self._get_db()
         async with self._write_lock:
-            cur = await db.execute(
-                "UPDATE workflow_run SET status = ?, stop_reason = ?, failure_json = ?,"
-                " result_json = ?, finished_at = ?, updated_at = ? WHERE id = ?",
-                (status, stop_reason or None,
-                 json.dumps(failure, ensure_ascii=False) if failure else None,
-                 json.dumps(result, ensure_ascii=False) if result else None,
-                 time.time(), time.time(), run_id),
-            )
-            await db.commit()
-            return cur.rowcount > 0
+            now = time.time()
+            try:
+                cur = await db.execute(
+                    "UPDATE workflow_run SET status = ?, stop_reason = ?, failure_json = ?,"
+                    " result_json = ?, finished_at = ?, updated_at = ? WHERE id = ? AND status = ?",
+                    (status, stop_reason or None,
+                     json.dumps(failure, ensure_ascii=False) if failure is not None else None,
+                     json.dumps(result, ensure_ascii=False) if result is not None else None,
+                     now, now, run_id, RUNNING))
+                if cur.rowcount:
+                    payload = {**(event_detail or {}), "status": status}
+                    if stop_reason:
+                        payload["stop_reason"] = stop_reason
+                    await self._insert_event(db, run_id, "run-settled", payload, now)
+                await db.commit()
+                return cur.rowcount > 0
+            except BaseException:
+                await db.rollback()
+                raise
 
     async def reopen_run(self, run_id: str) -> bool:
         """续跑开账：翻回 running 并同笔清空结算袋（缺一即出脏终态）。"""
@@ -282,14 +310,14 @@ class WorkflowJournal:
         sql = "SELECT id, name, status, stop_reason, scope, parent_run_id, spec_hash," \
               " created_at, updated_at, finished_at FROM workflow_run" \
               " ORDER BY updated_at DESC, id LIMIT ? OFFSET ?"
-        async with db.execute(sql, (max(1, limit), max(0, offset))) as cur:
+        async with self._write_lock, db.execute(sql, (max(1, limit), max(0, offset))) as cur:
             rows = await cur.fetchall()
         return [_row_to_dict(r) for r in rows]
 
     async def list_non_terminal_runs(self) -> List[Dict[str, Any]]:
         """崩溃残留（永远停在 running 的 run）；启动收敛用。"""
         db = await self._get_db()
-        async with db.execute(
+        async with self._write_lock, db.execute(
                 "SELECT * FROM workflow_run WHERE status = 'running'") as cur:
             rows = await cur.fetchall()
         return [_row_to_dict(r) for r in rows]
@@ -401,25 +429,30 @@ class WorkflowJournal:
         """追加事件（写锁内 max+1 分配单调序；返回 sequence）。"""
         db = await self._get_db()
         async with self._write_lock:
-            async with db.execute(
-                    "SELECT COALESCE(MAX(sequence), -1) AS ms FROM workflow_event"
-                    " WHERE run_id = ?", (run_id,)) as cur:
-                row = await cur.fetchone()
-            sequence = int(row["ms"]) + 1 if row is not None else 0
-            await db.execute(
-                "INSERT INTO workflow_event (run_id, sequence, type, payload_json, ts)"
-                " VALUES (?, ?, ?, ?, ?)",
-                (run_id, sequence, event_type,
-                 json.dumps(payload or {}, ensure_ascii=False), time.time()),
-            )
-            await db.commit()
-            return sequence
+            try:
+                sequence = await self._insert_event(db, run_id, event_type, payload or {}, time.time())
+                await db.commit()
+                return sequence
+            except BaseException:
+                await db.rollback()
+                raise
 
-    async def list_events(self, run_id: str, after_sequence: int = 0,
+    @staticmethod
+    async def _insert_event(db: aiosqlite.Connection, run_id: str, event_type: str,
+                            payload: Dict[str, Any], ts: float) -> int:
+        cur = await db.execute(
+            "INSERT INTO workflow_event (run_id, sequence, type, payload_json, ts)"
+            " SELECT ?, COALESCE(MAX(sequence), -1) + 1, ?, ?, ? FROM workflow_event"
+            " WHERE run_id = ?",
+            (run_id, event_type, json.dumps(payload, ensure_ascii=False), ts, run_id))
+        async with db.execute("SELECT sequence FROM workflow_event WHERE id = ?", (cur.lastrowid,)) as inserted:
+            return int(required_row(await inserted.fetchone())[0])
+
+    async def list_events(self, run_id: str, after_sequence: int = -1,
                           limit: int = 200, *, latest: bool = False) -> List[Dict[str, Any]]:
         db = await self._get_db()
         order = "DESC" if latest else "ASC"
-        async with db.execute(
+        async with self._write_lock, db.execute(
                 "SELECT sequence, type, payload_json, ts FROM workflow_event"
                 f" WHERE run_id = ? AND sequence > ? ORDER BY sequence {order} LIMIT ?",
                 (run_id, after_sequence, max(1, limit))) as cur:
@@ -448,7 +481,8 @@ class WorkflowJournal:
         """删除终态运行及其节点、事件；仍被运行/续跑引用的源运行拒绝删除。"""
         db = await self._get_db()
         async with self._write_lock:
-            run = await self.get_run(run_id)
+            async with db.execute("SELECT status FROM workflow_run WHERE id = ?", (run_id,)) as cur:
+                run = await cur.fetchone()
             if run is None:
                 raise ValueError(f"工作流运行不存在: {run_id}")
             if run["status"] == RUNNING:

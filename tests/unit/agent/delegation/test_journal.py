@@ -91,6 +91,18 @@ class TestLedger:
         # 扫描即闭合：再次扫描为空（at-most-once）
         assert journal.unclosed_delegations() == []
 
+    def test_recovery_skips_live_runs_and_notices_require_persisted_close(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(journal.ConfigPaths, "DELEGATION_DIR", str(tmp_path))
+        journal.append_ledger("started", "live")
+        journal.append_ledger("started", "past")
+        with monkeypatch.context() as patch:
+            patch.setattr(journal, "append_ledger", lambda *a, **kw: False)
+            assert journal.unclosed_delegations() == []
+        assert [r["id"] for r in journal.unclosed_delegations(lambda did: did == "live")] == ["past"]
+        assert journal.unclosed_delegations(lambda did: did == "live") == []
+        journal.append_ledger("closed", "live", status="success")
+        assert journal.unclosed_delegations() == []
+
     def test_repeated_events_last_wins(self) -> None:
         journal.append_ledger(journal.LEDGER_STARTED, "d1", goal="g")
         journal.append_ledger(journal.LEDGER_CLOSED, "d1", status=journal.STATUS_SUCCESS)
@@ -119,6 +131,80 @@ class TestRetention:
         assert not old.exists()
         assert fresh.exists()
         assert keep.exists()
+
+
+    def test_compaction_keeps_open_and_cross_period_attempts(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setattr(journal.ConfigPaths, "DELEGATION_DIR", str(tmp_path))
+        now = time.time()
+        old = now - 30 * 86400
+        _write_ledger([
+            {"event": "started", "id": "expired", "ts": old},
+            {"event": "closed", "id": "expired", "ts": old},
+            {"event": "started", "id": "same", "ts": old, "goal": "finished attempt"},
+            {"event": "started", "id": "open", "ts": old},
+            {"event": "annotation", "id": "open", "ts": now},
+            {"event": "closed", "id": "same", "ts": now, "status": "success"},
+            {"event": "started", "id": "same", "ts": now, "goal": "new attempt"},
+        ])
+        with journal.ledger_path().open("ab") as fp:
+            fp.write(b'{"event":\xff')
+        journal.append_ledger("started", "after-tail")
+        contents = journal.ledger_path().read_text(encoding="utf-8")
+        assert "expired" not in contents and "annotation" in contents
+        assert journal.recent_history()[0]["goal"] == "finished attempt"
+        assert {r["id"] for r in journal.unclosed_delegations()} == {"open", "same", "after-tail"}
+        assert not journal.unclosed_delegations()
+
+    def test_retention_zero_and_truncated_tail(self, tmp_path, monkeypatch) -> None:
+        monkeypatch.setattr(journal.ConfigPaths, "DELEGATION_DIR", str(tmp_path))
+        monkeypatch.setattr(journal, "_retention_days", lambda: 0)
+        _write_ledger([{"event": "closed", "id": "expired", "ts": 1}])
+        with journal.ledger_path().open("ab") as fp:
+            fp.write(b'{"event":')
+        journal.append_ledger("started", "after-tail")
+        assert b"expired" in journal.ledger_path().read_bytes()
+        assert [r["id"] for r in journal.unclosed_delegations()] == ["after-tail"]
+
+    def test_append_during_compaction_is_preserved(self, tmp_path, monkeypatch) -> None:
+        from concurrent.futures import ThreadPoolExecutor
+        from contextlib import contextmanager
+        from threading import Event
+        monkeypatch.setattr(journal.ConfigPaths, "DELEGATION_DIR", str(tmp_path))
+        _write_ledger([{"event": "closed", "id": "expired", "ts": 1}])
+        entered, appending = Event(), Event()
+        original = journal.atomic_binary_writer
+
+        @contextmanager
+        def delayed(path):
+            with original(path) as writer:
+                entered.set()
+                assert appending.wait(3)
+                yield writer
+
+        def append():
+            assert entered.wait(3)
+            appending.set()
+            journal.append_ledger("started", "second")
+
+        monkeypatch.setattr(journal, "atomic_binary_writer", delayed)
+        with ThreadPoolExecutor(2) as pool:
+            first = pool.submit(journal.append_ledger, "started", "first")
+            second = pool.submit(append)
+            first.result(5)
+            second.result(5)
+        assert [r["id"] for r in journal.unclosed_delegations()] == ["first", "second"]
+
+    def test_compaction_write_failure_preserves_original_and_new_record(self, tmp_path, monkeypatch):
+        from core import file_utils
+        monkeypatch.setattr(journal.ConfigPaths, "DELEGATION_DIR", str(tmp_path))
+        _write_ledger([{"event": "closed", "id": "expired", "ts": 1}])
+
+        def fail(*args):
+            raise OSError("replace failed")
+        monkeypatch.setattr(file_utils.os, "replace", fail)
+        journal.append_ledger("started", "new")
+        assert [r["id"] for _, r in journal._ledger_records(journal.ledger_path())] == ["expired", "new"]
+        assert not list(tmp_path.glob(".atomic_*.tmp"))
 
 
 class TestProgressTail:

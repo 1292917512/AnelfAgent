@@ -29,6 +29,10 @@ uv run pytest -m integration           # 集成
 
 加 `-n auto` 并行（已装 pytest-xdist，全量约 64s→26s，CI 已启用；单测调试/`--pdb` 时去掉）。
 
+默认召回评测可用 `uv run python scripts/eval_memory_recall.py` 在临时库运行，包含纠正事实、同名、多目标和无结果用例。
+对自有记忆库评测时显式传 `cases.json --db <数据库路径>`，脚本读取 SQLite 一致性快照。
+`Hit@k` 与 `MRR@k` 统计有目标的查询，有明确目标 ID 的用例另报宏平均 `Recall@k`，无结果用例单独计数。
+
 ## 前端持续负载测量
 
 前端持续负载验收使用生产构建和隔离 API 数据，显式启用后运行；常规 CI 跳过耗时测量：
@@ -70,12 +74,13 @@ JSON 报告与截图保存在测试产物中。此测量隔离模型和网络延
 
 按平台与职责拆分的门禁：
 
-- `changes`（原生 shell 归类：push 对 HEAD^、PR 对目标分支基点对比）
+- `changes` 用 shell 归类，push 对比推送前的提交，PR 对比目标分支基点。
 - `lint`（ruff + import-linter + mypy core 三平台必过/全量观察，静态门禁与改动面无关始终全仓）
-- `tests`（**模块动态矩阵**：实体/频道改动只跑对应 `模块/tests` 腿并附带跨实体共享套件；`core/`、
-  `agent/`、`tests/`、根 `conftest.py`、依赖锁定等横切改动触发 `all` 全量腿；services/web 后端各有
-  专属腿；`fail-fast: false` 保留完整失败面）+ `frontend`（lint/build；模块前端 `channels/*/frontend/`、
-  实体 `*.tsx` 面板同属前端改动面）
+- `tests` 按模块生成矩阵。实体和频道运行所属模块测试，实体另跑跨实体共享套件。`core/`、
+  `agent/`、`tests/`、根 `conftest.py`、依赖锁定等横切改动触发全量测试。services 和 web 后端各有专属任务。
+  `acp/` 或 `channels/http_api/` 的 Python 改动运行 `tests/unit/acp`，召回评测脚本和语料改动运行对应回归。
+- `frontend` 覆盖 `web/frontend/`、`channels/*/frontend/`、实体面板及 `panels/locales/*.json`，
+  以及根目录的 `eslint.config.mjs`、`.nvmrc`。
 - `docs`（AGENTS.md ≤500 行门禁——防止工作区指令再膨胀，长期指导迁移到 docs/）
 - `windows-tests`（隔离配置和数据目录的单元与模块回归）
 - `macos-index-recovery`（真实 Ladybug 进程中断、文件系统快照恢复及升级兼容契约；不调用外部模型）

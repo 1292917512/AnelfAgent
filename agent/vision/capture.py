@@ -8,6 +8,7 @@ CapturedFrame 是视觉源组件的取帧契约；grid dHash 是内容级变化�
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 
 @dataclass(slots=True)
@@ -19,6 +20,8 @@ class CapturedFrame:
     height: int
     captured_at: float
     monitor: int = 0
+    monitors: list[dict[str, Any]] | None = None
+    """本机截屏时的完整显示布局，索引 0 为虚拟桌面。"""
 
 
 def grid_dhash(path: str, grid: int = 4) -> list[int]:

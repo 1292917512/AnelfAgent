@@ -118,6 +118,9 @@ class DesktopActions:
             self.report()
         elif action == "scroll":
             self.total = abs(amount)
+            if amount and params.get("_screen_frame"):
+                self.check()
+                b.moveTo(x, y)
             for _ in range(abs(amount)):
                 self.step(lambda: b.scroll(1 if amount > 0 else -1, x, y))
         elif action in {"click", "double_click", "right_click"}:

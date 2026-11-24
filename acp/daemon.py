@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional
 
 import httpx
 
@@ -87,6 +87,7 @@ class DaemonClient:
         user_id: str,
         text: str,
         images: Optional[List[Dict[str, str]]] = None,
+        *, message_id: str = "",
     ) -> None:
         """async 模式投递消息（立即返回，回复经流式帧投递）。"""
         payload: Dict[str, Any] = {
@@ -95,13 +96,28 @@ class DaemonClient:
             "user_name": user_id,
             "async_mode": True,
         }
+        if message_id:
+            payload.update(message_id=message_id, request_id=message_id)
         if images:
             payload["images"] = images
         async with self._client(httpx.Timeout(30.0)) as client:
             resp = await client.post("/api/chat", json=payload)
             resp.raise_for_status()
+            result = resp.json()
+            if result.get("status") != "accepted":
+                raise RuntimeError(f"message rejected: {result.get('error') or result.get('status')}")
 
-    async def stream_frames(self, user_id: str) -> AsyncIterator[Dict[str, Any]]:
+    async def stop_message(self, user_id: str, message_id: str) -> None:
+        """请求协作停止本条已投递消息，排队期间由守护进程保留请求。"""
+        async with self._client(httpx.Timeout(10.0)) as client:
+            resp = await client.post("/api/sessions/control", json={
+                "action": "stop", "user_id": user_id, "message_id": message_id, "reason": "ACP session/cancel",
+            })
+            resp.raise_for_status()
+            if resp.json().get("status") not in {"ok", "idle", "pending"}:
+                raise RuntimeError("daemon did not accept the stop request")
+
+    async def stream_frames(self, user_id: str, *, message_id: str = "") -> AsyncGenerator[Dict[str, Any], None]:
         """订阅该 user 的 SSE 流式帧（delta / tool_call / reply / turn_end）。
 
         连接建立后先 yield ``{"type": "open"}`` 哨兵帧（供调用方确认订阅
@@ -109,11 +125,16 @@ class DaemonClient:
         读超时 120s——服务端 30s ping 保活，超时视为链路死亡。
         """
         timeout = httpx.Timeout(30.0, read=120.0)
+        params = {"user_id": user_id}
+        if message_id:
+            params["message_id"] = message_id
         async with self._client(timeout) as client:
             async with client.stream(
-                "GET", "/api/chat/stream", params={"user_id": user_id}
+                "GET", "/api/chat/stream", params=params
             ) as resp:
                 resp.raise_for_status()
+                if message_id and resp.headers.get("X-Anelf-Stream-Scope") != "message":
+                    raise RuntimeError("daemon needs an update to support message-scoped streams")
                 yield {"type": "open"}
                 event = "message"
                 async for line in resp.aiter_lines():

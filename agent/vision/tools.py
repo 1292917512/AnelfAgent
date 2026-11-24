@@ -6,6 +6,8 @@ vision_look 走多模态工具结果约定（_multimodal: true）：视觉模型
 隐私纪律：截屏/盯屏是隐私敏感操作，工具默认可被审批规则引擎拦截
 （用户可在权限规则中为 vision 组配置 ask）；监视默认关闭，注入开关
 vision_context_inject 单独可关。
+
+模型可见本机截屏的帧引用和原图尺寸。引用仅在工具结果中增加约 30 token，稳定前缀不变。
 """
 
 from __future__ import annotations
@@ -23,13 +25,14 @@ from .watcher import get_vision_watcher
 EntityRegistry.register_group_order("vision", 40)
 
 
-def _frame_result(path: str, note: str, changed: bool) -> str:
+def _frame_result(path: str, note: str, changed: bool, frame_ref: str = "") -> str:
     return json.dumps({
         "_multimodal": True,
         "text": note,
         "images": [path],
         "path": path,
         "changed_since_last": changed,
+        **({"frame_ref": frame_ref} if frame_ref else {}),
     }, ensure_ascii=False)
 
 
@@ -63,14 +66,15 @@ async def vision_look(source: str = "screen") -> str:
             )
         if frame is None:
             return tool_error(f"视觉源 {source} 当前无画面", cause=ErrorCause.STATE, retryable=True)
-        _f, changed = await buffer.ingest(
+        buffered, changed = await buffer.ingest(
             frame.path, source,
             width=frame.width, height=frame.height, captured_at=frame.captured_at,
+            screen_capture=frame if source == "screen" and frame.monitors else None,
         )
         return _frame_result(
             frame.path,
-            f"已获取 {src.display_name} 画面（{frame.width}x{frame.height}）",
-            changed,
+            f"已获取 {src.display_name} 画面（原图 {frame.width}x{frame.height}）",
+            changed, buffered.frame_ref,
         )
     # 外部推送源：取该源最新帧（附帧年龄——AI 判断画面时效的依据）
     latest = buffer.latest_by_source.get(source)

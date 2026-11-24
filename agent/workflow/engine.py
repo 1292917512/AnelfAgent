@@ -367,14 +367,11 @@ class WorkflowEngine:
                     run_id, wf_journal.STOPPED, stop_reason="user",
                     failure={"message": "被停止（已完成步骤保留，可续跑）"},
                 )
-                await self._journal.append_event(
-                    run_id, "run-settled", {"status": wf_journal.STOPPED, "stop_reason": "user"})
                 self._complete_registry(state, False, f"工作流 [{spec.name}] 已停止（可续跑）")
             elif failure is not None:
-                await self._journal.settle_run(run_id, wf_journal.FAILED, failure=failure)
-                await self._journal.append_event(run_id, "run-settled", {
-                    "status": wf_journal.FAILED,
-                    "failed_steps": [f["key"] for f in failure["failed_steps"]]})
+                await self._journal.settle_run(
+                    run_id, wf_journal.FAILED, failure=failure,
+                    event_detail={"failed_steps": [f["key"] for f in failure["failed_steps"]]})
                 self._complete_registry(state, False, f"工作流 [{spec.name}] 失败: "
                                                        f"{', '.join(f['key'] for f in failure['failed_steps'])}")
             else:
@@ -386,9 +383,8 @@ class WorkflowEngine:
                         for key in by_key
                     },
                 }
-                await self._journal.settle_run(run_id, wf_journal.COMPLETED, result=result)
-                await self._journal.append_event(
-                    run_id, "run-settled", {"status": wf_journal.COMPLETED, "steps": len(by_key)})
+                await self._journal.settle_run(
+                    run_id, wf_journal.COMPLETED, result=result, event_detail={"steps": len(by_key)})
                 self._complete_registry(state, True, f"工作流 [{spec.name}] 完成（{len(by_key)} 步）")
             log(f"工作流结算: {run_id} [{spec.name}]", tag=_TAG)
         except asyncio.CancelledError:
@@ -398,9 +394,8 @@ class WorkflowEngine:
             log(f"工作流引擎异常: {run_id}: {exc}", "ERROR", tag=_TAG)
             await self._journal.settle_run(
                 run_id, wf_journal.FAILED,
-                failure={"message": f"引擎异常: {type(exc).__name__}: {exc}"})
-            await self._journal.append_event(run_id, "run-settled", {
-                "status": wf_journal.FAILED, "error": str(exc)[:500]})
+                failure={"message": f"引擎异常: {type(exc).__name__}: {exc}"},
+                event_detail={"error": str(exc)[:500]})
             self._complete_registry(state, False, f"工作流 [{spec.name}] 引擎异常")
 
     def _complete_registry(self, state: _RunState, success: bool, summary: str) -> None:
@@ -968,7 +963,7 @@ class WorkflowEngine:
                 for n in nodes
             ],
             "events": events,
-            "events_truncated": bool(events and events[0]["sequence"] > 1),
+            "events_truncated": bool(events and events[0]["sequence"] > 0),
         }
 
     @staticmethod

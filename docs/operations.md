@@ -97,6 +97,9 @@ DuerOS 控制台（dueros.baidu.com/dbp/mcp/console）重新授权并同步更�
   再决定后续动作。历史仍为进程内最多 50 条，不新增持久化版本或迁移旧数据。
 - **看屏验证联动**：desktop_act(verify=auto/on/off) → `_sdk.vision_look("screen")` 视觉桥——动作
   成功后按多模态契约附最新画面帧；captured 仅表示取得截图，unavailable 表示未取得，业务结果由 AI 判断。
+  用截图定位时，将 `vision_look` 或回看返回的 `frame_ref` 连同原图像素坐标传给 `desktop_act`。
+  工作进程在输入前校验显示器布局和像素尺寸，再转换为桌面坐标。引用过期、布局改变或坐标越界时须重新看屏。
+  省略引用沿用绝对桌面坐标，键盘操作无需截图。
 - **按需态势注入**（provider：operation，priority 36）：仅操作活跃窗口内有执行才注入
   （operation_context_window_seconds 默认 600s 滑动续期），静默期零注入；分段预算 + skip-not-stop；
   未关联 server 的工具清单不进注入

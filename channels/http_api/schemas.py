@@ -122,6 +122,7 @@ class ExecutionRequest(SessionTarget):
 
     action: Literal["stop", "resume"] = "stop"
     run_id: str = Field(default="", max_length=128)
+    message_id: str = Field(default="", max_length=128)
     reason: str = Field(default="HTTP 调用方停止执行", max_length=500)
     message: str = Field(
         default="继续刚才中止的任务。已完成的操作不要重复执行；结果不确定的操作先核对实际状态。",

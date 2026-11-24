@@ -49,6 +49,35 @@ class TestPushFrameScopeFilter:
         channel._push_frame({"type": "delta"}, "user_http_api:u1")  # 不应抛异常
 
 
+async def test_message_subscription_ignores_late_terminal_and_nested_activity() -> None:
+    from core.activity import activity_scope
+    from core.tool_context import tool_request
+
+    channel = HttpApiChannel()
+    scope = channel._delivery_key("acp-session")
+    generic = _StreamSub(scope)
+    current = _StreamSub(scope, message_id="next-message")
+    channel._stream_subs.extend((generic, current))
+    with tool_request(scope, "actor", message_id="next-message"):
+        async with activity_scope("new", scope):
+            await channel._on_activity_started({"message_id": "next-message", "scope": scope, "turn_id": "new"})
+            await channel._on_after_reply({"scope": scope, "turn_id": "old", "reason": "interrupted"})
+            await channel._on_assistant_delta({"scope": scope, "turn_id": "new", "delta": "hello"})
+            async with activity_scope("child", scope):
+                assert channel._deliver_to_subscribers("acp-session", {"type": "reply", "content": "child"})
+            await channel.send_text("acp-session", "answer")
+    await channel._on_after_reply({"scope": scope, "turn_id": "new", "reason": "completed"})
+    frames = [json.loads(current.queue.get_nowait()) for _ in range(current.queue.qsize())]
+    assert [f["type"] for f in frames] == ["turn_started", "delta", "reply", "turn_end"]
+    assert frames[2]["content"] == "answer"
+    assert generic.queue.qsize() == 5
+
+    early = _StreamSub(scope, message_id="early")
+    channel._stream_subs.append(early)
+    await channel._on_after_reply({"scope": scope, "message_id": "early", "error": True, "reason": "failed"})
+    assert json.loads(early.queue.get_nowait())["error"]
+
+
 class TestSendTextStreamDelivery:
     def test_private_group_and_subsession_replies_do_not_cross(self) -> None:
         channel = HttpApiChannel()

@@ -338,6 +338,7 @@ async def complete_reply(
 
     await event_bus.emit(EVENT_AFTER_REPLY, {
         "scope": _scope,
+        "message_id": getattr(anything, "_trace_message_id", "") or getattr(anything, "adapter_message_id", ""),
         "content": content[:100] if content else "",
         "iterations": iterations,
         "error": error,
