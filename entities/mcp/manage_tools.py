@@ -251,6 +251,16 @@ def mcp_tool_call(require_bridge: bool = False) -> Callable[[Callable[..., Any]]
     并以 bridge 关键字参数注入被装饰函数；业务函数只需处理参数与调用逻辑。
     """
     def decorator(func: Callable[..., Any]) -> Callable[..., Any]:
+        def expose_public_signature(wrapper: Callable[..., Any]) -> Callable[..., Any]:
+            """隐藏运行时注入参数，让 Registry 按公开参数校验调用。"""
+            if require_bridge:
+                signature = inspect.signature(func)
+                public_params = [
+                    param for param in signature.parameters.values() if param.name != "bridge"
+                ]
+                setattr(wrapper, "__signature__", signature.replace(parameters=public_params))
+            return wrapper
+
         if inspect.iscoroutinefunction(func):
             @functools.wraps(func)
             async def async_wrapper(*args: Any, **kwargs: Any) -> str:
@@ -264,7 +274,7 @@ def mcp_tool_call(require_bridge: bool = False) -> Callable[[Callable[..., Any]]
                     return await func(*args, **kwargs)
                 except Exception as exc:
                     return _tool_error_json(exc)
-            return async_wrapper
+            return expose_public_signature(async_wrapper)
 
         @functools.wraps(func)
         def sync_wrapper(*args: Any, **kwargs: Any) -> str:
@@ -278,7 +288,7 @@ def mcp_tool_call(require_bridge: bool = False) -> Callable[[Callable[..., Any]]
                 return func(*args, **kwargs)
             except Exception as exc:
                 return _tool_error_json(exc)
-        return sync_wrapper
+        return expose_public_signature(sync_wrapper)
     return decorator
 
 

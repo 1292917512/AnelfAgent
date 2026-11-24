@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import inspect
 from typing import Generator
 
 import pytest
 from helpers.mcp_fakes import make_tool
 
 from core.entity import EntityRegistry
+from entities.mcp import manage_tools
 from entities.mcp.bridge import MCPBridge
 from entities.mcp.schema import (
     _MAX_PARAM_DESC_CHARS,
@@ -113,3 +115,20 @@ class TestSchemaSizeGovernance:
     def test_clip_description_passthrough(self) -> None:
         assert clip_description("短描述") == "短描述"
         assert clip_description("") == ""
+
+
+class TestManageToolPublicSignature:
+    @pytest.mark.parametrize("func_name", [
+        "_tool_list_mcp_servers",
+        "_tool_mcp_auth_start",
+        "_tool_connect_mcp_server",
+        "_tool_disconnect_mcp_server",
+        "_tool_toggle_mcp_server",
+        "_tool_add_mcp_server",
+        "_tool_remove_mcp_server",
+        "_tool_reload_mcp_config",
+    ])
+    def test_injected_bridge_is_not_a_required_public_argument(self, func_name: str) -> None:
+        """装饰器注入的 bridge 不应出现在 Registry 的调用参数校验签名中。"""
+        signature = inspect.signature(getattr(manage_tools, func_name))
+        assert "bridge" not in signature.parameters
