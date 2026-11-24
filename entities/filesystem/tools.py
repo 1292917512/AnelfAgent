@@ -163,7 +163,7 @@ _LIST_DIRECTORY_PROMPT = """列出已知目录的内容，返回可直接用于�
 _SEARCH_FILES_PROMPT = """按名称或内容搜索已知文件或目录；结果返回可直接使用的绝对路径。
 path 可以是目录或文件；目录递归搜索，文件只搜索自身，pattern 对文件名继续生效。
 仅知道名称时先搜索，不要拼接猜测的路径。例如 pattern="graph" 可找到嵌套的 memory/graph。
-零匹配是正常查询结果；truncated=true 表示有结果未展示，应缩小 path/pattern/content_pattern。
+truncated=true 表示结果不完整；timed_out=true 表示扫描预算耗尽，可缩小 path/pattern 后继续，空列表也可能尚未搜完。
 内容搜索的 coverage 表示当前过滤范围内的覆盖情况；有跳过或读取失败时，零匹配不能证明内容不存在。
 自动跳过噪声目录（node_modules/.git/__pycache__ 等，search_exclude_dirs 可配置）；内容模式额外跳过二进制与超大文件（>2MB）。"""
 
@@ -855,11 +855,13 @@ def search_files(path: str = ".", pattern: str = "*", content_pattern: str = "",
         max_results = min(200, max(1, max_results))
 
         from entities.filesystem.scan import (
+            ScanBudget,
             content_search,
             iter_matches,
             resolve_exclude_dirs,
         )
         exclude = resolve_exclude_dirs()
+        budget = ScanBudget()
 
         if not content_pattern:
             # 按修改时间倒序（最近修改在前）；
@@ -868,7 +870,7 @@ def search_files(path: str = ".", pattern: str = "*", content_pattern: str = "",
             from heapq import nsmallest
 
             entries = nsmallest(
-                max_results + 1, iter_matches(fp, pattern, exclude),
+                max_results + 1, iter_matches(fp, pattern, exclude, budget=budget),
                 key=lambda e: (not e.is_dir, -e.mtime),
             )
             matches = [
@@ -881,7 +883,8 @@ def search_files(path: str = ".", pattern: str = "*", content_pattern: str = "",
                 "root": fp,
                 "excluded_dirs": sorted(exclude),
                 "count": len(matches),
-                "truncated": len(entries) > max_results,
+                "truncated": len(entries) > max_results or budget.timed_out,
+                "timed_out": budget.timed_out,
                 "results": matches,
             }, ensure_ascii=False)
 
@@ -893,7 +896,7 @@ def search_files(path: str = ".", pattern: str = "*", content_pattern: str = "",
             return tool_error(f"无效的正则表达式: {e}", cause=ErrorCause.PARAM,
                               retryable=False)
 
-        scan = content_search(fp, pattern, regex, exclude, max_results=max_results)
+        scan = content_search(fp, pattern, regex, exclude, max_results=max_results, budget=budget)
         return json.dumps({
             "pattern": pattern,
             "content_pattern": content_pattern,
@@ -901,6 +904,7 @@ def search_files(path: str = ".", pattern: str = "*", content_pattern: str = "",
             "excluded_dirs": sorted(exclude),
             "count": len(scan.hits),
             "truncated": scan.truncated,
+            "timed_out": budget.timed_out,
             "coverage": scan.coverage(),
             "results": [
                 {"path": os.path.normpath(h.abspath), "matches": h.lines, "truncated": h.truncated}

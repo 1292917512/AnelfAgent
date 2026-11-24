@@ -6,7 +6,10 @@
 
 from __future__ import annotations
 
+import pytest
+
 from agent.mind.background.tasks import BackgroundTaskRegistry
+from core.tool_results import extract_error_text
 
 
 class TestReadTaskOutput:
@@ -87,17 +90,21 @@ class TestReadTaskOutput:
         reg = BackgroundTaskRegistry()
         tid = reg.register("user_qq:1", "delegation", "子代理")
         r = reg.read_task_output("user_qq:1", tid)
-        assert r["ok"] and r["progress"] == {} and not r["done"]
+        assert r["ok"] and r["progress"] == {} and not r["done"] and r["task_success"] is None
 
-    def test_done_flag_visible(self, tmp_path) -> None:
+    @pytest.mark.parametrize("success", [True, False])
+    def test_done_flag_visible(self, tmp_path, success: bool) -> None:
         reg = BackgroundTaskRegistry()
         out = tmp_path / "a.log"
         out.write_text("done-output")
         tid = reg.register("user_qq:1", "shell", "t")
         reg.attach_output_file(tid, str(out))
-        reg.complete(tid, True, "退出码 0")
+        summary = "退出码 0" if success else "退出码 1"
+        reg.complete(tid, success, summary)
         r = reg.read_task_output("user_qq:1", tid)
-        assert r["ok"] and r["done"] is True
+        assert r["ok"] and r["done"] and r["task_success"] is success
+        assert r["summary"] == summary and r["delta"] == "done-output"
+        assert not extract_error_text(r)
 
     def test_attach_unknown_task_noop(self) -> None:
         reg = BackgroundTaskRegistry()

@@ -12,6 +12,9 @@ from typing import Any, Optional, Self
 
 from core.sanitizer import sanitize_text
 
+THREAT_WARNING_PREFIX = "[安全警告] "
+GUARDRAIL_WARNING_SUFFIX = "\n\n[工具守卫警告: "
+
 # 失败分支提取错误文本的键优先级
 _ERROR_TEXT_KEYS = ("error", "message", "stderr", "detail")
 
@@ -66,23 +69,14 @@ def redact_tool_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]
 
 
 def parse_tool_result_json(text: str) -> Optional[Any]:
-    """宽松解析工具结果 JSON。
-
-    结果经加工管线后可能带威胁扫描前缀（[安全警告] ...\n）或
-    守卫警告后缀（\n\n[工具守卫警告: ...]），整体 json.loads 会失败；
-    此处定位首个 '{' 起解析首个完整 JSON 值，容忍前后附加文本。
-    """
+    """解析完整的工具 JSON 回执，允许结果管线附加的安全提示与守卫提示。"""
+    text = text.lstrip()
+    if text.startswith(THREAT_WARNING_PREFIX):
+        text = text.partition("\n")[2]
+    payload = text.partition(GUARDRAIL_WARNING_SUFFIX)[0]
     try:
-        return json.loads(text)
+        return json.loads(payload)
     except (json.JSONDecodeError, TypeError):
-        pass
-    start = text.find("{")
-    if start < 0:
-        return None
-    try:
-        obj, _ = json.JSONDecoder().raw_decode(text, start)
-        return obj
-    except (json.JSONDecodeError, ValueError):
         return None
 
 

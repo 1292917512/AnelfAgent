@@ -143,24 +143,7 @@ def _check_tool_results_all_errors(
             content = msg.get("content", "")
             results.append(content if isinstance(content, str) else "")
 
-    if not results:
-        return False
-
-    for r in results:
-        parsed = parse_tool_result_json(r)
-        if not isinstance(parsed, dict):
-            # 非 JSON dict 内容视为非错误（纯文本结果）
-            return False
-        # 有 error 真值 → 错误，继续检查下一个（{"error": null/""} 视为成功）
-        if parsed.get("error"):
-            continue
-        # success=false / ok=false → 错误，继续检查下一个
-        if parsed.get("success") is False or parsed.get("ok") is False:
-            continue
-        # 无错误信号，至少一个成功
-        return False
-    # 全部都是错误结果
-    return True
+    return bool(results) and all(extract_error_text(result) for result in results)
 
 
 _ERROR_BRIEF_MAX = 150
@@ -227,8 +210,6 @@ def _append_assistant_msg(
 
 def _reply_tool_results(tool_chain: List[Dict]) -> list[ReplyToolResult]:
     """按实际调用 ID 配对已返回事实，不解析模型正文或结束备注。"""
-    from core.tool_results import parse_tool_result_json
-
     names: dict[str, str] = {}
     results: list[ReplyToolResult] = []
     for message in tool_chain:

@@ -338,6 +338,7 @@ class TestBackgroundTaskRegistry:
         registry.complete(tid, False, "已被 AI 终止")
         result = registry.terminate("user_1", tid)
         assert result["ok"] and result["already_finished"] and not result["terminated"]
+        assert result["task_success"] is False and "success" not in result
 
     def test_snapshot_includes_expected_seconds(self) -> None:
         registry = BackgroundTaskRegistry()

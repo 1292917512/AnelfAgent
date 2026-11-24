@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -427,19 +427,21 @@ class TestReadProtection:
         _read(fp)
         assert _edit(fp, "line300:", "changed:")["ok"]
 
-    async def test_registry_preserves_receipt_until_pipeline_and_scope(self, workspace: Path) -> None:
+    @pytest.mark.parametrize("offset_unit", ["line", "char"])
+    async def test_registry_preserves_receipt_until_pipeline_and_scope(self, workspace: Path, offset_unit: str) -> None:
         from agent.mind.execution.result_pipeline import ToolResultPipeline
         from core.conversation_scope import bind_scope, reset_scope
         from core.entity import EntityRegistry
 
         fp = workspace / "receipt.txt"
-        fp.write_text("alpha\nbeta", encoding="utf-8")
-        output = await EntityRegistry.execute_tool("read_file", json.dumps({"file_path": str(fp)}))
+        fp.write_text('return {"error": "env 必须是合法 JSON 对象"}\nbeta', encoding="utf-8")
+        output = await EntityRegistry.execute_tool("read_file", json.dumps({"file_path": str(fp), "offset_unit": offset_unit}))
         assert isinstance(output, PresentedToolResult)
         assert "尚未读取" in _edit(fp, "beta", "gamma")["error"]
         token = bind_scope("receipt-other")
         try:
-            assert "2→beta" in ToolResultPipeline(128_000).process("read_file", "{}", output)
+            visible = ToolResultPipeline(128_000).process("read_file", "{}", output)
+            assert '1→return {"error": "env 必须是合法 JSON 对象"}' in visible and "2→beta" in visible
             assert "尚未读取" in _edit(fp, "beta", "gamma")["error"]
         finally:
             reset_scope(token)
@@ -548,6 +550,45 @@ class TestAtomicWrite:
 # ------------------------------------------------------------------
 
 class TestSearchFiles:
+    @pytest.mark.parametrize(("pattern", "content_pattern", "expected"), [
+        ("*.md", "", ["root.md"]), ("*.md", "needle", ["root.md"]), ("absent.md", "", []),
+    ])
+    async def test_search_budget_returns_partial_results(
+        self, workspace: Path, monkeypatch: pytest.MonkeyPatch,
+        pattern: str, content_pattern: str, expected: list[str],
+    ) -> None:
+        from core.cancellation import current_tool_deadline
+        from core.entity import EntityRegistry
+        from entities.filesystem import scan
+
+        (workspace / "root.md").write_text("needle")
+        nested = workspace / "nested"
+        nested.mkdir()
+        (nested / "later.md").write_text("needle")
+        walk = scan.os.walk
+        now = scan.monotonic()
+
+        def walk_until_deadline(
+            root: str, *, onerror: Callable[[OSError], None] | None,
+        ) -> Iterator[tuple[str, list[str], list[str]]]:
+            nonlocal now
+            for directory in walk(root, onerror=onerror):
+                if Path(directory[0]) == nested:
+                    deadline = current_tool_deadline.get()
+                    assert deadline is not None
+                    now = deadline - 0.05
+                yield directory
+
+        monkeypatch.setattr(scan, "monotonic", lambda: now)
+        monkeypatch.setattr(scan.os, "walk", walk_until_deadline)
+        args = {"path": str(workspace), "pattern": pattern, "content_pattern": content_pattern, "_timeout": 5}
+        result = json.loads(await EntityRegistry.execute_tool("search_files", json.dumps(args)))
+        assert result["timed_out"] and result["truncated"]
+        assert [Path(item["path"]).name for item in result["results"]] == expected
+        if content_pattern:
+            assert not result["coverage"]["complete"] and result["results"][0]["matches"] == ["1:needle"]
+        assert current_tool_deadline.get() is None
+
     @pytest.mark.parametrize("content_pattern", ["", "mood-chip|ceremony"])
     def test_explicit_file_stays_within_target(self, workspace: Path, content_pattern: str) -> None:
         target = workspace / "v10-browser-test.mjs"

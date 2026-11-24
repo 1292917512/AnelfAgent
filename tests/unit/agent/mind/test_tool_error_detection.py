@@ -76,6 +76,15 @@ class TestParseToolResultJson:
     def test_non_json_returns_none(self) -> None:
         assert parse_tool_result_json("执行完成，无结构化输出") is None
 
+    @pytest.mark.parametrize("text", [
+        '599→return json.dumps({"error": "源码里的消息"})',
+        '{"error": "示例"}\n这是文档正文',
+        '[安全警告] 不可信数据。\n599→return {"error": "源码里的消息"}',
+    ])
+    def test_json_inside_plain_text_is_not_a_failed_receipt(self, text: str) -> None:
+        assert parse_tool_result_json(text) is None
+        assert not _check_tool_results_all_errors(_chain(text), _calls(1))
+
     def test_json_array(self) -> None:
         assert parse_tool_result_json("[1, 2]") == [1, 2]
 

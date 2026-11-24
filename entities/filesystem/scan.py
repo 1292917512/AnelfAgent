@@ -1,7 +1,7 @@
 """剪枝目录遍历、内容检索与二进制嗅探。
 
-模型可见：文件命中、准确行号、截断和扫描覆盖情况，经工具结果返回。
-Token：预览沿用单行预算，覆盖状态为固定计数和最多五条读取错误。
+模型可见：返回已找到的文件与行号，预算耗尽时以 timed_out 和 truncated 标记部分结果。
+Token：时间状态增加一个布尔字段，预览沿用单行预算，最多返回五条读取错误。
 缓存：结果属于工具链，不改稳定上下文前缀。
 """
 
@@ -11,9 +11,13 @@ import fnmatch
 import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from itertools import chain
+from stat import S_ISDIR, S_ISREG
+from time import monotonic
 from typing import Iterator, List, NamedTuple, Optional, Pattern
 
 from core.text_passage import passage_around
+from entities._sdk import current_tool_deadline, get_execution_signal
 
 # 默认剪枝目录：版本控制 / 依赖 / 构建产物 / 工具缓存
 DEFAULT_EXCLUDE_DIRS = frozenset({
@@ -39,14 +43,39 @@ _CONTENT_SKIP_EXTS = frozenset({
 })
 
 
+class ScanBudget:
+    """在调用方的单调时钟期限内为结果序列化与交付预留时间。"""
+
+    def __init__(self) -> None:
+        deadline = current_tool_deadline.get()
+        self._stop_at = float("inf")
+        if deadline is not None:
+            remaining = max(0.0, deadline - monotonic())
+            # 工作线程交回结果与事件循环唤醒也占用预算，短调用需覆盖平台时钟粒度。
+            reserve = min(remaining / 2, 1.0, max(0.1, remaining * 0.1))
+            self._stop_at = deadline - reserve
+        self._signal = get_execution_signal()
+        self.timed_out = False
+
+    def exhausted(self) -> bool:
+        if self._signal is not None:
+            self._signal.checkpoint()
+        self.timed_out = monotonic() >= self._stop_at
+        return self.timed_out
+
+
 class MatchEntry(NamedTuple):
     """一次匹配命中的条目（相对路径以 "/" 分隔，展示友好）。"""
 
     relpath: str
     abspath: str
-    is_dir: bool
+    mode: int
     size: int
     mtime: float
+
+    @property
+    def is_dir(self) -> bool:
+        return S_ISDIR(self.mode)
 
 
 def resolve_exclude_dirs() -> frozenset:
@@ -64,6 +93,7 @@ def iter_matches(
     exclude: Optional[frozenset] = None,
     *,
     on_error: Callable[[OSError], None] | None = None,
+    budget: ScanBudget | None = None,
 ) -> Iterator[MatchEntry]:
     """按 glob 模式匹配文件或遍历目录（剪枝噪声目录）。
 
@@ -74,6 +104,9 @@ def iter_matches(
     目录同样参与匹配；显式文件只匹配其名称，不扩大到父目录。
     """
     exclude = DEFAULT_EXCLUDE_DIRS if exclude is None else exclude
+    budget = budget or ScanBudget()
+    if budget.exhausted():
+        return
     # 前导 **/ 剥离后的备选模式（按 basename 匹配，覆盖零目录情形）
     alt = pattern
     while alt.startswith("**/"):
@@ -95,25 +128,18 @@ def iter_matches(
                 if on_error is not None:
                     on_error(exc)
             else:
-                yield MatchEntry(name, root, False, stat.st_size, stat.st_mtime)
+                yield MatchEntry(name, root, stat.st_mode, stat.st_size, stat.st_mtime)
         return
 
     for dirpath, dirnames, filenames in os.walk(root, onerror=on_error):
+        if budget.exhausted():
+            return
         kept = sorted(d for d in dirnames if d not in exclude)
         dirnames[:] = kept
         base = os.path.relpath(dirpath, root)
-        for name in kept:
-            rel = name if base == "." else f"{base}/{name}"
-            if _matched(rel, name):
-                abspath = os.path.join(dirpath, name)
-                try:
-                    stat = os.stat(abspath)
-                    yield MatchEntry(rel, abspath, True, stat.st_size, stat.st_mtime)
-                except OSError as exc:
-                    if on_error is not None:
-                        on_error(exc)
-                    continue
-        for name in sorted(filenames):
+        for name in chain(kept, sorted(filenames)):
+            if budget.exhausted():
+                return
             rel = name if base == "." else f"{base}/{name}"
             if _matched(rel, name):
                 abspath = os.path.join(dirpath, name)
@@ -123,7 +149,7 @@ def iter_matches(
                     if on_error is not None:
                         on_error(exc)
                     continue
-                yield MatchEntry(rel, abspath, False, stat.st_size, stat.st_mtime)
+                yield MatchEntry(rel, abspath, stat.st_mode, stat.st_size, stat.st_mtime)
 
 
 def looks_binary(path: str, sample_bytes: int = BINARY_SAMPLE_BYTES) -> bool:
@@ -187,6 +213,7 @@ def content_search(
     per_file_hits: int = 5,
     line_preview_chars: int = 200,
     max_file_bytes: int = 2 * 1024 * 1024,
+    budget: ScanBudget | None = None,
 ) -> ContentSearchResult:
     """文件名 glob 过滤后做逐行内容检索（跳过二进制与超大文件）。
 
@@ -194,8 +221,12 @@ def content_search(
     慢且命中无操作价值，直接跳过（文件名模式不受限）。
     """
     result = ContentSearchResult()
-    for entry in iter_matches(root, pattern, exclude, on_error=result.read_error):
+    budget = budget or ScanBudget()
+    for entry in iter_matches(root, pattern, exclude, on_error=result.read_error, budget=budget):
         if entry.is_dir:
+            continue
+        if not S_ISREG(entry.mode):
+            result.skip("special_file")
             continue
         if entry.size > max_file_bytes:
             result.skip("too_large")
@@ -213,6 +244,9 @@ def content_search(
                 matched: List[str] = []
                 truncated = False
                 for i, line in enumerate(f, 1):
+                    if (i - 1) % 128 == 0 and budget.exhausted():
+                        truncated = True
+                        break
                     match = regex.search(line)
                     if match is not None:
                         if len(matched) >= per_file_hits:
@@ -228,6 +262,9 @@ def content_search(
                 result.truncated = True
                 break
             result.hits.append(ContentHit(entry.relpath, entry.abspath, matched, truncated))
+        if budget.timed_out:
+            break
+    result.truncated |= budget.timed_out
     return result
 
 

@@ -50,6 +50,17 @@ class TestResolveLimit:
 
 
 class TestTruncateWithBudget:
+    @pytest.mark.parametrize(("name", "status"), [
+        ("check_background_tasks", {"ok": True, "task_id": "job", "done": True, "task_success": False}),
+        ("search_files", {"timed_out": True, "truncated": True}),
+    ])
+    def test_partial_search_and_task_outcome_survive_compaction(self, name: str, status: dict[str, str | bool]) -> None:
+        import json
+
+        output = json.dumps({**status, "data": ["x" * 500] * 25})
+        result = json.loads(truncate_tool_output(name, output, ResultBudget(2000, 4000)))
+        assert result["_json_compacted"] and status.items() <= result.items()
+
     @pytest.mark.parametrize("marker", ["error", "ok", "success"])
     def test_failure_trace_survives_exhausted_budget(self, marker: str) -> None:
         import json

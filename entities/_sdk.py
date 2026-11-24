@@ -68,7 +68,7 @@ from agent.llm.model_api import (
     get_model_api,
 )
 from agent.memory.recall_policy import RecallPolicy, recall_options, set_turn_recall_policy
-from core.cancellation import ExecutionSignal, ToolCancelled, get_execution_signal
+from core.cancellation import ExecutionSignal, ToolCancelled, current_tool_deadline, get_execution_signal
 from core.context_provider import context_provider
 from core.entity import EntityRegistry
 from core.log import log
@@ -113,7 +113,7 @@ from core.network.httpx2 import async_network_client2
 __all__ = [
     "AdapterRequest", "ImageGenAdapter", "ImageGenParams", "ImageResults", "OpenAIImagesAdapter",
     "register_image_adapter", "MediaClient", "MediaOutcomeUnknown", "check_base_resp", "host_root",
-    "request_execution_stop", "get_execution_signal", "ExecutionSignal", "ToolCancelled",
+    "request_execution_stop", "get_execution_signal", "current_tool_deadline", "ExecutionSignal", "ToolCancelled",
     "get_model_api", "ModelAPI", "ModelType", "ModelResult", "ModelCallError", "LLMNotConfiguredError",
     "ChatResult", "ImageContent", "VideoContent", "MusicResult",
     "ChoiceQuestion", "NoulQuestion", "NoulCriteria", "ScoreQuestion", "Question",

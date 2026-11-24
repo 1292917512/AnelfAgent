@@ -49,6 +49,7 @@ class ToolCancelled(asyncio.CancelledError):
 
 
 _signal: ContextVar[ExecutionSignal | None] = ContextVar("execution_signal", default=None)
+current_tool_deadline: ContextVar[float | None] = ContextVar("tool_monotonic_deadline", default=None)
 
 
 def get_execution_signal() -> ExecutionSignal | None:

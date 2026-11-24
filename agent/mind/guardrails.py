@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from typing import Dict, Optional
 
 from core.log import log
+from core.tool_results import GUARDRAIL_WARNING_SUFFIX, extract_error_text
 
 # ------------------------------------------------------------------
 # 配置
@@ -185,20 +186,8 @@ def classify_tool_failure(result: str) -> bool:
     if not result:
         return False
     text = result.strip()
-    if text.startswith("{"):
-        try:
-            parsed = json.loads(text)
-        except (json.JSONDecodeError, TypeError):
-            parsed = None
-        if isinstance(parsed, dict):
-            # 真值判断：{"error": null/""} 是成功结果的常见字段形态，不算失败
-            if parsed.get("error"):
-                return True
-            if parsed.get("success") is False or parsed.get("ok") is False:
-                return True
-            return False
     lowered = text[:300].lower()
-    return lowered.startswith(("error:", "错误", "failed", "失败"))
+    return lowered.startswith(("error:", "错误", "failed", "失败")) or bool(extract_error_text(text))
 
 
 # ------------------------------------------------------------------
@@ -419,7 +408,7 @@ class GuardrailController:
 def append_guardrail_guidance(result: str, decision: GuardrailDecision) -> str:
     """在工具结果尾部追加守卫警告文本（warn/halt 时调用）。"""
     guidance = (
-        f"\n\n[工具守卫警告: {decision.reason}; 次数={decision.count}] "
+        f"{GUARDRAIL_WARNING_SUFFIX}{decision.reason}; 次数={decision.count}] "
         f"{decision.message}"
     )
     return f"{result}{guidance}"

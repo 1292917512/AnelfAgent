@@ -131,6 +131,8 @@ DuerOS 控制台（dueros.baidu.com/dbp/mcp/console）重新授权并同步更�
 - **扫描剪枝**：os.walk 按目录名剪枝（默认 .git/node_modules/__pycache__/.venv/dist/build/各类
   缓存，`search_exclude_dirs` 可配置）——不进结果也不再向下遍历；glob 语义（裸 `*.png` 任意深度、
   `**/` 零目录语义）；内容模式跳过二进制扩展名与 >2MB 大文件；结果 path 保持绝对路径
+- `search_files` 在遍历目录和读取文件时检查本次调用的时间预算。提前收尾的回执包含已有命中，
+  并设置 `timed_out=true`、`truncated=true`。此时即使零匹配，也应缩小目录后再判断文件是否存在。
 - **二进制嗅探**（`looks_binary`，前 8KB NUL 采样）：read_file 扩展名表之外的内容级防线——文本
   读取走 `errors="replace"` 永不抛解码异常；命中返回 `{"type":"binary"}` JSON 引导媒体工具
 

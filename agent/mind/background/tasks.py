@@ -11,7 +11,7 @@
   通过 should_abort 传入），不阻塞事件循环。
 - 进程内实现：后台任务本身是 asyncio.Task，进程退出即失效，无持久化需求。
 
-模型可见：任务 ID、状态及完成结果经工具回执或所属会话的内部通知送达。
+模型可见：单任务回执用 ok 表示操作成功，task_success 表示任务终态，运行中为 null。
 Token：状态摘要有界，完整结果按 ID 查询；等待不调用模型轮询。
 缓存：后台状态仅在动态区和工具结果中更新，不修改稳定前缀。
 """
@@ -391,11 +391,10 @@ class BackgroundTaskRegistry:
             return {"ok": False, "error": f"任务不存在: {task_id}"}
         if rec.info.scope != (scope or "_global"):
             return {"ok": False, "error": f"任务 {task_id} 不属于当前会话"}
-        facts = {"notification": rec.info.notification.value,
+        facts = {"task_success": rec.success if rec.done else None, "notification": rec.info.notification.value,
                  "evidence": rec.evidence.read(after_sequence),
                  "elapsed_seconds": max(0, int((rec.finished_at or time.time()) - rec.info.started_at)),
-                 "progress": self.progress(task_id), "summary": rec.summary,
-                 "success": rec.success if rec.done else None, "alert": rec.alert}
+                 "progress": self.progress(task_id), "summary": rec.summary, "alert": rec.alert}
         if not rec.output_file:
             return {"ok": True, "task_id": task_id, "done": rec.done, **facts,
                     "hint": "evidence 为有界操作证据；传 after_sequence=next_sequence 获取后续记录。耗时或暂无进展不代表失败。通知遵循 notification 策略。"}
@@ -412,12 +411,12 @@ class BackgroundTaskRegistry:
         self._output_cursors[task_id] = offset + len(consumed)
         return {
             "ok": True,
-            **facts,
             "task_id": task_id,
+            "done": rec.done,
+            **facts,
             "delta": delta,
             "consumed_bytes": offset + len(consumed),
             "truncated": truncated,
-            "done": rec.done,
             "hint": "delta 为本次新增输出（消费型读取，重复调用不会重发旧内容）；truncated=true 表示还有未读。" if delta else "暂无新输出，可稍后再查或等待完成通知。",
         }
 
@@ -573,7 +572,7 @@ class BackgroundTaskRegistry:
         if rec.done:
             return {
                 "ok": True, "terminated": False, "already_finished": True,
-                "success": rec.success, "summary": rec.summary[:200],
+                "task_success": rec.success, "summary": rec.summary[:200],
             }
         if rec.killer is None:
             return {"ok": False, "error": f"任务 {task_id} 不支持终止（无终止句柄）"}

@@ -26,11 +26,12 @@ from abc import ABC
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from time import monotonic
 from typing import Any, Callable, Dict, List, Optional, Type
 
 from pydantic import TypeAdapter, ValidationError
 
-from core.cancellation import ToolCancelled, get_execution_signal
+from core.cancellation import ToolCancelled, current_tool_deadline, get_execution_signal
 from core.event_bus import EVENT_TRACE_CALL_END, EVENT_TRACE_CALL_START, event_bus
 from core.exceptions import catch_exceptions
 from core.log import log
@@ -1347,6 +1348,7 @@ class EntityRegistry:
 
         # 声明 timeout=0 的工具自行管理动态请求预算；显式 _timeout 仍保持最高优先级。
         deadline = asyncio.timeout(tool_timeout if tool_timeout else None)
+        deadline_token = current_tool_deadline.set(monotonic() + tool_timeout if tool_timeout else None)
         try:
             from core.tool_preconditions import tool_precondition_port
             if tool_precondition_port.bound:
@@ -1377,6 +1379,8 @@ class EntityRegistry:
                 hint="先检查操作状态或产物，再决定是否重试；超时不代表操作未生效",
                 timeout_seconds=tool_timeout, background_may_continue=not entity.is_async,
             )
+        finally:
+            current_tool_deadline.reset(deadline_token)
 
     @classmethod
     async def execute_tool_call(cls, tool_call: Any) -> str:
