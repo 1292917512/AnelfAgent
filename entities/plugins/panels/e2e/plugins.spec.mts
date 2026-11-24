@@ -12,6 +12,13 @@ test("plugin cards expose details and marketplace selection on the capabilities 
         { name: "community", enabled: true, source_type: "git", plugin_count: 1 },
         { name: "disabled", enabled: false, source_type: "git", plugin_count: 1 },
       ] });
+    } else if (url.pathname.endsWith("/demo")) {
+      await route.fulfill({ json: { ...installed, runtime: { registered: true, servers: [{ name: "drawio", state: "connected" }] } } });
+    } else if (url.pathname.endsWith("/inspect")) {
+      await route.fulfill({ json: { status: "unverified", detail: "Source offline" } });
+    } else if (url.pathname.endsWith("/diagnostics/operations")) {
+      await route.fulfill({ json: [{ id: "operation-1", action: "安装", name: "demo", stage: "fetch", status: "failed",
+        started_at: 100, error: "Source offline" }] });
     } else if (url.pathname.endsWith("/search")) {
       searches.push(url.searchParams.get("marketplace") ?? "");
       await route.fulfill({ json: { plugins: url.searchParams.get("marketplace") === "community" ? [{
@@ -26,7 +33,10 @@ test("plugin cards expose details and marketplace selection on the capabilities 
   await page.getByRole("button", { name: "Draw", exact: true }).click();
   const details = page.getByRole("dialog");
   await expect(details.getByText("drawio", { exact: true })).toBeVisible();
+  await expect(details.getByText("drawio · Connected")).toBeVisible();
   await details.getByRole("button", { name: "Close" }).click();
+  await page.getByRole("tab", { name: "Operations" }).click();
+  await expect(page.getByText("Source offline")).toBeVisible();
   await page.getByRole("tab", { name: "Browse & Install" }).click();
   await expect(page.getByRole("combobox")).toHaveValue("dsh-community");
   await expect(page.getByText("No matching plugins")).toBeVisible();
@@ -34,6 +44,7 @@ test("plugin cards expose details and marketplace selection on the capabilities 
   await expect(page.locator('option[value="disabled"]')).toHaveCount(0);
   await page.getByRole("combobox").selectOption("community");
   await page.getByRole("button", { name: "Example/Draw" }).click();
+  await expect(page.getByRole("dialog").getByText("Source unverified · Source offline")).toBeVisible();
   await expect(page.getByRole("dialog").getByRole("button", { name: "Install", exact: true })).toBeVisible();
   await page.getByRole("dialog").getByRole("button", { name: "Close" }).click();
   await page.getByRole("button", { name: "Install from Source", exact: true }).click();
@@ -63,7 +74,12 @@ test("install from source, disable, and confirm removal through plugin details",
   await page.route("**/api/entity/plugins**", async (route) => {
     const req = route.request();
     const path = new URL(req.url()).pathname;
+    if (path.endsWith("/inspect")) return route.fulfill({ json: { status: "verified", name: "demo", version: "1",
+      format: "plugin", requirements: {}, commands: [], skills: [], mcp_servers: [], tools_file: "tools.py", revision: "checked-source" } });
+    if (path.endsWith("/demo") && req.method() === "GET") return route.fulfill({ json: { ...plugin,
+      runtime: { registered: plugin.enabled, servers: [] } } });
     if (path.endsWith("/from-source")) {
+      expect(req.postDataJSON().expected_revision).toBe("checked-source");
       expect(req.postDataJSON().source).toBe("local/demo");
       installed = true;
       return route.fulfill({ status: 201, json: plugin });
@@ -90,6 +106,8 @@ test("install from source, disable, and confirm removal through plugin details",
   await page.getByRole("button", { name: "Install from Source" }).click();
   const dialog = page.getByRole("dialog");
   await dialog.getByRole("textbox", { name: "Plugin source" }).fill(plugin.source);
+  await dialog.getByRole("button", { name: "Inspect", exact: true }).click();
+  await expect(dialog.getByText("tools.py")).toBeVisible();
   await dialog.getByRole("button", { name: "Install", exact: true }).click();
   await expect(dialog).toHaveCount(0);
   await page.getByRole("tab", { name: "Installed Plugins" }).click();

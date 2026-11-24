@@ -178,6 +178,7 @@
     "effortOff": "关闭",
     "effortMinimal": "极简",
     "lastRunPrefix": "上次执行 ",
+    "fileDelivered": "已送达 {{scope}}",
     "lastRunAgoSuffix": " 前",
     "lastRunDuration": "历时 {{duration}}",
     "runStatusSuccess": "成功",

@@ -18,6 +18,7 @@ import threading
 from pathlib import Path
 from typing import Any, Dict, List, Set
 
+from agent.artifacts import TaskArtifact
 from core.config import get_config_int, register_configs_safe
 from core.file_utils import atomic_write_text
 from core.log import log
@@ -107,12 +108,16 @@ def record_execution(
     trigger: str,
     preview: str = "",
     error: str = "",
+    artifacts: list[TaskArtifact] | None = None,
+    artifact_scope: str = "",
 ) -> bool:
     """记录一次任务执行（追加并按上限裁剪，原子落盘）。返回是否成功。"""
     record = _normalize_record(
         task_name, started_at=started_at, duration_ms=duration_ms,
         status=status, trigger=trigger, preview=preview, error=error,
     )
+    if artifacts:
+        record.update(artifacts=artifacts, artifact_scope=artifact_scope)
     try:
         with _LOCK:
             data = _load_all()

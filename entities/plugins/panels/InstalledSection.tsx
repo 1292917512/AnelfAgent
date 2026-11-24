@@ -26,6 +26,11 @@ export function InstalledSection({ onBrowse }: { onBrowse: () => void }) {
   });
   const plugins = installed.data ?? [];
   const selected = plugins.find((plugin) => plugin.name === selectedName);
+  const detail = useQuery({
+    queryKey: ["plugins-detail", selectedName], enabled: !!selected, throwOnError: false,
+    queryFn: () => pluginsApi.detail(selectedName).then((r) => r.data.runtime),
+    refetchInterval: selected?.mcp_servers.length ? 10000 : false,
+  });
   const refresh = () => refreshPluginViews(queryClient);
 
   const onToggle = async (p: InstalledPlugin, enabled: boolean) => {
@@ -117,6 +122,13 @@ export function InstalledSection({ onBrowse }: { onBrowse: () => void }) {
             {selected.version && <><dt>{t("version")}</dt><dd>{selected.version}</dd></>}
             {selected.dsh_home && <><dt>DSH_HOME</dt><dd className="break-all font-mono">{selected.dsh_home}</dd></>}
           </dl>
+          <AsyncState pending={detail.isPending} error={detail.error} retry={() => void detail.refetch()}>
+            {detail.data && <section className="space-y-1 text-sm">
+              <h3 className="font-medium">{t("runtime")}</h3>
+              <p>{t(detail.data.registered ? "registered" : "unregistered")}</p>
+              {detail.data.servers.map((server) => <p key={server.name}>{server.name} · {t(server.state)}</p>)}
+            </section>}
+          </AsyncState>
           {selected.dsh_home && <p className="text-xs text-muted">{t("hostInstructions")}</p>}
           {(["skills", "tools", "mcp_servers"] as const).map((key) => selected[key].length > 0 && <div key={key}>
             <h3 className="mb-2 text-sm font-medium">{t(key === "mcp_servers" ? "mcpServers" : key)}</h3>

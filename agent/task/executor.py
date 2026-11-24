@@ -89,6 +89,9 @@ class TaskExecutor:
         effective_effort = reasoning_effort or task.reasoning_effort or ""
         await self._emit("unit_start", task, entity)
 
+        from agent.artifacts import capture_task_files
+        from core.conversation_scope import current_scope
+
         started_at = time.time()
         started_mono = time.monotonic()
 
@@ -100,6 +103,7 @@ class TaskExecutor:
                 duration_ms=int((time.monotonic() - started_mono) * 1000),
                 status=status, trigger=trigger,
                 preview=preview, error=error,
+                artifacts=list(files.files.values()), artifact_scope=files.owner,
             )
 
         completion: Dict[str, Any] = {}
@@ -118,10 +122,11 @@ class TaskExecutor:
         try:
             # 本任务的工具调用计数经 completion 消息链归因——全局计数器会被
             # 并发的在途回复/钩子/其他后台任务污染，误判无产出任务为成功
-            content = await self._execute_llm(
-                task, entity, temperature, effective_model, effective_effort,
-                extra_note=extra_note, completion=completion, trigger=trigger,
-            )
+            with capture_task_files(task.name, entity.entity_scope if entity else current_scope()) as files:
+                content = await self._execute_llm(
+                    task, entity, temperature, effective_model, effective_effort,
+                    extra_note=extra_note, completion=completion, trigger=trigger,
+                )
             reason = str(completion.get("reason") or "unknown")
             tool_results = [m for m in completion.get("messages", [])
                             if isinstance(m, dict) and m.get("role") == "tool"]

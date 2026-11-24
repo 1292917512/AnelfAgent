@@ -135,16 +135,25 @@ def parse_dsh_manifest(root: Path, data: dict[str, Any]) -> PluginManifest:
     if not isinstance(bundle, dict):
         raise PluginError("dsh.bundle 必须是包含 patch 的对象")
     plugin_format = "dsh"
+    host_reason = ""
     try:
         servers = read_dsh_servers(root, bundle.get("patch"))
         if "platforms" in bundle or "client" in data["dsh"] or "profile" in data["dsh"]:
             raise RequiresDshHost("该插件使用 DSH 平台约束或界面")
-    except RequiresDshHost:
+    except RequiresDshHost as exc:
+        host_reason = str(exc)
         servers = {}
         plugin_format = "dsh-host"
     except (ValueError, OSError) as exc:
         raise PluginError(f"DSH 插件 {package_name}: {exc}") from exc
+    requirements = {
+        key: value for field in ("engines", "peerDependencies")
+        if isinstance(section := data.get(field), dict)
+        for key, value in section.items() if isinstance(value, str)
+        and (field == "engines" or key.startswith("@deepseek-ai/dsh"))
+    }
     return PluginManifest(
+        requirements=requirements, host_reason=host_reason,
         name=name, version=str(data.get("version") or ""), description=str(data.get("description") or ""),
         interface=PluginInterface(display_name=package_name), mcp_servers_inline=servers, format=plugin_format,
     )

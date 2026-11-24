@@ -4,7 +4,7 @@
 阻塞安装操作经 asyncio.to_thread 移出事件循环。
 
 Model Experience:
-    管理工具提供来源开关、分页结果及各源错误；DSH 宿主包返回独立 profile 的 DSH_HOME。
+    管理工具可预检静态清单、按操作 ID 查询阶段，已装详情按需读取实体和 MCP 状态。DSH 宿主包返回独立 profile 的 DSH_HOME。
     仅调用时增加格式和操作结果字段的 token，空闲时不注入宿主配置。
     工具声明变动随工具集缓存更新，操作状态沿用动态区。
 """
@@ -17,6 +17,7 @@ from typing import Any
 
 from core.log import log
 from core.plugins import PluginManager, get_plugin_manager
+from core.plugins.status import get_operation_board
 from core.sanitizer import is_sanitize_enabled, sanitize_text
 from core.tool_errors import ErrorCause, error_from_exception, tool_error
 from entities._sdk import (
@@ -27,6 +28,7 @@ from entities._sdk import (
     tool,
 )
 from entities.plugins.activation import activate_installed_plugins, wire_plugin_manager
+from entities.plugins.diagnostics import plugin_detail
 
 entity("plugins", "插件管理 - 插件安装/升级/移除与市场订阅")
 entity_manifest(
@@ -73,7 +75,6 @@ async def plugin_operation_status(scope: str):
     """
     import time
 
-    from core.plugins.status import get_operation_board
 
     snap = get_operation_board().snapshot()
     if not snap["active"] and not snap["failures"]:
@@ -141,7 +142,23 @@ def plugin_info(name: str) -> str:
     record = _manager().get_plugin(name.strip())
     if record is None:
         return tool_error(f"插件 '{name}' 未安装", cause=ErrorCause.NOT_FOUND, retryable=False)
-    return _safe_json(record.to_dict())
+    return _safe_json(plugin_detail(record))
+
+
+@tool(name="inspect_plugin", group="plugins", concurrency_safe=True)
+async def inspect_plugin(name: str = "", marketplace: str = "", source: str = "", ref: str = "", subdir: str = "") -> str:
+    """只读预检市场条目(name, marketplace)或直接来源(source, ref, subdir)。verified 表示清单已解析，revision 可用于安装。"""
+    try:
+        result = await asyncio.to_thread(_manager().inspect, name, marketplace, source, ref, subdir)
+        return _safe_json(result)
+    except Exception as exc:
+        return error_from_exception(exc, action="预检插件")
+
+
+@tool(name="plugin_operations", group="plugins", concurrency_safe=True)
+def plugin_operations(operation_id: str = "") -> str:
+    """查询本进程最近的插件操作，返回 ID、阶段与结果；可按操作 ID 精确查询。"""
+    return _safe_json(get_operation_board().operations(operation_id))
 
 
 @tool(name="search_plugins", group="plugins", concurrency_safe=True)
@@ -163,34 +180,39 @@ async def search_plugins(query: str = "", marketplace: str = "", offset: int = 0
 
 
 @tool(name="install_plugin", group="plugins")
-async def install_plugin(name: str, marketplace: str = "") -> str:
+async def install_plugin(name: str, marketplace: str = "", expected_revision: str = "") -> str:
     """按检索结果的 name 和 marketplace 安装。返回的 name 是后续管理使用的标识，format 表示运行方式。
 
     Args:
         name: 市场目录中的插件名
         marketplace: 指定来源市场名；留空时全市场唯一匹配
+        expected_revision: 预检返回的 revision，可选；来源变化时拒绝安装。
     """
     try:
-        record = await asyncio.to_thread(_manager().install, name.strip(), marketplace.strip())
-        return _safe_json({"installed": True, **record.to_dict()})
+        record, operation_id = await asyncio.to_thread(
+            _manager().install_package, name=name.strip(), marketplace=marketplace.strip(), expected_revision=expected_revision,
+        )
+        return _safe_json({"installed": True, "operation_id": operation_id, **record.to_dict()})
     except Exception as e:
         return error_from_exception(e, action=f"安装插件 {name}")
 
 
 @tool(name="install_plugin_from_source", group="plugins")
-async def install_plugin_from_source(source: str, ref: str = "", subdir: str = "") -> str:
+async def install_plugin_from_source(source: str, ref: str = "", subdir: str = "", expected_revision: str = "") -> str:
     """直接从 git URL 或本地路径安装插件，支持 plugin.json 和 DSH bundle。独立 MCP 直接注册；Cordis 包安装到返回的独立 DSH_HOME。
 
     Args:
         source: git 仓库地址（https://... / git@...）或本地插件目录路径
         ref: Git 分支/tag/提交（可选）
         subdir: 来源内插件子目录（monorepo 场景，可选）
+        expected_revision: 预检返回的 revision，可选；来源变化时拒绝安装。
     """
     try:
-        record = await asyncio.to_thread(
-            _manager().install_from_source, source.strip(), ref.strip(), subdir.strip(),
+        record, operation_id = await asyncio.to_thread(
+            _manager().install_package, source=source.strip(), ref=ref.strip(), subdir=subdir.strip(),
+            expected_revision=expected_revision,
         )
-        return _safe_json({"installed": True, **record.to_dict()})
+        return _safe_json({"installed": True, "operation_id": operation_id, **record.to_dict()})
     except Exception as e:
         return error_from_exception(e, action=f"从来源安装插件 {source}")
 

@@ -14,7 +14,9 @@ from pydantic import BaseModel
 
 from core.plugins import PluginManager, get_plugin_manager
 from core.plugins.manifest import PluginError, PluginNotFound
+from core.plugins.status import get_operation_board
 from entities.plugins.activation import wire_plugin_manager
+from entities.plugins.diagnostics import plugin_detail
 
 
 class InstallIn(BaseModel):
@@ -22,12 +24,22 @@ class InstallIn(BaseModel):
 
     name: str
     marketplace: str = ""
+    expected_revision: str = ""
 
 
 class InstallSourceIn(BaseModel):
     """直接来源安装请求。"""
 
     source: str
+    ref: str = ""
+    subdir: str = ""
+    expected_revision: str = ""
+
+
+class InspectIn(BaseModel):
+    name: str = ""
+    marketplace: str = ""
+    source: str = ""
     ref: str = ""
     subdir: str = ""
 
@@ -116,20 +128,31 @@ def build_router() -> APIRouter:
         except PluginError as e:
             raise _http_error(e) from e
 
+    @router.post("/inspect")
+    async def inspect_plugin(body: InspectIn) -> dict:
+        try:
+            return await asyncio.to_thread(_manager().inspect, **body.model_dump())
+        except PluginError as exc:
+            raise _http_error(exc) from exc
+
+    @router.get("/diagnostics/operations")
+    async def operations(operation_id: str = "") -> list[dict]:
+        return get_operation_board().operations(operation_id)
+
     @router.get("/{name}")
     async def plugin_info(name: str) -> dict:
         """插件详情。"""
         record = _manager().get_plugin(name)
         if record is None:
             raise HTTPException(status_code=404, detail=f"插件 '{name}' 未安装")
-        return record.to_dict()
+        return plugin_detail(record)
 
     @router.post("", status_code=201)
     async def install_plugin(body: InstallIn) -> dict:
         """从已订阅市场安装插件。"""
         try:
-            record = await asyncio.to_thread(_manager().install, body.name, body.marketplace)
-            return record.to_dict()
+            record, operation_id = await asyncio.to_thread(_manager().install_package, **body.model_dump())
+            return {**record.to_dict(), "operation_id": operation_id}
         except PluginError as e:
             raise _http_error(e) from e
 
@@ -137,10 +160,8 @@ def build_router() -> APIRouter:
     async def install_from_source(body: InstallSourceIn) -> dict:
         """直接从 git URL 或本地路径安装插件。"""
         try:
-            record = await asyncio.to_thread(
-                _manager().install_from_source, body.source, body.ref, body.subdir,
-            )
-            return record.to_dict()
+            record, operation_id = await asyncio.to_thread(_manager().install_package, **body.model_dump())
+            return {**record.to_dict(), "operation_id": operation_id}
         except PluginError as e:
             raise _http_error(e) from e
 

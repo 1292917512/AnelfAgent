@@ -1755,9 +1755,11 @@ async def task_history(task_name: str) -> str:
         task_name: 任务名称（通过 list_tasks 获取）
     """
     try:
+        from agent.artifacts import history_for_scope
         from agent.task.history import get_history
+        from core.conversation_scope import current_scope
 
-        records = get_history(task_name)
+        records = [history_for_scope(row, current_scope()) for row in get_history(task_name)]
         if not records:
             return json.dumps(
                 {

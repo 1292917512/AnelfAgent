@@ -3,6 +3,10 @@ import { api } from "@/lib/api";
 import { refreshToolCatalog } from "@/lib/tool-catalog";
 import type {
   InstalledPlugin,
+  PluginInspection,
+  PluginOperation,
+  PluginRuntime,
+  PluginSource,
   MarketplaceInfo,
   RefreshResult,
   SearchResult,
@@ -13,7 +17,7 @@ import type {
 export async function refreshPluginViews(client: QueryClient): Promise<void> {
   await Promise.all([
     refreshToolCatalog(client),
-    ...["plugins-installed", "plugins-search", "mcpServers", "mcpConfig"].map((key) =>
+    ...["plugins-installed", "plugins-detail", "plugins-operations", "plugins-search", "mcpServers", "mcpConfig"].map((key) =>
       client.invalidateQueries({ queryKey: [key] })),
   ]);
 }
@@ -25,10 +29,14 @@ const lifecycleRequest = { timeout: 0 };
 export const pluginsApi = {
   // 已安装插件
   list: () => api.get<InstalledPlugin[]>("/entity/plugins"),
-  install: (name: string, marketplace = "") =>
-    api.post<InstalledPlugin>("/entity/plugins", { name, marketplace }, lifecycleRequest),
-  installFromSource: (source: string, ref = "", subdir = "") =>
-    api.post<InstalledPlugin>("/entity/plugins/from-source", { source, ref, subdir }, lifecycleRequest),
+  detail: (name: string) => api.get<InstalledPlugin & { runtime: PluginRuntime }>(`/entity/plugins/${encodeURIComponent(name)}`),
+  operations: () => api.get<PluginOperation[]>("/entity/plugins/diagnostics/operations"),
+  inspect: (target: PluginSource, signal?: AbortSignal) =>
+    api.post<PluginInspection>("/entity/plugins/inspect", target, { ...lifecycleRequest, signal }),
+  install: (name: string, marketplace = "", expected_revision = "") =>
+    api.post<InstalledPlugin>("/entity/plugins", { name, marketplace, expected_revision }, lifecycleRequest),
+  installFromSource: (source: string, ref = "", subdir = "", expected_revision = "") =>
+    api.post<InstalledPlugin>("/entity/plugins/from-source", { source, ref, subdir, expected_revision }, lifecycleRequest),
   remove: (name: string) => api.delete(`/entity/plugins/${name}`),
   upgrade: (name: string) =>
     api.post<UpgradeResult>(`/entity/plugins/${name}/upgrade`, null, lifecycleRequest),

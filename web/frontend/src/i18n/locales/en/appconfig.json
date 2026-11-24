@@ -178,6 +178,7 @@
     "effortOff": "Off",
     "effortMinimal": "Minimal",
     "lastRunPrefix": "Last run ",
+    "fileDelivered": "Delivered to {{scope}}",
     "lastRunAgoSuffix": " ago",
     "lastRunDuration": "took {{duration}}",
     "runStatusSuccess": "Success",

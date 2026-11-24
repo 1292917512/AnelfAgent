@@ -79,3 +79,25 @@ export interface RefreshResult {
   results: Record<string, number>;
   errors?: Record<string, string>;
 }
+
+export type PluginSource = { name: string; marketplace: string } | { source: string; ref: string; subdir: string };
+
+export type PluginInspection =
+  | { status: "invalid" | "unverified"; detail: string }
+  | { status: "verified"; name: string; version: string; format: string; revision: string; host_reason: string;
+      requirements: Record<string, string>; skills: string[]; commands: string[]; tools_file: string; mcp_servers: string[] };
+
+export interface PluginRuntime {
+  registered: boolean;
+  servers: { name: string; state: "connected" | "disconnected" | "unknown" | "missing" }[];
+}
+
+export interface PluginOperation {
+  id: string;
+  action: string;
+  name: string;
+  status: "active" | "failed" | "succeeded";
+  stage: string;
+  started_at: number;
+  error?: string;
+}

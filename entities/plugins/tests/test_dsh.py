@@ -27,6 +27,19 @@ MCP = """- insert:
 """
 
 
+@pytest.mark.parametrize(("patch", "format"), [(MCP, "dsh"), ("- insert: [{name: custom-plugin}]", "dsh-host")])
+def test_inspect_dsh_without_host_or_registration(manager, plugin_env, patch, format):
+    root = bundle(plugin_env.root / "inspect", patch)
+    manifest = root / "package.json"
+    data = json.loads(manifest.read_text(encoding="utf8"))
+    data["engines"] = {"dsh": "^0.2.0"}
+    manifest.write_text(json.dumps(data), encoding="utf8")
+    result = manager.inspect(source=str(root))
+    assert (result["status"], result["format"], result["requirements"]) == ("verified", format, {"dsh": "^0.2.0"})
+    assert result["mcp_servers"] == (["draw"] if format == "dsh" else [])
+    assert not manager.list_plugins() and not plugin_env.read_mcp_servers()
+
+
 def test_mcp_bundle_lifecycle_and_disabled_upgrade(manager, plugin_env):
     repo = plugin_env.root / "repo"
     root = bundle(repo / "packages" / "draw", MCP)

@@ -102,6 +102,8 @@ class PluginManifest:
     tools_file: str = ""
     commands_dir: str = ""
     format: str = "plugin"
+    host_reason: str = ""
+    requirements: dict[str, str] = field(default_factory=dict)
 
     @property
     def display_name(self) -> str:

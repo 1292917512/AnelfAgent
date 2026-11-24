@@ -57,6 +57,11 @@ export interface TaskRunSummary {
 
 /** 任务单次执行记录（历史明细） */
 export interface TaskExecutionRecord extends TaskRunSummary {
+  artifacts?: {
+    path: string;
+    size: number;
+    receipts: { scope: string; message_id: string }[];
+  }[];
   task_name: string;
   preview: string;
   error: string;

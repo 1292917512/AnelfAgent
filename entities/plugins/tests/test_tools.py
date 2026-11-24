@@ -23,6 +23,8 @@ class TestPluginTools:
         result = json.loads(await svc.install_plugin_from_source(str(pkg)))
         assert result["installed"] is True
         assert result["name"] == "demo"
+        op, = json.loads(svc.plugin_operations(result["operation_id"]))
+        assert op["stage"] == "persist" and op["status"] == "succeeded"
 
         records = json.loads(svc.list_plugins())
         assert records[0]["name"] == "demo"

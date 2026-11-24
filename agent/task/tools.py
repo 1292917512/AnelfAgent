@@ -5,6 +5,10 @@
 与 Web 管理面（web/routers/config.py）走同一份配置文件与热重载路径，
 两侧改动互相可见。工具挂 group="planning"，须在 planning 组激活
 之前 import 本模块（deferred 注册按组弹出）。
+
+模型可见：任务可显式登记工作区文件，工具结果返回路径与大小。
+Token 影响：按调用返回一个文件摘要。
+缓存影响：产物清单只在工具结果中出现。
 """
 
 from __future__ import annotations
@@ -34,6 +38,22 @@ _SCHEDULE_MODES = {"heartbeat", "scheduled", "idle", "manual"}
 _EXPIRY_CLEAR_TOKENS = {"clear", "永久"}
 # update_task 的可选覆盖字段清除标记（model_id / reasoning_effort / trigger_event）
 _OPTIONAL_CLEAR_TOKENS = {"clear", "none"}
+
+
+@deferred_tool(group="planning", tags=["planning", "heartbeat"], source="mind.task",
+               description="将已存在的工作区文件登记到当前任务执行历史，供用户下载。")
+async def present_task_file(path: str) -> str:
+    """登记本次任务的文件产物。
+
+    Args:
+        path: 工作区相对路径或工作区内的绝对路径。
+    """
+    from agent.artifacts import present_file
+
+    try:
+        return json.dumps(present_file(path), ensure_ascii=False)
+    except Exception as exc:
+        return error_from_exception(exc, action="登记任务产物")
 
 
 def _validate_trigger_event(value: str) -> str:

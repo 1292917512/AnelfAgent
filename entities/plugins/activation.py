@@ -22,6 +22,7 @@ from core.entity import EntityMetadata, EntityRegistry, EntityType
 from core.log import log
 from core.path import workspace_root
 from core.plugins import PluginManager
+from core.plugins.inspection import skill_directories
 from core.plugins.manifest import PluginError, load_plugin_mcp_servers, parse_manifest
 from core.plugins.roster import roster_line
 from core.plugins.store import InstalledPlugin
@@ -121,14 +122,7 @@ def _activate_skills(plugin_name: str, payload_dir: Path, skill_roots: List[str]
     skills_base.mkdir(parents=True, exist_ok=True)
     for root_rel in skill_roots:
         root = payload_dir / root_rel
-        if not root.is_dir():
-            continue
-        skill_dirs = sorted(
-            d for d in root.iterdir() if d.is_dir() and (d / "SKILL.md").is_file()
-        )
-        if (root / "SKILL.md").is_file():
-            skill_dirs = [root]
-        for skill_dir in skill_dirs:
+        for skill_dir in skill_directories(root):
             try:
                 target_name = _resolve_skill_target(skills_base, plugin_name, skill_dir.name)
                 target = skills_base / target_name

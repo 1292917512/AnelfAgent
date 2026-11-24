@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Download, SearchX, Store } from "lucide-react";
 import { AsyncState } from "@/components/common/AsyncState";
 import { usePluginAction } from "./usePluginAction";
+import { Inspection, useInspection } from "./Inspection";
 import { PluginCard } from "./PluginCard";
 import { NetworkConfigLink } from "@/components/common/NetworkSettings";
 import { Card } from "@/components/common/Card";
@@ -29,6 +30,10 @@ export function BrowseSection({ onViewMarkets }: { onViewMarkets: () => void }) 
   const [ref, setRef] = useState("");
   const [subdir, setSubdir] = useState("");
   const { busy, run } = usePluginAction();
+
+  const marketCheck = useInspection({ name: selected?.name ?? "", marketplace: selected?.marketplace ?? "" },
+    !!selected && !selected.installed && selected.installation !== "NOT_AVAILABLE");
+  const sourceCheck = useInspection({ source: source.trim(), ref: ref.trim(), subdir: subdir.trim() }, false);
 
   const active = markets.data?.filter((market) => market.enabled !== false) ?? [];
   const hasMarkets = active.length > 0;
@@ -58,7 +63,7 @@ export function BrowseSection({ onViewMarkets }: { onViewMarkets: () => void }) 
 
   const onInstall = async (entry: MarketplacePluginEntry) => {
     await run(`install:${entry.marketplace}:${entry.name}`, async () => {
-      await pluginsApi.install(entry.name, entry.marketplace);
+      await pluginsApi.install(entry.name, entry.marketplace, marketCheck.data?.status === "verified" ? marketCheck.data.revision : "");
       setSelected(null);
       toast.success(t("installDone", { name: entry.name }));
       await refreshPluginViews(queryClient);
@@ -68,7 +73,8 @@ export function BrowseSection({ onViewMarkets }: { onViewMarkets: () => void }) 
   const onInstallFromSource = async () => {
     if (!source.trim()) return;
     await run("install-source", async () => {
-      const { data } = await pluginsApi.installFromSource(source.trim(), ref.trim(), subdir.trim());
+      const { data } = await pluginsApi.installFromSource(source.trim(), ref.trim(), subdir.trim(),
+        sourceCheck.data?.status === "verified" ? sourceCheck.data.revision : "");
       toast.success(t("installDone", { name: data.name }));
       setShowSource(false);
       setSource("");
@@ -108,13 +114,14 @@ export function BrowseSection({ onViewMarkets }: { onViewMarkets: () => void }) 
         </nav>}
       </AsyncState>
       <Modal open={!!selected} onClose={() => setSelected(null)} dismissible={!busy} title={selected?.name} placement="right"
-        footer={selected && <Button variant="primary" loading={!!busy} disabled={selected.installed || selected.installation === "NOT_AVAILABLE"}
+        footer={selected && <Button variant="primary" loading={!!busy} disabled={marketCheck.isFetching || marketCheck.data?.status === "invalid" || selected.installed || selected.installation === "NOT_AVAILABLE"}
           onClick={() => onInstall(selected)}>{t(selected.installed ? "installedBadge" : selected.installation === "NOT_AVAILABLE" ? "unavailable" : "install")}</Button>}>
         {selected && <div className="space-y-4 text-sm">
           <Badge variant="neutral">{selected.marketplace}</Badge>
           {markets.data?.find((m) => m.name === selected.marketplace)?.source_type === "github-topic" && <p className="text-xs text-muted">{t("mdTopicHint")}</p>}
           {selected.description && <p>{selected.description}</p>}
           <p className="break-all text-muted">{[selected.url || selected.path, selected.subdir, selected.ref].filter(Boolean).join(" · ")}</p>
+          {!selected.installed && selected.installation !== "NOT_AVAILABLE" && <Inspection query={marketCheck} disabled={!!busy} />}
         </div>}
       </Modal>
       <Modal open={showSource} onClose={() => setShowSource(false)} dismissible={!busy} title={t("installFromSource")}>
@@ -149,9 +156,10 @@ export function BrowseSection({ onViewMarkets }: { onViewMarkets: () => void }) 
               aria-label={t("subdirLabel")}
             />
           </label>
+          <Inspection query={sourceCheck} disabled={!source.trim() || !!busy} />
           <div className="flex flex-wrap items-center justify-between gap-3">
             <NetworkConfigLink />
-            <Button type="submit" variant="primary" loading={!!busy} disabled={!source.trim()}><Download size={14} />{t("install")}</Button>
+            <Button type="submit" variant="primary" loading={!!busy} disabled={!source.trim() || sourceCheck.isFetching || sourceCheck.data?.status === "invalid"}><Download size={14} />{t("install")}</Button>
           </div>
         </form>
       </Modal>

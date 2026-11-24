@@ -107,9 +107,9 @@ def fetch_local(path: str, staging: Path, *, subdir: str = "") -> Tuple[Path, st
     ignore = shutil.ignore_patterns(".git", "__pycache__", "node_modules", ".venv")
     try:
         shutil.copytree(source, target, ignore=ignore)
+        return target, _dir_fingerprint(target)
     except OSError as e:
         raise PluginError(f"拷贝本地插件失败: {source} - {e}") from e
-    return target, _dir_fingerprint(target)
 
 
 def _dir_fingerprint(root: Path) -> str:
@@ -119,10 +119,9 @@ def _dir_fingerprint(root: Path) -> str:
     digest = hashlib.sha256()
     for file in sorted(p for p in root.rglob("*") if p.is_file()):
         digest.update(str(file.relative_to(root)).encode())
-        try:
-            digest.update(file.read_bytes())
-        except OSError:
-            continue
+        with file.open("rb") as stream:
+            while chunk := stream.read(1024 * 1024):
+                digest.update(chunk)
     return digest.hexdigest()
 
 

@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { tasksApi } from "@/lib/api";
+import { tasksApi, workspaceApi } from "@/lib/api";
 import type { TaskConfig } from "@/lib/types";
 import { cn, formatAge, formatDurationMs } from "@/lib/utils";
 /** 本文件辅助组件共用的 i18n t 签名（支持插值参数） */
@@ -79,6 +79,12 @@ export function TaskHistoryList({ name, t }: { name: string; t: Tf }) {
                   <span className="text-muted tabular-nums">{formatDurationMs(rec.duration_ms)}</span>
                   <span className="text-muted">{runTriggerLabel(rec.trigger, t)}</span>
                 </div>
+                {rec.artifacts?.map((file) => <div key={file.path} className="mt-1 break-all">
+                  <a className="text-accent underline" href={workspaceApi.rawUrl(file.path)} download>{file.path}</a>
+                  {file.receipts.map((receipt) => <p key={JSON.stringify(receipt)} className="text-muted">
+                    {t("tasks.fileDelivered", { scope: receipt.scope })} {receipt.message_id}
+                  </p>)}
+                </div>)}
                 {rec.error && <p className="text-danger mt-1 break-all">{rec.error}</p>}
                 {rec.preview && <p className="text-foreground/80 mt-1 line-clamp-2 break-all">{rec.preview}</p>}
               </div>

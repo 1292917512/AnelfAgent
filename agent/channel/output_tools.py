@@ -314,6 +314,7 @@ async def execute_send_action(
         record_content: str = "",
         session_id: str = "",
         delivery_mode: DeliveryMode = "channel",
+        file_path: str = "",
 ) -> str:
     """统一发送执行管道：校验 → 目标解析 → 出站事实面 → 调用频道 → 历史固化 → 日志。
 
@@ -362,6 +363,9 @@ async def execute_send_action(
             enrich(parsed, ok)
 
         if ok:
+            if file_path:
+                from agent.artifacts import confirm_file_delivery
+                confirm_file_delivery(file_path, target_scope, parsed.get("message_id"))
             record_delivery(target_scope, through_ts=seen_through)
             note_outbound(target_scope, thinker, outbound_preview or operation)
             media = MediaMessage.model_validate(parsed["media"]) if parsed.get("media") else None
@@ -632,6 +636,7 @@ async def send_file(channel_id: str, target_id: str, file_path: str, caption: st
         channel_id=channel_id,
         target_id=target_id,
         operation="文件",
+        file_path=file_path,
         invoke=_invoke,
         enrich=_enrich,
         outbound_preview=caption or "文件",
