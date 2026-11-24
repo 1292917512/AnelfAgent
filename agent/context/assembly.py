@@ -8,14 +8,14 @@
 - 完整 LLM 上下文组装（stable/context/volatile/对话历史分层）
 - 每轮执行上下文（轮次/工具态势/当前空间；跨会话通知独立放在动态区）
 
-模型看到：工具态势只列本轮可调用的工具，动态发现标记取自当前执行会话。
-Token 影响：省去目录外工具名，每轮最多缩短一行提示。
-缓存影响：仅更新动态执行上下文，不改稳定前缀。
+模型看到：稳定目录按组汇总工具选填的功能短句，动态工具态势列出本轮可调用的方法。
+Token 影响：每条选填简介增加一个短句，参数随工具发现或激活提供。
+缓存影响：简介随注册表变化更新稳定工具块，分组激活与当前会话不改变简介。
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, List, NamedTuple, Optional
 
 from agent.config import get_mind_config
 from agent.context.ports import PFCView, ToolContextView
@@ -48,16 +48,26 @@ def _memory_rules_text() -> str:
     return load_rules().strip()
 
 
-def _delegation_enabled() -> bool:
-    """子代理委托是否启用（后台任务规范提示的注入条件）。"""
-    from core.config import get_config_bool
-    return get_config_bool("delegation_enabled", True)
-
-
 def _codebox_enabled() -> bool:
     """代码编排实体是否启用（代码编排路由纪律的注入条件）。"""
     from core.config import get_config_bool
     return get_config_bool("codebox_enabled", True)
+
+
+class _ToolPromptInputs(NamedTuple):
+    """稳定工具提示的注册表版本和本次渲染采用的配置值。"""
+
+    registry_version: int
+    sleep_groups: str
+    system_rules: tuple[str, ...]
+    memory_rules: str
+    codebox_enabled: bool
+
+    @classmethod
+    def capture(cls) -> _ToolPromptInputs:
+        version, sleep_groups = EntityRegistry.catalog_cache_key()
+        rules = tuple(getattr(get_mind_config(), "tool_system_rules", ()))
+        return cls(version, sleep_groups, rules, _memory_rules_text(), _codebox_enabled())
 
 
 def _tool_activation_sticky() -> bool:
@@ -170,9 +180,7 @@ class ContextAssembly:
         self._skill_store = skill_store
         # 插件注册表（名册注入来源）：未注入时不进插件名册，测试构造默认与磁盘隔离
         self._plugin_registry = plugin_registry
-        # stable_fingerprint 版本门控缓存：(tools_version, activation_version, models_summary,
-        # direct_vision, memory_rules, registry_version, catalog_factor, roster_factor) → hash
-        self._fp_cache: Optional[tuple[int, int, str, bool, str, int, str, str, str]] = None
+        self._tools_cache: tuple[tuple[object, ...], tuple[str, str]] | None = None
         # 上下文构建管线：默认布局（动态在历史之后）+ legacy 回退布局
         self._pipeline = ContextPipeline(self)
         self._pipeline_legacy = ContextPipeline(self, volatility_overrides=_LEGACY_VOLATILITY)
@@ -189,22 +197,28 @@ class ContextAssembly:
             direct_vision: bool = False,
     ) -> list[dict]:
         """构建工具使用规则、通道感知、媒体处理规则的系统提示。"""
+        text = self._render_tool_system_text(_ToolPromptInputs.capture(), models_summary, direct_vision)
+        return [{"role": "system", "content": text}] if text else []
+
+    def _render_tool_system_text(
+            self, inputs: _ToolPromptInputs, models_summary: str, direct_vision: bool,
+    ) -> str:
         catalog = EntityRegistry.get_entity_catalog()
         if not catalog:
-            return []
+            return ""
 
-        mc = get_mind_config()
-        rules = mc.tool_system_rules if hasattr(mc, "tool_system_rules") else []
-        lines = list(rules) + ["# 工具分组目录"]
+        lines = [*inputs.system_rules, "# 工具分组目录"]
 
         # 可沉睡分组：目录文案保持静态（不随激活状态变化）——激活状态是
         # 按 scope 隔离的动态量，嵌进 stable 块会导致文本随 scope/激活波动，
         # 击穿缓存前缀；当前激活状态由 exec_context 的 [已激活工具分组] 呈现
-        sleepable_groups = EntityRegistry.get_sleepable_groups()
+        sleepable_groups = EntityRegistry.get_sleepable_groups(inputs.sleep_groups)
 
         for entry in catalog:
             group = entry["group"]
             desc = entry.get("description", "")
+            if briefs := entry.get("tool_briefs"):
+                desc = " · ".join(filter(None, (desc, " / ".join(briefs))))
             desc_part = f" — {desc}" if desc else ""
             sleep_info = sleepable_groups.get(group)
             if sleep_info:
@@ -236,10 +250,9 @@ class ContextAssembly:
         lines.append(TOOL_USAGE_RULES)
         lines.append("")
         lines.append(PLAN_USAGE_RULES)
-        memory_rules = _memory_rules_text()
-        if memory_rules:
+        if inputs.memory_rules:
             lines.append("")
-            lines.append(memory_rules)
+            lines.append(inputs.memory_rules)
 
         lines.append("")
         lines.append(PARALLEL_CALL_HINT)
@@ -247,12 +260,11 @@ class ContextAssembly:
         lines.append("")
         lines.append(BACKGROUND_TASK_HINT)
 
-        # 代码编排路由纪律：实体启用时注入（配置在进程期恒定，stable 层字节稳定）
-        if _codebox_enabled():
+        if inputs.codebox_enabled:
             lines.append("")
             lines.append(CODE_ORCHESTRATION_RULES)
 
-        return [{"role": "system", "content": "\n".join(lines)}]
+        return "\n".join(lines)
 
     @staticmethod
     def _build_context_reading_rules() -> str:
@@ -317,7 +329,7 @@ channel_id 和 target_id 取当前请求的频道与会话标签，群聊目标�
             "对话中出现 [media_type:类型][media_path:路径] 标签时，**必须优先使用下列内置媒体工具**处理：",
         ]
         for media_type, tool_names in sorted(tag_tool_map.items()):
-            tools_str = " / ".join(tool_names)
+            tools_str = " / ".join(sorted(tool_names))
             if media_type == "image":
                 lines.append(
                     f"- [media_type:image] → 若图片已直接以视觉形式呈现则无需调用工具识别；"
@@ -359,23 +371,7 @@ channel_id 和 target_id 取当前请求的频道与会话标签，群聊目标�
             direct_vision: bool = False,
     ) -> str:
         """构建工具块：工具使用规则 + 工具目录 + 媒体规则 + 技能目录 + 插件名册。"""
-        parts: list[str] = []
-        for msg in self.build_tool_system_prompt(
-                models_summary=models_summary, direct_vision=direct_vision,
-        ):
-            if msg.get("content"):
-                parts.append(msg["content"])
-        if self._skill_store is not None:
-            from agent.skills.catalog import catalog_section
-            catalog = catalog_section(self._skill_store)
-            if catalog:
-                parts.append(catalog)
-        if self._plugin_registry is not None:
-            from core.plugins.roster import roster_section
-            roster = roster_section(self._plugin_registry)
-            if roster:
-                parts.append(roster)
-        return "\n\n".join(parts)
+        return self.stable_tools_snapshot(models_summary, direct_vision)[1]
 
     def build_stable_layer(
             self,
@@ -391,68 +387,33 @@ channel_id 和 target_id 取当前请求的频道与会话标签，群聊目标�
         ) if p)
 
     def stable_fingerprint(self, models_summary: str = "", direct_vision: bool = False) -> str:
-        """计算 stable 层动态输入的指纹（任一输入变化即触发重建）。
+        """返回稳定工具块实际文本的指纹。"""
+        return self.stable_tools_snapshot(models_summary, direct_vision)[0]
 
-        覆盖：工具目录、可沉睡分组、工具规则、记忆铁律文档、模型摘要、媒体规则、
-        运行环境、技能目录、插件名册。不含激活状态（目录文案已静态化，激活状态由
-        exec_context 动态呈现）。以 _tools_version + 激活版本 + 铁律文本门控：
-        工具集/激活状态/铁律文档均未变时直接返回缓存哈希，跳过 json.dumps 开销
-        （铁律文本经 mtime 缓存读取，未变时仅一次 stat syscall，
-        Web/手工编辑后随门控失配重建一次）。
-        """
-        if self._skill_store is not None:
-            from agent.skills.catalog import catalog_factor, catalog_section
-            catalog_gate = catalog_factor(self._skill_store)
-            catalog_text = catalog_section(self._skill_store)
-        else:
-            catalog_gate, catalog_text = "skills-catalog:none", ""
-
-        if self._plugin_registry is not None:
-            from core.plugins.roster import roster_factor, roster_section
-            roster_gate = roster_factor(self._plugin_registry)
-            roster_text = roster_section(self._plugin_registry)
-        else:
-            roster_gate, roster_text = "plugins-roster:none", ""
-
-        memory_rules = _memory_rules_text()
-        cache_key = (
-            self._tool_assembly.tools_version,
-            self._tool_assembly.activation_version, models_summary, direct_vision,
-            memory_rules,
-            # 注册表-only 变化（实体热插拔/分组权重调整）不触碰 tools_version，
-            # 必须纳入门控，否则目录重建滞后一轮
-            EntityRegistry.version(),
-            # 技能目录随库内容版本变化（计数类账本更新不改变版本）
-            catalog_gate,
-            # 插件名册随注册表内容版本变化（装卸/启停/组件回写）
-            roster_gate,
-        )
-        if self._fp_cache is not None and self._fp_cache[:8] == cache_key:
-            return self._fp_cache[8]
-
-        import json as _json
-
+    def stable_tools_snapshot(self, models_summary: str = "", direct_vision: bool = False) -> tuple[str, str]:
+        """返回同一次渲染的指纹和文本。跨会话发现或唤醒工具可复用该快照。"""
         from agent.context.prompt_layers import prompt_cache_manager
 
-        mc = get_mind_config()
-        rules = mc.tool_system_rules if hasattr(mc, "tool_system_rules") else []
-        catalog = EntityRegistry.get_entity_catalog()
-        sleepable = EntityRegistry.get_sleepable_groups()
-        # 指纹不含激活状态：目录文案已静态化，激活状态不再影响 stable 内容
-        result = prompt_cache_manager.compute_hash(
-            _json.dumps(catalog, sort_keys=True, ensure_ascii=False),
-            _json.dumps(sleepable, sort_keys=True, ensure_ascii=False),
-            "\n".join(rules),
-            memory_rules,
-            models_summary,
-            self._build_media_rules(direct_vision),
-            str(_delegation_enabled()),
-            _env_info_block(),
-            catalog_text,
-            roster_text,
-        )
-        self._fp_cache = (*cache_key, result)
-        return result
+        inputs = _ToolPromptInputs.capture()
+        catalog = roster = ""
+        if self._skill_store is not None:
+            from agent.skills.catalog import catalog_section
+            catalog = catalog_section(self._skill_store)
+
+        if self._plugin_registry is not None:
+            from core.plugins.roster import roster_section
+            roster = roster_section(self._plugin_registry)
+
+        cache_key = (inputs, models_summary, direct_vision, catalog, roster)
+        cached = self._tools_cache
+        if cached is not None and cached[0] == cache_key:
+            return cached[1]
+
+        prompt = self._render_tool_system_text(inputs, models_summary, direct_vision)
+        text = "\n\n".join(part for part in (prompt, catalog, roster) if part)
+        snapshot = (prompt_cache_manager.compute_hash(text), text)
+        self._tools_cache = (cache_key, snapshot)
+        return snapshot
 
     async def build_llm_context(
             self,

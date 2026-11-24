@@ -101,6 +101,9 @@ class TestToolVisibility:
         entry = next(e for e in catalog if e["group"] == "plugin:demo")
         assert entry["tool_count"] == 1
         assert entry["description"] == "demo plugin"
+        assert entry["tool_briefs"] == ("探测插件连通性",)
+        manager.toggle("demo", False)
+        assert all(e["group"] != "plugin:demo" for e in EntityRegistry.get_entity_catalog())
 
     def test_auto_activate_in_conversation_scope(self, manager, plugin_env):
         """对话 scope 中安装：分组自动激活（装完即可用）。"""

@@ -467,12 +467,13 @@ class TestSkillCatalog:
         from agent.skills import catalog as catalog_mod
 
         monkeypatch.setattr(catalog_mod, "_catalog_enabled", lambda: True)
+        for i in range(6):
+            store.create(f"skill-{i}", f"技能 {i} 的较长描述内容", "c")
+        assert "的较长描述" in catalog_mod.catalog_section(store)
         monkeypatch.setattr(
             "core.config.get_config_int",
             lambda key, default=0: 30 if key == "skills_catalog_max_chars" else default,
         )
-        for i in range(6):
-            store.create(f"skill-{i}", f"技能 {i} 的较长描述内容", "c")
         text = catalog_mod.catalog_section(store)
         assert "未列出" in text  # 超预算显式省略标记
         assert "的较长描述" not in text  # 描述被降级（截断/仅名称）

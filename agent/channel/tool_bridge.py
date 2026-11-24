@@ -80,6 +80,7 @@ class ChannelToolMeta:
     """会话投递类工具：handler 走统一发送管道（出站事实面 + 历史固化）。
     仅给向会话投递消息的工具声明（转发/合并转发/戳一戳等）；内容平台互动
     （评论/弹幕/动态）不是会话投递，不声明。"""
+    catalog_brief: str = ""
 
 
 def channel_tool(
@@ -89,6 +90,7 @@ def channel_tool(
     extra_tags: Optional[List[str]] = None,
     group: Optional[str] = None,
     outbound: bool = False,
+    catalog_brief: str = "",
 ) -> Callable:
     """标记频道适配器方法为 AI 可见工具（仅打标记，注册在频道注册时发生）。
 
@@ -99,12 +101,13 @@ def channel_tool(
         extra_tags: 附加 tag（channel_id / capability tag 自动添加）
         group: 工具分组覆盖（缺省 channel_ops）
         outbound: 是否会话投递类工具（走统一发送管道，见 ChannelToolMeta.outbound）
+        catalog_brief: 在分组目录展示的功能短句，留空则省略
     """
     def decorator(func: Callable) -> Callable:
         setattr(func, _CHANNEL_TOOL_ATTR, ChannelToolMeta(
             name=name, description=description,
             sensitive=sensitive, extra_tags=list(extra_tags or []),
-            group=group, outbound=outbound,
+            group=group, outbound=outbound, catalog_brief=catalog_brief,
         ))
         return func
     return decorator
@@ -332,6 +335,7 @@ def _register_specific_tool(channel_id: str, bound: Callable, meta: ChannelToolM
         params=_normalize_target_params(extract_tool_params(bound)),
         tags=tags,
         source=f"channel.{channel_id}",
+        catalog_brief=meta.catalog_brief,
         check_fn=_sensitive_check if meta.sensitive else None,
         meta={"risk": "CRITICAL"} if meta.sensitive else None,
     )
@@ -438,6 +442,7 @@ def _rebuild_common_tool(cap_value: str) -> bool:
     params = _merge_params(cap_value, supporters)
     sensitive = any(meta.sensitive for _, meta in supporters.values())
     description = _common_description(cap_value, supporters)
+    briefs = sorted({meta.catalog_brief for _, meta in supporters.values() if meta.catalog_brief})
 
     ok = EntityRegistry.register_tool(
         name=cap_value,
@@ -447,6 +452,7 @@ def _rebuild_common_tool(cap_value: str) -> bool:
         params=params,
         tags=[cap_value],
         source="channel.auto",
+        catalog_brief="、".join(briefs),
         check_fn=_sensitive_check if sensitive else None,
         meta={"risk": "CRITICAL"} if sensitive else None,
     )

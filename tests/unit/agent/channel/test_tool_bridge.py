@@ -72,7 +72,7 @@ class FakeChannel(BaseChannel[_FakeConfig]):
     async def health_check(self) -> HealthStatus:
         return HealthStatus(healthy=True)
 
-    @channel_tool(description="撤回消息")
+    @channel_tool(description="撤回消息", catalog_brief="撤回频道消息")
     async def delete_message(self, chat_id: str, message_id: str, **kwargs: Any) -> str:
         """撤回消息。"""
         return json.dumps({"success": True, "deleted": message_id, "channel_type": kwargs.get("channel_type")})
@@ -98,7 +98,7 @@ class FakeChannel(BaseChannel[_FakeConfig]):
         """戳一戳（特有投递工具：无能力映射，注册为 {channel}_send_poke）。"""
         return json.dumps({"success": True, "poked": user_id})
 
-    @channel_tool()
+    @channel_tool(catalog_brief="执行频道特有操作")
     async def do_special(self, target: str) -> str:
         """特有方法。
 
@@ -196,6 +196,8 @@ class TestCommonTools:
         _make(cm, created)
         for name in ("delete_message", "ban_user", "forward_message"):
             assert _registered(name), name
+        group = next(g for g in EntityRegistry.get_entity_catalog() if g["group"] == "channel_ops")
+        assert {"撤回频道消息", "执行频道特有操作"} <= set(group["tool_briefs"])
 
     def test_capability_tag(self, channel_manager) -> None:
         cm, created = channel_manager

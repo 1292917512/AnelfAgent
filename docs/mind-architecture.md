@@ -267,11 +267,16 @@ bootstrap 不重复维护这些声明的导入清单。
 思维循环负责逐轮刷新和调度，上下文组件不反向调用这些调度实现。
 `end_reply` 与 `compress_context` 的工具入口归属 `tools/core.py`，压缩器本身不注册工具。
 
-工具分组目录描述注册能力，不表示本轮所有方法都已装入调用列表。`list_entity_methods`
+工具分组目录展示模块自述。工具作者可在 `@tool`、`@deferred_tool`、`@channel_tool` 或 `register_tool` 上选填
+`catalog_brief="重建前端并重启"`，仅写适用场景。已启用工具的短句按组汇总为一行，随工具启停和卸载更新。
+普通对话首轮可用 `query_entities(keyword=...)` 按功能查找所属分组。`list_entity_methods`
 返回实际参数 schema，并将发现的工具交给既有装配门控；返回 `sleeping=true` 的分组仍须
 用 `activate_tool_group` 激活。激活只接受目录标记 `[可沉睡]` 的分组。粘性模式下回执以
 `sticky=true` 表示不按轮数到期；非粘性模式才报告剩余轮数。当前状态只进入工具结果与
 动态执行上下文，目录规则与工具描述不随 scope、激活或到期变化。
+
+稳定工具块按实际渲染文本计算缓存指纹。分组顺序、沉睡配置、工具规则以及技能和插件目录的展示预算
+热更后重新校验。相同文本跨会话复用，纯展示图标变化和同一组工具换序注册也可复用。
 
 `ContextAssembly.build_llm_context()` 使用 `ContextPipeline` 按变动频率从静到动组装消息，
 并为每个块附加内部 `_layer` 标记。`@context_block` 保留方法类型，管线只发现类上声明的方法，

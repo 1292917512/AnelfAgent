@@ -8,9 +8,14 @@
 - 遇到 Git 冲突时提示联系主人
 - 单实体/单频道代码重载与批量目录同步复用既有同步器，全部声明 CRITICAL 走统一审批
 
+运维目录 Model Experience：
+① 模型在稳定目录看到一行运维能力简介，按需发现对应方法。
+② 八项能力各占一个短句，合计数十 token；参数随工具 schema 提供。
+③ 简介随实体分组注册，复用稳定工具块缓存；构建进度和重启结果只随执行回执或恢复通知提供。
+
 热同步 Model Experience：
 ① 模型看到三个按需发现的工具及真实增删、重载、失败/忙碌摘要与当前工具发现指引，失败不可视为完成。
-② token 影响为三个工具 schema 与按模块数增长的结果；不常驻注入运维提示。
+② 发现后增加三个工具 schema 与按模块数增长的结果。
 ③ 结果进入工具链尾部，工具目录更新沿用注册表版本和追加冻结，不改稳定消息前缀。
 
 重启交接体验（Model Experience 三行声明）：
@@ -41,7 +46,7 @@ from entities._sdk import (
 from . import service
 from .module_reload import SyncTarget, reload_channel_module, reload_entity_module, sync_module_directories
 
-entity("devops", "运维管理 - 模块热同步、应用重启、前端构建、项目代码更新")
+entity("devops", "应用运维")
 
 
 def _result(action: str, **fields: Any) -> str:
@@ -81,7 +86,7 @@ def _reload_result(raw: str, *, module: str = "", channel_id: str = "") -> str:
     return json.dumps(payload, ensure_ascii=False)
 
 
-@tool(name="reload_entity", group="devops", tags=["core"], risk="CRITICAL", timeout=120)
+@tool(name="reload_entity", group="devops", tags=["core"], risk="CRITICAL", timeout=120, catalog_brief="热重载实体")
 async def reload_entity(entity_name: str) -> str:
     """热重载单个实体的工具和路由代码；保留状态资源，失败沿用原同步器回滚。
 
@@ -92,7 +97,7 @@ async def reload_entity(entity_name: str) -> str:
 
 
 @tool(name="reload_channel", group="devops", tags=["core"], risk="CRITICAL", timeout=120,
-      check_fn=channel_sensitive_allowed)
+      check_fn=channel_sensitive_allowed, catalog_brief="热重载频道")
 async def reload_channel(channel_id: str) -> str:
     """热重载单个频道的代码与 schema；原启停意图不变，运行中的连接会短暂重连。
 
@@ -102,7 +107,7 @@ async def reload_channel(channel_id: str) -> str:
     return _reload_result(await reload_channel_module(channel_id), channel_id=channel_id.strip())
 
 
-@tool(name="sync_modules", group="devops", tags=["core"], risk="CRITICAL", timeout=900)
+@tool(name="sync_modules", group="devops", tags=["core"], risk="CRITICAL", timeout=900, catalog_brief="同步模块目录")
 async def sync_modules(target: SyncTarget = "all", reload_existing: bool = False) -> str:
     """批量同步实体或频道目录；默认不主动重载正常存续模块，显式 reload_existing=true 才全部重载。
 
@@ -115,7 +120,7 @@ async def sync_modules(target: SyncTarget = "all", reload_existing: bool = False
 
 # ── 重启应用 ──────────────────────────────────────────────────────────
 
-@tool(name="restart_app", group="devops")
+@tool(name="restart_app", group="devops", catalog_brief="重启应用")
 def restart_app(message: str = "") -> str:
     """重启应用进程。
 
@@ -145,7 +150,7 @@ def restart_app(message: str = "") -> str:
                    already_pending=bool(result.get("already_pending")))
 
 
-@tool(name="get_crash_report", concurrency_safe=True, group="devops")
+@tool(name="get_crash_report", concurrency_safe=True, group="devops", catalog_brief="查看崩溃报告")
 def get_crash_report() -> str:
     """查询最近一次进程崩溃信息（退出码/信号/系统崩溃报告摘要）。
 
@@ -156,7 +161,7 @@ def get_crash_report() -> str:
     return _result("get_crash_report", **service.get_crash_info())
 
 
-@tool(name="build_and_restart", group="devops", timeout=330)
+@tool(name="build_and_restart", group="devops", timeout=330, catalog_brief="重建前端并重启")
 def build_and_restart(message: str = "") -> str:
     """重新构建前端（npm run build）并重启应用。
 
@@ -185,7 +190,7 @@ def build_and_restart(message: str = "") -> str:
 
 # ── 项目更新 ──────────────────────────────────────────────────────────
 
-@tool(name="update_project", group="devops")
+@tool(name="update_project", group="devops", catalog_brief="拉取项目代码")
 def update_project() -> str:
     """从远程仓库拉取项目最新代码（git pull --ff-only）。
 
@@ -195,9 +200,9 @@ def update_project() -> str:
     return _result("update_project", **result)
 
 
-@tool(name="update_and_restart", group="devops", timeout=330)
+@tool(name="update_and_restart", group="devops", timeout=330, catalog_brief="更新代码、重建前端并重启")
 def update_and_restart(message: str = "") -> str:
-    """一步完成：拉取最新代码 + 构建前端 + 重启应用。
+    """更新并重启应用：拉取最新代码，前端构建成功后重启。
 
     流程：git pull → 检查冲突 → 构建前端 → 构建成功则重启。
     遇到冲突或构建失败时不会重启，请主动联系主人解决。

@@ -30,8 +30,8 @@ _HEADER = (
 )
 
 _cache_lock = threading.Lock()
-# id(store) → (store 强引用, 库版本, 目录文本)：不同实例（测试/服务）互不串扰
-_cache: Dict[int, Tuple[SkillStore, int, str]] = {}
+# id(store) → (store 强引用, 内容版本与预算, 目录文本)
+_cache: Dict[int, Tuple[SkillStore, tuple[int, int, int], str]] = {}
 
 
 def _catalog_enabled() -> bool:
@@ -55,12 +55,13 @@ def _omission_line(count: int) -> str:
     return f"- …另有 {count} 个技能未列出（list_skills 查看全部）"
 
 
-def _render(skills: List[Skill]) -> str:
-    """渲染目录正文：预算内尽量保留描述，超限逐级降级。"""
+def _catalog_budget() -> tuple[int, int]:
     from core.config import get_config_int
+    return get_config_int("skills_catalog_max_chars", 16000), get_config_int("skills_catalog_desc_chars", 160)
 
-    max_chars = get_config_int("skills_catalog_max_chars", 16000)
-    desc_chars = get_config_int("skills_catalog_desc_chars", 160)
+
+def _render(skills: List[Skill], max_chars: int, desc_chars: int) -> str:
+    """渲染目录正文：预算内尽量保留描述，超限逐级降级。"""
 
     def fits(lines: List[str]) -> bool:
         return len(_HEADER) + 1 + sum(len(line) + 1 for line in lines) <= max_chars
@@ -88,22 +89,24 @@ def catalog_section(store: SkillStore) -> str:
     """
     if not _catalog_enabled():
         return ""
-    version = store.version
+    max_chars, desc_chars = _catalog_budget()
+    key = (store.version, max_chars, desc_chars)
     with _cache_lock:
         entry = _cache.get(id(store))
-        if entry and entry[0] is store and entry[1] == version:
+        if entry and entry[0] is store and entry[1] == key:
             return entry[2]
     # list_skills 默认排除归档：目录 = 全部可用技能（active + stale）
     skills = store.list_skills()
-    text = f"{_HEADER}\n{_render(skills)}" if skills else ""
+    text = f"{_HEADER}\n{_render(skills, max_chars, desc_chars)}" if skills else ""
     with _cache_lock:
-        _cache[id(store)] = (store, version, text)
+        _cache[id(store)] = (store, key, text)
     return text
 
 
 def catalog_factor(store: SkillStore) -> str:
-    """目录指纹因子（启用位 + 库版本），供 stable 工具块指纹门控。"""
-    return f"skills-catalog:{_catalog_enabled()}:{store.version}"
+    """目录渲染所依赖的启用位、库版本和长度预算。"""
+    max_chars, desc_chars = _catalog_budget()
+    return f"skills-catalog:{_catalog_enabled()}:{store.version}:{max_chars}:{desc_chars}"
 
 
 # ------------------------------------------------------------------

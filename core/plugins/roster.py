@@ -25,8 +25,8 @@ _HEADER = (
 _DESC_CHARS = 100
 
 _cache_lock = threading.Lock()
-# id(registry) → (registry 强引用, 内容版本, 名册文本)：不同实例（测试）互不串扰
-_cache: Dict[int, Tuple[PluginRegistry, int, str]] = {}
+# id(registry) → (registry 强引用, 内容版本与预算, 名册文本)
+_cache: Dict[int, Tuple[PluginRegistry, tuple[int, int], str]] = {}
 
 
 def _roster_enabled() -> bool:
@@ -70,11 +70,13 @@ def _omission_line(count: int) -> str:
     return f"- …另有 {count} 个插件未列出（list_plugins 查看全部）"
 
 
-def _render(records: List[InstalledPlugin]) -> str:
-    """渲染名册正文：预算内保留完整行，超限降级为仅名称行。"""
+def _roster_budget() -> int:
     from core.config import get_config_int
+    return get_config_int("plugins_roster_max_chars", 4000)
 
-    max_chars = get_config_int("plugins_roster_max_chars", 4000)
+
+def _render(records: List[InstalledPlugin], max_chars: int) -> str:
+    """渲染名册正文：预算内保留完整行，超限降级为仅名称行。"""
 
     def fits(lines: List[str]) -> bool:
         return len(_HEADER) + 1 + sum(len(line) + 1 for line in lines) <= max_chars
@@ -98,21 +100,22 @@ def roster_section(registry: PluginRegistry) -> str:
     """
     if not _roster_enabled():
         return ""
-    version = registry.version
+    max_chars = _roster_budget()
+    key = (registry.version, max_chars)
     with _cache_lock:
         entry = _cache.get(id(registry))
-        if entry and entry[0] is registry and entry[1] == version:
+        if entry and entry[0] is registry and entry[1] == key:
             return entry[2]
     records = registry.list_installed()
-    text = f"{_HEADER}\n{_render(records)}" if records else ""
+    text = f"{_HEADER}\n{_render(records, max_chars)}" if records else ""
     with _cache_lock:
-        _cache[id(registry)] = (registry, version, text)
+        _cache[id(registry)] = (registry, key, text)
     return text
 
 
 def roster_factor(registry: PluginRegistry) -> str:
-    """名册指纹因子（启用位 + 内容版本），供 stable 工具块指纹门控。"""
-    return f"plugins-roster:{_roster_enabled()}:{registry.version}"
+    """名册渲染所依赖的启用位、内容版本和长度预算。"""
+    return f"plugins-roster:{_roster_enabled()}:{registry.version}:{_roster_budget()}"
 
 
 # ------------------------------------------------------------------

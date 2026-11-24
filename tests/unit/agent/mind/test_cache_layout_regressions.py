@@ -374,7 +374,7 @@ class TestSleepableCatalogStatic:
         )
         monkeypatch.setattr(
             ca.EntityRegistry, "get_sleepable_groups",
-            staticmethod(lambda: {"ssh": {"brief": "SSH 管理"}}),
+            staticmethod(lambda config_raw: {"ssh": {"brief": "SSH 管理"}}),
         )
         monkeypatch.setattr(ca.EntityRegistry, "get_all", staticmethod(lambda: []))
         asm = ca.ContextAssembly(SN(), SN())
@@ -488,6 +488,16 @@ class TestConfigSleepGroups:
         assert groups["cfg_ent"]["tool_count"] == 1
         assert "cfg_free" not in groups
 
+    def test_configured_group_keeps_plugin_sleep_brief(self) -> None:
+        from core.entity import EntityRegistry
+
+        name = "cfg_z_plugin"
+        try:
+            assert EntityRegistry.register_tool(name, str, group="cfg_ent", allow_sleep=True, sleep_brief="插件说明")
+            assert EntityRegistry.get_sleepable_groups()["cfg_ent"] == {"brief": "插件说明", "tool_count": 2}
+        finally:
+            EntityRegistry.unregister(name)
+
     def test_is_sleepable_semantics(self) -> None:
         from core.entity import EntityRegistry
 
@@ -515,15 +525,33 @@ class TestConfigSleepGroups:
 
     def test_config_change_invalidates_cache(self) -> None:
         """名单热变更不依赖注册表版本也能重算（防目录过期）。"""
+        from unittest.mock import Mock
+
+        from agent.context.assembly import ContextAssembly
+        from agent.context.prompt_layers import LAYER_STABLE_TOOLS, PromptCacheManager
+        from agent.mind.tool_assembly import ToolAssembly
         from core.config import ConfigManager
         from core.entity import EntityRegistry
 
+        assembly = ContextAssembly(Mock(), ToolAssembly())
+        cache = PromptCacheManager()
+
+        def read(scope: str) -> tuple[str, bool]:
+            return cache.get_or_build(scope, LAYER_STABLE_TOOLS, assembly.stable_fingerprint(), assembly.build_tools_block)
+
+        before, hit = read("first")
+        assert not hit and 'activate_tool_group(group="cfg_ent")' in before
         ConfigManager.set("tool_sleep_groups", "cfg_free")
         groups = EntityRegistry.get_sleepable_groups()
         assert "cfg_ent" not in groups
         assert "cfg_free" in groups
+        after, hit = read("first")
+        assert not hit and 'activate_tool_group(group="cfg_free")' in after
+        assert after == assembly.build_tools_block()
+        assert read("second") == (after, True)
         ConfigManager.set("tool_sleep_groups", "cfg_ent")
         assert "cfg_ent" in EntityRegistry.get_sleepable_groups()
+        assert read("first") == (before, True)
 
 
 class TestStickyActivation:

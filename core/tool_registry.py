@@ -25,6 +25,7 @@ def tool(
     path_resolver: Optional[Callable[[str], Path]] = None,
     sensitive_result: bool = False,
     replay_safe: bool = False,
+    catalog_brief: str = "",
 ) -> Callable[[F], F]:
     """装饰器：将函数注册为 LLM 可调用工具（注册到 EntityRegistry）。
 
@@ -36,6 +37,7 @@ def tool(
             检查不通过时工具不出现在 LLM schema 中
         allow_sleep: 是否允许沉睡（沉睡时仅展示 sleep_brief）
         sleep_brief: 沉睡状态下展示给 AI 的简短描述
+        catalog_brief: 在分组目录展示的功能短句，留空则省略
         concurrency_safe: 是否可与其他安全工具并行执行（只读工具才应开启，
             默认 False — fail-closed 语义）。这是对整条执行链的断言：
             框架层（事件/审批/ContextVar 隔离）已保证并发安全，
@@ -76,6 +78,7 @@ def tool(
             check_fn=check_fn,
             allow_sleep=allow_sleep,
             sleep_brief=sleep_brief,
+            catalog_brief=catalog_brief,
         )
         if not registered:
             raise ValueError(f"工具注册失败: {tool_name} ({func.__module__})")
@@ -112,6 +115,7 @@ def deferred_tool(
     path_resolver: Optional[Callable[[str], Path]] = None,
     sensitive_result: bool = False,
     replay_safe: bool = False,
+    catalog_brief: str = "",
 ) -> Callable[[F], F]:
     """延迟注册装饰器：装饰时仅收集元数据，activate_group() 时批量注册。
 
@@ -123,6 +127,7 @@ def deferred_tool(
         check_fn: 工具门控前置检查（返回 bool 或 Awaitable[bool]）
         allow_sleep: 是否允许沉睡（沉睡时仅展示 sleep_brief）
         sleep_brief: 沉睡状态下展示给 AI 的简短描述
+        catalog_brief: 注册后在分组目录展示的功能短句，留空则省略
         concurrency_safe: 是否可与其他安全工具并行执行（只读工具才应开启；
             框架层已保证并发安全，标注者只需确保工具体自身只读无共享写状态）
         risk: 风险等级标记（如 CRITICAL），供规则与自动评审判断执行条件
@@ -162,6 +167,7 @@ def deferred_tool(
             "source": source, "meta": meta,
             "check_fn": check_fn, "allow_sleep": allow_sleep,
             "sleep_brief": sleep_brief,
+            "catalog_brief": catalog_brief,
         })
         return func
     return decorator

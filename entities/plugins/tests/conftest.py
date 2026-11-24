@@ -66,7 +66,7 @@ def plugin_env(tmp_path, monkeypatch):
             if tools:
                 (pkg / "tools.py").write_text(
                     "from entities._sdk import tool\n\n"
-                    f"@tool(name=\"{name}_ping\", group=\"{name}_grp\")\n"
+                    f"@tool(name=\"{name}_ping\", group=\"{name}_grp\", catalog_brief=\"探测插件连通性\")\n"
                     f"def {name}_ping() -> str:\n"
                     f"    \"\"\"ping\"\"\"\n"
                     f"    return \"pong\"\n",

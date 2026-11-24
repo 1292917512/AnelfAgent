@@ -86,12 +86,10 @@ class ContextPreparation:
         )
 
         # --- stable 工具块：工具目录 + 规则（指纹含工具版本门控） ---
-        tools_hash = prompt_cache_manager.compute_hash(
-            self.assembly.stable_fingerprint(models_summary, direct_vision),
-        )
+        tools_hash, rendered_tools = self.assembly.stable_tools_snapshot(models_summary, direct_vision)
         tools_text, tools_hit = prompt_cache_manager.get_or_build(
             scope, LAYER_STABLE_TOOLS, tools_hash,
-            lambda: self.assembly.build_tools_block(models_summary, direct_vision),
+            lambda: rendered_tools,
         )
 
         # --- context 层：动态便签 + 文件索引（lean 模式只留永久记忆块） ---

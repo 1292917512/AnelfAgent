@@ -15,7 +15,8 @@ Token 影响：发现指引替换重复的失败纪律，固定增加数十 toke
 # 并行调用用法由 PARALLEL_CALL_HINT 统一提供，此处不重复）
 TOOL_USAGE_RULES = (
     "[工具使用指引]\n"
-    "1. 分组目录不等于本轮可调用工具。需要本轮列表外的工具时，标记[可沉睡]的分组用 activate_tool_group 激活；"
+    "1. 优先用覆盖任务的专用工具。本轮缺少所需工具时，先看分组；不确定所属分组时用 query_entities 按功能关键词搜索。"
+    "标记[可沉睡]的分组用 activate_tool_group 激活；"
     "其余分组用 list_entity_methods 发现，后续轮次按权限加入工具列表。\n"
     "2. 返回“工具不存在/未知工具”时，用 list_entity_methods 获取精确方法名与参数，禁止猜测相似名称。"
 )

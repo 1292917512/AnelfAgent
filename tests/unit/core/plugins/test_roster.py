@@ -52,15 +52,16 @@ class TestRosterSection:
         assert roster_section(other) == ""
 
     def test_budget_downgrade_keeps_components(self, registry, monkeypatch):
-        monkeypatch.setattr(
-            "core.config.get_config_int",
-            lambda key, default: 260 if key == "plugins_roster_max_chars" else default,
-        )
         registry.upsert(InstalledPlugin(
             name="demo", version="1.0.0", description="长描述" * 40,
             skills=["s"], tools=["t"],
         ))
         registry.upsert(InstalledPlugin(name="overflow", description="x"))
+        assert "长描述" in roster_section(registry)
+        monkeypatch.setattr(
+            "core.config.get_config_int",
+            lambda key, default: 260 if key == "plugins_roster_max_chars" else default,
+        )
         text = roster_section(registry)
         assert "未列出" in text
         demo_line = next(ln for ln in text.splitlines() if "demo" in ln)

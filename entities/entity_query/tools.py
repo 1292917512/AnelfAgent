@@ -1,8 +1,8 @@
 """实体系统自省工具 — 查询实体目录和方法详情。
 
-Model Experience：方法详情复用执行端 JSON Schema；说明发现工具与激活分组的边界，返回当前沉睡状态。
-Token 影响：工具描述固定增加数十 token，按需结果携带参数约束与激活模式。
-缓存影响：描述只在发布时更新；会话状态只进工具结果，不改写稳定提示词或已发送的消息。
+Model Experience：普通对话可直接按功能搜索分组，再按需查看方法和参数。
+Token 影响：常态工具列表增加一个搜索 schema（约百余 token），方法详情按需提供。
+缓存影响：搜索 schema 固定，搜索结果进入工具调用链尾部。
 """
 
 from __future__ import annotations
@@ -24,12 +24,12 @@ from .network import check_network_proxy as check_network_proxy
 entity("entity", "实体系统自省 - 查询实体目录、方法详情和配置管理")
 
 
-@tool(name="query_entities", concurrency_safe=True, group="entity", tags=["core"])
+@tool(name="query_entities", concurrency_safe=True, group="entity", tags=["core", "always"])
 def query_entities(keyword: str = "", include_disabled: bool = False) -> str:
-    """查询实体目录，默认只显示已启用的实体。
+    """按功能关键词查找工具及所属分组，留空列出实体目录。
 
     Args:
-        keyword: 关键词搜索（名称、描述、分组）
+        keyword: 工具或分组的名称、功能描述或标签中的关键词，如“运维”
         include_disabled: 设为 true 可同时查看已禁用的实体/分组
     """
     try:

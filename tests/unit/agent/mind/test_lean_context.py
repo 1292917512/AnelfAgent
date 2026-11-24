@@ -38,9 +38,8 @@ def _fake_mind(pins_text: str = "") -> SN:
                                  pfc=SN(), conversation_data=SN(), embedder=SN()),
         models=SN(llm=None, llm_manager=SN(get_models_summary=lambda: "models")),
         context=SN(
-            stable_fingerprint=lambda summary, vision: "fp",
+            stable_tools_snapshot=lambda summary, vision: ("fp", "工具块"),
             build_persona_block=lambda parts, guide: "人设块",
-            build_tools_block=lambda summary, vision: "工具块",
         ),
     )
     mind.context.preparation = ContextPreparation(mind.context)

@@ -135,6 +135,71 @@ class TestStableBlocks:
         assert "你是 Anelf。" not in block
         assert "[运行环境]" not in block
 
+    def test_tool_rules_and_codebox_switch_refresh_fingerprint(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from agent.context.usage_rules import CODE_ORCHESTRATION_RULES
+        from core.config import ConfigManager
+        from core.entity import EntityRegistry
+
+        config = SimpleNamespace(tool_system_rules=["示例使用规则"])
+        monkeypatch.setattr("agent.context.assembly.get_mind_config", lambda: config)
+        monkeypatch.setattr(EntityRegistry, "get_entity_catalog", lambda: [{"group": "code", "tool_count": 1}])
+        ConfigManager.set("codebox_enabled", True)
+        assembly = self._assembly()
+        initial = assembly.stable_fingerprint()
+        assert CODE_ORCHESTRATION_RULES in assembly.build_tools_block()
+        ConfigManager.set("codebox_enabled", False)
+        without_codebox = assembly.stable_fingerprint()
+        assert without_codebox != initial and CODE_ORCHESTRATION_RULES not in assembly.build_tools_block()
+        config.tool_system_rules.append("新的使用规则")
+        assert assembly.stable_fingerprint() != without_codebox
+        assert "新的使用规则" in assembly.build_tools_block()
+        config.tool_system_rules.pop()
+        ConfigManager.set("codebox_enabled", True)
+        assert assembly.stable_fingerprint() == initial
+
+    def test_plugin_reload_preserves_snapshot_until_visible_content_changes(self) -> None:
+        from core.entity import EntityRegistry
+
+        assembly = self._assembly()
+        group = "order_freeze_plugin"
+
+        def register(name: str) -> None:
+            assert EntityRegistry.register_tool(name, str, group=group, catalog_brief=name, tags=["media:image"],
+                                                allow_sleep=True, sleep_brief=f"help for {name}")
+
+        try:
+            for name in ("freeze_b", "freeze_a"):
+                register(name)
+            before = assembly.stable_tools_snapshot()
+            EntityRegistry.unregister_group(group)
+            for name in ("freeze_a", "freeze_b"):
+                register(name)
+            EntityRegistry.register_group_manifest(group, {"icon": "puzzle"})
+            assert assembly.stable_tools_snapshot() == before
+            assert EntityRegistry.set_enabled("freeze_a", False, persist=False)
+            fingerprint, text = assembly.stable_tools_snapshot()
+            assert fingerprint != before[0] and "freeze_a" not in text
+        finally:
+            EntityRegistry.unregister_group(group)
+
+    def test_config_change_during_render_cannot_poison_restored_snapshot(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from agent.context.usage_rules import CODE_ORCHESTRATION_RULES
+        from core.config import ConfigManager
+        from core.entity import EntityRegistry
+
+        def read_catalog() -> list[dict]:
+            ConfigManager.set("codebox_enabled", False)
+            return [{"group": "code", "tool_count": 1}]
+
+        monkeypatch.setattr(EntityRegistry, "get_entity_catalog", read_catalog)
+        ConfigManager.set("codebox_enabled", True)
+        assembly = self._assembly()
+        original = assembly.stable_tools_snapshot()
+        assert CODE_ORCHESTRATION_RULES in original[1]
+        assert CODE_ORCHESTRATION_RULES not in assembly.stable_tools_snapshot()[1]
+        ConfigManager.set("codebox_enabled", True)
+        assert assembly.stable_tools_snapshot() == original
+
     def test_tools_block_appends_skill_catalog(self, tmp_path) -> None:
         """工具块尾接技能目录：注入 store 才进目录；未注入（隔离构造）不进。
 
