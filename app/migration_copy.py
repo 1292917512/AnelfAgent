@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Callable
 
 from app.migration_windows import change_time
+from app.windows_junction import is_junction
 
 
 def fingerprint(path: Path) -> str:
@@ -32,7 +33,7 @@ class CopyCheckpoint:
     """Batch durable checkpoints; interrupted files are recopied and verified files are reused."""
 
     def __init__(self, path: Path) -> None:
-        if path.is_symlink() or path.is_junction():
+        if path.is_symlink() or is_junction(path):
             raise RuntimeError("迁移进度文件被链接替换，请保留文件并检查。")
         self.connection = sqlite3.connect(path)
         self.connection.execute("CREATE TABLE IF NOT EXISTS files (name TEXT PRIMARY KEY, source TEXT, destination TEXT, digest TEXT, verified INTEGER)")

@@ -22,6 +22,7 @@ from app.manager import pid_alive
 from app.migration_copy import CopyCheckpoint
 from app.migration_links import Link, create_link, environment_links, plan_link, restore_links
 from app.migration_windows import check_move_access
+from app.windows_junction import is_junction
 from core.host_protocol import HostLock, write_json
 
 Report = Callable[[str, int, int], None]
@@ -36,7 +37,7 @@ def validate_project(root: Path, *, moving: bool = False) -> Path:
     if not (root / ".git").exists():
         raise ValueError("所选目录不是 Git 项目。")
     if moving:
-        if root.is_symlink() or root.is_junction() or not (root / ".git").is_dir():
+        if root.is_symlink() or is_junction(root) or not (root / ".git").is_dir():
             raise ValueError("链接目录或 Git worktree 请取消迁移勾选，直接使用原目录。")
         _validate_git_directory(root / ".git", root)
     return root.resolve()
@@ -95,8 +96,7 @@ def _inventory(root: Path, *, validate_git: bool = True) -> dict[str, tuple[int,
             if item.relative_to(root).as_posix() in _LOCK_FILES:
                 continue
             info = item.lstat()
-            link = stat.S_ISLNK(info.st_mode) or (sys.platform == "win32"
-                    and getattr(info, "st_reparse_tag", 0) == stat.IO_REPARSE_TAG_MOUNT_POINT)
+            link = stat.S_ISLNK(info.st_mode) or is_junction(item, info)
             if not (link or stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
                 raise ValueError(f"无法安全迁移特殊文件：{item}")
             if name == ".git" and validate_git:
@@ -120,7 +120,10 @@ def _remove_tree(root: Path) -> None:
         os.chmod(name, stat.S_IWRITE)
         function(name)
 
-    shutil.rmtree(root, onexc=writable)
+    if sys.version_info >= (3, 12):
+        shutil.rmtree(root, onexc=writable)
+    else:
+        shutil.rmtree(root, onerror=lambda function, name, exc_info: writable(function, name, exc_info[1]))
 
 
 def _preferences(data: Path, target: Path) -> None:
@@ -166,7 +169,7 @@ def recover(data: Path) -> str | None:
             or staging.name != f".anelf-transfer-{token}" or backup.name != f".anelf-original-{token}"
             or source == target or source in target.parents or target in source.parents):
         raise RuntimeError("迁移记录路径异常，请保留文件并检查。")
-    if any(item.is_symlink() or item.is_junction() for item in (source, target, staging, backup)):
+    if any(item.is_symlink() or is_junction(item) for item in (source, target, staging, backup)):
         raise RuntimeError("迁移目录被链接替换，请保留文件并检查。")
     marker = target / "logs/manager/migration.json"
     published = marker.is_file() and json.loads(marker.read_text("utf-8")).get("id") == token
@@ -208,7 +211,7 @@ def _sync_tree(staging: Path, before: dict[str, tuple[int, int, int, str]],
         if wanted and stat.S_IFMT(mode) == stat.S_IFMT(wanted[0]) and link == wanted[3]:
             continue
         item = staging / relative
-        if item.is_junction() or stat.S_ISDIR(mode) and not link:
+        if is_junction(item) or stat.S_ISDIR(mode) and not link:
             item.rmdir()
         else:
             try:

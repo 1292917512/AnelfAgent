@@ -1,4 +1,4 @@
-"""Create Windows directory junctions without requiring their targets to exist.
+"""Identify and create Windows directory junctions without requiring their targets to exist.
 
 Uses the documented mount-point reparse buffer and FSCTL_SET_REPARSE_POINT.
 Only a newly created link directory is written; the target is never opened.
@@ -10,9 +10,22 @@ import ctypes
 import errno
 import logging
 import ntpath
+import os
+import stat
 import struct
 import sys
 from pathlib import Path
+
+
+def is_junction(item: Path, info: os.stat_result | None = None) -> bool:
+    """Identify a mount-point reparse tag on the link itself, including a dangling junction."""
+    if sys.platform != "win32":
+        return False
+    try:
+        link_stat = info if info is not None else item.lstat()
+        return link_stat.st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT
+    except (FileNotFoundError, NotADirectoryError):
+        return False
 
 
 def _extended(path: str) -> str:

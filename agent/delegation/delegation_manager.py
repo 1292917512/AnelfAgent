@@ -787,9 +787,10 @@ class DelegationManager:
         self._pending[delegation_id] = acquire_task
         try:
             try:
-                await asyncio.wait_for(acquire_task, timeout)
+                async with asyncio.timeout(timeout):
+                    await acquire_task
             except (TimeoutError, asyncio.CancelledError) as exc:
-                # acquire 已完成而 wait_for 尚未交接所有权时也可能收到取消。
+                # 槽位已获取、等待方尚未恢复执行时也可能收到取消。
                 if acquire_task.done() and not acquire_task.cancelled() and acquire_task.exception() is None:
                     semaphore.release()
                 if isinstance(exc, TimeoutError):

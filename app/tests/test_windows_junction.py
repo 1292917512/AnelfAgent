@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import ctypes
 import os
+import stat
 from pathlib import Path
 
 import pytest
 
 from app.migration_links import plain_path
-from app.windows_junction import create_junction
+from app.windows_junction import create_junction, is_junction
 
 pytestmark = pytest.mark.skipif(os.name != "nt", reason="Windows reparse points")
 
@@ -18,7 +19,9 @@ def test_missing_target_and_long_unicode_paths_are_preserved(tmp_path: Path) -> 
     missing = tmp_path / ("中文🧪" * 12) / ("nested" * 20) / "missing package"
     link = tmp_path / "directory junction"
     create_junction(link, str(missing))
-    assert link.is_junction() and not link.exists()
+    assert link.lstat().st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT
+    assert is_junction(link) and not link.exists()
+    assert not is_junction(tmp_path) and not is_junction(missing)
     assert Path(plain_path(Path(os.readlink(link)))) == missing
     assert not missing.parent.exists()
     missing.mkdir(parents=True)

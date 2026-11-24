@@ -16,6 +16,7 @@ import pytest
 
 from app.migration import migrate, recover, validate_git_link, validate_project
 from app.migration_links import Link, plain_path, relocated_target
+from app.windows_junction import is_junction
 from core.host_protocol import HostLock
 
 
@@ -274,14 +275,14 @@ def test_windows_junctions_preserve_internal_packages_and_external_data(
         else:
             migrate(source, target, data, lambda *_: None, data / "cancel")
         link = target / "node_modules/example"
-        assert link.is_junction() and link.samefile(target / package.relative_to(source))
+        assert is_junction(link) and link.samefile(target / package.relative_to(source))
         assert (link / "index.js").read_text() == "local package"
-        assert (target / "external").is_junction() and (target / "external").samefile(external)
+        assert is_junction(target / "external") and (target / "external").samefile(external)
         saved = json.loads((target / "logs/manager/migration.json").read_text("utf-8"))["environment_backup"]
         assert (target / saved / "alias/keep.txt").read_text() == "extra package"
         assert (target / "old-environment").samefile(target / saved)
         moved_recovery = target / recovery.relative_to(source)
-        assert moved_recovery.is_junction() and not moved_recovery.exists()
+        assert is_junction(moved_recovery) and not moved_recovery.exists()
         assert Path(plain_path(Path(os.readlink(moved_recovery)))) == target / "packages/axios"
         assert Path(plain_path(Path(os.readlink(target / "recovery-chain")))) == moved_recovery
         (target / "packages/axios").mkdir()
@@ -326,7 +327,7 @@ def test_link_creation_failure_precedes_file_copy_and_preserves_external_target(
         migrate(source, target, data, lambda message, *_: messages.append(message), data / "cancel")
     assert not any(message.startswith("正在迁移 ·") for message in messages)
     assert (source / "config/data.db").read_bytes() == b"user-data\x00\xff"
-    assert (source / "config-link").is_junction() and not target.exists()
+    assert is_junction(source / "config-link") and not target.exists()
     assert (data / "migration.json").is_file()
     monkeypatch.setattr(migration, "create_link", create)
     migrate(source, target, data, lambda *_: None, data / "cancel")

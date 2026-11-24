@@ -9,7 +9,7 @@ import stat
 from pathlib import Path, PurePath, PureWindowsPath
 from typing import TypedDict
 
-from app.windows_junction import create_junction
+from app.windows_junction import create_junction, is_junction
 
 
 class Link(TypedDict):
@@ -71,7 +71,7 @@ def plan_link(source: Path, target: Path, name: str, raw: str) -> Link:
     # flatten junctions and can fail on cycles or temporarily unavailable targets.
     resolved = plain_path(Path(os.path.abspath(item.parent / raw)))
     info = item.lstat()
-    junction = item.is_junction()
+    junction = is_junction(item, info)
     directory = item.is_dir() or bool(getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_DIRECTORY)
     return {"target": relocated_target(source, target, name, resolved, junction=junction),
             "original": str(resolved), "junction": junction, "directory": directory}
@@ -94,19 +94,20 @@ def restore_links(root: Path, links: dict[str, Link | str], token: str) -> None:
         item = root / name
         link: Link = ({"target": value, "original": "", "junction": False, "directory": item.is_dir()}
                       if isinstance(value, str) else value)
-        if item.is_symlink() or item.is_junction():
-            if item.is_junction() == link["junction"] and plain_path(Path(os.readlink(item))) == plain_path(Path(link["target"])):
+        junction = is_junction(item)
+        if junction or item.is_symlink():
+            if junction == link["junction"] and plain_path(Path(os.readlink(item))) == plain_path(Path(link["target"])):
                 continue
         elif os.path.lexists(item):
             raise RuntimeError(f"迁移链接位置被其他文件占用，文件已保留：{item}")
         temporary = item.with_name(item.name + ".anelf-link-" + token)
         if not os.path.lexists(temporary):
             create_link(temporary, link)
-        elif not (temporary.is_symlink() or temporary.is_junction()) or plain_path(Path(os.readlink(temporary))) != plain_path(Path(link["target"])):
+        elif not (temporary.is_symlink() or is_junction(temporary)) or plain_path(Path(os.readlink(temporary))) != plain_path(Path(link["target"])):
             raise RuntimeError(f"迁移临时链接发生变化，文件已保留：{temporary}")
         # Windows cannot replace a junction with rename. The durable plan permits
         # recovery between removing the old link and publishing its replacement.
-        if item.is_junction():
+        if is_junction(item):
             item.rmdir()
         elif item.is_symlink():
             item.unlink()
