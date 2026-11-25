@@ -98,8 +98,8 @@ url = "https://pypi.org/simple"
 default = true
 
 [tool.uv.sources]
-# 上游正则字面量修复；固定提交并由锁文件校验源码，不在分词层屏蔽警告。
-jieba = { url = "https://github.com/fxsjy/jieba/archive/9ad240225ce521400cf2f10c8921ab5e6cbf0a16.tar.gz" }
+# 上游正则字面量修复；按完整提交号固定的 git 源，同步环境时不联网校验，不在分词层屏蔽警告。
+jieba = { git = "https://github.com/fxsjy/jieba", rev = "9ad240225ce521400cf2f10c8921ab5e6cbf0a16" }
 
 [dependency-groups]
 dev = [

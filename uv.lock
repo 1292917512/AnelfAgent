@@ -260,7 +260,7 @@ requires-dist = [
     { name = "httpx", extras = ["socks"], specifier = ">=0.28.0" },
     { name = "httpx-sse", specifier = ">=0.4.0,<0.5" },
     { name = "icalendar", specifier = ">=7.3.0" },
-    { name = "jieba", url = "https://github.com/fxsjy/jieba/archive/9ad240225ce521400cf2f10c8921ab5e6cbf0a16.tar.gz" },
+    { name = "jieba", git = "https://github.com/fxsjy/jieba?rev=9ad240225ce521400cf2f10c8921ab5e6cbf0a16" },
     { name = "lark-oapi", specifier = ">=1.5.0" },
     { name = "litellm", specifier = "==1.109.1" },
     { name = "loguru", specifier = ">=0.7.0" },
@@ -1831,8 +1831,7 @@ wheels = [
 [[package]]
 name = "jieba"
 version = "0.42.1"
-source = { url = "https://github.com/fxsjy/jieba/archive/9ad240225ce521400cf2f10c8921ab5e6cbf0a16.tar.gz" }
-sdist = { hash = "sha256:942542a9015b90dd2b3727d6ac7600564d95dfc3b0c6342cfecb8b097608e0e6" }
+source = { git = "https://github.com/fxsjy/jieba?rev=9ad240225ce521400cf2f10c8921ab5e6cbf0a16#9ad240225ce521400cf2f10c8921ab5e6cbf0a16" }
 
 [[package]]
 name = "jinja2"
